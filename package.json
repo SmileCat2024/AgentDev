@@ -1,0 +1,25 @@
+{
+  "name": "agentdev",
+  "version": "0.1.0",
+  "description": "A lightweight, decoupled AI agent framework",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "agent": "tsx examples/agent.ts"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.4.6",
+    "express": "^5.2.1",
+    "open": "^11.0.0",
+    "openai": "^4.73.0",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

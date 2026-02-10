@@ -36,6 +36,7 @@ export type {
   LLMClient,
   AgentConfig,
   ContextMiddleware,
+  ToolRenderConfig,
 } from './core/types.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';

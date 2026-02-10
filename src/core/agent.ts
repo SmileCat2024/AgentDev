@@ -53,6 +53,8 @@ export class Agent {
   async withViewer(port?: number): Promise<this> {
     this.viewer = new MessageViewer(port);
     await this.viewer.start();
+    // 注册工具到viewer，用于渲染配置
+    this.viewer.registerTools(this.tools.getAll());
     return this;
   }
 

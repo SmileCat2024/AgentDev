@@ -3,7 +3,7 @@
  * 简单的工具创建函数
  */
 
-import type { Tool } from './types.js';
+import type { Tool, ToolRenderConfig } from './types.js';
 
 /**
  * 创建一个工具
@@ -13,12 +13,14 @@ export function createTool(config: {
   description: string;
   parameters?: Record<string, any>;
   execute: (args: any) => Promise<any>;
+  render?: ToolRenderConfig;
 }): Tool {
   return {
     name: config.name,
     description: config.description,
     parameters: config.parameters,
     execute: config.execute,
+    render: config.render,
   };
 }
 
@@ -55,5 +57,13 @@ export class ToolRegistry {
    */
   has(name: string): boolean {
     return this.tools.has(name);
+  }
+
+  /**
+   * 获取工具的渲染配置
+   */
+  getRenderConfig(name: string): ToolRenderConfig | undefined {
+    const tool = this.tools.get(name);
+    return tool?.render;
   }
 }

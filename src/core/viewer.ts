@@ -3,12 +3,34 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { type Message } from './types.js';
+import { type Message, type Tool } from './types.js';
+import {
+  RENDER_TEMPLATES,
+  SYSTEM_RENDER_MAP,
+  TOOL_DISPLAY_NAMES,
+  applyTemplate,
+  getToolRenderTemplate,
+  getToolDisplayName,
+  getToolRenderConfig
+} from './render.js';
+
+/**
+ * 工具元数据（用于前端渲染）
+ */
+interface ToolMetadata {
+  name: string;
+  description: string;
+  render: {
+    call: string;  // 模板名称，必需
+    result: string;  // 模板名称，必需
+  };
+}
 
 export class MessageViewer {
   private port: number;
   private server: ReturnType<typeof createServer>;
   private messages: Message[] = [];
+  private registeredTools: Map<string, ToolMetadata> = new Map();
 
   constructor(port: number = 2026) {
     this.port = port;
@@ -53,10 +75,18 @@ export class MessageViewer {
       return;
     }
 
-    // API 端点
+    // API 端点 - 消息
     if (req.url === '/api/messages') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(this.messages));
+      return;
+    }
+
+    // API 端点 - 工具元数据
+    if (req.url === '/api/tools') {
+      const tools = Array.from(this.registeredTools.values());
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(tools));
       return;
     }
 
@@ -70,6 +100,35 @@ export class MessageViewer {
 
   stop(): void {
     this.server.close();
+  }
+
+  /**
+   * 注册工具元数据到viewer
+   */
+  registerTools(tools: Tool[]): void {
+    for (const tool of tools) {
+      // 获取工具的渲染配置（模板名称）
+      const config = getToolRenderConfig(tool.name, tool.render);
+
+      // 确保模板名称不为空
+      const callTemplate = config.call || 'json';
+      const resultTemplate = config.result || 'json';
+
+      // 构建工具元数据 - 传输模板名称，而不是模板内容
+      this.registeredTools.set(tool.name, {
+        name: tool.name,
+        description: tool.description,
+        render: {
+          call: callTemplate,    // 模板名称，如 'command', 'file'
+          result: resultTemplate, // 模板名称
+        },
+      });
+
+      // 同时注册显示名称
+      if (!TOOL_DISPLAY_NAMES[tool.name]) {
+        (TOOL_DISPLAY_NAMES as Record<string, string>)[tool.name] = tool.name;
+      }
+    }
   }
 
   private getHtml(): string {
@@ -422,6 +481,8 @@ export class MessageViewer {
     const container = document.getElementById('chat-container');
     const statusBadge = document.getElementById('connection-status');
     let currentMessages = [];
+    let toolRenderConfigs = {};
+    let TOOL_NAMES = {};
 
     // Configure Marked
     marked.setOptions({
@@ -433,6 +494,69 @@ export class MessageViewer {
       },
       breaks: true
     });
+
+    // 渲染模板（与后端保持一致）
+    const RENDER_TEMPLATES = {
+      'file': {
+        call: (args) => \`<div class="bash-command">Read <span class="file-path">\${args.path}</span></div>\`,
+        result: (data) => \`<pre class="bash-output" style="max-height:300px;">\${escapeHtml(data)}</pre>\`
+      },
+      'file-write': {
+        call: (args) => \`<div class="bash-command">Write <span class="file-path">\${args.path}</span></div>\`,
+        result: (data) => \`<div style="color:var(--success-color)">✓ File written successfully</div>\`
+      },
+      'file-list': {
+        call: (args) => \`<div class="bash-command">LS <span class="file-path">\${args.path || '.'}</span></div>\`,
+        result: (data) => {
+          const files = (data || '').split('\\n').filter(f => f);
+          return \`<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:4px; font-family:monospace; font-size:12px;">
+            \${files.map(f => \`<div style="color:var(--text-primary);">\${escapeHtml(f)}</div>\`).join('')}
+          </div>\`;
+        }
+      },
+      'command': {
+        call: (args) => \`<div class="bash-command">> \${args.command}</div>\`,
+        result: (data) => \`<pre class="bash-output">\${escapeHtml(data)}</pre>\`
+      },
+      'web': {
+        call: (args) => \`<div>GET <a href="\${args.url}" target="_blank" style="color:var(--accent-color)">\${args.url}</a></div>\`,
+        result: (data) => \`<div style="font-size:12px; opacity:0.8;">Fetched \${String(data).length} chars</div>\`
+      },
+      'math': {
+        call: (args) => \`<div class="bash-command">\${args.expression}</div>\`,
+        result: (data) => \`<div class="bash-command" style="color:#d2a8ff">= \${escapeHtml(data)}</div>\`
+      },
+      'json': {
+        call: (args) => \`<pre style="margin:0; font-size:12px;">\${escapeHtml(JSON.stringify(args, null, 2))}</pre>\`,
+        result: (data) => {
+          const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+          return \`<pre class="bash-output">\${escapeHtml(displayData)}</pre>\`;
+        }
+      }
+    };
+
+    // HTML转义函数
+    function escapeHtml(text) {
+      const str = String(text);
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+      return str.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    // 字符串模板插值
+    function interpolateTemplate(template, data) {
+      return template.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+        const value = data[key];
+        return value !== undefined ? String(value) : \`{{\${key}}}\`;
+      });
+    }
+
+    // 应用模板
+    function applyTemplate(template, data, success = true) {
+      if (typeof template === 'function') {
+        return template(data, success);
+      }
+      return interpolateTemplate(template, data);
+    }
 
     function parseToolResult(content) {
       try {
@@ -446,46 +570,62 @@ export class MessageViewer {
       }
     }
 
-    const TOOL_NAMES = {
-      run_shell_command: 'Bash',
-      read_file: 'Read File',
-      write_file: 'Write File',
-      list_directory: 'LS',
-      web_fetch: 'Web',
-      calculator: 'Calc'
+    // 获取工具渲染模板
+    function getToolRenderTemplate(toolName) {
+      const config = toolRenderConfigs[toolName];
+
+      // 使用系统默认映射作为fallback
+      const callTemplateName = (config?.render?.call) || SYSTEM_RENDER_MAP[toolName] || 'json';
+      const resultTemplateName = (config?.render?.result) || SYSTEM_RENDER_MAP[toolName] || 'json';
+
+      const callTemplate = RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json'];
+      const resultTemplate = RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json'];
+
+      return {
+        call: callTemplate.call,
+        result: resultTemplate.result
+      };
+    }
+
+    // 获取工具显示名称
+    function getToolDisplayName(toolName) {
+      return TOOL_NAMES[toolName] || toolName;
+    }
+
+    // 系统工具默认渲染模板映射（与后端 SYSTEM_RENDER_MAP 保持一致）
+    const SYSTEM_RENDER_MAP = {
+      read_file: 'file',
+      write_file: 'file-write',
+      list_directory: 'file-list',
+      run_shell_command: 'command',
+      web_fetch: 'web',
+      calculator: 'math',
     };
 
-    const toolRenderers = {
-      read_file: {
-        call: (args) => \`<div class="bash-command">Read <span class="file-path">\${args.path}</span></div>\`,
-        result: (data) => \`<pre class="bash-output" style="max-height:300px;">\${data}</pre>\`
-      },
-      write_file: {
-        call: (args) => \`<div class="bash-command">Write <span class="file-path">\${args.path}</span></div>\`,
-        result: (data) => \`<div style="color:var(--success-color)">✓ File written successfully</div>\`
-      },
-      list_directory: {
-        call: (args) => \`<div class="bash-command">LS <span class="file-path">\${args.path || '.'}</span></div>\`,
-        result: (data) => {
-          const files = data.split('\\n').filter(f => f);
-          return \`<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:4px; font-family:monospace; font-size:12px;">
-            \${files.map(f => \`<div style="color:var(--text-primary);">\${f}</div>\`).join('')}
-          </div>\`;
+    // 加载工具配置
+    async function loadToolsConfig() {
+      try {
+        const res = await fetch('/api/tools');
+        const tools = await res.json();
+
+        // 系统工具默认显示名称
+        const DEFAULT_DISPLAY_NAMES = {
+          run_shell_command: 'Bash',
+          read_file: 'Read File',
+          write_file: 'Write File',
+          list_directory: 'LS',
+          web_fetch: 'Web',
+          calculator: 'Calc'
+        };
+
+        for (const tool of tools) {
+          toolRenderConfigs[tool.name] = tool;
+          TOOL_NAMES[tool.name] = DEFAULT_DISPLAY_NAMES[tool.name] || tool.name;
         }
-      },
-      run_shell_command: {
-        call: (args) => \`<div class="bash-command">> \${args.command}</div>\`,
-        result: (data) => \`<pre class="bash-output">\${data}</pre>\`
-      },
-      web_fetch: {
-        call: (args) => \`<div>GET <a href="\${args.url}" target="_blank" style="color:var(--accent-color)">\${args.url}</a></div>\`,
-        result: (data) => \`<div style="font-size:12px; opacity:0.8;">Fetched \${data.length} chars</div>\`
-      },
-      calculator: {
-        call: (args) => \`<div class="bash-command">\${args.expression}</div>\`,
-        result: (data) => \`<div class="bash-command" style="color:#d2a8ff">= \${data}</div>\`
+      } catch (e) {
+        console.error('Failed to load tools config:', e);
       }
-    };
+    }
 
     async function poll() {
       try {
@@ -547,11 +687,12 @@ export class MessageViewer {
           
           if (msg.toolCalls && msg.toolCalls.length > 0) {
             const toolsHtml = msg.toolCalls.map(call => {
-              const displayName = TOOL_NAMES[call.name] || call.name;
+              const displayName = getToolDisplayName(call.name);
+              const template = getToolRenderTemplate(call.name);
               let innerHtml;
-              
-              if (toolRenderers[call.name] && toolRenderers[call.name].call) {
-                innerHtml = toolRenderers[call.name].call(call.arguments);
+
+              if (template.call) {
+                innerHtml = applyTemplate(template.call, call.arguments);
               } else {
                 innerHtml = \`<pre style="margin:0; font-size:12px;">\${JSON.stringify(call.arguments, null, 2)}</pre>\`;
               }
@@ -582,16 +723,17 @@ export class MessageViewer {
           }
 
           const { success, data } = parseToolResult(msg.content);
-          const displayName = TOOL_NAMES[toolName] || toolName || 'Tool Result';
+          const displayName = getToolDisplayName(toolName);
 
+          const template = getToolRenderTemplate(toolName);
           let bodyHtml;
-          if (toolName && toolRenderers[toolName] && toolRenderers[toolName].result) {
-             bodyHtml = toolRenderers[toolName].result(data, success);
+          if (template.result) {
+             bodyHtml = applyTemplate(template.result, data, success);
           } else {
              const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
              bodyHtml = \`<pre class="bash-output">\${displayData}</pre>\`;
           }
-          
+
           contentHtml = \`
             <div class="message-content" id="\${msgId}" style="padding:0; overflow:hidden;">
               <div class="tool-result-header">
@@ -663,7 +805,10 @@ export class MessageViewer {
       }
     };
 
-    poll();
+    // 加载工具配置并开始轮询
+    loadToolsConfig().then(() => {
+      poll();
+    });
   </script>
 </body>
 </html>`;

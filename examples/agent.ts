@@ -26,7 +26,7 @@ async function main() {
   });
 
   // 启用可视化查看器
-  await agent.withViewer(2026);
+  await agent.withViewer(2027);
 
   console.log('--- Agent 运行中 ---\n');
   console.log('工具:', ['read_file', 'write_file', 'list_directory', 'run_shell_command', 'web_fetch', 'calculator'].join(', '));

@@ -29,12 +29,22 @@ export interface LLMResponse {
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
 }
 
+// 工具渲染配置
+export interface ToolRenderConfig {
+  /** 调用时的渲染模板名称 */
+  call?: string;
+  /** 结果时的渲染模板名称 */
+  result?: string;
+}
+
 // 工具定义
 export interface Tool {
   name: string;
   description: string;
   parameters?: Record<string, any>;
   execute: (args: any) => Promise<any>;
+  /** 可选：渲染配置 */
+  render?: ToolRenderConfig;
 }
 
 // LLM 接口 - 所有 LLM 适配器都需要实现这个

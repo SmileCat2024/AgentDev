@@ -10,6 +10,7 @@ export { Context } from './core/context.js';
 export { createTool, ToolRegistry } from './core/tool.js';
 export { runReactLoop } from './core/loop.js';
 export { MessageViewer } from './core/viewer.js';
+export { DebugHub } from './core/debug-hub.js';
 
 // 生命周期类型
 export type { ToolContext, ToolResult, HookResult } from './core/lifecycle.js';
@@ -40,6 +41,10 @@ export type {
   AgentConfig,
   ContextMiddleware,
   ToolRenderConfig,
+  ToolMetadata,
+  AgentInfo,
+  AgentSession,
+  DebugHubIPCMessage,
 } from './core/types.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';

@@ -6,7 +6,7 @@
 import type { AgentConfig, ToolCall, Tool } from './types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, ContextSnapshot } from './context.js';
-import { MessageViewer } from './viewer.js';
+import { DebugHub } from './debug-hub.js';
 import { ToolContext, ToolResult, HookResult } from './lifecycle.js';
 
 // Re-export ContextSnapshot for convenience
@@ -17,8 +17,10 @@ export class Agent {
   protected tools: ToolRegistry;
   protected maxTurns: number;
   protected systemMessage?: string;
-  protected viewer?: MessageViewer;
   protected persistentContext?: Context;
+  protected debugHub?: DebugHub;
+  protected agentId?: string;
+  protected debugEnabled: boolean = false;
 
   constructor(config: AgentConfig) {
     this.llm = config.llm;
@@ -56,16 +58,16 @@ export class Agent {
     // 添加用户输入
     context.add({ role: 'user', content: input });
 
-    // 推送初始状态到 Viewer（包含当前输入）
-    if (this.viewer) {
-      this.viewer.push(context.getAll());
+    // 推送初始状态到 DebugHub（包含当前输入）
+    if (this.debugEnabled && this.agentId && this.debugHub) {
+      this.debugHub.pushMessages(this.agentId, context.getAll());
     }
 
     // ReAct 循环
     for (let turn = 0; turn < this.maxTurns; turn++) {
-      // 推送消息到 Viewer
-      if (this.viewer) {
-        this.viewer.push(context.getAll());
+      // 推送消息到 DebugHub
+      if (this.debugEnabled && this.agentId && this.debugHub) {
+        this.debugHub.pushMessages(this.agentId, context.getAll());
       }
 
       // LLM 调用
@@ -82,9 +84,9 @@ export class Agent {
         reasoning: response.reasoning,
       });
 
-      // 推送消息到 Viewer
-      if (this.viewer) {
-        this.viewer.push(context.getAll());
+      // 推送消息到 DebugHub
+      if (this.debugEnabled && this.agentId && this.debugHub) {
+        this.debugHub.pushMessages(this.agentId, context.getAll());
       }
 
       // 检查是否需要调用工具
@@ -106,21 +108,26 @@ export class Agent {
   }
 
   /**
-   * 启用调试
+   * 启用可视化查看器（多 Agent 共享模式）
+   *
+   * @param name Agent 显示名称（可选，默认使用类名）
+   * @param port HTTP 端口（默认 2026，仅在首次调用时生效）
    */
-  async withDebug(name: string): Promise<this> {
-    // TODO: 实现调试注册逻辑
-    return this;
-  }
+  async withViewer(name?: string, port?: number): Promise<this> {
+    this.debugHub = DebugHub.getInstance();
+    this.debugEnabled = true;
 
-  /**
-   * 启用可视化查看器（向后兼容）
-   */
-  async withViewer(port?: number): Promise<this> {
-    this.viewer = new MessageViewer(port);
-    await this.viewer.start();
-    // 注册工具到viewer，用于渲染配置
-    this.viewer.registerTools(this.tools.getAll());
+    // 首次调用时启动调试服务器
+    if (!this.debugHub.getCurrentAgentId()) {
+      await this.debugHub.start(port);
+    }
+
+    // 注册自身到 Hub
+    this.agentId = this.debugHub.registerAgent(this, name || this.constructor.name);
+
+    // 注册工具到 Hub
+    this.debugHub.registerAgentTools(this.agentId, this.tools.getAll());
+
     return this;
   }
 

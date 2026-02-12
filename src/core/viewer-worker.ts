@@ -1,10 +1,10 @@
 /**
  * Viewer Worker - 在独立进程中运行 HTTP 服务器
- * 解决主进程 execSync 阻塞导致 HTTP 无法响应的问题
+ * 支持多 Agent 调试，共享单端口
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { type Message, type Tool } from './types.js';
+import { type Message, type Tool, AgentSession, DebugHubIPCMessage, ToolMetadata } from './types.js';
 import {
   RENDER_TEMPLATES,
   SYSTEM_RENDER_MAP,
@@ -12,23 +12,21 @@ import {
   getToolRenderConfig
 } from './render.js';
 
-/**
- * 工具元数据
- */
-interface ToolMetadata {
-  name: string;
-  description: string;
-  render: {
-    call: string;
-    result: string;
-  };
-}
+// ============= Worker 类 =============
 
 class ViewerWorker {
   private port: number;
   private server: ReturnType<typeof createServer>;
-  private messages: Message[] = [];
-  private registeredTools: Map<string, ToolMetadata> = new Map();
+
+  // 多 Agent 会话存储
+  private agentSessions: Map<string, AgentSession> = new Map();
+
+  // 当前选中的 Agent ID
+  private currentAgentId: string | null = null;
+
+  // 内存限制配置
+  private readonly MAX_MESSAGES = 10000;
+  private readonly MAX_BYTES = 50 * 1024 * 1024; // 50MB
 
   constructor(port: number) {
     this.port = port;
@@ -71,31 +69,361 @@ class ViewerWorker {
     });
   }
 
+  // ========== HTTP 请求处理 ==========
+
   private handleRequest(req: IncomingMessage, res: ServerResponse) {
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    if (req.url === '/' || req.url === '/index.html') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(this.getHtml());
+    // 路由分发
+    const url = req.url || '/';
+
+    // 主页
+    if (url === '/' || url === '/index.html') {
+      this.handleIndex(req, res);
       return;
     }
 
-    if (req.url === '/api/messages') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(this.messages));
-      return;
-    }
-
-    if (req.url === '/api/tools') {
-      const tools = Array.from(this.registeredTools.values());
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(tools));
+    // API 端点
+    if (url.startsWith('/api/')) {
+      this.handleAPI(req, res);
       return;
     }
 
     res.writeHead(404);
     res.end('Not Found');
   }
+
+  /**
+   * 主页 - 带多 Agent 切换器
+   */
+  private handleIndex(req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(this.getHtml());
+  }
+
+  /**
+   * API 端点路由
+   */
+  private handleAPI(req: IncomingMessage, res: ServerResponse): void {
+    const url = req.url || '';
+
+    // GET /api/agents - Agent 列表
+    if (url === '/api/agents' && req.method === 'GET') {
+      this.handleGetAgents(req, res);
+      return;
+    }
+
+    // GET /api/agents/current - 当前 Agent
+    if (url === '/api/agents/current' && req.method === 'GET') {
+      this.handleGetCurrentAgent(req, res);
+      return;
+    }
+
+    // PUT /api/agents/current - 切换当前 Agent
+    if (url === '/api/agents/current' && req.method === 'PUT') {
+      this.handleSetCurrentAgentHttp(req, res);
+      return;
+    }
+
+    // GET /api/agents/:id/messages - 指定 Agent 的消息
+    const msgMatch = url.match(/^\/api\/agents\/([^/]+)\/messages$/);
+    if (msgMatch && req.method === 'GET') {
+      this.handleGetAgentMessages(req, res, msgMatch[1]);
+      return;
+    }
+
+    // GET /api/agents/:id/tools - 指定 Agent 的工具
+    const toolsMatch = url.match(/^\/api\/agents\/([^/]+)\/tools$/);
+    if (toolsMatch && req.method === 'GET') {
+      this.handleGetAgentTools(req, res, toolsMatch[1]);
+      return;
+    }
+
+    // 兼容端点：/api/messages → 当前 Agent 的消息
+    if (url === '/api/messages' && req.method === 'GET') {
+      if (this.currentAgentId) {
+        this.handleGetAgentMessages(req, res, this.currentAgentId);
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify([]));
+      }
+      return;
+    }
+
+    // 兼容端点：/api/tools → 当前 Agent 的工具
+    if (url === '/api/tools' && req.method === 'GET') {
+      if (this.currentAgentId) {
+        this.handleGetAgentTools(req, res, this.currentAgentId);
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify([]));
+      }
+      return;
+    }
+
+    res.writeHead(404);
+    res.end('API Not Found');
+  }
+
+  // ========== API 处理器 ==========
+
+  /**
+   * GET /api/agents - 获取所有 Agent
+   */
+  private handleGetAgents(req: IncomingMessage, res: ServerResponse): void {
+    const agents = Array.from(this.agentSessions.values()).map(session => ({
+      id: session.id,
+      name: session.name,
+      createdAt: session.createdAt,
+      messageCount: session.messages.length,
+    }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      agents,
+      currentAgentId: this.currentAgentId,
+    }));
+  }
+
+  /**
+   * GET /api/agents/current - 获取当前 Agent
+   */
+  private handleGetCurrentAgent(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.currentAgentId) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'No current agent' }));
+      return;
+    }
+
+    const session = this.agentSessions.get(this.currentAgentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      id: session.id,
+      name: session.name,
+      createdAt: session.createdAt,
+    }));
+  }
+
+  /**
+   * PUT /api/agents/current - 切换当前 Agent
+   */
+  public handleSetCurrentAgentHttp(req: IncomingMessage, res: ServerResponse): void {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const agentId = data.agentId;
+
+        if (!this.agentSessions.has(agentId)) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Agent not found' }));
+          return;
+        }
+
+        this.currentAgentId = agentId;
+        this.updateSessionActivity(agentId);
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: true, agentId }));
+
+        // 通知主进程
+        if (process.send) {
+          process.send({ type: 'agent-switched', agentId });
+        }
+      } catch (e) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+  }
+
+  /**
+   * GET /api/agents/:id/messages - 获取指定 Agent 的消息
+   */
+  private handleGetAgentMessages(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      agentId,
+      messages: session.messages,
+    }));
+  }
+
+  /**
+   * GET /api/agents/:id/tools - 获取指定 Agent 的工具
+   */
+  private handleGetAgentTools(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(session.tools));
+  }
+
+  // ========== 会话管理 ==========
+
+  /**
+   * 获取或创建会话
+   */
+  public getOrCreateSession(agentId: string, name: string): AgentSession {
+    let session = this.agentSessions.get(agentId);
+    if (!session) {
+      session = {
+        id: agentId,
+        name,
+        messages: [],
+        tools: [],
+        createdAt: Date.now(),
+        lastActive: Date.now(),
+      };
+      this.agentSessions.set(agentId, session);
+    }
+    return session;
+  }
+
+  /**
+   * 更新会话活跃时间
+   */
+  public updateSessionActivity(agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (session) {
+      session.lastActive = Date.now();
+    }
+  }
+
+  /**
+   * 应用内存限制
+   */
+  public enforceMemoryLimits(session: AgentSession): void {
+    // 消息数量限制
+    while (session.messages.length > this.MAX_MESSAGES) {
+      session.messages.shift();
+    }
+
+    // 字节限制
+    let byteSize = 0;
+    for (let i = 0; i < session.messages.length; i++) {
+      byteSize += JSON.stringify(session.messages[i]).length;
+      if (byteSize > this.MAX_BYTES) {
+        // 删除超出部分
+        session.messages = session.messages.slice(i + 1);
+        break;
+      }
+    }
+  }
+
+  // ========== IPC 消息处理 ==========
+
+  /**
+   * 处理注册 Agent
+   */
+  public handleRegisterAgent(msg: any): void {
+    const { agentId, name, createdAt } = msg;
+    this.getOrCreateSession(agentId, name);
+
+    // 首个 Agent 自动成为当前
+    if (this.agentSessions.size === 1) {
+      this.currentAgentId = agentId;
+    }
+
+    console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})`);
+  }
+
+  /**
+   * 处理推送消息
+   */
+  public handlePushMessages(msg: any): void {
+    const { agentId, messages } = msg;
+    const session = this.agentSessions.get(agentId);
+    if (session) {
+      session.messages = messages;
+      this.updateSessionActivity(agentId);
+      this.enforceMemoryLimits(session);
+    }
+  }
+
+  /**
+   * 处理注册工具
+   */
+  public handleRegisterTools(msg: any): void {
+    const { agentId, tools } = msg;
+    const session = this.agentSessions.get(agentId);
+    if (session) {
+      session.tools = [];
+      for (const tool of tools) {
+        const config = getToolRenderConfig(tool.name, tool.render);
+        const callTemplate = config.call || 'json';
+        const resultTemplate = config.result || 'json';
+
+        session.tools.push({
+          name: tool.name,
+          description: tool.description,
+          render: {
+            call: callTemplate,
+            result: resultTemplate,
+          },
+        });
+
+        if (!TOOL_DISPLAY_NAMES[tool.name]) {
+          (TOOL_DISPLAY_NAMES as Record<string, string>)[tool.name] = tool.name;
+        }
+      }
+      console.log(`[Viewer Worker] Agent ${agentId} 已注册 ${tools.length} 个工具`);
+    }
+  }
+
+  /**
+   * 处理切换当前 Agent（IPC 消息）
+   */
+  public handleSetCurrentAgent(msg: any): void {
+    const { agentId } = msg;
+    if (this.agentSessions.has(agentId)) {
+      this.currentAgentId = agentId;
+      this.updateSessionActivity(agentId);
+      console.log(`[Viewer Worker] 当前 Agent 已切换: ${agentId}`);
+    }
+  }
+
+  /**
+   * 处理注销 Agent
+   */
+  public handleUnregisterAgent(msg: any): void {
+    const { agentId } = msg;
+    this.agentSessions.delete(agentId);
+    console.log(`[Viewer Worker] Agent 已注销: ${agentId}`);
+
+    // 如果注销的是当前 Agent，切换到另一个
+    if (this.currentAgentId === agentId) {
+      const remaining = Array.from(this.agentSessions.keys());
+      this.currentAgentId = remaining.length > 0 ? remaining[0] : null;
+    }
+  }
+
+  /**
+   * 处理停止
+   */
+  public handleStop(): void {
+    process.exit(0);
+  }
+
+  // ========== HTML 生成（复用原有代码）==========
 
   private getHtml(): string {
     const port = this.port;
@@ -153,7 +481,38 @@ class ViewerWorker {
       z-index: 10;
     }
 
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
     h1 { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+
+    /* Agent 切换器 */
+    .agent-selector {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #21262d;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+
+    .agent-selector select {
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-size: 13px;
+      cursor: pointer;
+      outline: none;
+      min-width: 120px;
+    }
+
+    .agent-selector select:focus {
+      outline: 1px solid var(--accent-color);
+    }
 
     .status-badge {
       font-size: 12px;
@@ -367,7 +726,14 @@ class ViewerWorker {
 </head>
 <body>
   <header>
-    <h1>Agent Debugger</h1>
+    <div class="header-left">
+      <h1>Agent Debugger</h1>
+      <div class="agent-selector">
+        <select id="agent-select">
+          <option value="">加载中...</option>
+        </select>
+      </div>
+    </div>
     <span id="connection-status" class="status-badge">Connected</span>
   </header>
 
@@ -378,6 +744,10 @@ class ViewerWorker {
   <script>
     const container = document.getElementById('chat-container');
     const statusBadge = document.getElementById('connection-status');
+    const agentSelect = document.getElementById('agent-select');
+
+    let currentAgentId = null;
+    let allAgents = [];
     let currentMessages = [];
     let toolRenderConfigs = {};
     let TOOL_NAMES = {};
@@ -465,8 +835,8 @@ class ViewerWorker {
 
     function getToolRenderTemplate(toolName) {
       const config = toolRenderConfigs[toolName];
-      const callTemplateName = (config?.render?.call) || SYSTEM_RENDER_MAP[toolName] || 'json';
-      const resultTemplateName = (config?.render?.result) || SYSTEM_RENDER_MAP[toolName] || 'json';
+      const callTemplateName = (config?.render?.call) || 'json';
+      const resultTemplateName = (config?.render?.result) || 'json';
       const callTemplate = RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json'];
       const resultTemplate = RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json'];
       return {
@@ -488,10 +858,41 @@ class ViewerWorker {
       calculator: 'math',
     };
 
-    async function loadToolsConfig() {
+    async function loadAgents() {
       try {
-        const res = await fetch('/api/tools');
-        const tools = await res.json();
+        const res = await fetch('/api/agents');
+        const data = await res.json();
+        allAgents = data.agents || [];
+
+        // 更新选择器
+        agentSelect.innerHTML = allAgents.map(a =>
+          \`<option value="\${a.id}" \${a.id === data.currentAgentId ? 'selected' : ''}>\${a.name}</option>\`
+        ).join('');
+
+        // 更新当前 Agent
+        if (data.currentAgentId && data.currentAgentId !== currentAgentId) {
+          currentAgentId = data.currentAgentId;
+          await loadAgentData(currentAgentId);
+        }
+      } catch (e) {
+        console.error('Failed to load agents:', e);
+      }
+    }
+
+    async function loadAgentData(agentId) {
+      try {
+        const [msgsRes, toolsRes] = await Promise.all([
+          fetch(\`/api/agents/\${agentId}/messages\`),
+          fetch(\`/api/agents/\${agentId}/tools\`)
+        ]);
+
+        const msgsData = await msgsRes.json();
+        const tools = await toolsRes.json();
+
+        currentMessages = msgsData.messages || [];
+        toolRenderConfigs = {};
+        TOOL_NAMES = {};
+
         const DEFAULT_DISPLAY_NAMES = {
           run_shell_command: 'Bash',
           read_file: 'Read File',
@@ -500,19 +901,40 @@ class ViewerWorker {
           web_fetch: 'Web',
           calculator: 'Calc'
         };
+
         for (const tool of tools) {
           toolRenderConfigs[tool.name] = tool;
           TOOL_NAMES[tool.name] = DEFAULT_DISPLAY_NAMES[tool.name] || tool.name;
         }
+
+        render(currentMessages);
       } catch (e) {
-        console.error('Failed to load tools config:', e);
+        console.error('Failed to load agent data:', e);
       }
     }
 
+    agentSelect.addEventListener('change', async (e) => {
+      const newAgentId = e.target.value;
+      try {
+        const res = await fetch('/api/agents/current', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentId: newAgentId })
+        });
+        if (res.ok) {
+          currentAgentId = newAgentId;
+          await loadAgentData(newAgentId);
+        }
+      } catch (e) {
+        console.error('Failed to switch agent:', e);
+      }
+    });
+
     async function poll() {
       try {
-        const res = await fetch('/api/messages');
-        const messages = await res.json();
+        const msgsRes = await fetch(\`/api/agents/\${currentAgentId}/messages\`);
+        const data = await msgsRes.json();
+        const messages = data.messages || [];
 
         if (messages.length !== currentMessages.length || messages.length === 0) {
           currentMessages = messages;
@@ -674,7 +1096,7 @@ class ViewerWorker {
         el.classList.toggle('collapsed');
         const meta = el.parentElement.querySelector('.message-meta .collapse-toggle svg');
         if (meta) {
-           meta.style.transform = el.classList.contains('collapsed') ? 'rotate(-90deg)' : 'rotate(0deg)';
+           meta.transform = el.classList.contains('collapsed') ? 'rotate(-90deg)' : 'rotate(0deg)';
         }
       }
     };
@@ -686,37 +1108,12 @@ class ViewerWorker {
       }
     };
 
-    loadToolsConfig().then(() => {
+    loadAgents().then(() => {
       poll();
     });
   </script>
 </body>
 </html>`;
-  }
-
-  registerTools(tools: Tool[]): void {
-    for (const tool of tools) {
-      const config = getToolRenderConfig(tool.name, tool.render);
-      const callTemplate = config.call || 'json';
-      const resultTemplate = config.result || 'json';
-
-      this.registeredTools.set(tool.name, {
-        name: tool.name,
-        description: tool.description,
-        render: {
-          call: callTemplate,
-          result: resultTemplate,
-        },
-      });
-
-      if (!TOOL_DISPLAY_NAMES[tool.name]) {
-        (TOOL_DISPLAY_NAMES as Record<string, string>)[tool.name] = tool.name;
-      }
-    }
-  }
-
-  push(messages: Message[]): void {
-    this.messages = messages;
   }
 }
 
@@ -725,20 +1122,33 @@ class ViewerWorker {
 const port = parseInt(process.argv[2] || '2026', 10);
 const worker = new ViewerWorker(port);
 
-// 立即启动服务器（不等待 start 消息）
+// 立即启动服务器
 worker.start().catch(err => {
   console.error('[Viewer Worker] 启动失败:', err);
   process.exit(1);
 });
 
 // 监听主进程消息
-process.on('message', (msg: any) => {
-  if (msg.type === 'push') {
-    worker.push(msg.messages);
-  } else if (msg.type === 'register-tools') {
-    worker.registerTools(msg.tools);
-  } else if (msg.type === 'stop') {
-    process.exit(0);
+process.on('message', (msg: DebugHubIPCMessage) => {
+  switch (msg.type) {
+    case 'register-agent':
+      worker.handleRegisterAgent(msg);
+      break;
+    case 'push-messages':
+      worker.handlePushMessages(msg);
+      break;
+    case 'register-tools':
+      worker.handleRegisterTools(msg);
+      break;
+    case 'set-current-agent':
+      worker.handleSetCurrentAgent(msg);
+      break;
+    case 'unregister-agent':
+      worker.handleUnregisterAgent(msg);
+      break;
+    case 'stop':
+      worker.handleStop();
+      break;
   }
 });
 

@@ -7,15 +7,22 @@ import { readFile, readdir } from 'fs/promises';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
+/**
+ * 统一配置类型
+ * 字段允许冗余，各 LLM 实现只取自己需要的
+ */
 export interface ModelConfig {
-  provider: string;
-  name: string;
-  baseUrl: string;
+  provider: 'openai' | 'anthropic' | string;
   apiKey: string;
+  model: string;
+  baseUrl?: string;
+  // 未来可扩展
+  region?: string;
+  projectId?: string;
 }
 
 export interface AgentConfigFile {
-  model: ModelConfig;
+  defaultModel: ModelConfig;
   agent: {
     maxTurns: number;
     temperature: number;

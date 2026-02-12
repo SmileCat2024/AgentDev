@@ -74,13 +74,47 @@ export class OpenAILLM implements LLMClient {
   }
 }
 
+import type { ModelConfig, AgentConfigFile } from '../core/config.js';
+
 /**
  * 从配置创建 OpenAI LLM 实例
+ *
+ * @example
+ *   // 方式1：传入配置文件对象（推荐）
+ *   const llm = createOpenAILLM(config);
+ *
+ * @example
+ *   // 方式2：传入模型配置
+ *   const llm = createOpenAILLM(config.defaultModel);
+ *
+ * @example
+ *   // 方式3：单独传参
+ *   const llm = createOpenAILLM(apiKey, 'gpt-4o', baseUrl);
+ *
+ * @example
+ *   // 方式4：自定义配置
+ *   const llm = createOpenAILLM({ apiKey: 'xxx', model: 'gpt-4o' });
  */
+export function createOpenAILLM(config: AgentConfigFile): OpenAILLM;
+export function createOpenAILLM(modelConfig: ModelConfig): OpenAILLM;
 export function createOpenAILLM(
   apiKey: string,
   modelName: string,
   baseUrl?: string
+): OpenAILLM;
+export function createOpenAILLM(
+  configOrApiKey: AgentConfigFile | ModelConfig | string,
+  modelName?: string,
+  baseUrl?: string
 ): OpenAILLM {
-  return new OpenAILLM(apiKey, modelName, baseUrl);
+  // 处理 AgentConfigFile
+  if (typeof configOrApiKey === 'object' && 'defaultModel' in configOrApiKey) {
+    return new OpenAILLM(configOrApiKey.defaultModel.apiKey, configOrApiKey.defaultModel.model, configOrApiKey.defaultModel.baseUrl);
+  }
+  // 处理 ModelConfig
+  if (typeof configOrApiKey === 'object') {
+    return new OpenAILLM(configOrApiKey.apiKey, configOrApiKey.model, configOrApiKey.baseUrl);
+  }
+  // 处理单独传参
+  return new OpenAILLM(configOrApiKey, modelName!, baseUrl);
 }

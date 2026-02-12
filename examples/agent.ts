@@ -1,7 +1,3 @@
-/**
- * 双 Agent 示例 - 简化版
- */
-
 import { Agent, createOpenAILLM, loadConfig, fsTools, shellTools, webTools, mathTools } from '../src/index.js';
 import { exec } from 'child_process';
 
@@ -19,10 +15,18 @@ function agentHook(agentId: string): Promise<string> {
 
 async function main() {
   const config = await loadConfig();
-  const llm = createOpenAILLM(config.model.apiKey, config.model.name, config.model.baseUrl);
+  const llm = createOpenAILLM(config);
 
-  const agent1 = new Agent({ llm, tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool], maxTurns: Infinity, systemMessage: '你是 Agent1，一个专业的编程助手。' });
-  const agent2 = new Agent({ llm, tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool], maxTurns: Infinity, systemMessage: '你是 Agent2，一个数据分析师。' });
+  const agent1 = new Agent({ 
+     llm, 
+     tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool], 
+     maxTurns: Infinity, 
+     systemMessage: '你是 Agent1，一个专业的编程助手。' });
+  const agent2 = new Agent({ 
+     llm, 
+     tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool], 
+     maxTurns: Infinity, 
+     systemMessage: '你是 Agent2，一个数据分析师。' });
 
   await agent1.withViewer('Agent-1', 2026);
   await agent2.withViewer('Agent-2');

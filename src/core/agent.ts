@@ -275,6 +275,16 @@ export class Agent {
 
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error);
+
+      // 添加错误结果到上下文（让 LLM 知道工具执行失败）
+      context.add({
+        role: 'tool',
+        toolCallId: call.id,
+        content: JSON.stringify({
+          error: result.error,
+          success: false,
+        }),
+      });
     }
 
     result.duration = Date.now() - startTime;

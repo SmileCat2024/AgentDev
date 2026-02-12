@@ -1,7 +1,7 @@
 {
-  "model": {
+  "defaultModel": {
     "provider": "bigmodel",
-    "name": "glm-4.7",
+    "model": "glm-4.7",
     "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
     "apiKey": "ebfe3f9e68da409b83532645b27546ad.aDvVKNoAr1DHyaMG"
   },

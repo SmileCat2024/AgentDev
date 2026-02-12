@@ -1,9 +1,37 @@
 /**
  * 基础 Agent 示例
- * 使用 @openai/agents SDK 工具
+ * 适配新版本生命周期 API
  */
 
 import { Agent, createOpenAILLM, loadConfig, fsTools, shellTools, webTools, mathTools } from '../src/index.js';
+import { execSync } from 'child_process';
+import { createServer } from 'http';
+
+// ==================== 辅助函数 ====================
+
+/**
+ * 检测端口是否可用
+ */
+function isPortAvailable(port: number): boolean {
+  try {
+    execSync(`netstat -ano | findstr :${port}`, { stdio: 'pipe', encoding: 'utf-8', windowsHide: true });
+    return false;  // 端口被占用
+  } catch {
+    return true;  // 端口可用
+  }
+}
+
+/**
+ * 查找可用端口
+ */
+function findAvailablePort(startPort: number): number {
+  for (let port = startPort; port < startPort + 10; port++) {
+    if (isPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`无法找到可用端口 (从 ${startPort} 开始)`);
+}
 
 // ==================== 主程序 ====================
 
@@ -21,26 +49,55 @@ async function main() {
       webTools.webFetchTool,
       mathTools.calculatorTool,
     ],
-    maxTurns: 15,
-    systemMessage: '你是一个编码助手，可以使用工具来读写文件、执行命令、获取网页内容。',
+    maxTurns: Infinity,  // 无限循环，由用户主动退出
+    // 移除 systemMessage - 没有初始指令
   });
 
-  // 启用可视化查看器
-  await agent.withViewer(2027);
+  // 查找可用端口并启动调试服务器
+  const debugPort = findAvailablePort(2026);
+  await agent.withViewer(debugPort);
+  console.log(`调试页面: http://localhost:${debugPort}\n`);
 
-  console.log('--- Agent 运行中 ---\n');
-  console.log('工具:', ['read_file', 'write_file', 'list_directory', 'run_shell_command', 'web_fetch', 'calculator'].join(', '));
-  console.log();
+  console.log('--- Agent 已启动 (无限循环模式) ---\n');
+  console.log('可用工具: read_file, write_file, list_directory, run_shell_command, web_fetch, calculator');
+  console.log('输入 Ctrl+C 或输入 "exit" 退出\n');
 
-  const tasks = [
-    '请执行npx agenthook命令'
-  ];
+  // 无限循环：持续等待用户输入
+  while (true) {
+    try {
+      // 调用 agenthook 命令获取用户输入（阻塞等待）
+      const input = execSync('npx agenthook', {
+        encoding: 'utf-8',
+        stdio: ['inherit', 'pipe', 'inherit']
+      }).trim();
 
-  for (const task of tasks) {
-    console.log(`\n任务: ${task}`);
-    console.log('---');
-    const result = await agent.run(task);
-    console.log('\n结果:', result);
+      // 检查退出命令
+      if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
+        console.log('\n再见！');
+        break;
+      }
+
+      // 空输入跳过
+      if (!input) {
+        continue;
+      }
+
+      console.log(`\n> ${input}`);
+      console.log('---');
+
+      // 使用新的 API：onCall() 替代 run()
+      const result = await agent.onCall(input);
+
+      console.log(`\n结果: ${result}\n`);
+
+    } catch (error) {
+      // 忽略 Ctrl+C 的中断错误
+      if ((error as any).code === 130) {
+        console.log('\n再见！');
+        break;
+      }
+      console.error('执行出错:', error);
+    }
   }
 }
 

@@ -11,6 +11,9 @@ export { createTool, ToolRegistry } from './core/tool.js';
 export { runReactLoop } from './core/loop.js';
 export { MessageViewer } from './core/viewer.js';
 
+// 生命周期类型
+export type { ToolContext, ToolResult, HookResult } from './core/lifecycle.js';
+
 // 系统工具
 export * as fsTools from './tools/fs.js';
 export * as shellTools from './tools/shell.js';

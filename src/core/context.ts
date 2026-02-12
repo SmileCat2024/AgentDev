@@ -6,6 +6,14 @@
 import type { Message } from './types.js';
 import { cloneMessages } from './message.js';
 
+/**
+ * 上下文快照类型 - 用于序列化
+ */
+export interface ContextSnapshot {
+  version: number;
+  messages: Message[];
+}
+
 export class Context {
   private messages: Message[] = [];
 
@@ -75,5 +83,38 @@ export class Context {
    */
   slice(start?: number, end?: number): Message[] {
     return this.messages.slice(start, end);
+  }
+
+  /**
+   * 序列化为快照
+   */
+  toJSON(): ContextSnapshot {
+    return {
+      version: 1,
+      messages: cloneMessages(this.messages),
+    };
+  }
+
+  /**
+   * 从快照恢复
+   */
+  static fromJSON(snapshot: ContextSnapshot): Context {
+    const ctx = new Context();
+    ctx.messages = cloneMessages(snapshot.messages);
+    return ctx;
+  }
+
+  /**
+   * 序列化为 JSON 字符串
+   */
+  serialize(): string {
+    return JSON.stringify(this.toJSON());
+  }
+
+  /**
+   * 从 JSON 字符串反序列化
+   */
+  static deserialize(json: string): Context {
+    return Context.fromJSON(JSON.parse(json));
   }
 }

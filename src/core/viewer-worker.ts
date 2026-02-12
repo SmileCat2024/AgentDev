@@ -1,113 +1,45 @@
 /**
- * 消息可视化器 - HTTP 轮询模式
- * 支持独立进程运行，避免主线程阻塞影响 HTTP 响应
+ * Viewer Worker - 在独立进程中运行 HTTP 服务器
+ * 解决主进程 execSync 阻塞导致 HTTP 无法响应的问题
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { fork, spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { type Message, type Tool } from './types.js';
 import {
   RENDER_TEMPLATES,
   SYSTEM_RENDER_MAP,
   TOOL_DISPLAY_NAMES,
-  applyTemplate,
-  getToolRenderTemplate,
-  getToolDisplayName,
   getToolRenderConfig
 } from './render.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 /**
- * 工具元数据（用于前端渲染）
+ * 工具元数据
  */
 interface ToolMetadata {
   name: string;
   description: string;
   render: {
-    call: string;  // 模板名称，必需
-    result: string;  // 模板名称，必需
+    call: string;
+    result: string;
   };
 }
 
-export class MessageViewer {
+class ViewerWorker {
   private port: number;
-  private server: ReturnType<typeof createServer> | null = null;
+  private server: ReturnType<typeof createServer>;
   private messages: Message[] = [];
   private registeredTools: Map<string, ToolMetadata> = new Map();
-  private worker: any = null;
-  private useWorkerMode: boolean = true;  // 默认使用独立进程模式
 
-  constructor(port: number = 2026, useWorkerMode: boolean = true) {
+  constructor(port: number) {
     this.port = port;
-    this.useWorkerMode = useWorkerMode;
-    if (!useWorkerMode) {
-      this.server = createServer();
-    }
+    this.server = createServer();
   }
 
   async start(): Promise<void> {
-    if (this.useWorkerMode) {
-      return this.startWorkerMode();
-    }
-    return this.startDirectMode();
-  }
-
-  /**
-   * 独立进程模式 - HTTP 服务器在子进程中运行
-   * 主进程阻塞时仍可响应 HTTP 请求
-   */
-  private async startWorkerMode(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // __dirname 在编译后指向 dist/core/
-      const workerPath = join(__dirname, 'viewer-worker.js');
+      this.server.on('request', (req, res) => this.handleRequest(req, res));
 
-      // 直接 fork 编译后的 JS 文件
-      this.worker = fork(workerPath, [String(this.port)], {
-        silent: false,
-      });
-
-      // 等待 worker 准备就绪
-      const onReady = (msg: any) => {
-        if (msg.type === 'ready') {
-          this.worker.off('message', onReady);
-          console.log(`[Viewer] Worker 进程已启动，端口: ${this.port}`);
-          resolve();
-        }
-      };
-
-      this.worker.on('message', onReady);
-
-      // 错误处理
-      this.worker.on('error', (err: any) => {
-        reject(new Error(`Worker 启动失败: ${err.message}`));
-      });
-
-      this.worker.on('exit', (code: number) => {
-        if (code !== 0) {
-          reject(new Error(`Worker 异常退出，代码: ${code}`));
-        }
-      });
-    });
-  }
-
-  /**
-   * 直接模式 - HTTP 服务器在主进程中运行（原有逻辑）
-   */
-  private async startDirectMode(): Promise<void> {
-    if (!this.server) {
-      this.server = createServer();
-    }
-    const server = this.server!;  // TypeScript non-null assertion
-    return new Promise((resolve, reject) => {
-      // 先注册 request 处理器
-      server.on('request', (req, res) => this.handleRequest(req, res));
-
-      // 错误处理
-      server.on('error', (err: any) => {
+      this.server.on('error', (err: any) => {
         if (err.code === 'EADDRINUSE') {
           reject(new Error(`端口 ${this.port} 被占用`));
         } else {
@@ -115,21 +47,23 @@ export class MessageViewer {
         }
       });
 
-      // 监听端口
-      server.listen(this.port, async () => {
+      this.server.listen(this.port, async () => {
         const url = `http://localhost:${this.port}`;
-        console.log(`[Viewer] ${url}`);
+        console.log(`[Viewer Worker] ${url}`);
 
-        // 打开浏览器（等待完成，但失败不影响服务器运行）
+        // 打开浏览器
         try {
           const open = await import('open');
           await open.default(url).catch(() => {
-            // 浏览器打开失败不影响服务器运行
-            console.warn('[Viewer] 浏览器打开失败，请手动访问: ' + url);
+            console.warn('[Viewer Worker] 浏览器打开失败，请手动访问: ' + url);
           });
         } catch {
-          // open 模块不可用时，服务器继续运行
-          console.warn('[Viewer] open 模块不可用，请手动访问: ' + url);
+          console.warn('[Viewer Worker] open 模块不可用，请手动访问: ' + url);
+        }
+
+        // 通知主进程服务器已启动
+        if (process.send) {
+          process.send({ type: 'ready' });
         }
 
         resolve();
@@ -138,31 +72,20 @@ export class MessageViewer {
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse) {
-    // Worker 模式下，由子进程处理请求
-    if (this.useWorkerMode) {
-      res.writeHead(503);
-      res.end('Service running in worker mode');
-      return;
-    }
-
-    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    // 主页
     if (req.url === '/' || req.url === '/index.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(this.getHtml());
       return;
     }
 
-    // API 端点 - 消息
     if (req.url === '/api/messages') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(this.messages));
       return;
     }
 
-    // API 端点 - 工具元数据
     if (req.url === '/api/tools') {
       const tools = Array.from(this.registeredTools.values());
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -172,56 +95,6 @@ export class MessageViewer {
 
     res.writeHead(404);
     res.end('Not Found');
-  }
-
-  push(messages: Message[]): void {
-    this.messages = messages;
-    // 如果是 worker 模式，发送 IPC 消息
-    if (this.useWorkerMode && this.worker) {
-      this.worker.send({ type: 'push', messages });
-    }
-  }
-
-  stop(): void {
-    if (this.useWorkerMode && this.worker) {
-      this.worker.send({ type: 'stop' });
-    } else if (this.server) {
-      this.server.close();
-    }
-  }
-
-  /**
-   * 注册工具元数据到viewer
-   */
-  registerTools(tools: Tool[]): void {
-    for (const tool of tools) {
-      // 获取工具的渲染配置（模板名称）
-      const config = getToolRenderConfig(tool.name, tool.render);
-
-      // 确保模板名称不为空
-      const callTemplate = config.call || 'json';
-      const resultTemplate = config.result || 'json';
-
-      // 构建工具元数据 - 传输模板名称，而不是模板内容
-      this.registeredTools.set(tool.name, {
-        name: tool.name,
-        description: tool.description,
-        render: {
-          call: callTemplate,    // 模板名称，如 'command', 'file'
-          result: resultTemplate, // 模板名称
-        },
-      });
-
-      // 同时注册显示名称
-      if (!TOOL_DISPLAY_NAMES[tool.name]) {
-        (TOOL_DISPLAY_NAMES as Record<string, string>)[tool.name] = tool.name;
-      }
-    }
-
-    // 如果是 worker 模式，发送 IPC 消息
-    if (this.useWorkerMode && this.worker) {
-      this.worker.send({ type: 'register-tools', tools });
-    }
   }
 
   private getHtml(): string {
@@ -253,22 +126,10 @@ export class MessageViewer {
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    /* Scrollbar */
-    ::-webkit-scrollbar {
-      width: 10px;
-      height: 10px;
-    }
-    ::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: #30363d;
-      border-radius: 6px;
-      border: 2px solid var(--bg-color); /* Creates padding effect */
-    }
-    ::-webkit-scrollbar-thumb:hover {
-      background: #8b949e;
-    }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 6px; border: 2px solid var(--bg-color); }
+    ::-webkit-scrollbar-thumb:hover { background: #8b949e; }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
@@ -293,7 +154,7 @@ export class MessageViewer {
     }
 
     h1 { font-size: 16px; font-weight: 600; color: var(--text-primary); }
-    
+
     .status-badge {
       font-size: 12px;
       padding: 2px 8px;
@@ -308,7 +169,7 @@ export class MessageViewer {
       flex: 1;
       overflow-y: auto;
       padding: 20px;
-      padding-bottom: 120px; /* Extra bottom padding as requested */
+      padding-bottom: 120px;
       display: flex;
       flex-direction: column;
       gap: 24px;
@@ -352,16 +213,8 @@ export class MessageViewer {
       height: 16px;
       border-radius: 4px;
     }
-    .collapse-toggle:hover {
-      opacity: 1;
-      background: rgba(255,255,255,0.1);
-    }
-    .collapse-toggle svg {
-      width: 12px;
-      height: 12px;
-      fill: currentColor;
-      transition: transform 0.2s;
-    }
+    .collapse-toggle:hover { opacity: 1; background: rgba(255,255,255,0.1); }
+    .collapse-toggle svg { width: 12px; height: 12px; fill: currentColor; transition: transform 0.2s; }
 
     .message-content {
       padding: 16px;
@@ -374,14 +227,13 @@ export class MessageViewer {
       transition: max-height 0.3s ease;
       overflow: hidden;
     }
-    
+
     .message-content.collapsed {
       max-height: 160px;
       mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
       -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
     }
 
-    /* User Message */
     .message-row.user { align-items: flex-end; }
     .message-row.user .message-meta { justify-content: flex-end; }
     .message-row.user .message-content {
@@ -391,22 +243,15 @@ export class MessageViewer {
       max-width: 85%;
     }
 
-    /* Assistant Message - Use Markdown Body Style */
     .message-row.assistant .message-content {
       background-color: var(--assistant-msg-bg);
       border: 1px solid var(--border-color);
       border-bottom-left-radius: 2px;
       width: 100%;
     }
-    
-    /* Override markdown-body bg for assistant to match our theme */
-    .markdown-body {
-      background-color: transparent !important;
-      font-family: inherit !important;
-      font-size: inherit !important;
-    }
 
-    /* System Message */
+    .markdown-body { background-color: transparent !important; font-family: inherit !important; font-size: inherit !important; }
+
     .message-row.system { align-items: center; gap: 4px; margin: 12px auto; opacity: 0.8; }
     .message-row.system .message-content {
       background: transparent;
@@ -417,7 +262,6 @@ export class MessageViewer {
       text-align: center;
     }
 
-    /* Tool Call Container */
     .tool-call-container {
       margin-top: 12px;
       border: 1px solid var(--border-color);
@@ -425,7 +269,7 @@ export class MessageViewer {
       overflow: hidden;
       background: #161b22;
     }
-    
+
     .tool-header {
       background: #21262d;
       padding: 6px 12px;
@@ -436,26 +280,18 @@ export class MessageViewer {
       color: var(--text-secondary);
       border-bottom: 1px solid var(--border-color);
     }
-    .tool-header-name {
-        color: var(--text-primary);
-        font-weight: 600;
-    }
+    .tool-header-name { color: var(--text-primary); font-weight: 600; }
 
-    .tool-content {
-      padding: 12px;
-      font-size: 13px;
-      color: var(--text-primary);
-    }
+    .tool-content { padding: 12px; font-size: 13px; color: var(--text-primary); }
 
-    /* Tool Result Message */
     .message-row.tool .message-content {
       background-color: var(--tool-msg-bg);
       border: 1px solid var(--border-color);
-      border-left: 3px solid #8b949e; /* Neutral grey for result */
+      border-left: 3px solid #8b949e;
       padding: 0;
       width: 100%;
     }
-    
+
     .tool-result-header {
       padding: 4px 12px;
       background: #161b22;
@@ -467,12 +303,8 @@ export class MessageViewer {
       gap: 6px;
     }
 
-    .tool-result-body {
-      padding: 12px;
-      overflow-x: auto;
-    }
+    .tool-result-body { padding: 12px; overflow-x: auto; }
 
-    /* Reasoning Block */
     .reasoning-block {
       margin-bottom: 16px;
       border-left: 2px solid #30363d;
@@ -493,16 +325,10 @@ export class MessageViewer {
       font-weight: 500;
       transition: color 0.2s;
     }
-    .reasoning-header:hover {
-      color: var(--text-primary);
-    }
-    
-    .reasoning-icon {
-      transition: transform 0.2s;
-    }
-    .reasoning-block.expanded .reasoning-icon {
-      transform: rotate(90deg);
-    }
+    .reasoning-header:hover { color: var(--text-primary); }
+
+    .reasoning-icon { transition: transform 0.2s; }
+    .reasoning-block.expanded .reasoning-icon { transform: rotate(90deg); }
 
     .reasoning-content {
       display: none;
@@ -516,17 +342,13 @@ export class MessageViewer {
       display: block;
       animation: fadeIn 0.2s ease-in-out;
     }
-    
+
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(-4px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
-    /* Specific Tool Styles */
-    .bash-command {
-      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-      color: #c9d1d9;
-    }
+    .bash-command { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; color: #c9d1d9; }
     .bash-output {
       font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
       white-space: pre-wrap;
@@ -534,30 +356,13 @@ export class MessageViewer {
       font-size: 12px;
       margin-top: 0;
     }
-    
-    .file-path {
-      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-      color: var(--accent-color);
-    }
 
-    .simple-list {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .simple-list-item {
-      display: flex;
-      gap: 8px;
-      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-      font-size: 12px;
-    }
+    .file-path { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; color: var(--accent-color); }
 
-    .empty-state {
-      text-align: center;
-      margin-top: 10vh;
-      color: var(--text-secondary);
-    }
+    .simple-list { display: flex; flex-direction: column; gap: 4px; }
+    .simple-list-item { display: flex; gap: 8px; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; font-size: 12px; }
 
+    .empty-state { text-align: center; margin-top: 10vh; color: var(--text-secondary); }
   </style>
 </head>
 <body>
@@ -565,7 +370,7 @@ export class MessageViewer {
     <h1>Agent Debugger</h1>
     <span id="connection-status" class="status-badge">Connected</span>
   </header>
-  
+
   <div id="chat-container">
     <div class="empty-state">Waiting for messages...</div>
   </div>
@@ -577,7 +382,6 @@ export class MessageViewer {
     let toolRenderConfigs = {};
     let TOOL_NAMES = {};
 
-    // Configure Marked
     marked.setOptions({
       highlight: function(code, lang) {
         if (lang && hljs.getLanguage(lang)) {
@@ -588,7 +392,6 @@ export class MessageViewer {
       breaks: true
     });
 
-    // 渲染模板（与后端保持一致）
     const RENDER_TEMPLATES = {
       'file': {
         call: (args) => \`<div class="bash-command">Read <span class="file-path">\${args.path}</span></div>\`,
@@ -628,14 +431,12 @@ export class MessageViewer {
       }
     };
 
-    // HTML转义函数
     function escapeHtml(text) {
       const str = String(text);
       const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
       return str.replace(/[&<>"']/g, m => map[m]);
     }
 
-    // 字符串模板插值
     function interpolateTemplate(template, data) {
       return template.replace(/\{\{(\w+)\}\}/g, (_, key) => {
         const value = data[key];
@@ -643,7 +444,6 @@ export class MessageViewer {
       });
     }
 
-    // 应用模板
     function applyTemplate(template, data, success = true) {
       if (typeof template === 'function') {
         return template(data, success);
@@ -663,29 +463,22 @@ export class MessageViewer {
       }
     }
 
-    // 获取工具渲染模板
     function getToolRenderTemplate(toolName) {
       const config = toolRenderConfigs[toolName];
-
-      // 使用系统默认映射作为fallback
       const callTemplateName = (config?.render?.call) || SYSTEM_RENDER_MAP[toolName] || 'json';
       const resultTemplateName = (config?.render?.result) || SYSTEM_RENDER_MAP[toolName] || 'json';
-
       const callTemplate = RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json'];
       const resultTemplate = RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json'];
-
       return {
         call: callTemplate.call,
         result: resultTemplate.result
       };
     }
 
-    // 获取工具显示名称
     function getToolDisplayName(toolName) {
       return TOOL_NAMES[toolName] || toolName;
     }
 
-    // 系统工具默认渲染模板映射（与后端 SYSTEM_RENDER_MAP 保持一致）
     const SYSTEM_RENDER_MAP = {
       read_file: 'file',
       write_file: 'file-write',
@@ -695,13 +488,10 @@ export class MessageViewer {
       calculator: 'math',
     };
 
-    // 加载工具配置
     async function loadToolsConfig() {
       try {
         const res = await fetch('/api/tools');
         const tools = await res.json();
-
-        // 系统工具默认显示名称
         const DEFAULT_DISPLAY_NAMES = {
           run_shell_command: 'Bash',
           read_file: 'Read File',
@@ -710,7 +500,6 @@ export class MessageViewer {
           web_fetch: 'Web',
           calculator: 'Calc'
         };
-
         for (const tool of tools) {
           toolRenderConfigs[tool.name] = tool;
           TOOL_NAMES[tool.name] = DEFAULT_DISPLAY_NAMES[tool.name] || tool.name;
@@ -720,23 +509,19 @@ export class MessageViewer {
       }
     }
 
-    // 使用消息长度作为快速检查，避免不必要的 JSON.stringify
     async function poll() {
       try {
         const res = await fetch('/api/messages');
         const messages = await res.json();
 
-        // 快速检查：先比较长度
         if (messages.length !== currentMessages.length || messages.length === 0) {
           currentMessages = messages;
           render(messages);
           statusBadge.textContent = 'Connected';
           statusBadge.classList.remove('disconnected');
         } else {
-          // 长度相同时，检查最后一条消息的内容
           const lastMsgChanged = messages.length > 0 &&
             JSON.stringify(messages[messages.length - 1]) !== JSON.stringify(currentMessages[currentMessages.length - 1]);
-
           if (lastMsgChanged) {
             currentMessages = messages;
             render(messages);
@@ -746,7 +531,7 @@ export class MessageViewer {
         statusBadge.textContent = 'Disconnected';
         statusBadge.classList.add('disconnected');
       }
-      setTimeout(poll, 100);  // 100ms 轮询，更实时的调试体验
+      setTimeout(poll, 100);
     }
 
     function render(messages) {
@@ -760,7 +545,7 @@ export class MessageViewer {
         const msgId = \`msg-\${index}\`;
         let contentHtml = '';
         let metaHtml = \`<div class="role-badge">\${role}</div>\`;
-        
+
         metaHtml += \`
           <div class="collapse-toggle" onclick="toggleMessage('\${msgId}')" title="Toggle content">
             <svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
@@ -771,8 +556,7 @@ export class MessageViewer {
           contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
         } else if (role === 'assistant') {
           let innerContent = '';
-          
-          // Reasoning Block
+
           if (msg.reasoning) {
             innerContent += \`
               <div class="reasoning-block" id="reasoning-\${msgId}">
@@ -788,7 +572,7 @@ export class MessageViewer {
           }
 
           innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
-          
+
           if (msg.toolCalls && msg.toolCalls.length > 0) {
             const toolsHtml = msg.toolCalls.map(call => {
               const displayName = getToolDisplayName(call.name);
@@ -812,13 +596,12 @@ export class MessageViewer {
             }).join('');
             innerContent += toolsHtml;
           }
-          
+
           contentHtml = \`<div class="message-content" id="\${msgId}">\${innerContent}</div>\`;
 
         } else if (role === 'tool') {
           const toolCallId = msg.toolCallId;
           let toolName = null;
-          // Find corresponding tool call
           for (const m of messages) {
             if (m.toolCalls) {
               const found = m.toolCalls.find(c => c.id === toolCallId);
@@ -859,17 +642,12 @@ export class MessageViewer {
       }).join('');
 
       container.innerHTML = html;
-      
-      // Auto-collapse large messages
+
       document.querySelectorAll('.message-row').forEach(row => {
         const el = row.querySelector('.message-content');
         if (!el) return;
 
-        // Check if content is large enough to be collapsible
         const isCollapsible = el.scrollHeight > 160;
-        
-        // Determine if it should be collapsed by default
-        // Only collapse 'system' messages by default
         const isSystem = row.classList.contains('system');
         const shouldCollapse = isCollapsible && isSystem;
 
@@ -879,7 +657,6 @@ export class MessageViewer {
              const meta = row.querySelector('.message-meta .collapse-toggle svg');
              if (meta) meta.style.transform = 'rotate(-90deg)';
            } else {
-             // Ensure it is expanded (no 'collapsed' class)
              el.classList.remove('collapsed');
              const meta = row.querySelector('.message-meta .collapse-toggle svg');
              if (meta) meta.style.transform = 'rotate(0deg)';
@@ -901,7 +678,7 @@ export class MessageViewer {
         }
       }
     };
-    
+
     window.toggleReasoning = function(id) {
       const el = document.getElementById(id);
       if (el) {
@@ -909,7 +686,6 @@ export class MessageViewer {
       }
     };
 
-    // 加载工具配置并开始轮询
     loadToolsConfig().then(() => {
       poll();
     });
@@ -917,4 +693,60 @@ export class MessageViewer {
 </body>
 </html>`;
   }
+
+  registerTools(tools: Tool[]): void {
+    for (const tool of tools) {
+      const config = getToolRenderConfig(tool.name, tool.render);
+      const callTemplate = config.call || 'json';
+      const resultTemplate = config.result || 'json';
+
+      this.registeredTools.set(tool.name, {
+        name: tool.name,
+        description: tool.description,
+        render: {
+          call: callTemplate,
+          result: resultTemplate,
+        },
+      });
+
+      if (!TOOL_DISPLAY_NAMES[tool.name]) {
+        (TOOL_DISPLAY_NAMES as Record<string, string>)[tool.name] = tool.name;
+      }
+    }
+  }
+
+  push(messages: Message[]): void {
+    this.messages = messages;
+  }
 }
+
+// ========== Worker 进程入口 ==========
+
+const port = parseInt(process.argv[2] || '2026', 10);
+const worker = new ViewerWorker(port);
+
+// 立即启动服务器（不等待 start 消息）
+worker.start().catch(err => {
+  console.error('[Viewer Worker] 启动失败:', err);
+  process.exit(1);
+});
+
+// 监听主进程消息
+process.on('message', (msg: any) => {
+  if (msg.type === 'push') {
+    worker.push(msg.messages);
+  } else if (msg.type === 'register-tools') {
+    worker.registerTools(msg.tools);
+  } else if (msg.type === 'stop') {
+    process.exit(0);
+  }
+});
+
+// 优雅退出
+process.on('SIGINT', () => {
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  process.exit(0);
+});

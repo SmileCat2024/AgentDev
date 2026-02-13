@@ -12,7 +12,7 @@ export function createTool(config: {
   name: string;
   description: string;
   parameters?: Record<string, any>;
-  execute: (args: any) => Promise<any>;
+  execute: (args: any, context?: any) => Promise<any>;
   render?: ToolRenderConfig;
 }): Tool {
   return {

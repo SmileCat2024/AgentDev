@@ -364,7 +364,11 @@ export class Agent {
 
     try {
       // 执行工具
-      const data = await tool.execute(call.arguments);
+      // 为 invoke_skill 注入 skills 上下文
+      const data = await tool.execute(
+        call.arguments,
+        call.name === 'invoke_skill' ? { _context: { skills: this.skills } } : undefined
+      );
       result.success = true;
       result.data = data;
 

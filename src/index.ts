@@ -20,6 +20,7 @@ export * as fsTools from './tools/fs.js';
 export * as shellTools from './tools/shell.js';
 export * as webTools from './tools/web.js';
 export * as mathTools from './tools/math.js';
+export * as skillTools from './tools/skill.js';
 
 // 消息
 export { system, user, assistant, toolResult, createMessage } from './core/message.js';

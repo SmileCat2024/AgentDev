@@ -1,4 +1,4 @@
-import { Agent, createOpenAILLM, loadConfig, fsTools, shellTools, webTools, mathTools, TemplateComposer } from '../src/index.js';
+import { Agent, createOpenAILLM, loadConfig, fsTools, shellTools, webTools, mathTools, skillTools, TemplateComposer } from '../src/index.js';
 import { exec } from 'child_process';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
@@ -31,7 +31,7 @@ async function main() {
   // ========== Agent1: 编程小助手 ==========
   const agent1 = new Agent({
      llm,
-     tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool],
+     tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool, skillTools.invokeSkillTool],
      maxTurns: Infinity,
      skillsDir: '.agentdev/skills',  // 设置 skills 目录
   });
@@ -40,7 +40,7 @@ async function main() {
     .add('\n\n## 身份设定\n\n')
     .add('你是一个专业的编程助手，擅长代码编写、调试和优化。')
     .add('\n\n## 技能（Skills）\n\n')
-    .add('当用户要求你执行任务时，检查是否有任何可用的技能匹配。技能提供专门的能力和领域知识。你拥有如下技能：\n')
+    .add('当用户要求你执行任务时，检查是否有任何可用的技能匹配。技能提供专门的能力和领域知识。你拥有如下技能，可使用 invoke_skill 工具激活，以展开技能的详细介绍。\n')
     .add({ skills: '- **{{name}}**: {{description}}' })
   );
   // 注入系统环境信息

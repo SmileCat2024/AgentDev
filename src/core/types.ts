@@ -42,7 +42,7 @@ export interface Tool {
   name: string;
   description: string;
   parameters?: Record<string, any>;
-  execute: (args: any) => Promise<any>;
+  execute: (args: any, context?: any) => Promise<any>;
   /** 可选：渲染配置 */
   render?: ToolRenderConfig;
 }

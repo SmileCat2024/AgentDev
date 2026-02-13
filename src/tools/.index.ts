@@ -8,12 +8,14 @@ export { readFileTool, writeFileTool, listDirTool } from './fs.js';
 export { shellTool } from './shell.js';
 export { webFetchTool } from './web.js';
 export { calculatorTool } from './math.js';
+export { invokeSkillTool } from './skill.js';
 
 // 为了方便使用，也可以导出所有工具的数组
 import { readFileTool, writeFileTool, listDirTool } from './fs.js';
 import { shellTool } from './shell.js';
 import { webFetchTool } from './web.js';
 import { calculatorTool } from './math.js';
+import { invokeSkillTool } from './skill.js';
 
 /**
  * 所有系统工具
@@ -32,6 +34,9 @@ export const SYSTEM_TOOLS = [
 
   // 数学工具
   calculatorTool,
+
+  // Skills 工具
+  invokeSkillTool,
 ] as const;
 
 /**

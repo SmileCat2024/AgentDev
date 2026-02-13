@@ -72,6 +72,12 @@ export const RENDER_TEMPLATES: Record<string, RenderTemplate> = {
       return `<pre class="bash-output">${escapeHtml(displayData)}</pre>`;
     }
   },
+
+  // ----- Skills 工具 -----
+  'skill': {
+    call: '<div class="bash-command">Skill <span class="file-path">{{skill}}</span></div>',
+    result: (data) => `<pre class="bash-output" style="max-height:400px;">${escapeHtml(data)}</pre>`
+  },
 } as const;
 
 // ============= 默认映射 =============
@@ -93,6 +99,9 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
 
   // Math 工具
   'calculator': 'math',
+
+  // Skills 工具
+  'invoke_skill': 'skill',
 } as const;
 
 // ============= 工具显示名称映射 =============

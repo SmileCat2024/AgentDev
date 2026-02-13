@@ -52,12 +52,15 @@ export interface LLMClient {
   chat(messages: Message[], tools: Tool[]): Promise<LLMResponse>;
 }
 
+// 占位符上下文类型
+import type { PlaceholderContext, TemplateSource } from '../template/types.js';
+
 // Agent 配置
 export interface AgentConfig {
   llm: LLMClient;
   tools?: Tool[];
   maxTurns?: number;
-  systemMessage?: string;
+  systemMessage?: string | TemplateSource;
   name?: string;  // Agent 显示名称（用于调试）
 }
 

@@ -30,6 +30,9 @@ export { OpenAILLM, createOpenAILLM } from './llm/openai.js';
 // 配置
 export { loadConfig, listConfigs } from './core/config.js';
 
+// 模板系统
+export * from './template/index.js';
+
 // 类型
 export type {
   Message,
@@ -48,3 +51,12 @@ export type {
 } from './core/types.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';
+
+// 模板系统类型
+export type {
+  TemplateSource,
+  PlaceholderContext,
+  TemplateResult,
+  TemplateLoaderOptions,
+  CacheStats,
+} from './template/types.js';

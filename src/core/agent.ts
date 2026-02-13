@@ -4,10 +4,15 @@
  */
 
 import type { AgentConfig, ToolCall, Tool } from './types.js';
+import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
 import { ToolContext, ToolResult, HookResult } from './lifecycle.js';
+import { TemplateComposer } from '../template/composer.js';
+import { TemplateLoader } from '../template/loader.js';
+import { existsSync } from 'fs';
+import { cwd } from 'process';
 
 // Re-export ContextSnapshot for convenience
 export type { ContextSnapshot };
@@ -16,7 +21,10 @@ export class Agent {
   protected llm: AgentConfig['llm'];
   protected tools: ToolRegistry;
   protected maxTurns: number;
-  protected systemMessage?: string;
+  protected systemMessage?: string | TemplateSource;
+  protected systemContext?: PlaceholderContext;
+  protected templateComposer?: TemplateComposer;
+  protected templateLoader: TemplateLoader;
   protected persistentContext?: Context;
   protected debugHub?: DebugHub;
   protected agentId?: string;
@@ -26,7 +34,13 @@ export class Agent {
     this.llm = config.llm;
     this.maxTurns = config.maxTurns ?? 10;
     this.systemMessage = config.systemMessage;
+    this.templateLoader = new TemplateLoader();
     this.tools = new ToolRegistry();
+
+    // 如果 systemMessage 是 TemplateComposer，保存引用
+    if (config.systemMessage instanceof TemplateComposer) {
+      this.templateComposer = config.systemMessage;
+    }
 
     // 注册工具
     if (config.tools) {
@@ -52,7 +66,10 @@ export class Agent {
 
     // 添加系统消息（如果是新上下文）
     if (this.systemMessage && context.getAll().length === 0) {
-      context.add({ role: 'system', content: this.systemMessage });
+      const systemMsg = await this.resolveSystemPrompt();
+      if (systemMsg) {
+        context.add({ role: 'system', content: systemMsg });
+      }
     }
 
     // 添加用户输入
@@ -162,6 +179,68 @@ export class Agent {
     return this;
   }
 
+  // ========== 模板系统 API ==========
+
+  /**
+   * 设置系统提示词模板
+   * @param prompt 模板源（字符串、文件路径、或组合器）
+   * @returns this，支持链式调用
+   */
+  setSystemPrompt(prompt: string | TemplateSource): this {
+    if (typeof prompt === 'string') {
+      this.systemMessage = prompt;
+      this.templateComposer = undefined;
+    } else if (prompt instanceof TemplateComposer) {
+      this.systemMessage = prompt;
+      this.templateComposer = prompt;
+    } else {
+      // { file: string }
+      this.systemMessage = prompt;
+      this.templateComposer = undefined;
+    }
+    return this;
+  }
+
+  /**
+   * 设置占位符上下文变量
+   * @param context 占位符键值对
+   * @returns this，支持链式调用
+   */
+  setSystemContext(context: PlaceholderContext): this {
+    this.systemContext = context;
+    return this;
+  }
+
+  /**
+   * 解析系统提示词（渲染模板）
+   * @returns 渲染后的系统提示词字符串
+   */
+  private async resolveSystemPrompt(): Promise<string> {
+    // 使用用户设置的上下文
+    const context = this.systemContext || {};
+
+    // 直接字符串
+    if (typeof this.systemMessage === 'string') {
+      const { PlaceholderResolver } = await import('../template/resolver.js');
+      return PlaceholderResolver.resolve(this.systemMessage, context);
+    }
+
+    // TemplateComposer 实例
+    if (this.templateComposer) {
+      const result = await this.templateComposer.render(context);
+      return result.content;
+    }
+
+    // 文件路径 { file: string }
+    if (this.systemMessage && typeof this.systemMessage === 'object' && 'file' in this.systemMessage) {
+      const content = await this.templateLoader.load(this.systemMessage.file);
+      const { PlaceholderResolver } = await import('../template/resolver.js');
+      return PlaceholderResolver.resolve(content, context);
+    }
+
+    return '';
+  }
+
   /**
    * 获取上下文（用于调试，向后兼容）
    */
@@ -172,7 +251,7 @@ export class Agent {
   /**
    * 获取工具列表（向后兼容）
    */
-  getTools() {
+  getTools(): ToolRegistry {
     return this.tools;
   }
 

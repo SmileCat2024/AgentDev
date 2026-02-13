@@ -354,6 +354,42 @@ export class MessageViewer {
       max-height: 160px;
       mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
       -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+      cursor: default;
+    }
+    
+    .expand-toggle-bar {
+      display: flex;
+      justify-content: center;
+      padding-top: 4px;
+      margin-bottom: 8px;
+      width: 100%;
+    }
+    
+    .expand-toggle-btn {
+      background: var(--tool-msg-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      border-radius: 12px;
+      padding: 4px 12px;
+      font-size: 11px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+    
+    .expand-toggle-btn:hover {
+      background: var(--hover-bg);
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+    }
+    
+    .expand-toggle-btn svg {
+      width: 12px;
+      height: 12px;
+      fill: currentColor;
     }
 
     .message-row.user { align-items: flex-end; }
@@ -778,7 +814,27 @@ export class MessageViewer {
         \`;
 
         if (role === 'user' || role === 'system') {
-          contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
+          let style = '';
+          let rowClass = role;
+          if (role === 'system') {
+            const isLong = msg.content.includes('\\n') || msg.content.length > 60;
+            if (isLong) {
+              style = 'text-align: left !important;';
+              rowClass += ' long-content';
+            }
+          }
+          contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}" onclick="if(this.classList.contains('collapsed')) toggleMessage('\${msgId}')">\${marked.parse(msg.content)}</div>\`;
+
+          if (role === 'system') {
+            return \`
+              <div class="message-row \${rowClass}">
+                <div class="message-meta">
+                  \${metaHtml}
+                </div>
+                \${contentHtml}
+              </div>
+            \`;
+          }
         } else if (role === 'assistant') {
           let innerContent = '';
           
@@ -878,8 +934,9 @@ export class MessageViewer {
         const el = row.querySelector('.message-content');
         if (!el) return;
 
-        const isCollapsible = el.scrollHeight > 160;
         const isSystem = row.classList.contains('system');
+        const threshold = isSystem ? 130 : 160;
+        const isCollapsible = el.scrollHeight > threshold;
         const shouldCollapse = isCollapsible && isSystem;
 
         if (isCollapsible) {

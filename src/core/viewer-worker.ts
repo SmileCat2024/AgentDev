@@ -623,6 +623,60 @@ class ViewerWorker {
       overflow-wrap: break-word;
     }
 
+    .message-content.collapsed {
+      max-height: 160px;
+      mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+      -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+      overflow: hidden;
+    }
+
+    .message-row.system.long-content { align-items: stretch; }
+    .message-row.system.long-content .message-content {
+      text-align: left !important;
+      width: 100%;
+    }
+    .message-content.collapsed {
+      max-height: 160px;
+      mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+      -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+      cursor: default;
+    }
+    
+    .expand-toggle-bar {
+      display: flex;
+      justify-content: center;
+      padding-top: 4px;
+      margin-bottom: 8px;
+      width: 100%;
+    }
+    
+    .expand-toggle-btn {
+      background: var(--tool-msg-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      border-radius: 12px;
+      padding: 4px 12px;
+      font-size: 11px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+    
+    .expand-toggle-btn:hover {
+      background: var(--hover-bg);
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+    }
+    
+    .expand-toggle-btn svg {
+      width: 12px;
+      height: 12px;
+      fill: currentColor;
+    }
+
     .message-row.user .message-content {
       background-color: var(--user-msg-bg);
       color: var(--text-primary);
@@ -1150,7 +1204,27 @@ class ViewerWorker {
         let metaHtml = \`<div class="role-badge">\${role}</div>\`;
 
         if (role === 'user' || role === 'system') {
-          contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
+          let style = '';
+          let rowClass = role;
+          if (role === 'system') {
+             const isLong = msg.content.includes('\\n') || msg.content.length > 60;
+             if (isLong) {
+               style = 'text-align: left !important;';
+               rowClass += ' long-content';
+             }
+          }
+          contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
+          
+          if (role === 'system') {
+             return \`
+              <div class="message-row \${rowClass}">
+                <div class="message-meta">
+                  \${metaHtml}
+                </div>
+                \${contentHtml}
+              </div>
+            \`;
+          }
         } else if (role === 'assistant') {
           let innerContent = '';
 
@@ -1257,6 +1331,7 @@ class ViewerWorker {
         if (isCollapsible) {
            if (shouldCollapse) {
              el.classList.add('collapsed');
+             // Meta toggle rotation
              const meta = row.querySelector('.message-meta .collapse-toggle svg');
              if (meta) meta.style.transform = 'rotate(-90deg)';
            } else {
@@ -1264,6 +1339,24 @@ class ViewerWorker {
              const meta = row.querySelector('.message-meta .collapse-toggle svg');
              if (meta) meta.style.transform = 'rotate(0deg)';
            }
+           
+           // Inject Toggle Button
+           let btnBar = row.querySelector('.expand-toggle-bar');
+           if (!btnBar) {
+             btnBar = document.createElement('div');
+             btnBar.className = 'expand-toggle-bar';
+             row.appendChild(btnBar);
+           }
+           
+           const isCollapsed = el.classList.contains('collapsed');
+           btnBar.innerHTML = \`
+             <button class="expand-toggle-btn" onclick="toggleMessage('\${el.id}')">
+               \${isCollapsed ? 
+                 '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> Expand' : 
+                 '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> Collapse'}
+             </button>
+           \`;
+           
         } else {
            const toggle = row.querySelector('.collapse-toggle');
            if (toggle) toggle.style.display = 'none';
@@ -1275,9 +1368,22 @@ class ViewerWorker {
       const el = document.getElementById(id);
       if (el) {
         el.classList.toggle('collapsed');
-        const meta = el.parentElement.querySelector('.message-meta .collapse-toggle svg');
+        const row = el.closest('.message-row');
+        const isCollapsed = el.classList.contains('collapsed');
+
+        // Update meta icon
+        const meta = row.querySelector('.message-meta .collapse-toggle svg');
         if (meta) {
-           meta.transform = el.classList.contains('collapsed') ? 'rotate(-90deg)' : 'rotate(0deg)';
+           meta.style.transform = isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)'; // meta uses transform
+           // Fix: meta.transform in previous code was wrong, it's meta.style.transform
+        }
+        
+        // Update bottom button
+        const btn = row.querySelector('.expand-toggle-btn');
+        if (btn) {
+          btn.innerHTML = isCollapsed ? 
+             '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> Expand' : 
+             '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> Collapse';
         }
       }
     };

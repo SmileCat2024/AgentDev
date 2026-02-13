@@ -28,17 +28,17 @@ async function main() {
      maxTurns: Infinity, 
      systemMessage: '你是 Agent2，一个数据分析师。' });
 
-  await agent1.withViewer('Agent-1', 2026);
-  await agent2.withViewer('Agent-2');
+  await agent1.withViewer('编程小助手', 2026);
+  await agent2.withViewer('数据分析师');
   console.log('调试页面: http://localhost:2026\n');
 
   // Agent1
   const loop1 = async () => {
     while (true) {
-      const input = await agentHook('Agent1');
+      const input = await agentHook('编程小助手');
       if (input === 'exit') break;
       if (!input) continue;
-      console.log(`\n[Agent1] > ${input}\n---`);
+      console.log(`\n[编程小助手] > ${input}\n---`);
       const result = await agent1.onCall(input);
       console.log(`结果: ${result}\n`);
     }
@@ -47,10 +47,10 @@ async function main() {
   // Agent2
   const loop2 = async () => {
     while (true) {
-      const input = await agentHook('Agent2');
+      const input = await agentHook('数据分析师');
       if (input === 'exit') break;
       if (!input) continue;
-      console.log(`\n[Agent2] > ${input}\n---`);
+      console.log(`\n[数据分析师] > ${input}\n---`);
       const result = await agent2.onCall(input);
       console.log(`结果: ${result}\n`);
     }

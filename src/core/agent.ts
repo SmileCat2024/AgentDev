@@ -251,10 +251,14 @@ export class Agent {
 
     if (blocked || !tool) {
       // 添加阻止结果到上下文
+      // 格式：{ success: false, result: { error: string } }
       context.add({
         role: 'tool',
         toolCallId: call.id,
-        content: result.error || 'Tool not found',
+        content: JSON.stringify({
+          success: false,
+          result: { error: result.error || 'Tool not found' },
+        }),
       });
       await this.onPostToolUse(result);
       return;
@@ -277,12 +281,13 @@ export class Agent {
       result.error = error instanceof Error ? error.message : String(error);
 
       // 添加错误结果到上下文（让 LLM 知道工具执行失败）
+      // 格式：{ success: false, result: { error: string } }
       context.add({
         role: 'tool',
         toolCallId: call.id,
         content: JSON.stringify({
-          error: result.error,
           success: false,
+          result: { error: result.error },
         }),
       });
     }

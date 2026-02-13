@@ -21,7 +21,10 @@ export const shellTool = createTool({
       const { stdout, stderr } = await execAsync(command);
       return stdout || stderr;
     } catch (error: any) {
-      return `Error: ${error.message}`;
+      // Throwing error to indicate failure to the agent and viewer
+      // detailed output is preserved in the error message
+      const output = error.stdout || error.stderr || error.message;
+      throw new Error(output);
     }
   },
 });

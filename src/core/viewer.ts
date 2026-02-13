@@ -1,3 +1,4 @@
+
 /**
  * 消息可视化器 - HTTP 轮询模式
  * 支持独立进程运行，避免主线程阻塞影响 HTTP 响应
@@ -238,40 +239,30 @@ export class MessageViewer {
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
     :root {
-      --bg-color: #0d1117;
-      --header-bg: #161b22;
-      --border-color: #30363d;
-      --text-primary: #c9d1d9;
-      --text-secondary: #8b949e;
-      --accent-color: #58a6ff;
-      --user-msg-bg: #1f6feb;
-      --assistant-msg-bg: #161b22;
-      --tool-msg-bg: #0d1117;
-      --success-color: #238636;
-      --error-color: #da3633;
+      --bg-color: #000000;
+      --header-bg: #0a0a0a;
+      --border-color: #222;
+      --text-primary: #ededed;
+      --text-secondary: #888;
+      --accent-color: #ededed;
+      --user-msg-bg: #1a1a1a;
+      --assistant-msg-bg: #000000;
+      --tool-msg-bg: #050505;
+      --success-color: #198754;
+      --error-color: #dc3545;
+      --hover-bg: #1f1f1f;
+      --active-bg: #2a2a2a;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    /* Scrollbar */
-    ::-webkit-scrollbar {
-      width: 10px;
-      height: 10px;
-    }
-    ::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: #30363d;
-      border-radius: 6px;
-      border: 2px solid var(--bg-color); /* Creates padding effect */
-    }
-    ::-webkit-scrollbar-thumb:hover {
-      background: #8b949e;
-    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       background-color: var(--bg-color);
       color: var(--text-primary);
       height: 100vh;
@@ -290,6 +281,7 @@ export class MessageViewer {
       align-items: center;
       flex-shrink: 0;
       z-index: 10;
+      height: 56px;
     }
 
     h1 { font-size: 16px; font-weight: 600; color: var(--text-primary); }
@@ -299,7 +291,7 @@ export class MessageViewer {
       padding: 2px 8px;
       border-radius: 12px;
       background: var(--success-color);
-      color: #ffffff;
+      color: #fff;
       font-weight: 500;
     }
     .status-badge.disconnected { background: var(--error-color); }
@@ -307,8 +299,8 @@ export class MessageViewer {
     #chat-container {
       flex: 1;
       overflow-y: auto;
-      padding: 20px;
-      padding-bottom: 120px; /* Extra bottom padding as requested */
+      padding: 24px;
+      padding-bottom: 100px;
       display: flex;
       flex-direction: column;
       gap: 24px;
@@ -318,7 +310,7 @@ export class MessageViewer {
     .message-row {
       display: flex;
       flex-direction: column;
-      max-width: 900px;
+      max-width: 800px;
       width: 100%;
       margin: 0 auto;
       gap: 6px;
@@ -330,16 +322,10 @@ export class MessageViewer {
       gap: 8px;
       font-size: 12px;
       color: var(--text-secondary);
-      margin-left: 4px;
-      margin-right: 4px;
+      padding: 0 4px;
     }
 
-    .role-badge {
-      text-transform: uppercase;
-      font-weight: 600;
-      font-size: 11px;
-      letter-spacing: 0.5px;
-    }
+    .role-badge { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
 
     .collapse-toggle {
       cursor: pointer;
@@ -352,27 +338,16 @@ export class MessageViewer {
       height: 16px;
       border-radius: 4px;
     }
-    .collapse-toggle:hover {
-      opacity: 1;
-      background: rgba(255,255,255,0.1);
-    }
-    .collapse-toggle svg {
-      width: 12px;
-      height: 12px;
-      fill: currentColor;
-      transition: transform 0.2s;
-    }
+    .collapse-toggle:hover { opacity: 1; background: var(--hover-bg); }
+    .collapse-toggle svg { width: 12px; height: 12px; fill: currentColor; transition: transform 0.2s; }
 
     .message-content {
-      padding: 16px;
-      border-radius: 12px;
+      padding: 12px 16px;
+      border-radius: 8px;
       font-size: 15px;
       line-height: 1.6;
       position: relative;
       overflow-wrap: break-word;
-      word-wrap: break-word;
-      transition: max-height 0.3s ease;
-      overflow: hidden;
     }
     
     .message-content.collapsed {
@@ -381,32 +356,24 @@ export class MessageViewer {
       -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
     }
 
-    /* User Message */
     .message-row.user { align-items: flex-end; }
     .message-row.user .message-meta { justify-content: flex-end; }
     .message-row.user .message-content {
       background-color: var(--user-msg-bg);
-      color: #ffffff;
+      color: var(--text-primary);
       border-bottom-right-radius: 2px;
       max-width: 85%;
     }
 
-    /* Assistant Message - Use Markdown Body Style */
     .message-row.assistant .message-content {
-      background-color: var(--assistant-msg-bg);
-      border: 1px solid var(--border-color);
-      border-bottom-left-radius: 2px;
+      background-color: transparent;
+      padding: 0;
       width: 100%;
     }
     
-    /* Override markdown-body bg for assistant to match our theme */
-    .markdown-body {
-      background-color: transparent !important;
-      font-family: inherit !important;
-      font-size: inherit !important;
-    }
+    .markdown-body { color: var(--text-primary) !important; font-family: inherit !important; background: transparent !important; }
+    .markdown-body pre { background-color: #111 !important; border-radius: 6px; }
 
-    /* System Message */
     .message-row.system { align-items: center; gap: 4px; margin: 12px auto; opacity: 0.8; }
     .message-row.system .message-content {
       background: transparent;
@@ -417,17 +384,16 @@ export class MessageViewer {
       text-align: center;
     }
 
-    /* Tool Call Container */
     .tool-call-container {
       margin-top: 12px;
       border: 1px solid var(--border-color);
       border-radius: 6px;
       overflow: hidden;
-      background: #161b22;
+      background: var(--tool-msg-bg);
     }
     
     .tool-header {
-      background: #21262d;
+      background: var(--hover-bg);
       padding: 6px 12px;
       font-size: 12px;
       display: flex;
@@ -436,127 +402,121 @@ export class MessageViewer {
       color: var(--text-secondary);
       border-bottom: 1px solid var(--border-color);
     }
-    .tool-header-name {
-        color: var(--text-primary);
-        font-weight: 600;
-    }
+    .tool-header-name { color: var(--text-primary); font-weight: 600; }
+    .tool-content { padding: 12px; font-size: 13px; color: var(--text-primary); overflow-x: auto; }
 
-    .tool-content {
-      padding: 12px;
-      font-size: 13px;
-      color: var(--text-primary);
-    }
-
-    /* Tool Result Message */
-    .message-row.tool .message-content {
-      background-color: var(--tool-msg-bg);
-      border: 1px solid var(--border-color);
-      border-left: 3px solid #8b949e; /* Neutral grey for result */
-      padding: 0;
-      width: 100%;
-    }
-    
     .tool-result-header {
-      padding: 4px 12px;
-      background: #161b22;
-      border-bottom: 1px solid var(--border-color);
-      font-size: 11px;
-      color: var(--text-secondary);
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--hover-bg);
+      border-radius: 6px 6px 0 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+      border-bottom: none;
     }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-dot.success { background-color: var(--success-color); box-shadow: 0 0 4px rgba(25, 135, 84, 0.4); }
+    .status-dot.error { background-color: var(--error-color); box-shadow: 0 0 4px rgba(220, 53, 69, 0.4); }
 
     .tool-result-body {
+      background: var(--tool-msg-bg);
+      border: 1px solid var(--border-color);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
       padding: 12px;
       overflow-x: auto;
+      font-size: 13px;
     }
 
-    /* Reasoning Block */
     .reasoning-block {
       margin-bottom: 16px;
-      border-left: 2px solid #30363d;
-      background: rgba(13, 17, 23, 0.5);
+      border-left: 2px solid var(--border-color);
+      padding-left: 12px;
+      background: rgba(255, 255, 255, 0.02);
       border-radius: 0 4px 4px 0;
-      overflow: hidden;
     }
-
     .reasoning-header {
-      padding: 6px 12px;
-      cursor: pointer;
-      font-size: 11px;
-      color: var(--text-secondary);
+      padding: 6px 0;
+      font-size: 12px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 6px;
+      user-select: none;
+    }
+    .reasoning-content { display: none; padding-bottom: 8px; font-size: 13px; color: var(--text-secondary); }
+    .reasoning-block.expanded .reasoning-content { display: block; animation: fadeIn 0.2s; }
+    .reasoning-icon { transition: transform 0.2s; }
+    .reasoning-block.expanded .reasoning-icon { transform: rotate(90deg); }
+    
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    .bash-command { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-primary); }
+    .bash-output { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-secondary); white-space: pre-wrap; margin: 0; }
+    .file-path { color: #58a6ff; }
+    
+    .ls-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .ls-item {
       display: flex;
       align-items: center;
-      gap: 6px;
-      user-select: none;
-      font-weight: 500;
-      transition: color 0.2s;
+      gap: 10px;
+      padding: 12px;
+      background: var(--hover-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      cursor: default;
+      transition: all 0.2s;
     }
-    .reasoning-header:hover {
-      color: var(--text-primary);
-    }
-    
-    .reasoning-icon {
-      transition: transform 0.2s;
-    }
-    .reasoning-block.expanded .reasoning-icon {
-      transform: rotate(90deg);
-    }
+    .ls-item:hover { background: var(--active-bg); border-color: #444; transform: translateY(-1px); }
+    .ls-icon { color: var(--text-secondary); display: flex; align-items: center; }
+    .ls-name { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
 
-    .reasoning-content {
-      display: none;
-      padding: 8px 12px 12px 12px;
+    .markdown-body table {
+      width: 100% !important;
+      border-collapse: collapse !important;
+      margin-bottom: 16px !important;
+      background-color: #161b22 !important;
+      border-radius: 6px !important;
+      overflow: hidden !important;
+      display: table !important; /* Override potential display:block from some markdown css */
+    }
+    .markdown-body th, .markdown-body td {
+      padding: 8px 12px !important;
+      border: 1px solid #30363d !important;
+    }
+    .markdown-body th {
+      background-color: #161b22 !important;
+      font-weight: 600 !important;
+      text-align: left !important;
+      color: var(--text-primary) !important;
+    }
+    .markdown-body tr { background-color: #0d1117 !important; }
+    .markdown-body tr:nth-child(2n) { background-color: #161b22 !important; }
+
+    .tool-error {
+      background: rgba(220, 53, 69, 0.1);
+      border: 1px solid rgba(220, 53, 69, 0.3);
+      color: #ff6b6b;
+      padding: 10px 14px;
+      border-radius: 6px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
       font-size: 13px;
-      color: var(--text-secondary);
-      line-height: 1.6;
-      border-top: 1px solid transparent;
+      line-height: 1.5;
     }
-    .reasoning-block.expanded .reasoning-content {
-      display: block;
-      animation: fadeIn 0.2s ease-in-out;
-    }
-    
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(-4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
+    .tool-error svg { flex-shrink: 0; margin-top: 2px; }
 
-    /* Specific Tool Styles */
-    .bash-command {
-      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-      color: #c9d1d9;
-    }
-    .bash-output {
-      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-      white-space: pre-wrap;
-      color: #8b949e;
-      font-size: 12px;
-      margin-top: 0;
-    }
-    
-    .file-path {
-      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-      color: var(--accent-color);
-    }
-
-    .simple-list {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .simple-list-item {
-      display: flex;
-      gap: 8px;
-      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-      font-size: 12px;
-    }
-
-    .empty-state {
-      text-align: center;
-      margin-top: 10vh;
-      color: var(--text-secondary);
-    }
+    .empty-state { text-align: center; margin-top: 20vh; color: var(--text-secondary); }
 
   </style>
 </head>
@@ -577,7 +537,6 @@ export class MessageViewer {
     let toolRenderConfigs = {};
     let TOOL_NAMES = {};
 
-    // Configure Marked
     marked.setOptions({
       highlight: function(code, lang) {
         if (lang && hljs.getLanguage(lang)) {
@@ -588,54 +547,107 @@ export class MessageViewer {
       breaks: true
     });
 
-    // 渲染模板（与后端保持一致）
     const RENDER_TEMPLATES = {
       'file': {
         call: (args) => \`<div class="bash-command">Read <span class="file-path">\${args.path}</span></div>\`,
-        result: (data) => \`<pre class="bash-output" style="max-height:300px;">\${escapeHtml(data)}</pre>\`
+        result: (data, success, args) => {
+          if (!success) return formatError(data);
+          const path = args?.path || '';
+          const ext = path.split('.').pop().toLowerCase();
+          const str = String(data);
+          
+          if (ext === 'md' || ext === 'markdown') {
+             return \`<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">\${marked.parse(str)}</div>\`;
+          }
+          
+          const codeExts = ['js', 'ts', 'py', 'java', 'c', 'cpp', 'rs', 'go', 'json', 'html', 'css', 'sh', 'bash', 'yaml', 'yml', 'xml', 'sql'];
+          if (codeExts.includes(ext)) {
+             const lang = ext === 'ts' ? 'typescript' : (ext === 'js' ? 'javascript' : (ext === 'py' ? 'python' : ext));
+             let highlighted;
+             try {
+               highlighted = hljs.highlight(str, { language: lang }).value;
+             } catch (e) {
+               highlighted = hljs.highlightAuto(str).value;
+             }
+             return \`<pre class="bash-output" style="max-height:500px; overflow:auto; background:#0d1117; padding:12px; border-radius:6px;"><code>\${highlighted}</code></pre>\`;
+          }
+          
+          return \`<pre class="bash-output" style="max-height:300px;">\${escapeHtml(str)}</pre>\`;
+        }
       },
       'file-write': {
         call: (args) => \`<div class="bash-command">Write <span class="file-path">\${args.path}</span></div>\`,
-        result: (data) => \`<div style="color:var(--success-color)">✓ File written successfully</div>\`
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          return \`<div style="color:var(--success-color)">✓ File written successfully</div>\`;
+        }
       },
       'file-list': {
-        call: (args) => \`<div class="bash-command">LS <span class="file-path">\${args.path || '.'}</span></div>\`,
-        result: (data) => {
-          const files = (data || '').split('\\n').filter(f => f);
-          return \`<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:4px; font-family:monospace; font-size:12px;">
-            \${files.map(f => \`<div style="color:var(--text-primary);">\${escapeHtml(f)}</div>\`).join('')}
+        call: (args) => \`<div class="bash-command">List <span class="file-path">\${args.path || '.'}</span></div>\`,
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          let str = String(data || '');
+          if (str.includes('\\\\n')) str = str.replace(/\\\\n/g, '\\n');
+          const files = str.split('\\n').filter(f => f.trim());
+          
+          if (files.length === 0) return \`<div style="color:var(--text-secondary); font-style:italic; padding:8px;">Empty directory</div>\`;
+          return \`<div class="ls-grid">
+            \${files.map(f => {
+              return \`<div class="ls-item">
+                <span class="ls-icon">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="opacity:0.7"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                </span>
+                <span class="ls-name" title="\${escapeHtml(f)}">\${escapeHtml(f)}</span>
+              </div>\`;
+            }).join('')}
           </div>\`;
         }
       },
       'command': {
         call: (args) => \`<div class="bash-command">> \${args.command}</div>\`,
-        result: (data) => \`<pre class="bash-output">\${escapeHtml(data)}</pre>\`
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          return \`<pre class="bash-output">\${escapeHtml(data)}</pre>\`;
+        }
       },
       'web': {
         call: (args) => \`<div>GET <a href="\${args.url}" target="_blank" style="color:var(--accent-color)">\${args.url}</a></div>\`,
-        result: (data) => \`<div style="font-size:12px; opacity:0.8;">Fetched \${String(data).length} chars</div>\`
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          return \`<div style="font-size:12px; opacity:0.8;">Fetched \${String(data).length} chars</div>\`;
+        }
       },
       'math': {
         call: (args) => \`<div class="bash-command">\${args.expression}</div>\`,
-        result: (data) => \`<div class="bash-command" style="color:#d2a8ff">= \${escapeHtml(data)}</div>\`
+        result: (data, success) => {
+           if (!success) return formatError(data);
+           return \`<div class="bash-command" style="color:#d2a8ff">= \${escapeHtml(data)}</div>\`;
+        }
       },
       'json': {
         call: (args) => \`<pre style="margin:0; font-size:12px;">\${escapeHtml(JSON.stringify(args, null, 2))}</pre>\`,
-        result: (data) => {
+        result: (data, success) => {
+          if (!success) return formatError(data);
           const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
           return \`<pre class="bash-output">\${escapeHtml(displayData)}</pre>\`;
         }
       }
     };
 
-    // HTML转义函数
     function escapeHtml(text) {
       const str = String(text);
       const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
       return str.replace(/[&<>"']/g, m => map[m]);
     }
 
-    // 字符串模板插值
+    function formatError(data) {
+       const text = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+       return \`<div class="tool-error">
+         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+         <span>\${escapeHtml(text)}</span>
+       </div>\`;
+    }
+
     function interpolateTemplate(template, data) {
       return template.replace(/\{\{(\w+)\}\}/g, (_, key) => {
         const value = data[key];
@@ -643,10 +655,9 @@ export class MessageViewer {
       });
     }
 
-    // 应用模板
-    function applyTemplate(template, data, success = true) {
+    function applyTemplate(template, data, success = true, args = {}) {
       if (typeof template === 'function') {
-        return template(data, success);
+        return template(data, success, args);
       }
       return interpolateTemplate(template, data);
     }
@@ -655,7 +666,20 @@ export class MessageViewer {
       try {
         const json = JSON.parse(content);
         if (json && typeof json === 'object' && 'success' in json && 'result' in json) {
-          return { success: json.success, data: json.result };
+          let data = json.result;
+          // Try to unwrap double-encoded JSON strings
+          if (typeof data === 'string') {
+             try {
+                // If the string starts with a quote or bracket/brace, it might be a JSON string
+                if (data.trim().startsWith('"') || data.trim().startsWith('{') || data.trim().startsWith('[')) {
+                   const parsed = JSON.parse(data);
+                   data = parsed;
+                }
+             } catch (e) {
+                // Not a JSON string, keep as is
+             }
+          }
+          return { success: json.success, data: data };
         }
         return { success: true, data: content };
       } catch (e) {
@@ -663,29 +687,22 @@ export class MessageViewer {
       }
     }
 
-    // 获取工具渲染模板
     function getToolRenderTemplate(toolName) {
       const config = toolRenderConfigs[toolName];
-
-      // 使用系统默认映射作为fallback
       const callTemplateName = (config?.render?.call) || SYSTEM_RENDER_MAP[toolName] || 'json';
       const resultTemplateName = (config?.render?.result) || SYSTEM_RENDER_MAP[toolName] || 'json';
-
       const callTemplate = RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json'];
       const resultTemplate = RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json'];
-
       return {
         call: callTemplate.call,
         result: resultTemplate.result
       };
     }
 
-    // 获取工具显示名称
     function getToolDisplayName(toolName) {
       return TOOL_NAMES[toolName] || toolName;
     }
 
-    // 系统工具默认渲染模板映射（与后端 SYSTEM_RENDER_MAP 保持一致）
     const SYSTEM_RENDER_MAP = {
       read_file: 'file',
       write_file: 'file-write',
@@ -695,22 +712,18 @@ export class MessageViewer {
       calculator: 'math',
     };
 
-    // 加载工具配置
     async function loadToolsConfig() {
       try {
         const res = await fetch('/api/tools');
         const tools = await res.json();
-
-        // 系统工具默认显示名称
         const DEFAULT_DISPLAY_NAMES = {
           run_shell_command: 'Bash',
           read_file: 'Read File',
           write_file: 'Write File',
-          list_directory: 'LS',
+          list_directory: 'List',
           web_fetch: 'Web',
           calculator: 'Calc'
         };
-
         for (const tool of tools) {
           toolRenderConfigs[tool.name] = tool;
           TOOL_NAMES[tool.name] = DEFAULT_DISPLAY_NAMES[tool.name] || tool.name;
@@ -720,23 +733,18 @@ export class MessageViewer {
       }
     }
 
-    // 使用消息长度作为快速检查，避免不必要的 JSON.stringify
     async function poll() {
       try {
         const res = await fetch('/api/messages');
         const messages = await res.json();
-
-        // 快速检查：先比较长度
         if (messages.length !== currentMessages.length || messages.length === 0) {
           currentMessages = messages;
           render(messages);
           statusBadge.textContent = 'Connected';
           statusBadge.classList.remove('disconnected');
         } else {
-          // 长度相同时，检查最后一条消息的内容
           const lastMsgChanged = messages.length > 0 &&
             JSON.stringify(messages[messages.length - 1]) !== JSON.stringify(currentMessages[currentMessages.length - 1]);
-
           if (lastMsgChanged) {
             currentMessages = messages;
             render(messages);
@@ -746,7 +754,7 @@ export class MessageViewer {
         statusBadge.textContent = 'Disconnected';
         statusBadge.classList.add('disconnected');
       }
-      setTimeout(poll, 100);  // 100ms 轮询，更实时的调试体验
+      setTimeout(poll, 100);
     }
 
     function render(messages) {
@@ -772,7 +780,6 @@ export class MessageViewer {
         } else if (role === 'assistant') {
           let innerContent = '';
           
-          // Reasoning Block
           if (msg.reasoning) {
             innerContent += \`
               <div class="reasoning-block" id="reasoning-\${msgId}">
@@ -818,21 +825,26 @@ export class MessageViewer {
         } else if (role === 'tool') {
           const toolCallId = msg.toolCallId;
           let toolName = null;
-          // Find corresponding tool call
+          let toolArgs = {};
+          
           for (const m of messages) {
             if (m.toolCalls) {
               const found = m.toolCalls.find(c => c.id === toolCallId);
-              if (found) { toolName = found.name; break; }
+              if (found) { 
+                toolName = found.name;
+                toolArgs = found.arguments;
+                break; 
+              }
             }
           }
 
           const { success, data } = parseToolResult(msg.content);
           const displayName = getToolDisplayName(toolName);
-
           const template = getToolRenderTemplate(toolName);
+          
           let bodyHtml;
           if (template.result) {
-             bodyHtml = applyTemplate(template.result, data, success);
+             bodyHtml = applyTemplate(template.result, data, success, toolArgs);
           } else {
              const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
              bodyHtml = \`<pre class="bash-output">\${displayData}</pre>\`;
@@ -841,8 +853,8 @@ export class MessageViewer {
           contentHtml = \`
             <div class="message-content" id="\${msgId}" style="padding:0; overflow:hidden;">
               <div class="tool-result-header">
+                <span class="status-dot \${success ? 'success' : 'error'}"></span>
                 <span>\${displayName}</span>
-                \${!success ? '<span style="color:var(--error-color)">Failed</span>' : ''}
               </div>
               <div class="tool-result-body">\${bodyHtml}</div>
             </div>\`;
@@ -860,16 +872,11 @@ export class MessageViewer {
 
       container.innerHTML = html;
       
-      // Auto-collapse large messages
       document.querySelectorAll('.message-row').forEach(row => {
         const el = row.querySelector('.message-content');
         if (!el) return;
 
-        // Check if content is large enough to be collapsible
         const isCollapsible = el.scrollHeight > 160;
-        
-        // Determine if it should be collapsed by default
-        // Only collapse 'system' messages by default
         const isSystem = row.classList.contains('system');
         const shouldCollapse = isCollapsible && isSystem;
 
@@ -879,7 +886,6 @@ export class MessageViewer {
              const meta = row.querySelector('.message-meta .collapse-toggle svg');
              if (meta) meta.style.transform = 'rotate(-90deg)';
            } else {
-             // Ensure it is expanded (no 'collapsed' class)
              el.classList.remove('collapsed');
              const meta = row.querySelector('.message-meta .collapse-toggle svg');
              if (meta) meta.style.transform = 'rotate(0deg)';
@@ -909,7 +915,6 @@ export class MessageViewer {
       }
     };
 
-    // 加载工具配置并开始轮询
     loadToolsConfig().then(() => {
       poll();
     });

@@ -271,10 +271,16 @@ export class Agent {
       result.data = data;
 
       // 添加工具结果到上下文
+      // 统一使用 JSON 格式，保持与错误处理的一致性
+      // 注意：这里只对非字符串类型进行 JSON.stringify，避免双重编码
+      const resultData = typeof data === 'string' ? data : JSON.stringify(data);
       context.add({
         role: 'tool',
         toolCallId: call.id,
-        content: JSON.stringify(data),
+        content: JSON.stringify({
+          success: true,
+          result: resultData,
+        }),
       });
 
     } catch (error) {

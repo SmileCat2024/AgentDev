@@ -705,14 +705,16 @@ class ViewerWorker {
     }
 
     /* System Tool Rendering */
-    .bash-command { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-primary); }
-    .bash-output { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-secondary); white-space: pre-wrap; margin: 0; }
+    .bash-command { font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-primary); }
+    .bash-output { font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-secondary); white-space: pre-wrap; margin: 0; }
     .file-path { color: #58a6ff; }
     
     .ls-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
       gap: 12px;
+      max-height: 500px;
+      overflow-y: auto;
     }
     .ls-item {
       display: flex;
@@ -725,7 +727,7 @@ class ViewerWorker {
       cursor: default;
       transition: all 0.2s;
     }
-    .ls-item:hover { background: var(--active-bg); border-color: #444; transform: translateY(-1px); }
+    .ls-item:hover { backgro"Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", und: var(--active-bg); border-color: #444; transform: translateY(-1px); }
     .ls-icon { color: var(--text-secondary); display: flex; align-items: center; }
     .ls-name { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
     

@@ -6,6 +6,7 @@
 import type { TemplateSource, PlaceholderContext, TemplateResult } from './types.js';
 import { TemplateLoader } from './loader.js';
 import { PlaceholderResolver } from './resolver.js';
+import { discover } from '../skills/loader.js';
 
 /**
  * 模板片段类型
@@ -13,6 +14,7 @@ import { PlaceholderResolver } from './resolver.js';
 type TemplatePart =
   | { type: 'static'; value: string }
   | { type: 'file'; path: string }
+  | { type: 'skills'; template: string; options: import('../skills/types.js').SkillsOptions }
   | { type: 'composer'; composer: TemplateComposer }
   | { type: 'conditional'; condition: (ctx: PlaceholderContext) => boolean; part: TemplatePart };
 
@@ -159,6 +161,8 @@ export class TemplateComposer {
           return p.value;
         case 'file':
           return { file: p.path };
+        case 'skills':
+          return { skills: p.template };
         case 'composer':
         case 'conditional':
           return '';
@@ -216,6 +220,37 @@ export class TemplateComposer {
         const fileContent = await this.loader.load(part.path);
         return PlaceholderResolver.resolve(fileContent, context);
 
+      case 'skills':
+        // 优先使用上下文中的 skills（由 agent 预加载），避免重复扫描
+        let skills = context.skills as unknown as import('../skills/types.js').SkillMetadata[];
+
+        // 如果上下文中没有 skills 且 options 指定了目录，则加载
+        if (!skills && part.options.dir) {
+          skills = await discover({ dir: part.options.dir });
+        }
+
+        // skills 模板特殊处理：
+        // 1. 如果模板包含 {{#each}} 语法，使用原有的循环渲染
+        // 2. 否则，自动将模板应用到每个 skill 并拼接结果
+        if (!skills || skills.length === 0) {
+          return '';
+        }
+
+        // 检查是否包含 {{#each}} 语法
+        const hasEachSyntax = part.template.includes('{{#each}}');
+
+        if (hasEachSyntax) {
+          // 使用原有的 resolver 逻辑处理 {{#each}}
+          const skillsContext: PlaceholderContext = { ...context, skills: skills as any };
+          return PlaceholderResolver.resolve(part.template, skillsContext);
+        }
+
+        // 自动遍历：对每个 skill 应用模板并拼接
+        return skills.map((skill: any) => {
+          const skillContext: PlaceholderContext = { ...context, ...skill, this: skill };
+          return PlaceholderResolver.resolve(part.template, skillContext);
+        }).join('\n');
+
       case 'composer':
         // 嵌套组合器，递归渲染
         const result = await part.composer.render(context);
@@ -238,6 +273,11 @@ export class TemplateComposer {
 
     if (source instanceof TemplateComposer) {
       return { type: 'composer', composer: source };
+    }
+
+    // { skills: string }
+    if ('skills' in source) {
+      return { type: 'skills', template: source.skills, options: {} };
     }
 
     // { file: string }

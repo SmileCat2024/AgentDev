@@ -33,6 +33,9 @@ export { loadConfig, listConfigs } from './core/config.js';
 // 模板系统
 export * from './template/index.js';
 
+// Skills 系统
+export * from './skills/index.js';
+
 // 类型
 export type {
   Message,

@@ -6,7 +6,7 @@
 import { readFile } from 'fs/promises';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-
+import { existsSync } from 'fs';
 import type {
   TemplateLoaderOptions,
   CacheStats,
@@ -14,22 +14,20 @@ import type {
 } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const projectRoot = resolve(dirname(__filename), '../..');
+const projectRoot = resolve(dirname(__filename), '..');
 
 /**
  * 模板加载器
  */
 export class TemplateLoader {
   private cache: Map<string, string>;
-  private projectRoot: string;
   private searchDirs: string[];
   private enabled: boolean;
   private stats = { hits: 0, misses: 0 };
 
   constructor(options: TemplateLoaderOptions = {}) {
     this.cache = new Map();
-    this.projectRoot = options.projectRoot ?? projectRoot;
-    this.searchDirs = options.searchDirs ?? ['templates', 'prompt'];
+    this.searchDirs = options.searchDirs ?? [];
     this.enabled = options.cacheEnabled !== false;
   }
 
@@ -70,7 +68,9 @@ export class TemplateLoader {
     } catch (err: any) {
       if (err.code === 'ENOENT') {
         const error: TemplateError = new Error(
-          `Template file not found: ${absolutePath}`
+          `Template file not found: ${absolutePath}\n` +
+          `Working directory: ${process.cwd()}\n` +
+          `Please ensure the file exists.`
         ) as TemplateError;
         (error as any).code = 'FILE_NOT_FOUND';
         (error as any).path = absolutePath;
@@ -95,6 +95,9 @@ export class TemplateLoader {
 
   /**
    * 解析路径为绝对路径
+   * @param templatePath 模板路径
+   * @returns 解析后的绝对路径
+   * @throws TemplateError 如果文件格式不支持
    */
   resolvePath(templatePath: string): string {
     // 如果是绝对路径，直接使用
@@ -102,27 +105,43 @@ export class TemplateLoader {
       return templatePath;
     }
 
-    // 尝试搜索目录
-    for (const dir of this.searchDirs) {
-      const candidate = resolve(this.projectRoot, dir, templatePath);
-      // 简单检查文件是否存在（不进行实际IO）
-      // 实际存在性检查会在 load() 中进行
-      if (candidate.endsWith('.txt') || candidate.endsWith('.md')) {
-        return candidate;
-      }
-      // 尝试添加 .md 后缀
-      if (!candidate.includes('.')) {
-        const withMd = candidate + '.md';
-        const withTxt = candidate + '.txt';
-        return withMd; // 优先 .md
-      }
-    }
+    // 相对路径：以 cwd 为基准目录
+    const cwd = process.cwd();
 
-    // 默认：项目根目录下
-    if (!templatePath.includes('.')) {
-      return resolve(this.projectRoot, templatePath + '.md');
+    // 1. 优先尝试 cwd/.agentdev/prompts
+    const agentDir = resolve(cwd, '.agentdev', 'prompts');
+    const agentCandidate = resolve(agentDir, templatePath);
+    if (this.fileExists(agentCandidate)) {
+      return agentCandidate;
     }
-    return resolve(this.projectRoot, templatePath);
+    if (this.fileExists(agentCandidate + '.md')) {
+      return agentCandidate + '.md';
+    }
+    if (this.fileExists(agentCandidate + '.txt')) {
+      return agentCandidate + '.txt';
+      }
+
+    // 2. 其次直接用 cwd 作为基准目录
+    const fallbackCandidate = resolve(cwd, templatePath);
+    if (this.fileExists(fallbackCandidate)) {
+      return fallbackCandidate;
+    }
+    if (this.fileExists(fallbackCandidate + '.md')) {
+      return fallbackCandidate + '.md';
+    }
+    if (this.fileExists(fallbackCandidate + '.txt')) {
+      return fallbackCandidate + '.txt';
+      }
+
+    // 3. 如果还找不到，抛出错误
+    throw new Error(
+      `Template file not found: ${templatePath}\n` +
+      `Searched in:\n` +
+      `  - ${this.searchDirs.map(d => resolve(cwd, d)).join('\n  - ')}\n` +
+      `  - ${agentDir}\n` +
+      `  - ${resolve(cwd, templatePath)} (cwd base)\n` +
+      `Working directory: ${cwd}`
+    );
   }
 
   /**
@@ -180,5 +199,12 @@ export class TemplateLoader {
    */
   private isAbsolute(path: string): boolean {
     return path.startsWith('/') || !!path.match(/^[A-Za-z]:\\/);
+  }
+
+  /**
+   * 简单检查文件是否存在（同步，不进行实际IO）
+   */
+  private fileExists(path: string): boolean {
+    return existsSync(path);
   }
 }

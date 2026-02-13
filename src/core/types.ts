@@ -62,6 +62,7 @@ export interface AgentConfig {
   maxTurns?: number;
   systemMessage?: string | TemplateSource;
   name?: string;  // Agent 显示名称（用于调试）
+  skillsDir?: string;  // Skills 目录路径
 }
 
 // 上下文中间件 - 用于处理消息数组

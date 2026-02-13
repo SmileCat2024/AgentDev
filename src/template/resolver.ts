@@ -11,6 +11,8 @@ import type { PlaceholderContext } from './types.js';
 export class PlaceholderResolver {
   // 正则表达式模式
   private static PATTERNS = {
+    // {{#each}}...{{/each}} 循环渲染
+    each: /\{\{#each\}\}(.*?)\{\{\/each\}\}/gs,
     // {{#if}}...{{/if}} 条件渲染
     conditional: /\{\{#if\}\}(.*?)\{\{\/if\}\}/gs,
     // {{variable}} 或 {{obj.key}} 或 {{var|default}}
@@ -24,8 +26,11 @@ export class PlaceholderResolver {
    * @returns 解析后的内容
    */
   static resolve(template: string, context: PlaceholderContext = {}): string {
-    // 1. 处理条件渲染 {{#if}}...{{/if}}
-    let result = PlaceholderResolver.processConditionals(template, context);
+    // 1. 处理循环渲染 {{#each}}...{{/each}}
+    let result = PlaceholderResolver.processEach(template, context);
+
+    // 2. 处理条件渲染 {{#if}}...{{/if}}
+    result = PlaceholderResolver.processConditionals(result, context);
 
     // 2. 处理变量替换（支持嵌套和默认值）
     result = result.replace(PlaceholderResolver.PATTERNS.variable, (_, expr) => {
@@ -54,6 +59,46 @@ export class PlaceholderResolver {
     });
 
     return result;
+  }
+
+  /**
+   * 处理循环渲染 {{#each}}...{{/each}}
+   * 格式：{{#each}}arrayName
+   *   ...template...
+   * {{/each}}
+   * 在循环内可使用数组元素的字段（如 {{name}}, {{description}}）或 {{this}} 引用整个对象
+   */
+  private static processEach(
+    template: string,
+    context: PlaceholderContext
+  ): string {
+    return template.replace(
+      PlaceholderResolver.PATTERNS.each,
+      (match, body: string) => {
+        // 解析内容：第一行是数组变量名，其余是循环模板
+        const lines = body.split('\n');
+        const arrayName = lines[0].trim();
+        const loopTemplate = lines.slice(1).join('\n');
+
+        // 获取数组数据
+        const array = PlaceholderResolver.getNestedValue(context, arrayName);
+
+        // 不是数组则返回空
+        if (!Array.isArray(array)) {
+          return '';
+        }
+
+        // 渲染每个元素
+        return array.map((item) => {
+          // 将 item 的字段作为上下文，也提供 this 引用整个对象
+          const itemContext: PlaceholderContext = {
+            ...context,
+            ...item,
+            this: item,
+          };
+          return PlaceholderResolver.resolve(loopTemplate, itemContext);
+        }).join('');
+      });
   }
 
   /**

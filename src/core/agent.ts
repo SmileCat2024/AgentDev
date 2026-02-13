@@ -5,6 +5,7 @@
 
 import type { AgentConfig, ToolCall, Tool } from './types.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
+import type { SkillMetadata } from '../skills/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
@@ -29,6 +30,9 @@ export class Agent {
   protected debugHub?: DebugHub;
   protected agentId?: string;
   protected debugEnabled: boolean = false;
+  protected skillsDir?: string;
+  protected skills: SkillMetadata[] = [];
+  protected skillsLoaded: boolean = false;
 
   constructor(config: AgentConfig) {
     this.llm = config.llm;
@@ -47,6 +51,11 @@ export class Agent {
       for (const tool of config.tools) {
         this.tools.register(tool);
       }
+    }
+
+    // Skills 配置
+    if (config.skillsDir) {
+      this.skillsDir = config.skillsDir;
     }
   }
 
@@ -216,8 +225,18 @@ export class Agent {
    * @returns 渲染后的系统提示词字符串
    */
   private async resolveSystemPrompt(): Promise<string> {
-    // 使用用户设置的上下文
-    const context = this.systemContext || {};
+    // 加载 skills（如果配置了且未加载）
+    if (this.skillsDir && !this.skillsLoaded) {
+      const { discover } = await import('../skills/loader.js');
+      this.skills = await discover({ dir: this.skillsDir });
+      this.skillsLoaded = true;
+    }
+
+    // 使用用户设置的上下文，并注入 skills
+    const context: PlaceholderContext = {
+      ...this.systemContext,
+      skills: this.skills as any,
+    };
 
     // 直接字符串
     if (typeof this.systemMessage === 'string') {

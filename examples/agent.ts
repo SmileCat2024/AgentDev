@@ -21,7 +21,7 @@ async function main() {
 
   // ========== 获取系统环境信息 ==========
   const systemContext = {
-SYSTEM_WORKING_DIR: cwd(),
+    SYSTEM_WORKING_DIR: cwd(),
     SYSTEM_IS_GIT_REPOSITORY: existsSync(cwd() + '/.git'),
     SYSTEM_PLATFORM: platform,
     SYSTEM_DATE: new Date().toISOString().split('T')[0], // YYYY-MM-DD
@@ -33,11 +33,15 @@ SYSTEM_WORKING_DIR: cwd(),
      llm,
      tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool],
      maxTurns: Infinity,
+     skillsDir: '.agentdev/skills',  // 设置 skills 目录
   });
   agent1.setSystemPrompt(new TemplateComposer()
-    .add({ file: '../prompts/system.md' })  // 通用提示词
+    .add({ file: 'system.md' })  // 通用提示词,用默认路径加载
     .add('\n\n## 身份设定\n\n')
     .add('你是一个专业的编程助手，擅长代码编写、调试和优化。')
+    .add('\n\n## 技能（Skills）\n\n')
+    .add('当用户要求你执行任务时，检查是否有任何可用的技能匹配。技能提供专门的能力和领域知识。你拥有如下技能：\n')
+    .add({ skills: '- **{{name}}**: {{description}}' })
   );
   // 注入系统环境信息
   agent1.setSystemContext(systemContext);
@@ -49,7 +53,7 @@ SYSTEM_WORKING_DIR: cwd(),
      maxTurns: Infinity,
   });
   agent2.setSystemPrompt(new TemplateComposer()
-    .add({ file: '../prompts/system.md' })  // 通用提示词
+    .add({ file: '.agentdev/prompts/system.md' })  // 通用提示词，用cwd的相对路径加载
     .add('\n\n## 身份设定\n\n')
     .add('你是一个数据分析师，擅长数据处理、统计分析和可视化。')
   );
@@ -84,6 +88,7 @@ SYSTEM_WORKING_DIR: cwd(),
     }
   };
 
+  // 启动 Agent1
   await Promise.all([loop1()]);
 }
 

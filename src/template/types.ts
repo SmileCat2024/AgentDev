@@ -6,9 +6,10 @@
  * 模板源
  * - string: 硬编码字符串
  * - { file: string }: 文件路径
+ * - { skills: string }: skills 目录路径
  * - TemplateComposer: 组合模板
  */
-export type TemplateSource = string | { file: string } | import('./composer.js').TemplateComposer;
+export type TemplateSource = string | { file: string } | { skills: string } | import('./composer.js').TemplateComposer;
 
 /**
  * 占位符上下文 - 变量替换的键值对

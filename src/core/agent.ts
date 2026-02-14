@@ -14,6 +14,8 @@ import { TemplateComposer } from '../template/composer.js';
 import { TemplateLoader } from '../template/loader.js';
 import { existsSync } from 'fs';
 import { cwd } from 'process';
+import { MCPConnectionManager } from '../mcp/index.js';
+import { MCPToolAdapter, createMCPToolAdapters } from '../mcp/index.js';
 
 // Re-export ContextSnapshot for convenience
 export type { ContextSnapshot };
@@ -33,6 +35,12 @@ export class Agent {
   protected skillsDir?: string;
   protected skills: SkillMetadata[] = [];
   protected skillsLoaded: boolean = false;
+
+  // MCP 相关
+  protected mcpConnectionManager?: MCPConnectionManager;
+  protected mcpConfig?: AgentConfig['mcp'];
+  protected mcpToolsRegistered: boolean = false;
+  protected mcpContext?: Record<string, unknown>;
 
   constructor(config: AgentConfig) {
     this.llm = config.llm;
@@ -57,6 +65,14 @@ export class Agent {
     if (config.skillsDir) {
       this.skillsDir = config.skillsDir;
     }
+
+    // MCP 配置（懒加载，不在构造函数中连接）
+    if (config.mcp) {
+      this.mcpConfig = config.mcp;
+      this.mcpContext = config.mcpContext;
+      // 注意：不在此时建立连接，采用懒加载策略
+      // 连接将在首次调用 MCP 工具时建立
+    }
   }
 
   // ========== 公开方法 ==========
@@ -70,6 +86,9 @@ export class Agent {
    * @returns Agent 响应内容
    */
   async onCall(input: string): Promise<string> {
+    // 注册 MCP 工具（懒加载，首次调用时才连接）
+    await this.registerMCPTools();
+
     // 使用持久化上下文或创建新的
     const context = this.persistentContext ?? new Context();
 
@@ -300,6 +319,106 @@ export class Agent {
     // 默认空实现
   }
 
+  // ========== MCP 集成 ==========
+
+  /**
+   * 注册 MCP 工具（懒加载）
+   *
+   * 首次调用时才建立连接并注册工具
+   */
+  protected async registerMCPTools(): Promise<void> {
+    console.log('[MCP] registerMCPTools called');
+    console.log('[MCP] mcpConfig:', JSON.stringify(this.mcpConfig, null, 2));
+    console.log('[MCP] mcpToolsRegistered:', this.mcpToolsRegistered);
+
+    // 已经注册过，跳过
+    if (this.mcpToolsRegistered || !this.mcpConfig) {
+      console.log('[MCP] Skipping: already registered or no config');
+      return;
+    }
+
+    try {
+      // 创建连接管理器
+      this.mcpConnectionManager = new MCPConnectionManager();
+      const mcpManager = this.mcpConnectionManager; // 保存到局部变量
+      let registeredCount = 0;
+
+      // 遍历配置的 MCP 服务器
+      for (const [serverId, serverConfig] of Object.entries(this.mcpConfig.servers)) {
+        try {
+          // 连接到服务器
+          const mcpServer = await mcpManager.connectServer(
+            serverId,
+            serverConfig
+          );
+
+          // 获取服务器的工具列表
+          const tools = await mcpManager.listTools(serverId);
+          console.log(`[MCP] Server "${serverId}" provides ${tools.length} tools:`, tools.map(t => t.name || '(unnamed)').join(', '));
+
+          // 为每个工具创建适配器并注册
+          for (const tool of tools) {
+            // 添加服务器前缀：mcp.serverId:toolName
+            // 确保 tool.name 存在
+            if (!tool.name) {
+              console.warn(`[MCP] Skipping tool without name:`, tool);
+              continue;
+            }
+
+            // 调试：打印 inputSchema 的结构（仅前 3 个工具）
+            if (registeredCount < 3) {
+              console.log(`[MCP] Tool "${tool.name}" inputSchema:`, JSON.stringify(tool.inputSchema, null, 2));
+            }
+
+            const originalToolName = tool.name; // 保存到局部变量以便闭包使用
+            const toolName = `mcp.${serverId}:${originalToolName}`;
+
+            const adaptedTool = new MCPToolAdapter({
+              name: toolName,
+              description: tool.description || `MCP tool: ${originalToolName}`,
+              inputSchema: tool.inputSchema,
+              enabled: true,
+              handler: async (args: any) => {
+                // 调用 MCP 工具 (参数顺序: name, serverName, args)
+                return await mcpManager.callTool(
+                  originalToolName,  // 工具名称
+                  serverId,        // 服务器名称
+                  args              // 工具参数
+                );
+              },
+            }, { serverName: serverId });
+
+            // 注册到工具注册表
+            this.tools.register(adaptedTool);
+            registeredCount++;
+            console.log(`[MCP] Registered tool: ${toolName}`);
+          }
+
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.warn(`[MCP] Failed to register tools from "${serverId}": ${errorMsg}`);
+          // 继续处理其他服务器
+        }
+      }
+
+      this.mcpToolsRegistered = true;
+      console.log(`[MCP] Total registered tools: ${registeredCount}`);
+
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[MCP] Failed to register MCP tools: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * 清理 MCP 连接
+   */
+  protected async disposeMCP(): Promise<void> {
+    if (this.mcpConnectionManager) {
+      await this.mcpConnectionManager.dispose();
+    }
+  }
+
   // ========== 内部实现 ==========
 
   /**
@@ -365,10 +484,17 @@ export class Agent {
     try {
       // 执行工具
       // 为 invoke_skill 注入 skills 上下文
-      const data = await tool.execute(
-        call.arguments,
-        call.name === 'invoke_skill' ? { _context: { skills: this.skills } } : undefined
-      );
+      // 为 MCP 工具注入 mcpContext 上下文
+      let toolContext: any = undefined;
+
+      if (call.name === 'invoke_skill') {
+        toolContext = { _context: { skills: this.skills } };
+      } else if (call.name.startsWith('mcp.')) {
+        // MCP 工具注入 mcpContext
+        toolContext = { _mcpContext: this.mcpContext };
+      }
+
+      const data = await tool.execute(call.arguments, toolContext);
       result.success = true;
       result.data = data;
 
@@ -404,5 +530,12 @@ export class Agent {
 
     // 后置钩子
     await this.onPostToolUse(result);
+  }
+
+  /**
+   * 清理资源（包括 MCP 连接）
+   */
+  async dispose(): Promise<void> {
+    await this.disposeMCP();
   }
 }

@@ -1,7 +1,27 @@
 import { Agent, createOpenAILLM, loadConfig, fsTools, shellTools, webTools, mathTools, skillTools, TemplateComposer } from '../src/index.js';
+import type { MCPConfig } from '../src/mcp/types.js';
 import { exec } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { cwd, platform } from 'process';
+import { join } from 'path';
+
+/**
+ * 加载 MCP 配置（从 .agentdev/mcps 目录）
+ */
+function loadMCPConfig(serverName: string): MCPConfig | undefined {
+  try {
+    const configPath = join(cwd(), '.agentdev', 'mcps', `${serverName}.json`);
+    if (!existsSync(configPath)) {
+      console.warn(`MCP config not found: ${configPath}`);
+      return undefined;
+    }
+    const content = readFileSync(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch (error) {
+    console.error(`Failed to load MCP config for ${serverName}:`, error);
+    return undefined;
+  }
+}
 
 /**
  * 异步执行 agenthook 命令并获取用户输入
@@ -28,20 +48,35 @@ async function main() {
     SYSTEM_CURRENT_MODEL: config.defaultModel?.model || 'unknown',
   };
 
-  // ========== Agent1: 编程小助手 ==========
+  // ========== 加载 MCP 配置 ==========
+  const mcpConfig = loadMCPConfig('github');
+  if (mcpConfig) {
+    console.log('[MCP] 已加载 GitHub MCP 配置');
+    console.log('[MCP] 可用工具将在首次调用时自动注册');
+  } else {
+    console.log('[MCP] 未找到 GitHub MCP 配置，将使用基础工具集');
+  }
+
+  // ========== Agent1: 编程小助手（带 MCP 支持） ==========
   const agent1 = new Agent({
      llm,
      tools: [fsTools.readFileTool, fsTools.writeFileTool, fsTools.listDirTool, shellTools.shellTool, webTools.webFetchTool, mathTools.calculatorTool, skillTools.invokeSkillTool],
      maxTurns: Infinity,
      skillsDir: '.agentdev/skills',  // 设置 skills 目录
+     mcp: mcpConfig,  // MCP 配置（可选）
+     mcpContext: {  // MCP 运行时上下文
+       GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
+     },
   });
   agent1.setSystemPrompt(new TemplateComposer()
-    .add({ file: 'system.md' })  // 通用提示词,用默认路径加载
+    .add({ file: '.agentdev/prompts/system.md' })  // 通用提示词,用默认路径加载
     .add('\n\n## 身份设定\n\n')
     .add('你是一个专业的编程助手，擅长代码编写、调试和优化。')
     .add('\n\n## 技能（Skills）\n\n')
     .add('当用户要求你执行任务时，检查是否有任何可用的技能匹配。技能提供专门的能力和领域知识。你拥有如下技能，可使用 invoke_skill 工具激活，以展开技能的详细介绍。\n')
     .add({ skills: '- **{{name}}**: {{description}}' })
+    .add('\n\n## MCP 工具\n\n')
+    .add('除了标准工具外，你还可以使用 MCP (Model Context Protocol) 工具。MCP 工具的名称以 "mcp." 开头，例如 "mcp.github:create_issue"。这些工具提供了与外部服务集成的能力。\n')
   );
   // 注入系统环境信息
   agent1.setSystemContext(systemContext);

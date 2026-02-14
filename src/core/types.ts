@@ -55,6 +55,9 @@ export interface LLMClient {
 // 占位符上下文类型
 import type { PlaceholderContext, TemplateSource } from '../template/types.js';
 
+// MCP 类型导入
+import type { MCPConfig } from '../mcp/types.js';
+
 // Agent 配置
 export interface AgentConfig {
   llm: LLMClient;
@@ -63,6 +66,10 @@ export interface AgentConfig {
   systemMessage?: string | TemplateSource;
   name?: string;  // Agent 显示名称（用于调试）
   skillsDir?: string;  // Skills 目录路径
+  /** MCP 配置（可选） */
+  mcp?: MCPConfig;
+  /** MCP 上下文参数（运行时注入，如用户 Token） */
+  mcpContext?: Record<string, unknown>;
 }
 
 // 上下文中间件 - 用于处理消息数组

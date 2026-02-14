@@ -37,6 +37,9 @@ export * from './template/index.js';
 // Skills 系统
 export * from './skills/index.js';
 
+// MCP 集成
+export * from './mcp/index.js';
+
 // 类型
 export type {
   Message,
@@ -64,3 +67,14 @@ export type {
   TemplateLoaderOptions,
   CacheStats,
 } from './template/types.js';
+
+// MCP 类型
+export type {
+  MCPServerConfig,
+  MCPSstdioConfig,
+  MCPHTTPConfig,
+  MCPConfig,
+  MCPConnectionInfo,
+  MCPToolResult,
+  MCPStatistics,
+} from './mcp/types.js';

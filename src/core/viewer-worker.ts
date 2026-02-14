@@ -990,6 +990,15 @@ class ViewerWorker {
            return \`<div class="bash-command" style="color:#d2a8ff">= \${escapeHtml(data)}</div>\`;
         }
       },
+      'skill': {
+        call: (args) => \`<div class="bash-command">Invoke Skill <span class="file-path">\${escapeHtml(args.skill || '')}</span></div>\`,
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          const str = String(data);
+          // invoke_skill 返回的是 markdown 格式的技能文档，直接用 markdown 渲染
+          return \`<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">\${marked.parse(str)}</div>\`;
+        }
+      },
       'json': {
         call: (args) => \`<pre style="margin:0; font-size:12px;">\${escapeHtml(JSON.stringify(args, null, 2))}</pre>\`,
         result: (data, success) => {
@@ -1134,7 +1143,8 @@ class ViewerWorker {
           write_file: 'Write File',
           list_directory: 'List',
           web_fetch: 'Web',
-          calculator: 'Calc'
+          calculator: 'Calc',
+          invoke_skill: 'Invoke Skill'
         };
 
         for (const tool of tools) {

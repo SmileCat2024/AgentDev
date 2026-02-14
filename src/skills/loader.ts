@@ -4,7 +4,7 @@
  */
 
 import { readdir, readFile } from 'fs/promises';
-import { resolve, isAbsolute, join } from 'path';
+import { resolve, isAbsolute, join, normalize, dirname, isAbsolute as pathIsAbsolute } from 'path';
 import { existsSync } from 'fs';
 import type { SkillMetadata, SkillsOptions } from './types.js';
 
@@ -85,8 +85,10 @@ export async function discover(options: SkillsOptions = {}): Promise<SkillMetada
         const relativePath = entry.path ? join(entry.path, entry.name) : entry.name;
 
         // 如果 relativePath 是绝对路径，直接使用；否则拼接 skillsDir
-        const isAbsolutePath = relativePath.match(/^[A-Za-z]:\\/) || relativePath.startsWith('/');
-        const fullPath = isAbsolutePath ? relativePath : join(skillsDir, relativePath);
+        const isAbs = pathIsAbsolute(relativePath);
+        let fullPath = isAbs ? relativePath : join(skillsDir, relativePath);
+        // 规范化路径格式，确保 Windows 路径正确
+        fullPath = normalize(fullPath);
 
         try {
           const content = await readFile(fullPath, 'utf-8');
@@ -123,7 +125,9 @@ function resolveSkillsDir(dir?: string): string {
       return dir;
     }
     // 相对路径以 cwd 为基准
-    return resolve(cwd, dir);
+    const resolved = resolve(cwd, dir);
+    // 确保 Windows 路径使用正确的分隔符
+    return resolved;
   }
 
   // 默认使用 cwd/.agentdev/skills

@@ -4,7 +4,7 @@
  */
 
 import { readFile } from 'fs/promises';
-import { dirname } from 'path';
+import { dirname, normalize } from 'path';
 import { createTool } from '../core/tool.js';
 import type { Tool } from '../core/types.js';
 import type { SkillMetadata } from '../skills/types.js';
@@ -22,7 +22,7 @@ export const invokeSkillTool: Tool = createTool({
     },
     required: ['skill']
   },
-  render: { call: 'skill', result: 'file' },
+  render: { call: 'skill', result: 'skill' },
   execute: async ({ skill }, context?: { _context?: { skills?: SkillMetadata[] } }) => {
     console.log(`[invoke_skill] ${skill}`);
 
@@ -45,15 +45,16 @@ export const invokeSkillTool: Tool = createTool({
       // 读取 SKILL.md 文件
       const content = await readFile(skillMetadata.path, 'utf-8');
 
-      // 获取技能目录路径
-      const basePath = dirname(skillMetadata.path);
+      // 获取技能目录路径，并规范化路径格式
+      const basePath = normalize(dirname(skillMetadata.path));
 
       // 返回格式化的技能文档
+      // 使用行内代码块包裹路径，避免 markdown 转义
       return `**技能名称**：${skillMetadata.name}
 
 **技能描述**：${skillMetadata.description}
 
-**技能的基础目录路径**：${basePath}
+**技能的基础目录路径**：\`${basePath}\`
 
 ---
 

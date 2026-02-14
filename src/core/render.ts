@@ -115,6 +115,7 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'list_directory': 'LS',
   'web_fetch': 'Web',
   'calculator': 'Calc',
+  'invoke_skill': 'Invoke Skill',
 } as const;
 
 // ============= 辅助函数 =============

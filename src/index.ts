@@ -12,6 +12,9 @@ export { runReactLoop } from './core/loop.js';
 export { MessageViewer } from './core/viewer.js';
 export { DebugHub } from './core/debug-hub.js';
 
+// 预置 Agent 类
+export * from './agents/index.js';
+
 // 工具加载器
 export { loadToolsFromDir, loadSystemTools, loadUserTools, loadAllTools } from './tools/loader.js';
 
@@ -82,3 +85,9 @@ export type {
   MCPToolResult,
   MCPStatistics,
 } from './mcp/types.js';
+
+// Agent 类型
+export type {
+  BasicAgentConfig,
+  SystemContext,
+} from './agents/index.js';

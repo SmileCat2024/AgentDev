@@ -220,3 +220,19 @@ export interface AgentSwitchedMsg {
   type: 'agent-switched';
   agentId: string;
 }
+
+// ========== 生命周期类型 re-export ==========
+// 生命周期类型从 lifecycle.ts 导出，保持类型定义集中管理
+export type {
+  AgentInitiateContext,
+  AgentDestroyContext,
+  CallStartContext,
+  CallFinishContext,
+  TurnStartContext,
+  TurnFinishedContext,
+  LLMStartContext,
+  LLMFinishContext,
+  HookResult,
+  ToolContext,
+  ToolResult,
+} from './lifecycle.js';

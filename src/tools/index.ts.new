@@ -1,0 +1,6 @@
+  shellTool,
+  webFetchTool,
+  calculatorTool,
+  invokeSkillTool,
+  SYSTEM_TOOLS,
+  SYSTEM_RENDER_TEMPLATES,

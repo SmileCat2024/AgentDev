@@ -9,7 +9,19 @@ import type { SkillMetadata } from '../skills/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
-import { ToolContext, ToolResult, HookResult } from './lifecycle.js';
+import type {
+  ToolContext,
+  ToolResult,
+  HookResult,
+  AgentInitiateContext,
+  AgentDestroyContext,
+  CallStartContext,
+  CallFinishContext,
+  TurnStartContext,
+  TurnFinishedContext,
+  LLMStartContext,
+  LLMFinishContext,
+} from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
 import { TemplateLoader } from '../template/loader.js';
 import { existsSync } from 'fs';
@@ -19,6 +31,20 @@ import { MCPToolAdapter, createMCPToolAdapters } from '../mcp/index.js';
 
 // Re-export ContextSnapshot for convenience
 export type { ContextSnapshot };
+
+// ========== 错误处理策略枚举 ==========
+
+/**
+ * 钩子错误处理策略
+ */
+export enum HookErrorHandling {
+  /** 静默失败：记录警告，不中断主流程 */
+  Silent = 'silent',
+  /** 传播异常：中断整个 onCall 流程 */
+  Propagate = 'propagate',
+  /** 记录后传播：先记录日志再抛出 */
+  Logged = 'logged',
+}
 
 export class Agent {
   protected llm: AgentConfig['llm'];
@@ -41,6 +67,16 @@ export class Agent {
   protected mcpConfig?: AgentConfig['mcp'];
   protected mcpToolsRegistered: boolean = false;
   protected mcpContext?: Record<string, unknown>;
+
+  // ========== 生命周期状态 ==========
+  /** Agent 是否已初始化（onInitiate 只触发一次） */
+  protected _initialized: boolean = false;
+  /** 当前 onCall 的用户输入 */
+  protected _currentCallInput?: string;
+  /** 当前 ReAct 循环的轮次 */
+  protected _currentTurn: number = 0;
+  /** 记录每个 onCall 的开始时间（用于性能监控） */
+  protected _callStartTimes: Map<number, number> = new Map();
 
   constructor(config: AgentConfig) {
     this.llm = config.llm;
@@ -75,6 +111,55 @@ export class Agent {
     }
   }
 
+  // ========== 生命周期钩子辅助方法 ==========
+
+  /**
+   * 获取钩子的错误处理策略（可被子类覆盖）
+   * @param hookName 钩子名称
+   * @returns 错误处理策略
+   */
+  protected getHookErrorHandling(hookName: string): HookErrorHandling {
+    // 默认策略：Call/LLM/Tool 级别的钩子传播异常，其他静默失败
+    const propagateHooks = [
+      'onCallStart', 'onCallFinish',
+      'onLLMStart', 'onLLMFinish',
+      'onToolUse', 'onToolFinished',
+    ];
+    return propagateHooks.includes(hookName) ? HookErrorHandling.Propagate : HookErrorHandling.Silent;
+  }
+
+  /**
+   * 统一的钩子执行包装器（自动处理错误）
+   */
+  private async executeHook<T>(
+    hookName: string,
+    hookFn: () => Promise<T>,
+    context: { input?: string; turn?: number }
+  ): Promise<T | undefined> {
+    try {
+      return await hookFn();
+    } catch (error) {
+      const strategy = this.getHookErrorHandling(hookName);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+
+      switch (strategy) {
+        case HookErrorHandling.Silent:
+          console.warn(`[Agent] Hook ${hookName} failed (silent):`, errorMsg);
+          return undefined;
+
+        case HookErrorHandling.Logged:
+          console.error(`[Agent] Hook ${hookName} failed (logged):`, errorMsg);
+          throw error;
+
+        case HookErrorHandling.Propagate:
+          throw error;
+
+        default:
+          return undefined;
+      }
+    }
+  }
+
   // ========== 公开方法 ==========
 
   /**
@@ -89,67 +174,218 @@ export class Agent {
     // 注册 MCP 工具（懒加载，首次调用时才连接）
     await this.registerMCPTools();
 
-    // 使用持久化上下文或创建新的
+    // ========== Call Start ==========
     const context = this.persistentContext ?? new Context();
+    const isFirstCall = !this._initialized;
+    const callStartTime = Date.now();
+    const callId = Date.now();
 
-    // 添加系统消息（如果是新上下文）
-    if (this.systemMessage && context.getAll().length === 0) {
-      const systemMsg = await this.resolveSystemPrompt();
-      if (systemMsg) {
-        context.add({ role: 'system', content: systemMsg });
+    this._currentCallInput = input;
+    this._callStartTimes.set(callId, callStartTime);
+
+    // 触发 onCallStart（使用 executeHook 包装器）
+    await this.executeHook(
+      'onCallStart',
+      () => this.onCallStart({ input, context, isFirstCall }),
+      { input }
+    );
+
+    try {
+      // ========== Agent Initiate（仅首次）==========
+      if (!this._initialized) {
+        // 先触发 onInitiate，让子类有机会在加载系统消息前进行配置
+        await this.executeHook(
+          'onInitiate',
+          () => this.onInitiate({ context }),
+          { input }
+        );
+
+        // 加载系统提示词（onInitiate 中可能修改了 systemMessage）
+        if (this.systemMessage && context.getAll().length === 0) {
+          const systemMsg = await this.resolveSystemPrompt();
+          if (systemMsg) {
+            context.add({ role: 'system', content: systemMsg });
+          }
+        }
+
+        // 添加用户输入
+        context.add({ role: 'user', content: input });
+
+        // 推送初始状态到 DebugHub
+        if (this.debugEnabled && this.agentId && this.debugHub) {
+          this.debugHub.pushMessages(this.agentId, context.getAll());
+        }
+
+        this._initialized = true;
+      } else {
+        // 非首次调用，直接添加用户输入
+        context.add({ role: 'user', content: input });
+
+        // 推送消息到 DebugHub
+        if (this.debugEnabled && this.agentId && this.debugHub) {
+          this.debugHub.pushMessages(this.agentId, context.getAll());
+        }
       }
-    }
 
-    // 添加用户输入
-    context.add({ role: 'user', content: input });
+      // ========== ReAct 循环 ==========
+      let completed = false;
+      let finalResponse = '';
 
-    // 推送初始状态到 DebugHub（包含当前输入）
-    if (this.debugEnabled && this.agentId && this.debugHub) {
-      this.debugHub.pushMessages(this.agentId, context.getAll());
-    }
+      for (let turn = 0; turn < this.maxTurns; turn++) {
+        this._currentTurn = turn;
 
-    // ReAct 循环
-    for (let turn = 0; turn < this.maxTurns; turn++) {
-      // 推送消息到 DebugHub
-      if (this.debugEnabled && this.agentId && this.debugHub) {
-        this.debugHub.pushMessages(this.agentId, context.getAll());
+        // 推送消息到 DebugHub
+        if (this.debugEnabled && this.agentId && this.debugHub) {
+          this.debugHub.pushMessages(this.agentId, context.getAll());
+        }
+
+        // ========== Turn Start ==========
+        await this.executeHook(
+          'onTurnStart',
+          () => this.onTurnStart({ turn, context, input }),
+          { input, turn }
+        );
+
+        // ========== LLM Start ==========
+        const llmStartResult = await this.executeHook(
+          'onLLMStart',
+          () => this.onLLMStart({
+            messages: context.getAll(),
+            tools: this.tools.getAll(),
+            turn,
+          }),
+          { input, turn }
+        );
+
+        // 检查是否被阻止
+        if (llmStartResult?.action === 'block') {
+          // LLM 调用被阻止
+          const blockResponse = llmStartResult.reason || 'LLM call blocked by hook';
+          context.add({
+            role: 'assistant',
+            content: blockResponse,
+          });
+
+          // 跳出循环
+          completed = true;
+          finalResponse = blockResponse;
+          break;
+        }
+
+        // 执行 LLM 调用
+        const llmStartTime = Date.now();
+        const response = await this.llm.chat(
+          context.getAll(),
+          this.tools.getAll()
+        );
+        const llmDuration = Date.now() - llmStartTime;
+
+        // ========== LLM Finish ==========
+        await this.executeHook(
+          'onLLMFinish',
+          () => this.onLLMFinish({ response, turn, duration: llmDuration }),
+          { input, turn }
+        );
+
+        // 添加助手响应
+        context.add({
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoning: response.reasoning,
+        });
+
+        // 推送消息到 DebugHub
+        if (this.debugEnabled && this.agentId && this.debugHub) {
+          this.debugHub.pushMessages(this.agentId, context.getAll());
+        }
+
+        // 检查是否需要调用工具
+        if (!response.toolCalls || response.toolCalls.length === 0) {
+          completed = true;
+          finalResponse = response.content;
+
+          // ========== Turn Finished（无工具调用）==========
+          await this.executeHook(
+            'onTurnFinished',
+            () => this.onTurnFinished({
+              turn,
+              context,
+              input,
+              llmResponse: response,
+              toolCallsCount: 0,
+            }),
+            { input, turn }
+          );
+
+          break;
+        }
+
+        // 执行工具
+        for (const call of response.toolCalls) {
+          await this.executeTool(call, input, context, turn);
+        }
+
+        // ========== Turn Finished（有工具调用）==========
+        await this.executeHook(
+          'onTurnFinished',
+          () => this.onTurnFinished({
+            turn,
+            context,
+            input,
+            llmResponse: response,
+            toolCallsCount: response.toolCalls?.length ?? 0,
+          }),
+          { input, turn }
+        );
       }
 
-      // LLM 调用
-      const response = await this.llm.chat(
-        context.getAll(),
-        this.tools.getAll()
+      // 达到最大轮次
+      if (!completed) {
+        finalResponse = context.getAll()[context.getAll().length - 1]?.content || '';
+      }
+
+      // 保存上下文
+      this.persistentContext = context;
+
+      // ========== Call Finish（成功）==========
+      await this.executeHook(
+        'onCallFinish',
+        () => this.onCallFinish({
+          input,
+          context,
+          response: finalResponse,
+          turns: this._currentTurn + 1,
+          completed: true,
+        }),
+        { input }
       );
 
-      // 添加助手响应
-      context.add({
-        role: 'assistant',
-        content: response.content,
-        toolCalls: response.toolCalls,
-        reasoning: response.reasoning,
-      });
+      return finalResponse;
 
-      // 推送消息到 DebugHub
-      if (this.debugEnabled && this.agentId && this.debugHub) {
-        this.debugHub.pushMessages(this.agentId, context.getAll());
-      }
+    } catch (error) {
+      // ========== Call Finish（异常）==========
+      const errorMsg = error instanceof Error ? error.message : String(error);
 
-      // 检查是否需要调用工具
-      if (!response.toolCalls || response.toolCalls.length === 0) {
-        // 保存上下文并返回
-        this.persistentContext = context;
-        return response.content;
-      }
+      await this.executeHook(
+        'onCallFinish',
+        () => this.onCallFinish({
+          input,
+          context,
+          response: errorMsg,
+          turns: this._currentTurn + 1,
+          completed: false,
+        }),
+        { input }
+      );
 
-      // 执行工具
-      for (const call of response.toolCalls) {
-        await this.executeTool(call, input, context, turn);
-      }
+      throw error;
+
+    } finally {
+      this._callStartTimes.delete(callId);
+      this._currentCallInput = undefined;
+      this._currentTurn = 0;
     }
-
-    // 达到最大轮次
-    this.persistentContext = context;
-    return context.getAll()[context.getAll().length - 1]?.content || '';
   }
 
   /**
@@ -295,8 +531,77 @@ export class Agent {
 
   // ========== 可重载的生命周期钩子 ==========
 
+  // ========== Agent 级别钩子 ==========
+
   /**
-   * 工具调用前钩子
+   * Agent 初始化钩子
+   * 只在首次 onCall 时触发一次
+   */
+  protected async onInitiate(ctx: AgentInitiateContext): Promise<void> {
+    // 默认空实现
+  }
+
+  /**
+   * Agent 销毁钩子
+   * 通过 dispose() 方法触发
+   */
+  protected async onDestroy(ctx: AgentDestroyContext): Promise<void> {
+    // 默认空实现
+  }
+
+  // ========== Call 级别钩子 ==========
+
+  /**
+   * 每次 onCall 开始时触发
+   */
+  protected async onCallStart(ctx: CallStartContext): Promise<void> {
+    // 默认空实现
+  }
+
+  /**
+   * 每次 onCall 结束时触发
+   */
+  protected async onCallFinish(ctx: CallFinishContext): Promise<void> {
+    // 默认空实现
+  }
+
+  // ========== Turn 级别钩子 ==========
+
+  /**
+   * 每轮 ReAct 循环开始时触发
+   */
+  protected async onTurnStart(ctx: TurnStartContext): Promise<void> {
+    // 默认空实现
+  }
+
+  /**
+   * 每轮 ReAct 循环结束时触发
+   */
+  protected async onTurnFinished(ctx: TurnFinishedContext): Promise<void> {
+    // 默认空实现
+  }
+
+  // ========== LLM 级别钩子 ==========
+
+  /**
+   * 每次 LLM 调用前触发
+   * 可以通过返回 { action: 'block' } 阻止调用
+   */
+  protected async onLLMStart(ctx: LLMStartContext): Promise<HookResult | undefined> {
+    return undefined;
+  }
+
+  /**
+   * 每次 LLM 调用后触发
+   */
+  protected async onLLMFinish(ctx: LLMFinishContext): Promise<void> {
+    // 默认空实现
+  }
+
+  // ========== Tool 级别钩子（重命名）==========
+
+  /**
+   * 工具使用前钩子（原 onPreToolUse）
    *
    * 返回值规则：
    * - { action: 'block' }  → 阻止工具执行
@@ -306,17 +611,33 @@ export class Agent {
    * @param ctx 工具上下文
    * @returns 钩子结果
    */
-  protected async onPreToolUse(ctx: ToolContext): Promise<HookResult | undefined> {
+  protected async onToolUse(ctx: ToolContext): Promise<HookResult | undefined> {
     return undefined;
   }
 
   /**
-   * 工具执行后钩子
+   * 工具执行后钩子（原 onPostToolUse）
    *
    * @param result 工具执行结果
    */
-  protected async onPostToolUse(result: ToolResult): Promise<void> {
+  protected async onToolFinished(result: ToolResult): Promise<void> {
     // 默认空实现
+  }
+
+  // ========== 向后兼容别名（废弃）==========
+
+  /**
+   * @deprecated 使用 onToolUse 代替
+   */
+  protected async onPreToolUse(ctx: ToolContext): Promise<HookResult | undefined> {
+    return this.onToolUse(ctx);
+  }
+
+  /**
+   * @deprecated 使用 onToolFinished 代替
+   */
+  protected async onPostToolUse(result: ToolResult): Promise<void> {
+    return this.onToolFinished(result);
   }
 
   // ========== MCP 集成 ==========
@@ -441,11 +762,16 @@ export class Agent {
       context,
     };
 
-    // 前置钩子
+    // 前置钩子（使用 executeHook 包装器）
     let blocked = false;
     let blockReason: string | undefined;
 
-    const hookResult = await this.onPreToolUse(toolCtx);
+    const hookResult = await this.executeHook(
+      'onToolUse',
+      () => this.onToolUse(toolCtx),
+      { input, turn }
+    );
+
     if (hookResult) {
       if (hookResult.action === 'block') {
         blocked = true;
@@ -477,7 +803,11 @@ export class Agent {
           result: { error: result.error || 'Tool not found' },
         }),
       });
-      await this.onPostToolUse(result);
+      await this.executeHook(
+        'onToolFinished',
+        () => this.onToolFinished(result),
+        { input, turn }
+      );
       return;
     }
 
@@ -528,14 +858,41 @@ export class Agent {
 
     result.duration = Date.now() - startTime;
 
-    // 后置钩子
-    await this.onPostToolUse(result);
+    // 后置钩子（使用 executeHook 包装器）
+    await this.executeHook(
+      'onToolFinished',
+      () => this.onToolFinished(result),
+      { input, turn }
+    );
   }
 
   /**
    * 清理资源（包括 MCP 连接）
    */
   async dispose(): Promise<void> {
+    // 触发 onDestroy 钩子
+    const context = this.persistentContext ?? new Context();
+
+    try {
+      await this.executeHook(
+        'onDestroy',
+        () => this.onDestroy({ context }),
+        {}
+      );
+    } catch (error) {
+      console.warn('[Agent] onDestroy hook error:', error);
+    }
+
+    // 清理 MCP 连接
     await this.disposeMCP();
+
+    // 注销 DebugHub
+    if (this.debugEnabled && this.agentId && this.debugHub) {
+      this.debugHub.unregisterAgent(this.agentId);
+    }
+
+    // 重置状态
+    this._initialized = false;
+    this.persistentContext = undefined;
   }
 }

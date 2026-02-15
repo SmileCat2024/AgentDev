@@ -3,8 +3,106 @@
  * 定义 Agent 生命周期钩子相关的类型
  */
 
-import type { ToolCall, Tool } from './types.js';
+import type { ToolCall, Tool, LLMResponse, Message } from './types.js';
 import { Context } from './context.js';
+
+// ========== Agent 级别 ==========
+
+/**
+ * Agent 初始化上下文
+ */
+export interface AgentInitiateContext {
+  /** 消息上下文 */
+  context: Context;
+}
+
+/**
+ * Agent 销毁上下文
+ */
+export interface AgentDestroyContext {
+  /** 消息上下文 */
+  context: Context;
+}
+
+// ========== Call 级别 ==========
+
+/**
+ * Call 开始上下文
+ */
+export interface CallStartContext {
+  /** 用户输入 */
+  input: string;
+  /** 消息上下文 */
+  context: Context;
+  /** 是否首次调用 */
+  isFirstCall: boolean;
+}
+
+/**
+ * Call 结束上下文
+ */
+export interface CallFinishContext {
+  /** 用户输入 */
+  input: string;
+  /** 消息上下文 */
+  context: Context;
+  /** 最终响应 */
+  response: string;
+  /** 执行的轮次数 */
+  turns: number;
+  /** 是否成功完成 */
+  completed: boolean;
+}
+
+// ========== Turn 级别 ==========
+
+/**
+ * Turn 开始上下文
+ */
+export interface TurnStartContext {
+  /** 当前轮次（从 0 开始） */
+  turn: number;
+  /** 消息上下文 */
+  context: Context;
+  /** 原始用户输入 */
+  input: string;
+}
+
+/**
+ * Turn 结束上下文
+ */
+export interface TurnFinishedContext extends TurnStartContext {
+  /** LLM 响应 */
+  llmResponse: LLMResponse;
+  /** 执行的工具调用数量 */
+  toolCallsCount: number;
+}
+
+// ========== LLM 级别 ==========
+
+/**
+ * LLM 调用开始上下文
+ */
+export interface LLMStartContext {
+  /** 发送给 LLM 的消息 */
+  messages: Message[];
+  /** 发送给 LLM 的工具列表 */
+  tools: Tool[];
+  /** 当前轮次 */
+  turn: number;
+}
+
+/**
+ * LLM 调用结束上下文
+ */
+export interface LLMFinishContext {
+  /** LLM 响应 */
+  response: LLMResponse;
+  /** 当前轮次 */
+  turn: number;
+  /** 调用耗时(ms) */
+  duration: number;
+}
 
 /**
  * 工具上下文 - onPreToolUse 钩子的参数

@@ -1,6 +1,6 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { createTool } from '../core/tool.js';
+import { createTool } from '../../core/tool.js';
 
 const execAsync = promisify(exec);
 
@@ -21,8 +21,8 @@ export const shellTool = createTool({
       const { stdout, stderr } = await execAsync(command);
       return stdout || stderr;
     } catch (error: any) {
-      // Throwing error to indicate failure to the agent and viewer
-      // detailed output is preserved in the error message
+      // Throwing error to indicate failure to agent and viewer
+      // detailed output is preserved in error message
       const output = error.stdout || error.stderr || error.message;
       throw new Error(output);
     }

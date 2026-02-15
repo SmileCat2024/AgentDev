@@ -3,7 +3,7 @@
  * 定义工具渲染模板、样式和默认映射
  */
 
-import type { ToolRenderConfig } from './types.js';
+import type { ToolRenderConfig, RenderTemplateItem, RenderTemplateFn } from './types.js';
 
 // ============= 类型定义 =============
 export interface RenderTemplate {
@@ -12,12 +12,6 @@ export interface RenderTemplate {
   /** 结果时的渲染模板 */
   result: RenderTemplateItem;
 }
-
-export type RenderTemplateItem =
-  | string                    // 字符串模板，使用 {{key}} 插值
-  | RenderTemplateFn;         // 函数模板，处理复杂逻辑
-
-export type RenderTemplateFn = (data: Record<string, any>, success?: boolean) => string;
 
 // ============= 模板定义 =============
 /**
@@ -160,6 +154,36 @@ export function applyTemplate(
   return interpolateTemplate(template, data);
 }
 
+// ============= 动态模板加载 =============
+/**
+ * 从文件加载渲染模板
+ * @param toolPath 工具路径（相对于项目根目录）
+ */
+export async function loadRenderTemplate(
+  toolPath: string
+): Promise<RenderTemplate | undefined> {
+  try {
+    // 构建模板文件路径：工具目录 + .render.ts
+    const templatePath = toolPath + '.render.ts';
+
+    // 动态导入模板模块
+    const module = await import(templatePath);
+
+    // 模块应导出 default 或 render 函数返回 RenderTemplate
+    if (module.default && typeof module.default === 'object') {
+      return module.default as RenderTemplate;
+    }
+    if (module.render && typeof module.render === 'function') {
+      return await module.render();
+    }
+
+    return undefined;
+  } catch {
+    // 文件不存在或导入失败，返回 undefined
+    return undefined;
+  }
+}
+
 // ============= 导出合并函数 =============
 /**
  * 获取工具的渲染配置（合并默认值）
@@ -183,14 +207,32 @@ export function getToolRenderConfig(
  */
 export function getToolRenderTemplate(toolName: string, customRender?: ToolRenderConfig): RenderTemplate {
   const config = getToolRenderConfig(toolName, customRender);
-  const callTemplateName = config.call || 'json';
-  const resultTemplateName = config.result || 'json';
-  const callTemplate = RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json'];
-  const resultTemplate = RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json'];
+
+  // 处理 call 模板
+  let callTemplate: RenderTemplateItem;
+  if (typeof config.call === 'object' && config.call !== null) {
+    // 内联模板
+    callTemplate = config.call.call;
+  } else {
+    // 字符串引用
+    const callTemplateName = config.call || 'json';
+    callTemplate = RENDER_TEMPLATES[callTemplateName]?.call || RENDER_TEMPLATES['json'].call;
+  }
+
+  // 处理 result 模板
+  let resultTemplate: RenderTemplateItem;
+  if (typeof config.result === 'object' && config.result !== null) {
+    // 内联模板
+    resultTemplate = config.result.result;
+  } else {
+    // 字符串引用
+    const resultTemplateName = config.result || 'json';
+    resultTemplate = RENDER_TEMPLATES[resultTemplateName]?.result || RENDER_TEMPLATES['json'].result;
+  }
 
   return {
-    call: callTemplate.call,
-    result: resultTemplate.result,
+    call: callTemplate,
+    result: resultTemplate,
   };
 }
 

@@ -5,9 +5,9 @@
 
 import { readFile } from 'fs/promises';
 import { dirname, normalize } from 'path';
-import { createTool } from '../core/tool.js';
-import type { Tool } from '../core/types.js';
-import type { SkillMetadata } from '../skills/types.js';
+import { createTool } from '../../core/tool.js';
+import type { Tool } from '../../core/types.js';
+import type { SkillMetadata } from '../../skills/types.js';
 
 export const invokeSkillTool: Tool = createTool({
   name: 'invoke_skill',

@@ -1,4 +1,4 @@
-import { createTool } from '../core/tool.js';
+import { createTool } from '../../core/tool.js';
 
 // 网页获取
 export const webFetchTool = createTool({

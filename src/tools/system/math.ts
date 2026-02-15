@@ -1,4 +1,4 @@
-import { createTool } from '../core/tool.js';
+import { createTool } from '../../core/tool.js';
 
 // 计算器
 export const calculatorTool = createTool({

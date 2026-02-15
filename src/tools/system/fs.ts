@@ -1,5 +1,5 @@
 import { readFile, writeFile, readdir } from 'fs/promises';
-import { createTool } from '../core/tool.js';
+import { createTool } from '../../core/tool.js';
 
 // 文件读取
 export const readFileTool = createTool({

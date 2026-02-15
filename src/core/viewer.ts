@@ -29,8 +29,8 @@ interface ToolMetadata {
   name: string;
   description: string;
   render: {
-    call: string;  // 模板名称，必需
-    result: string;  // 模板名称，必需
+    call: string | { call: any; result: any; };  // 模板名称或内联模板
+    result: string | { call: any; result: any; };  // 模板名称或内联模板
   };
 }
 
@@ -196,20 +196,21 @@ export class MessageViewer {
    */
   registerTools(tools: Tool[]): void {
     for (const tool of tools) {
-      // 获取工具的渲染配置（模板名称）
+      // 获取工具的渲染配置（模板名称或内联模板）
       const config = getToolRenderConfig(tool.name, tool.render);
 
-      // 确保模板名称不为空
+      // 处理 call 模板：内联模板直接使用，字符串使用默认值
       const callTemplate = config.call || 'json';
+      // 处理 result 模板：内联模板直接使用，字符串使用默认值
       const resultTemplate = config.result || 'json';
 
-      // 构建工具元数据 - 传输模板名称，而不是模板内容
+      // 构建工具元数据 - 支持内联模板和模板名称
       this.registeredTools.set(tool.name, {
         name: tool.name,
         description: tool.description,
         render: {
-          call: callTemplate,    // 模板名称，如 'command', 'file'
-          result: resultTemplate, // 模板名称
+          call: callTemplate,    // 模板名称或内联模板
+          result: resultTemplate, // 模板名称或内联模板
         },
       });
 

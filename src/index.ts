@@ -12,15 +12,18 @@ export { runReactLoop } from './core/loop.js';
 export { MessageViewer } from './core/viewer.js';
 export { DebugHub } from './core/debug-hub.js';
 
+// 工具加载器
+export { loadToolsFromDir, loadSystemTools, loadUserTools, loadAllTools } from './tools/loader.js';
+
 // 生命周期类型
 export type { ToolContext, ToolResult, HookResult } from './core/lifecycle.js';
 
 // 系统工具
-export * as fsTools from './tools/fs.js';
-export * as shellTools from './tools/shell.js';
-export * as webTools from './tools/web.js';
-export * as mathTools from './tools/math.js';
-export * as skillTools from './tools/skill.js';
+export * as fsTools from './tools/system/fs.js';
+export * as shellTools from './tools/system/shell.js';
+export * as webTools from './tools/system/web.js';
+export * as mathTools from './tools/system/math.js';
+export * as skillTools from './tools/system/skill.js';
 
 // 消息
 export { system, user, assistant, toolResult, createMessage } from './core/message.js';
@@ -51,6 +54,7 @@ export type {
   AgentConfig,
   ContextMiddleware,
   ToolRenderConfig,
+  InlineRenderTemplate,
   ToolMetadata,
   AgentInfo,
   AgentSession,

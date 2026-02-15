@@ -373,12 +373,18 @@ class ViewerWorker {
         const callTemplate = config.call || 'json';
         const resultTemplate = config.result || 'json';
 
+        // 检查是否为内联模板（对象类型）
+        const callIsInline = typeof tool.render?.call === 'object' && tool.render.call !== null;
+        const resultIsInline = typeof tool.render?.result === 'object' && tool.render.result !== null;
+
         session.tools.push({
           name: tool.name,
           description: tool.description,
           render: {
-            call: callTemplate,
-            result: resultTemplate,
+            call: callIsInline ? '__inline__' : callTemplate,
+            result: resultIsInline ? '__inline__' : resultTemplate,
+            inlineCall: callIsInline ? tool.render.call : undefined,
+            inlineResult: resultIsInline ? tool.render.result : undefined,
           },
         });
 
@@ -1028,6 +1034,16 @@ class ViewerWorker {
       if (typeof template === 'function') {
         return template(data, success, args);
       }
+      // 处理内联模板对象 { call: ..., result: ... }
+      if (typeof template === 'object' && template !== null) {
+        const fn = template.result || template.call;
+        if (typeof fn === 'function') {
+          return fn(data, success, args);
+        }
+        if (typeof fn === 'string') {
+          return interpolateTemplate(fn, data);
+        }
+      }
       return interpolateTemplate(template, data);
     }
 
@@ -1059,11 +1075,23 @@ class ViewerWorker {
       const config = toolRenderConfigs[toolName];
       const callTemplateName = (config?.render?.call) || 'json';
       const resultTemplateName = (config?.render?.result) || 'json';
-      const callTemplate = RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json'];
-      const resultTemplate = RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json'];
+
+      // 检查是否为内联模板
+      const callIsInline = callTemplateName === '__inline__';
+      const resultIsInline = resultTemplateName === '__inline__';
+
+      const callTemplate = callIsInline
+        ? { call: config?.render?.inlineCall, result: config?.render?.inlineCall }
+        : (RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json']);
+      const resultTemplate = resultIsInline
+        ? { call: config?.render?.inlineResult, result: config?.render?.inlineResult }
+        : (RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json']);
+
       return {
         call: callTemplate.call,
-        result: resultTemplate.result
+        result: resultTemplate.result,
+        isInlineCall: callIsInline,
+        isInlineResult: resultIsInline,
       };
     }
 

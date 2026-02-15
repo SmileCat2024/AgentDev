@@ -29,12 +29,35 @@ export interface LLMResponse {
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
 }
 
+// ============= 渲染模板类型 =============
+/**
+ * 渲染模板项
+ * 可以是字符串模板或函数模板
+ */
+export type RenderTemplateItem =
+  | string                    // 字符串模板，使用 {{key}} 插值
+  | RenderTemplateFn;         // 函数模板，处理复杂逻辑
+
+/**
+ * 渲染模板函数类型
+ */
+export type RenderTemplateFn = (data: Record<string, any>, success?: boolean) => string;
+
+/**
+ * 内联渲染模板
+ * 直接定义在工具中的渲染模板（无需引用预设模板）
+ */
+export interface InlineRenderTemplate {
+  call: RenderTemplateItem;
+  result: RenderTemplateItem;
+}
+
 // 工具渲染配置
 export interface ToolRenderConfig {
-  /** 调用时的渲染模板名称 */
-  call?: string;
-  /** 结果时的渲染模板名称 */
-  result?: string;
+  /** 调用时的渲染模板（字符串引用或内联模板） */
+  call?: string | InlineRenderTemplate;
+  /** 结果时的渲染模板（字符串引用或内联模板） */
+  result?: string | InlineRenderTemplate;
 }
 
 // 工具定义
@@ -93,8 +116,11 @@ export interface ToolMetadata {
   name: string;
   description: string;
   render: {
-    call: string;   // 模板名称
-    result: string; // 模板名称
+    call: string | InlineRenderTemplate;   // 模板名称或内联模板
+    result: string | InlineRenderTemplate; // 模板名称或内联模板
+    // 内联模板的可选直接存储（用于前端特殊标记）
+    inlineCall?: InlineRenderTemplate;
+    inlineResult?: InlineRenderTemplate;
   };
 }
 

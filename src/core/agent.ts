@@ -21,6 +21,9 @@ import type {
   TurnFinishedContext,
   LLMStartContext,
   LLMFinishContext,
+  SubAgentSpawnContext,
+  SubAgentUpdateContext,
+  SubAgentDestroyContext,
 } from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
 import { TemplateLoader } from '../template/loader.js';
@@ -28,6 +31,7 @@ import { existsSync } from 'fs';
 import { cwd } from 'process';
 import { MCPConnectionManager } from '../mcp/index.js';
 import { MCPToolAdapter, createMCPToolAdapters } from '../mcp/index.js';
+import { AgentPool } from './agent-pool.js';
 
 // Re-export ContextSnapshot for convenience
 export type { ContextSnapshot };
@@ -67,6 +71,14 @@ export class Agent {
   protected mcpConfig?: AgentConfig['mcp'];
   protected mcpToolsRegistered: boolean = false;
   protected mcpContext?: Record<string, unknown>;
+
+  // 子代理相关
+  protected _pool?: AgentPool;
+
+  /** 子代理的 ID（仅子代理有值） */
+  protected _agentId?: string;
+  /** 父代理的 AgentPool 引用（仅子代理有值） */
+  protected _parentPool?: import('./agent-pool.js').AgentPool;
 
   // ========== 生命周期状态 ==========
   /** Agent 是否已初始化（onInitiate 只触发一次） */
@@ -302,6 +314,30 @@ export class Agent {
 
         // 检查是否需要调用工具
         if (!response.toolCalls || response.toolCalls.length === 0) {
+          // 检查是否有子代理在运行
+          if (this._pool && this._pool.hasActiveAgents()) {
+            // 等待子代理消息（5秒超时）
+            const result = await this._pool.waitForMessage(5000);
+
+            if (result) {
+              // 收到消息，添加到上下文并继续循环
+              // 使用 'assistant' 角色，在内容中标注子代理来源
+              context.add({
+                role: 'assistant',
+                content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}\n\n(子代理已完成任务，结果已接收，无需调用 list_agents 确认)`,
+              });
+
+              // 推送到 DebugHub
+              if (this.debugEnabled && this.agentId && this.debugHub) {
+                this.debugHub.pushMessages(this.agentId, context.getAll());
+              }
+
+              // 继续下一轮
+              continue;
+            }
+            // 超时则结束循环
+          }
+
           completed = true;
           finalResponse = response.content;
 
@@ -640,6 +676,76 @@ export class Agent {
     return this.onToolFinished(result);
   }
 
+  // ========== SubAgent 级别钩子 ==========
+
+  /**
+   * 子代理创建钩子
+   */
+  public async onSubAgentSpawn(ctx: SubAgentSpawnContext): Promise<void> {
+    // 默认空实现
+  }
+
+  /**
+   * 子代理状态更新钩子
+   */
+  public async onSubAgentUpdate(ctx: SubAgentUpdateContext): Promise<void> {
+    // 默认空实现
+  }
+
+  /**
+   * 子代理销毁钩子
+   */
+  public async onSubAgentDestroy(ctx: SubAgentDestroyContext): Promise<void> {
+    // 默认空实现
+  }
+
+  // ========== 子代理管理 ==========
+
+  /**
+   * 子代理向父代理回传消息
+   * @param message 消息内容
+   */
+  protected async reportToParent(message: string): Promise<void> {
+    if (!this._parentPool || !this._agentId) {
+      return; // 不是子代理，忽略
+    }
+    await this._parentPool.report(this._agentId, message);
+  }
+
+  /**
+   * 获取子代理池
+   */
+  public get pool(): AgentPool {
+    if (!this._pool) {
+      this._pool = new AgentPool(this);
+    }
+    return this._pool;
+  }
+
+  /**
+   * 创建 Agent 实例（子类可覆盖）
+   * 异步方法，因为需要使用动态 import()
+   */
+  public async createAgentByType(type: string): Promise<Agent> {
+    // 支持的 Agent 类型
+    switch (type) {
+      case 'ExplorerAgent': {
+        const { ExplorerAgent } = await import('../agents/system/ExplorerAgent.js');
+        return new ExplorerAgent({
+          llm: this.llm,
+        });
+      }
+      case 'BasicAgent':
+      default: {
+        const { BasicAgent } = await import('../agents/system/BasicAgent.js');
+        return new BasicAgent({
+          llm: this.llm,
+          tools: this.tools.getAll().slice(0, 3), // 简化工具集
+        });
+      }
+    }
+  }
+
   // ========== MCP 集成 ==========
 
   /**
@@ -815,6 +921,7 @@ export class Agent {
       // 执行工具
       // 为 invoke_skill 注入 skills 上下文
       // 为 MCP 工具注入 mcpContext 上下文
+      // 为 spawn_agent 注入父代理引用
       let toolContext: any = undefined;
 
       if (call.name === 'invoke_skill') {
@@ -822,6 +929,9 @@ export class Agent {
       } else if (call.name.startsWith('mcp.')) {
         // MCP 工具注入 mcpContext
         toolContext = { _mcpContext: this.mcpContext };
+      } else if (['spawn_agent', 'list_agents', 'send_to_agent', 'close_agent'].includes(call.name)) {
+        // 子代理管理工具注入父代理引用
+        toolContext = { parentAgent: this };
       }
 
       const data = await tool.execute(call.arguments, toolContext);
@@ -870,6 +980,9 @@ export class Agent {
    * 清理资源（包括 MCP 连接）
    */
   async dispose(): Promise<void> {
+    // 先清理子代理池
+    await this._pool?.shutdown();
+
     // 触发 onDestroy 钩子
     const context = this.persistentContext ?? new Context();
 

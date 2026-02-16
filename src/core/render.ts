@@ -72,6 +72,57 @@ export const RENDER_TEMPLATES: Record<string, RenderTemplate> = {
     call: '<div class="bash-command">Skill <span class="file-path">{{skill}}</span></div>',
     result: (data) => `<pre class="bash-output" style="max-height:400px;">${escapeHtml(data)}</pre>`
   },
+
+  // ----- Agent Spawn -----
+  'agent-spawn': {
+    call: '<div class="bash-command">Spawn <span class="file-path">{{type}}</span> agent: {{instruction}}</div>',
+    result: (data) => {
+      if (data.error) {
+        return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
+      }
+      return `<div style="color:var(--success-color)">✓ Agent: <strong>${data.agentId}</strong> (${data.type})</div>`;
+    }
+  },
+
+  // ----- Agent List -----
+  'agent-list': {
+    call: '<div class="bash-command">List agents (filter: {{filter}})</div>',
+    result: (data) => {
+      if (!data.agents || data.agents.length === 0) {
+        return `<div style="color:var(--warning-color)">No agents found</div>`;
+      }
+      return `<div style="font-size:12px;">
+        <div>Total: ${data.total} | Running: ${data.running}</div>
+        ${data.agents.map((a: any) => `
+          <div style="margin-top:4px; padding:4px; background:var(--code-bg); border-radius:4px;">
+            <strong>${a.agentId}</strong> (${a.type}) - <span style="color:${a.status === 'running' ? 'var(--success-color)' : 'var(--warning-color)'}">${a.status}</span>
+          </div>
+        `).join('')}
+      </div>`;
+    }
+  },
+
+  // ----- Agent Send -----
+  'agent-send': {
+    call: '<div class="bash-command">Send to <span class="file-path">{{agentId}}</span>: {{message}}</div>',
+    result: (data) => {
+      if (data.error) {
+        return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
+      }
+      return `<div style="color:var(--success-color)">✓ Message sent to ${data.agentId}</div>`;
+    }
+  },
+
+  // ----- Agent Close -----
+  'agent-close': {
+    call: '<div class="bash-command">Close <span class="file-path">{{agentId}}</span> (reason: {{reason}})</div>',
+    result: (data) => {
+      if (data.error) {
+        return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
+      }
+      return `<div style="color:var(--success-color)">✓ ${data.message}</div>`;
+    }
+  },
 } as const;
 
 // ============= 默认映射 =============
@@ -96,6 +147,12 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
 
   // Skills 工具
   'invoke_skill': 'skill',
+
+  // Agent 工具
+  'spawn_agent': 'agent-spawn',
+  'list_agents': 'agent-list',
+  'send_to_agent': 'agent-send',
+  'close_agent': 'agent-close',
 } as const;
 
 // ============= 工具显示名称映射 =============
@@ -110,6 +167,10 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'web_fetch': 'Web',
   'calculator': 'Calc',
   'invoke_skill': 'Invoke Skill',
+  'spawn_agent': 'Spawn Agent',
+  'list_agents': 'List Agents',
+  'send_to_agent': 'Send to Agent',
+  'close_agent': 'Close Agent',
 } as const;
 
 // ============= 辅助函数 =============

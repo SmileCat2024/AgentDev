@@ -5,6 +5,7 @@
 
 import type { ToolCall, Tool, LLMResponse, Message } from './types.js';
 import { Context } from './context.js';
+import type { Agent } from './agent.js';
 
 // ========== Agent 级别 ==========
 
@@ -160,3 +161,54 @@ export type HookResult =
   | { action: 'block'; reason?: string }
   | { action: 'allow' }
   | undefined;
+
+// ========== SubAgent 级别 ==========
+
+/**
+ * 子代理状态
+ */
+export type SubAgentStatus = 'running' | 'completed' | 'failed' | 'terminated';
+
+/**
+ * 子代理创建上下文
+ */
+export interface SubAgentSpawnContext {
+  /** 子代理 ID */
+  agentId: string;
+  /** 子代理类型 */
+  type: string;
+  /** 初始指令 */
+  instruction: string;
+  /** 子代理实例 */
+  agent: Agent;
+}
+
+/**
+ * 子代理状态更新上下文
+ */
+export interface SubAgentUpdateContext {
+  /** 子代理 ID */
+  agentId: string;
+  /** 子代理类型 */
+  type: string;
+  /** 旧状态 */
+  oldStatus: SubAgentStatus;
+  /** 新状态 */
+  newStatus: SubAgentStatus;
+  /** 执行结果（完成时） */
+  result?: string;
+  /** 错误信息（失败时） */
+  error?: string;
+}
+
+/**
+ * 子代理销毁上下文
+ */
+export interface SubAgentDestroyContext {
+  /** 子代理 ID */
+  agentId: string;
+  /** 子代理类型 */
+  type: string;
+  /** 销毁原因 */
+  reason: 'manual' | 'parent_dispose' | 'error';
+}

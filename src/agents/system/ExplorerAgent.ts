@@ -1,31 +1,26 @@
 /**
- * BasicAgent - 基础 Agent 类
+ * ExplorerAgent - 代码探索者 Agent
  *
- * 封装了通用的工具集、LLM、Skills 目录和系统环境信息
- * 适用于大多数 Agent 场景
- *
- * 默认自动加载配置文件，开箱即用
+ * 专注于代码库探索和理解的轻量级 Agent
+ * 仅配备 read、list、bash 三个核心工具
+ * 适用于代码审查、结构分析、文档生成等场景
  */
 
 import { Agent } from '../../core/agent.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
-import type { MCPConfig } from '../../mcp/types.js';
 import { loadConfig } from '../../core/config.js';
 import { createOpenAILLM } from '../../llm/openai.js';
 import { existsSync, readFileSync } from 'fs';
 import { cwd, platform } from 'process';
 import { join } from 'path';
+import { TemplateComposer } from '../../template/composer.js';
 
-// 导入系统工具
+// 导入系统工具（探索工具 + 子代理工具）
 import {
   readFileTool,
-  writeFileTool,
   listDirTool,
   shellTool,
-  webFetchTool,
-  calculatorTool,
-  invokeSkillTool,
   spawnAgentTool,
   listAgentsTool,
   sendToAgentTool,
@@ -33,21 +28,12 @@ import {
 } from '../../tools/system/index.js';
 
 /**
- * 默认工具集
+ * ExplorerAgent 专用工具集（探索工具 + 子代理管理）
  */
-const DEFAULT_TOOLS: Tool[] = [
-  readFileTool,
-  writeFileTool,
-  listDirTool,
-  shellTool,
-  webFetchTool,
-  calculatorTool,
-  invokeSkillTool,
-  // 子代理管理工具
-  spawnAgentTool,
-  listAgentsTool,
-  sendToAgentTool,
-  closeAgentTool,
+const EXPLORER_TOOLS: Tool[] = [
+  readFileTool,     // 读取文件
+  listDirTool,      // 列出目录
+  shellTool,        // 执行命令
 ];
 
 /**
@@ -69,63 +55,44 @@ export interface SystemContext {
 }
 
 /**
- * BasicAgent 配置选项
+ * ExplorerAgent 配置选项
  *
  * 所有参数都是可选的，默认会自动加载配置文件
  */
-export interface BasicAgentConfig {
+export interface ExplorerAgentConfig {
   /** LLM 客户端（可选，不传则自动加载配置创建） */
   llm?: LLMClient;
   /** 配置文件名（可选，默认 'default'） */
   configName?: string;
   /** Agent 显示名称（可选） */
   name?: string;
-  /** 系统提示词（可选，后续可通过 setPrompt() 设置） */
+  /** 系统提示词（可选，默认使用 explorer.md） */
   systemMessage?: string;
-  /** MCP 配置（可选，将自动加载 .agentdev/mcps/{name}.json） */
-  mcpServer?: string;
-  /** MCP 运行时上下文（可选，如 GitHub Token） */
-  mcpContext?: Record<string, unknown>;
-  /** 自定义工具集（可选，默认使用系统工具集） */
-  tools?: Tool[];
   /** Skills 目录（可选，默认使用 .agentdev/skills） */
   skillsDir?: string;
 }
 
 /**
- * 加载 MCP 配置
- */
-function loadMCPConfig(serverName: string): MCPConfig | undefined {
-  try {
-    const configPath = join(cwd(), '.agentdev', 'mcps', `${serverName}.json`);
-    if (!existsSync(configPath)) {
-      return undefined;
-    }
-    const content = readFileSync(configPath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * 基础 Agent 类
+ * 代码探索者 Agent
  *
- * 封装了通用工具集和系统环境信息，开箱即用
+ * 轻量级代码探索 Agent，专注于：
+ * - 代码库结构分析
+ * - 代码审查和理解
+ * - 文档生成
+ * - 依赖关系梳理
+ *
  * 构造函数不传任何参数时，会自动加载配置文件创建 LLM
  */
-export class BasicAgent extends Agent {
+export class ExplorerAgent extends Agent {
   protected _systemContext: SystemContext;
-  protected _mcpServer?: string;
-  protected _mcpContext?: Record<string, unknown>;
   protected _config?: AgentConfigFile;
 
   /**
    * 构造函数
    *
-   * @param config 基础配置（全部可选，不传则使用默认配置）
+   * @param config 探索者配置（全部可选，不传则使用默认配置）
    */
-  constructor(config: BasicAgentConfig = {}) {
+  constructor(config: ExplorerAgentConfig = {}) {
     // 建立系统环境信息
     const systemContext: SystemContext = {
       SYSTEM_WORKING_DIR: cwd(),
@@ -135,27 +102,20 @@ export class BasicAgent extends Agent {
       SYSTEM_CURRENT_MODEL: 'unknown', // 稍后更新
     };
 
-    // 构建 MCP 配置
-    const mcpConfig = config.mcpServer ? loadMCPConfig(config.mcpServer) : undefined;
-
     // 构建完整的 Agent 配置
     const agentConfig: AgentConfig = {
       llm: config.llm!, // 如果是 undefined，会在 onInitiate 中延迟加载
-      tools: config.tools ?? DEFAULT_TOOLS,
-      maxTurns: Infinity,
+      tools: EXPLORER_TOOLS,  // 固定使用探索工具集
+      maxTurns: Infinity,      // 无限交互次数
       systemMessage: config.systemMessage,
       skillsDir: config.skillsDir ?? '.agentdev/skills',
       name: config.name,
-      mcp: mcpConfig,
-      mcpContext: config.mcpContext,
     };
 
     super(agentConfig);
 
     // 保存配置
     this._systemContext = systemContext;
-    this._mcpServer = config.mcpServer;
-    this._mcpContext = config.mcpContext;
     this.setSystemContext(systemContext);
 
     // 如果没有传入 llm，标记需要延迟加载
@@ -165,24 +125,32 @@ export class BasicAgent extends Agent {
   }
 
   /**
+   * Agent 初始化钩子
+   * 配置系统提示词
+   */
+  protected override async onInitiate(): Promise<void> {
+    // 延迟加载 LLM（如果需要）
+    await this.loadLLMIfNeeded();
+
+    // 配置系统提示词
+    if (!this.systemMessage) {
+      this.setSystemPrompt(new TemplateComposer()
+        .add({ file: '.agentdev/prompts/explorer.md' })
+        .add('\n\n## 系统环境\n\n')
+        .add('- 工作目录: `{{SYSTEM_WORKING_DIR}}`\n')
+        .add('- Git 仓库: {{SYSTEM_IS_GIT_REPOSITORY}}\n')
+        .add('- 操作系统: {{SYSTEM_PLATFORM}}\n')
+        .add('- bash版本：PowerShell 5.1\n')
+        .add('- 当前日期: {{SYSTEM_DATE}}\n')
+      );
+    }
+  }
+
+  /**
    * 获取系统环境信息
    */
   getSystemContext(): SystemContext {
     return this._systemContext ?? {};
-  }
-
-  /**
-   * 获取 MCP 服务器配置
-   */
-  getMcpServer(): string | undefined {
-    return this._mcpServer;
-  }
-
-  /**
-   * 获取 MCP 上下文
-   */
-  getMcpContext(): Record<string, unknown> | undefined {
-    return this._mcpContext;
   }
 
   /**
@@ -205,6 +173,6 @@ export class BasicAgent extends Agent {
     this._systemContext.SYSTEM_CURRENT_MODEL = config.defaultModel.model;
     this.setSystemContext(this._systemContext);
 
-    console.log(`[BasicAgent] 已加载配置: ${configName}, 模型: ${config.defaultModel.model}`);
+    console.log(`[ExplorerAgent] 已加载配置: ${configName}, 模型: ${config.defaultModel.model}`);
   }
 }

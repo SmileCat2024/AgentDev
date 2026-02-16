@@ -3,8 +3,8 @@
  * 所有类型集中在这里，简单直观
  */
 
-// 消息角色
-export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
+// 消息角色（支持子代理 ID 作为消息来源）
+export type MessageRole = 'system' | 'user' | 'assistant' | 'tool' | string;
 
 // 消息结构
 export interface Message {

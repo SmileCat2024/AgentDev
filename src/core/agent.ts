@@ -186,6 +186,14 @@ export class Agent {
     // 注册 MCP 工具（懒加载，首次调用时才连接）
     await this.registerMCPTools();
 
+    // 设置通知上下文
+    try {
+      const { _setNotificationAgent } = await import('./notification.js');
+      _setNotificationAgent(this.agentId!);
+    } catch {
+      // 通知模块不可用，忽略
+    }
+
     // ========== Call Start ==========
     const context = this.persistentContext ?? new Context();
     const isFirstCall = !this._initialized;
@@ -421,6 +429,14 @@ export class Agent {
       this._callStartTimes.delete(callId);
       this._currentCallInput = undefined;
       this._currentTurn = 0;
+
+      // 清除通知上下文
+      try {
+        const { _clearNotificationAgent } = await import('./notification.js');
+        _clearNotificationAgent();
+      } catch {
+        // 通知模块不可用，忽略
+      }
     }
   }
 

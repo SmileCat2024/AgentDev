@@ -140,6 +140,13 @@ class ViewerWorker {
       return;
     }
 
+    // GET /api/agents/:id/notification - 指定 Agent 的通知状态
+    const notifMatch = url.match(/^\/api\/agents\/([^/]+)\/notification$/);
+    if (notifMatch && req.method === 'GET') {
+      this.handleGetAgentNotification(req, res, notifMatch[1]);
+      return;
+    }
+
     // 兼容端点：/api/messages → 当前 Agent 的消息
     if (url === '/api/messages' && req.method === 'GET') {
       if (this.currentAgentId) {
@@ -278,6 +285,27 @@ class ViewerWorker {
     res.end(JSON.stringify(session.tools));
   }
 
+  /**
+   * GET /api/agents/:id/notification - 获取指定 Agent 的通知状态
+   */
+  private handleGetAgentNotification(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    const hasNewEvents = session.events.length > session.lastEventCount;
+    session.lastEventCount = session.events.length;
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      state: session.currentState,
+      hasNewEvents,
+    }));
+  }
+
   // ========== 会话管理 ==========
 
   /**
@@ -293,6 +321,10 @@ class ViewerWorker {
         tools: [],
         createdAt: Date.now(),
         lastActive: Date.now(),
+        // 通知系统扩展
+        currentState: null,
+        events: [],
+        lastEventCount: 0,
       };
       this.agentSessions.set(agentId, session);
     }
@@ -428,6 +460,26 @@ class ViewerWorker {
    */
   public handleStop(): void {
     process.exit(0);
+  }
+
+  /**
+   * 处理推送通知
+   */
+  public handlePushNotification(msg: any): void {
+    const { agentId, notification } = msg;
+    const session = this.agentSessions.get(agentId);
+    if (!session) return;
+
+    this.updateSessionActivity(agentId);
+
+    if (notification.category === 'state') {
+      // 状态类通知：覆盖当前状态
+      session.currentState = notification;
+    } else if (notification.category === 'event') {
+      // 事件类通知：追加到事件列表
+      session.events.push(notification);
+      session.lastEventCount++;
+    }
   }
 
   // ========== HTML 生成（复用原有代码）==========
@@ -831,6 +883,42 @@ class ViewerWorker {
     .markdown-body pre { background-color: #111 !important; border-radius: 6px; }
 
     .empty-state { text-align: center; margin-top: 20vh; color: var(--text-secondary); }
+
+    /* 通知状态指示器 */
+    .notification-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--hover-bg);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .notification-status.active {
+      color: var(--text-primary);
+      background: rgba(88, 166, 255, 0.15);
+    }
+    .notification-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-secondary);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .notification-status.active .notification-indicator {
+      background: #58a6ff;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .notification-phase {
+      font-weight: 500;
+    }
+    .notification-char-count {
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+    }
     
     /* Reasoning */
     .reasoning-block {
@@ -875,6 +963,11 @@ class ViewerWorker {
           </svg>
         </button>
         <h1 id="current-agent-name">Agent Debugger</h1>
+        <div id="notification-status" class="notification-status" style="display: none;">
+          <div class="notification-indicator"></div>
+          <span class="notification-phase" id="notification-phase"></span>
+          <span class="notification-char-count" id="notification-char-count"></span>
+        </div>
       </div>
       <span id="connection-status" class="status-badge">Connected</span>
     </header>
@@ -1194,9 +1287,18 @@ class ViewerWorker {
           return;
         }
 
-        const msgsRes = await fetch(\`/api/agents/\${currentAgentId}/messages\`);
+        // 并行请求消息和通知
+        const [msgsRes, notifRes] = await Promise.all([
+          fetch(\`/api/agents/\${currentAgentId}/messages\`),
+          fetch(\`/api/agents/\${currentAgentId}/notification\`),
+        ]);
+
         const data = await msgsRes.json();
         const messages = data.messages || [];
+
+        // 处理通知状态
+        const notifData = await notifRes.json();
+        updateNotificationStatus(notifData);
 
         if (messages.length !== currentMessages.length || messages.length === 0) {
           currentMessages = messages;
@@ -1211,7 +1313,7 @@ class ViewerWorker {
             render(messages);
           }
         }
-        
+
         // Also refresh agent list occasionally to get new agents
         if (Math.random() < 0.1) {
            const agentsRes = await fetch('/api/agents');
@@ -1221,12 +1323,44 @@ class ViewerWorker {
              renderAgentList();
            }
         }
-        
+
       } catch (e) {
         statusBadge.textContent = 'Disconnected';
         statusBadge.classList.add('disconnected');
       }
       setTimeout(poll, 100);
+    }
+
+    // 通知状态更新
+    function updateNotificationStatus(notifData) {
+      const statusEl = document.getElementById('notification-status');
+      const phaseEl = document.getElementById('notification-phase');
+      const charCountEl = document.getElementById('notification-char-count');
+
+      if (!notifData.state) {
+        statusEl.style.display = 'none';
+        return;
+      }
+
+      const { type, data } = notifData.state;
+
+      if (type === 'llm.char_count') {
+        statusEl.style.display = 'flex';
+        statusEl.classList.add('active');
+
+        const phaseNames = {
+          'thinking': '思考中',
+          'content': '生成内容',
+          'tool_calling': '工具调用'
+        };
+        phaseEl.textContent = phaseNames[data.phase] || data.phase;
+        charCountEl.textContent = \`\${data.charCount} 字符\`;
+      } else if (type === 'llm.complete') {
+        statusEl.style.display = 'none';
+        statusEl.classList.remove('active');
+      } else {
+        statusEl.style.display = 'none';
+      }
     }
 
     function render(messages) {
@@ -1470,6 +1604,9 @@ process.on('message', (msg: DebugHubIPCMessage) => {
       break;
     case 'unregister-agent':
       worker.handleUnregisterAgent(msg);
+      break;
+    case 'push-notification':
+      worker.handlePushNotification(msg);
       break;
     case 'stop':
       worker.handleStop();

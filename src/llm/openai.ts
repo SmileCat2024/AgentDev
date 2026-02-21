@@ -4,6 +4,7 @@
  */
 
 import type { LLMClient, Message, Tool, LLMResponse, ToolCall } from '../core/types.js';
+import type { LLMPhase } from '../core/types.js';
 import OpenAI from 'openai';
 
 // GLM-4.7等模型扩展了OpenAI的响应格式，添加了reasoning_content字段
@@ -24,7 +25,7 @@ export class OpenAILLM implements LLMClient {
   }
 
   /**
-   * 聊天 - 核心方法
+   * 聊天 - 核心方法（内部使用流式处理）
    */
   async chat(messages: Message[], tools: Tool[]): Promise<LLMResponse> {
     // 转换消息格式为 OpenAI 格式
@@ -46,28 +47,98 @@ export class OpenAILLM implements LLMClient {
       },
     }));
 
-    // 调用 OpenAI API
-    const response = await this.client.chat.completions.create({
+    // ========== 流式处理（内部） ==========
+    const stream = await this.client.chat.completions.create({
       model: this.modelName,
       messages: chatMessages,
       tools: chatTools.length > 0 ? chatTools : undefined,
+      stream: true,
     });
 
-    const choice = response.choices[0];
-    const message = choice.message as ExtendedChatCompletionMessage;
+    // 累积内容
+    let content = '';
+    let reasoning = '';
+    let currentPhase: LLMPhase = 'content';
+    let charCount = 0;
 
-    // 解析工具调用
-    const toolCalls: ToolCall[] | undefined = message.tool_calls?.map(tc => ({
-      id: tc.id,
-      name: tc.function.name,
-      arguments: JSON.parse(tc.function.arguments),
-    }));
+    // 累积 tool_calls
+    // tool_calls 在流中是增量的，需要合并
+    interface AccumulatedToolCall {
+      id: string;
+      name: string;
+      arguments: string;
+    }
+    const accumulatedToolCalls: Map<number, AccumulatedToolCall> = new Map();
 
-    // 提取思考内容（GLM-4.7等模型的扩展字段）
-    const reasoning = message.reasoning_content;
+    // 迭代流式响应
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta;
+
+      if (!delta) continue;
+
+      // 判断当前阶段并累积内容
+      // 使用类型断言处理扩展字段 reasoning_content（GLM-4.7 等模型支持）
+      const rawDelta = delta as { reasoning_content?: string; content?: string | null };
+      if (rawDelta.reasoning_content) {
+        currentPhase = 'thinking';
+        reasoning += rawDelta.reasoning_content;
+        charCount += rawDelta.reasoning_content.length;
+      } else if (delta.content) {
+        currentPhase = 'content';
+        content += delta.content;
+        charCount += delta.content.length;
+      }
+
+      // 处理 tool_calls（增量累积）
+      if (delta.tool_calls) {
+        currentPhase = 'tool_calling';
+        for (const toolCall of delta.tool_calls) {
+          const index = toolCall.index;
+          if (index === undefined) continue;
+
+          if (!accumulatedToolCalls.has(index)) {
+            accumulatedToolCalls.set(index, {
+              id: toolCall.id || '',
+              name: toolCall.function?.name || '',
+              arguments: toolCall.function?.arguments || '',
+            });
+          } else {
+            const accumulated = accumulatedToolCalls.get(index)!;
+            if (toolCall.id) accumulated.id = toolCall.id;
+            if (toolCall.function?.name) accumulated.name += toolCall.function.name;
+            if (toolCall.function?.arguments) accumulated.arguments += toolCall.function.arguments;
+          }
+        }
+      }
+
+      // 发送字符计数通知（每 100ms 最多一次，由 emitNotification 节流）
+      try {
+        const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
+        if (charCount > 0 || accumulatedToolCalls.size > 0) {
+          emitNotification(createLLMCharCount(charCount, currentPhase));
+        }
+      } catch {
+        // 通知模块不可用，忽略
+      }
+
+      // 检查是否完成
+      if (chunk.choices[0]?.finish_reason) {
+        break;
+      }
+    }
+
+    // 构建最终的 tool_calls 数组
+    let toolCalls: ToolCall[] | undefined;
+    if (accumulatedToolCalls.size > 0) {
+      toolCalls = Array.from(accumulatedToolCalls.values()).map(tc => ({
+        id: tc.id,
+        name: tc.name,
+        arguments: JSON.parse(tc.arguments),
+      }));
+    }
 
     return {
-      content: message.content || '',
+      content,
       toolCalls,
       reasoning,
     };

@@ -20,6 +20,7 @@ import type {
   Tool,
   AgentInfo,
   DebugHubIPCMessage,
+  Notification,
 } from './types.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
@@ -235,6 +236,19 @@ export class DebugHub {
    */
   getPort(): number | null {
     return this.workerPort;
+  }
+
+  /**
+   * 推送通知
+   * @param agentId Agent ID
+   * @param notification 通知对象
+   */
+  pushNotification(agentId: string, notification: Notification): void {
+    this.sendToWorker({
+      type: 'push-notification',
+      agentId,
+      notification,
+    });
   }
 
   // ========== 内部方法 ==========

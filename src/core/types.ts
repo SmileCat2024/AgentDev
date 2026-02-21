@@ -3,6 +3,71 @@
  * 所有类型集中在这里，简单直观
  */
 
+// ========== 通知系统类型 ==========
+
+/**
+ * 通知分类
+ * - state: 覆盖式更新（如 LLM 字符计数）
+ * - event: 追加式记录（如工具开始/完成）
+ */
+export type NotificationCategory = 'state' | 'event';
+
+/**
+ * LLM 生成阶段
+ */
+export type LLMPhase = 'thinking' | 'content' | 'tool_calling';
+
+/**
+ * 通知基础接口
+ */
+export interface Notification {
+  type: string;
+  category: NotificationCategory;
+  timestamp: number;
+  data: unknown;
+}
+
+/**
+ * LLM 字符计数通知数据
+ */
+export interface LLMCharCountData {
+  charCount: number;
+  phase: LLMPhase;
+}
+
+/**
+ * LLM 完成通知数据
+ */
+export interface LLMCompleteData {
+  totalChars: number;
+}
+
+/**
+ * 工具开始通知数据
+ */
+export interface ToolStartData {
+  toolName: string;
+}
+
+/**
+ * 工具完成通知数据
+ */
+export interface ToolCompleteData {
+  toolName: string;
+  success: boolean;
+  duration: number;
+}
+
+/**
+ * 通知状态响应（GET /api/agents/:id/notification）
+ */
+export interface NotificationStateResponse {
+  state: Notification | null;
+  hasNewEvents: boolean;
+}
+
+// ========== 消息类型 ==========
+
 // 消息角色（支持子代理 ID 作为消息来源）
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool' | string;
 
@@ -134,6 +199,10 @@ export interface AgentSession {
   tools: ToolMetadata[];
   createdAt: number;
   lastActive: number;
+  // 通知系统扩展
+  currentState: Notification | null;
+  events: Notification[];
+  lastEventCount: number;
 }
 
 /**
@@ -146,6 +215,7 @@ export type DebugHubIPCMessage =
   | RegisterToolsMsg
   | SetCurrentAgentMsg
   | UnregisterAgentMsg
+  | PushNotificationMsg
   | StopMsg;
 
 /**
@@ -197,6 +267,15 @@ export interface UnregisterAgentMsg {
  */
 export interface StopMsg {
   type: 'stop';
+}
+
+/**
+ * 推送通知
+ */
+export interface PushNotificationMsg {
+  type: 'push-notification';
+  agentId: string;
+  notification: Notification;
 }
 
 /**

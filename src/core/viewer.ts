@@ -743,12 +743,25 @@ export class MessageViewer {
     }
 
     const SYSTEM_RENDER_MAP = {
+      // 系统工具
       read_file: 'file',
       write_file: 'file-write',
       list_directory: 'file-list',
       run_shell_command: 'command',
       web_fetch: 'web',
       calculator: 'math',
+      invoke_skill: 'skill',
+      spawn_agent: 'agent-spawn',
+      list_agents: 'agent-list',
+      send_to_agent: 'agent-send',
+      close_agent: 'agent-close',
+      // Opencode 工具
+      read: 'file',
+      write: 'file-write',
+      edit: 'json',
+      glob: 'json',
+      grep: 'json',
+      ls: 'file-list',
     };
 
     async function loadToolsConfig() {
@@ -756,12 +769,25 @@ export class MessageViewer {
         const res = await fetch('/api/tools');
         const tools = await res.json();
         const DEFAULT_DISPLAY_NAMES = {
+          // 系统工具
           run_shell_command: 'Bash',
           read_file: 'Read File',
           write_file: 'Write File',
           list_directory: 'List',
           web_fetch: 'Web',
-          calculator: 'Calc'
+          calculator: 'Calc',
+          invoke_skill: 'Invoke Skill',
+          spawn_agent: 'Spawn Agent',
+          list_agents: 'List Agents',
+          send_to_agent: 'Send to Agent',
+          close_agent: 'Close Agent',
+          // Opencode 工具
+          read: 'Read',
+          write: 'Write',
+          edit: 'Edit',
+          glob: 'Glob',
+          grep: 'Grep',
+          ls: 'LS',
         };
         for (const tool of tools) {
           toolRenderConfigs[tool.name] = tool;

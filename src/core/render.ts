@@ -131,7 +131,8 @@ export const RENDER_TEMPLATES: Record<string, RenderTemplate> = {
  * 工具名称 -> 模板名称
  */
 export const SYSTEM_RENDER_MAP: Record<string, string> = {
-  // 文件系统工具
+  // ===== 系统工具 =====
+  // 文件系统工具（旧版，已废弃）
   'read_file': 'file',
   'write_file': 'file-write',
   'list_directory': 'file-list',
@@ -153,6 +154,16 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
   'list_agents': 'agent-list',
   'send_to_agent': 'agent-send',
   'close_agent': 'agent-close',
+
+  // ===== Opencode 工具（新默认） =====
+  // 注意：opencode 工具使用自己的 .render.ts 文件
+  // 这里仅提供备用映射，实际由工具的 render 属性指定
+  'read': 'file',
+  'write': 'file-write',
+  'edit': 'json',  // edit 有自己的复杂渲染
+  'glob': 'json',  // glob 有自己的渲染
+  'grep': 'json',  // grep 有自己的渲染
+  'ls': 'file-list',
 } as const;
 
 // ============= 工具显示名称映射 =============
@@ -160,6 +171,7 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
  * 工具显示名称（用于UI展示）
  */
 export const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  // ===== 系统工具 =====
   'run_shell_command': 'Bash',
   'read_file': 'Read File',
   'write_file': 'Write File',
@@ -171,6 +183,14 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'list_agents': 'List Agents',
   'send_to_agent': 'Send to Agent',
   'close_agent': 'Close Agent',
+
+  // ===== Opencode 工具 =====
+  'read': 'Read',
+  'write': 'Write',
+  'edit': 'Edit',
+  'glob': 'Glob',
+  'grep': 'Grep',
+  'ls': 'LS',
 } as const;
 
 // ============= 辅助函数 =============

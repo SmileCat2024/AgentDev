@@ -967,6 +967,7 @@ class ViewerWorker {
           <div class="notification-indicator"></div>
           <span class="notification-phase" id="notification-phase"></span>
           <span class="notification-char-count" id="notification-char-count"></span>
+          <span>字符</span>
         </div>
       </div>
       <span id="connection-status" class="status-badge">Connected</span>
@@ -1259,13 +1260,25 @@ class ViewerWorker {
         TOOL_NAMES = {};
 
         const DEFAULT_DISPLAY_NAMES = {
+          // 系统工具
           run_shell_command: 'Bash',
           read_file: 'Read File',
           write_file: 'Write File',
           list_directory: 'List',
           web_fetch: 'Web',
           calculator: 'Calc',
-          invoke_skill: 'Invoke Skill'
+          invoke_skill: 'Invoke Skill',
+          spawn_agent: 'Spawn Agent',
+          list_agents: 'List Agents',
+          send_to_agent: 'Send to Agent',
+          close_agent: 'Close Agent',
+          // Opencode 工具
+          read: 'Read',
+          write: 'Write',
+          edit: 'Edit',
+          glob: 'Glob',
+          grep: 'Grep',
+          ls: 'LS',
         };
 
         for (const tool of tools) {
@@ -1354,7 +1367,7 @@ class ViewerWorker {
           'tool_calling': '工具调用'
         };
         phaseEl.textContent = phaseNames[data.phase] || data.phase;
-        charCountEl.textContent = \`\${data.charCount} 字符\`;
+        charCountEl.textContent = data.charCount.toLocaleString();
       } else if (type === 'llm.complete') {
         statusEl.style.display = 'none';
         statusEl.classList.remove('active');

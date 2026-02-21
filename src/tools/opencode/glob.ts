@@ -39,9 +39,6 @@ export const globTool = createTool({
       absolute: true,
       windowsPathsNoEscape: true,
       nodir: true,
-      ignore: {
-        cwd: searchPath
-      }
     });
 
     for (const file of matches) {

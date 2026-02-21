@@ -64,14 +64,17 @@ export const lsTool = createTool({
 
     const ignoreGlobs = [...IGNORE_PATTERNS, ...ignore.map((p: string) => `${p}/**`)];
 
-    const files: string[] = [];
-    for await (const file of glob('**/*', {
+    // glob 返回 Promise<string[]>，不是异步迭代器
+    const matches = await glob('**/*', {
       cwd: dirPath,
       absolute: false,
       dot: true,
       ignore: ignoreGlobs,
       nodir: true
-    })) {
+    });
+
+    const files: string[] = [];
+    for (const file of matches) {
       files.push(file);
       if (files.length >= LIMIT) break;
     }

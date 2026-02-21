@@ -16,24 +16,22 @@ import { cwd, platform } from 'process';
 import { join } from 'path';
 import { TemplateComposer } from '../../template/composer.js';
 
-// 导入系统工具（探索工具 + 子代理工具）
-import {
-  readFileTool,
-  listDirTool,
-  shellTool,
-  spawnAgentTool,
-  listAgentsTool,
-  sendToAgentTool,
-  closeAgentTool,
-} from '../../tools/system/index.js';
+// 导入系统工具（shell 工具）
+import { shellTool } from '../../tools/system/index.js';
+
+// 导入 opencode 只读探索工具
+import { readTool, globTool, grepTool, lsTool } from '../../tools/opencode/index.js';
 
 /**
- * ExplorerAgent 专用工具集（探索工具 + 子代理管理）
+ * ExplorerAgent 专用工具集（只读探索工具）
+ * 专注于代码库探索，不包含任何修改能力
  */
 const EXPLORER_TOOLS: Tool[] = [
-  readFileTool,     // 读取文件
-  listDirTool,      // 列出目录
-  shellTool,        // 执行命令
+  readTool,     // 高级读取：分页、二进制检测、行号、目录支持
+  globTool,     // 文件搜索：glob 模式匹配
+  grepTool,     // 内容搜索：基于 ripgrep
+  lsTool,       // 目录列表：树形结构、自动忽略
+  shellTool,    // Shell 命令执行（仅用于只读操作，如 git status, ls, find 等）
 ];
 
 /**

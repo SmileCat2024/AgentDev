@@ -13,7 +13,9 @@
   },
   "dependencies": {
     "@openai/agents": "^0.4.6",
+    "diff": "^8.0.3",
     "express": "^5.2.1",
+    "glob": "^13.0.6",
     "js-yaml": "^4.1.0",
     "open": "^11.0.0",
     "openai": "^4.73.0",

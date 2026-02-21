@@ -17,11 +17,8 @@ import { existsSync, readFileSync } from 'fs';
 import { cwd, platform } from 'process';
 import { join } from 'path';
 
-// 导入系统工具
+// 导入系统工具（保留必要的非文件操作工具）
 import {
-  readFileTool,
-  writeFileTool,
-  listDirTool,
   shellTool,
   webFetchTool,
   calculatorTool,
@@ -32,17 +29,35 @@ import {
   closeAgentTool,
 } from '../../tools/system/index.js';
 
+// 导入 opencode 文件工具（更强大的文件操作能力）
+import {
+  readTool,
+  writeTool,
+  editTool,
+  globTool,
+  grepTool,
+  lsTool,
+} from '../../tools/opencode/index.js';
+
 /**
  * 默认工具集
+ * 使用 opencode 工具替代原 system 文件工具，提供更强的能力
  */
 const DEFAULT_TOOLS: Tool[] = [
-  readFileTool,
-  writeFileTool,
-  listDirTool,
-  shellTool,
-  webFetchTool,
-  calculatorTool,
-  invokeSkillTool,
+  // 文件操作工具（opencode 系列，能力更强）
+  readTool,      // 高级读取：分页、二进制检测、行号、目录支持
+  writeTool,     // 写入：带 diff 预览
+  editTool,      // 编辑：9种智能匹配策略
+  globTool,      // 文件搜索：glob 模式匹配
+  grepTool,      // 内容搜索：基于 ripgrep
+  lsTool,        // 目录列表：树形结构、自动忽略
+
+  // 系统工具
+  shellTool,     // Shell 命令执行
+  webFetchTool,  // HTTP 请求
+  calculatorTool,// 计算器
+  invokeSkillTool, // 技能调用
+
   // 子代理管理工具
   spawnAgentTool,
   listAgentsTool,

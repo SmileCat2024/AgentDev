@@ -15,6 +15,7 @@ import type {
   HookResult,
   AgentInitiateContext,
   AgentDestroyContext,
+  AgentInterruptContext,
   CallStartContext,
   CallFinishContext,
   TurnStartContext,
@@ -24,6 +25,7 @@ import type {
   SubAgentSpawnContext,
   SubAgentUpdateContext,
   SubAgentDestroyContext,
+  SubAgentInterruptContext,
 } from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
 import { TemplateLoader } from '../template/loader.js';
@@ -322,30 +324,25 @@ export class Agent {
 
         // 检查是否需要调用工具
         if (!response.toolCalls || response.toolCalls.length === 0) {
-          // 检查是否有子代理在运行
+          // 无工具调用 - 检查是否有活跃子代理
           if (this._pool && this._pool.hasActiveAgents()) {
-            // 等待子代理消息（5秒超时）
-            const result = await this._pool.waitForMessage(5000);
+            // 有活跃子代理 - 等待消息并继续循环
+            const result = await this._pool.waitForMessage();
+            context.add({
+              role: 'assistant',
+              content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}\n\n(子代理已完成任务，结果已接收，无需调用 list_agents 确认)`,
+            });
 
-            if (result) {
-              // 收到消息，添加到上下文并继续循环
-              // 使用 'assistant' 角色，在内容中标注子代理来源
-              context.add({
-                role: 'assistant',
-                content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}\n\n(子代理已完成任务，结果已接收，无需调用 list_agents 确认)`,
-              });
-
-              // 推送到 DebugHub
-              if (this.debugEnabled && this.agentId && this.debugHub) {
-                this.debugHub.pushMessages(this.agentId, context.getAll());
-              }
-
-              // 继续下一轮
-              continue;
+            // 推送到 DebugHub
+            if (this.debugEnabled && this.agentId && this.debugHub) {
+              this.debugHub.pushMessages(this.agentId, context.getAll());
             }
-            // 超时则结束循环
+
+            // 继续下一轮
+            continue;
           }
 
+          // 无活跃子代理 - 真正结束
           completed = true;
           finalResponse = response.content;
 
@@ -370,6 +367,22 @@ export class Agent {
           await this.executeTool(call, input, context, turn);
         }
 
+        // ========== 检查并消费子代理消息（有工具调用后）==========
+        if (this._pool && this._pool.hasPendingMessages()) {
+          const messages = this._pool.consumeAllPendingMessages();
+          for (const { agentId, message } of messages) {
+            context.add({
+              role: 'assistant',
+              content: `[子代理 ${agentId} 执行完成]:\n\n${message}\n\n(子代理已完成任务，结果已接收，无需调用 list_agents 确认)`,
+            });
+          }
+        }
+
+        // 推送到 DebugHub
+        if (this.debugEnabled && this.agentId && this.debugHub) {
+          this.debugHub.pushMessages(this.agentId, context.getAll());
+        }
+
         // ========== Turn Finished（有工具调用）==========
         await this.executeHook(
           'onTurnFinished',
@@ -384,9 +397,31 @@ export class Agent {
         );
       }
 
-      // 达到最大轮次
+      // 达到最大轮次 - 中断处理
       if (!completed) {
-        finalResponse = context.getAll()[context.getAll().length - 1]?.content || '';
+        const partialResult = context.getAll()[context.getAll().length - 1]?.content || '';
+
+        // 触发中断钩子
+        const interruptResult = await this.executeHook(
+          'onInterrupt',
+          () => this.onInterrupt({
+            reason: 'max_turns_reached',
+            turn: this._currentTurn,
+            context,
+          }),
+          { input, turn: this._currentTurn }
+        );
+
+        finalResponse = interruptResult as string ?? partialResult;
+
+        // 如果是子代理，报告中断给父代理
+        if (this._agentId && this._parentPool) {
+          await this._parentPool.handleInterrupt(
+            this._agentId,
+            'max_turns_reached',
+            finalResponse
+          );
+        }
       }
 
       // 保存上下文
@@ -410,6 +445,16 @@ export class Agent {
     } catch (error) {
       // ========== Call Finish（异常）==========
       const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // 如果是子代理，报告错误中断给父代理
+      if (this._agentId && this._parentPool) {
+        const errorResult = `[执行出错: ${errorMsg}]`;
+        await this._parentPool.handleInterrupt(
+          this._agentId,
+          'error',
+          errorResult
+        );
+      }
 
       await this.executeHook(
         'onCallFinish',
@@ -715,6 +760,24 @@ export class Agent {
     // 默认空实现
   }
 
+  /**
+   * 子代理中断钩子
+   */
+  public async onSubAgentInterrupt(ctx: SubAgentInterruptContext): Promise<void> {
+    // 默认空实现
+  }
+
+  // ========== Agent 中断钩子 ==========
+
+  /**
+   * Agent 中断钩子
+   * 当 ReAct 循环被意外中断时触发（达到最大轮次、错误等）
+   */
+  protected async onInterrupt(ctx: AgentInterruptContext): Promise<string> {
+    // 默认实现：返回中断信息
+    return `[执行被中断: ${ctx.reason}]`;
+  }
+
   // ========== 子代理管理 ==========
 
   /**
@@ -814,7 +877,9 @@ export class Agent {
             }
 
             const originalToolName = tool.name; // 保存到局部变量以便闭包使用
-            const toolName = `mcp.${serverId}:${originalToolName}`;
+            // 将工具名称中的特殊字符替换为下划线，以符合严格 API 的函数命名规范
+            // 只保留字母、数字和下划线
+            const toolName = `mcp_${serverId}_${originalToolName}`.replace(/[^a-zA-Z0-9_]/g, '_');
 
             const adaptedTool = new MCPToolAdapter({
               name: toolName,

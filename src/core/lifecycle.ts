@@ -167,7 +167,7 @@ export type HookResult =
 /**
  * 子代理状态
  */
-export type SubAgentStatus = 'running' | 'completed' | 'failed' | 'terminated';
+export type SubAgentStatus = 'idle' | 'busy' | 'completed' | 'failed' | 'terminated';
 
 /**
  * 子代理创建上下文
@@ -211,4 +211,30 @@ export interface SubAgentDestroyContext {
   type: string;
   /** 销毁原因 */
   reason: 'manual' | 'parent_dispose' | 'error';
+}
+
+/**
+ * Agent 中断上下文
+ */
+export interface AgentInterruptContext {
+  /** 中断原因 */
+  reason: 'max_turns_reached' | 'error' | 'cancelled';
+  /** 当前轮次 */
+  turn: number;
+  /** 当前消息上下文 */
+  context: Context;
+}
+
+/**
+ * 子代理中断上下文
+ */
+export interface SubAgentInterruptContext {
+  /** 子代理 ID */
+  agentId: string;
+  /** 子代理类型 */
+  type: string;
+  /** 中断原因 */
+  reason: 'max_turns_reached' | 'error' | 'cancelled';
+  /** 中断时的结果 */
+  result: string;
 }

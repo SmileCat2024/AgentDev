@@ -90,7 +90,7 @@ class ProgrammingHelperAgent extends BasicAgent {
       .add('当用户要求你执行任务时，检查是否有任何可用的技能匹配。技能提供专门的能力和领域知识。你拥有如下技能，可使用 invoke_skill 工具激活，以展开技能的详细介绍。\n')
       .add({ skills: '- **{{name}}**: {{description}}' })
       .add('\n\n## MCP 工具\n\n')
-      .add('除了标准工具外，你还可以使用 MCP (Model Context Protocol) 工具。MCP 工具的名称以 "mcp." 开头，例如 "mcp.github:create_issue"。这些工具提供了与外部服务集成的能力。\n')
+      .add('除了标准工具外，你还可以使用 MCP (Model Context Protocol) 工具。MCP 工具的名称以 "mcp_" 开头"。这些工具提供了与外部服务集成的能力。\n')
     );
 
     const mcpServer = this.getMcpServer();

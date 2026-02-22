@@ -42,9 +42,9 @@ export class AgentPool {
   }
 
   /**
-   * 创建子代理
+   * 创建子代理（不自动执行，等待 sendTo 激活）
    */
-  async spawn(type: string, instruction: string, createAgentFn: AgentFactory): Promise<string> {
+  async spawn(type: string, createAgentFn: AgentFactory): Promise<string> {
     // 生成 ID: type_序号
     const count = (this._counters.get(type) || 0) + 1;
     this._counters.set(type, count);
@@ -72,8 +72,8 @@ export class AgentPool {
       id,
       type,
       agent,
-      status: 'running',
-      initialInstruction: instruction,
+      status: 'idle',
+      initialInstruction: '',
       createdAt: Date.now(),
     };
     this._instances.set(id, instance);
@@ -83,14 +83,10 @@ export class AgentPool {
       agentId: id,
       type,
       agent,
-      instruction,
+      instruction: '',
     });
 
-    // 异步执行指令
-    agent.onCall(instruction)
-      .then(result => this._onComplete(id, result))
-      .catch(error => this._onError(id, error));
-
+    // 子代理创建后处于空闲状态，等待 sendTo 激活
     return id;
   }
 
@@ -111,12 +107,29 @@ export class AgentPool {
   }
 
   /**
-   * 向子代理发送消息
+   * 向子代理发送消息（非阻塞）
    */
   async sendTo(id: string, message: string): Promise<void> {
     const instance = this._instances.get(id);
     if (!instance) throw new Error(`子代理不存在: ${id}`);
-    await instance.agent.onCall(message);
+
+    // 更新状态为 busy
+    instance.status = 'busy';
+
+    // 异步执行，立即返回
+    instance.agent.onCall(message)
+      .then(result => {
+        // 正常完成
+        instance.status = 'idle';
+        instance.result = result;
+        // 报告消息（入队）
+        this.report(id, result);
+      })
+      .catch(error => {
+        // 执行失败
+        instance.status = 'failed';
+        this._onError(id, error);
+      });
   }
 
   /**
@@ -169,11 +182,10 @@ export class AgentPool {
   }
 
   /**
-   * 等待任意子代理的消息（带超时）
-   * @param timeout 超时时间（毫秒），默认 5000ms
-   * @returns { agentId, message } 或 null（超时）
+   * 等待任意子代理的消息
+   * @returns { agentId, message }
    */
-  async waitForMessage(timeout: number = 5000): Promise<{ agentId: string; message: string } | null> {
+  async waitForMessage(): Promise<{ agentId: string; message: string }> {
     // 检查是否有待处理消息
     for (const [agentId, messages] of this._pendingMessages) {
       if (messages.length > 0) {
@@ -185,19 +197,11 @@ export class AgentPool {
       }
     }
 
-    // 等待新消息或超时
+    // 等待新消息（无超时，一直等待直到有消息）
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        // 超时，移除解析器
-        const tempKey = `wait_${Date.now()}`;
-        this._messageResolvers.delete(tempKey);
-        resolve(null);
-      }, timeout);
-
       // 临时存储解析器（任意子代理都可以触发）
       const tempKey = `wait_${Date.now()}`;
       this._messageResolvers.set(tempKey, () => {
-        clearTimeout(timer);
         // 查找发送消息的 agentId
         for (const [agentId, messages] of this._pendingMessages) {
           if (messages.length > 0) {
@@ -209,28 +213,84 @@ export class AgentPool {
             return;
           }
         }
-        resolve(null);
       });
     });
   }
 
   /**
    * 检查是否有活跃的子代理或待处理的消息
+   *
+   * 注意：先检查消息队列，避免竞态条件
    */
   hasActiveAgents(): boolean {
-    // 检查是否有正在运行的子代理
-    for (const instance of this._instances.values()) {
-      if (instance.status === 'running') {
-        return true;
-      }
-    }
-    // 检查是否有待回传的消息
+    // 优先检查消息队列
     for (const messages of this._pendingMessages.values()) {
       if (messages.length > 0) {
         return true;
       }
     }
+    // 再检查 busy 状态的子代理
+    for (const instance of this._instances.values()) {
+      if (instance.status === 'busy') {
+        return true;
+      }
+    }
     return false;
+  }
+
+  /**
+   * 检查是否有待处理的子代理消息
+   */
+  hasPendingMessages(): boolean {
+    for (const messages of this._pendingMessages.values()) {
+      if (messages.length > 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 消费所有待处理的子代理消息
+   * @returns 消息列表
+   */
+  consumeAllPendingMessages(): Array<{agentId: string; message: string}> {
+    const results: Array<{agentId: string; message: string}> = [];
+    for (const [agentId, messages] of this._pendingMessages) {
+      for (const msg of messages) {
+        results.push({ agentId, message: msg });
+      }
+    }
+    this._pendingMessages.clear();
+    return results;
+  }
+
+  /**
+   * 处理子代理中断
+   * @param agentId 子代理 ID
+   * @param reason 中断原因
+   * @param result 中断时的结果
+   */
+  async handleInterrupt(
+    agentId: string,
+    reason: 'max_turns_reached' | 'error' | 'cancelled',
+    result: string
+  ): Promise<void> {
+    const instance = this._instances.get(agentId);
+    if (!instance) return;
+
+    const oldStatus = instance.status;
+    instance.status = 'idle';
+    instance.result = result;
+
+    // 报告消息（入队）
+    await this.report(agentId, result);
+
+    // 触发钩子
+    await this._parent.onSubAgentInterrupt?.({
+      agentId,
+      type: instance.type,
+      reason,
+      result,
+    });
   }
 
   /**
@@ -248,18 +308,20 @@ export class AgentPool {
     if (!instance) return;
 
     const oldStatus = instance.status;
-    instance.status = 'completed';
+
+    // 先回传消息给主代理（确保消息先入队，避免竞态条件）
+    await this.report(id, result);
+
+    // 再更新状态（子代理持久存在，完成任务后回到 idle）
+    instance.status = 'idle';
     instance.result = result;
     instance.completedAt = Date.now();
-
-    // 回传消息给主代理
-    await this.report(id, result);
 
     await this._parent.onSubAgentUpdate?.({
       agentId: id,
       type: instance.type,
       oldStatus,
-      newStatus: 'completed',
+      newStatus: 'idle',
       result,
     });
   }
@@ -269,6 +331,8 @@ export class AgentPool {
     if (!instance) return;
 
     const oldStatus = instance.status;
+
+    // 先更新状态（错误情况不需要回传消息，因为父代理无法处理错误子代理的结果）
     instance.status = 'failed';
     instance.error = error.message;
     instance.completedAt = Date.now();

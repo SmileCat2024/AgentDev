@@ -75,52 +75,45 @@ export const RENDER_TEMPLATES: Record<string, RenderTemplate> = {
 
   // ----- Agent Spawn -----
   'agent-spawn': {
-    call: '<div class="bash-command">Spawn <span class="file-path">{{type}}</span> agent: {{instruction}}</div>',
+    call: '<div class="bash-command">Spawn <span class="pattern">{{type}}</span> agent: {{instruction}}</div>',
     result: (data) => {
       if (data.error) {
         return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
       }
-      return `<div style="color:var(--success-color)">✓ Agent: <strong>${data.agentId}</strong> (${data.type})</div>`;
+      return `<div style="color:var(--success-color)">✓ Agent ${data.agentId} (${data.type}) completed</div>`;
     }
   },
 
   // ----- Agent List -----
   'agent-list': {
-    call: '<div class="bash-command">List agents (filter: {{filter}})</div>',
+    call: '<div class="bash-command">List agents</div>',
     result: (data) => {
       if (!data.agents || data.agents.length === 0) {
         return `<div style="color:var(--warning-color)">No agents found</div>`;
       }
-      return `<div style="font-size:12px;">
-        <div>Total: ${data.total} | Running: ${data.running}</div>
-        ${data.agents.map((a: any) => `
-          <div style="margin-top:4px; padding:4px; background:var(--code-bg); border-radius:4px;">
-            <strong>${a.agentId}</strong> (${a.type}) - <span style="color:${a.status === 'running' ? 'var(--success-color)' : 'var(--warning-color)'}">${a.status}</span>
-          </div>
-        `).join('')}
-      </div>`;
+      return `<div style="font-size:12px; color:var(--text-secondary);">Total: ${data.total} | Running: ${data.running}</div>`;
     }
   },
 
   // ----- Agent Send -----
   'agent-send': {
-    call: '<div class="bash-command">Send to <span class="file-path">{{agentId}}</span>: {{message}}</div>',
+    call: '<div class="bash-command">Send to <span class="pattern">{{agentId}}</span></div>',
     result: (data) => {
       if (data.error) {
         return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
       }
-      return `<div style="color:var(--success-color)">✓ Message sent to ${data.agentId}</div>`;
+      return `<div style="color:var(--success-color)">✓ Message sent</div>`;
     }
   },
 
   // ----- Agent Close -----
   'agent-close': {
-    call: '<div class="bash-command">Close <span class="file-path">{{agentId}}</span> (reason: {{reason}})</div>',
+    call: '<div class="bash-command">Close <span class="pattern">{{agentId}}</span></div>',
     result: (data) => {
       if (data.error) {
         return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
       }
-      return `<div style="color:var(--success-color)">✓ ${data.message}</div>`;
+      return `<div style="color:var(--success-color)">✓ ${data.message || 'Agent closed'}</div>`;
     }
   },
 } as const;

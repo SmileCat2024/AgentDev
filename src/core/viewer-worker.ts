@@ -496,6 +496,10 @@ class ViewerWorker {
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.1/github-markdown-dark.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
+
   <style>
     :root {
       --bg-color: #000000;
@@ -942,6 +946,64 @@ class ViewerWorker {
     
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
+    /* ========== Read 工具：简洁代码显示（无框体） ========== */
+    .code-read-container {
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 20px;
+    }
+    .code-read-line {
+      display: flex;
+      white-space: pre;
+    }
+    .code-read-line-num {
+      padding-right: 16px;
+      text-align: right;
+      color: #6e7681;
+      user-select: none;
+      min-width: 40px;
+      flex-shrink: 0;
+    }
+    .code-read-content {
+      flex: 1;
+      white-space: pre;
+    }
+
+    /* ========== Diff2Html 深色模式适配 ========== */
+    .d2h-wrapper {
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: transparent !important;
+    }
+    .d2h-file-header {
+      background-color: #21262d !important;
+      border-bottom: 1px solid #30363d !important;
+      padding: 4px 8px !important;
+    }
+    .d2h-file-name {
+      color: #c9d1d9 !important;
+      font-size: 11px !important;
+    }
+    .d2h-diff-table {
+      font-size: 12px;
+    }
+    .d2h-code-line-ctn {
+      color: #c9d1d9;
+    }
+    .d2h-code-side {
+      border: none !important;
+    }
+    .d2h-file-diff {
+      border: none !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+    }
+    .d2h-files-diff {
+      border: none !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+    }
+
   </style>
 </head>
 <body>
@@ -1113,6 +1175,7 @@ class ViewerWorker {
         },
         result: (data, success) => {
           if (!success) return formatError(data);
+
           if (data.type === 'directory') {
             return \`<div style="font-family:monospace; font-size:12px; line-height:1.6;">
               <div style="color:var(--accent-color); margin-bottom:8px;">📁 \${escapeHtml(data.path)}</div>
@@ -1127,21 +1190,48 @@ class ViewerWorker {
               </div>
             </div>\`;
           }
-          // 文件类型
-          return \`<div>
-            <div style="font-family:monospace; font-size:12px; line-height:1.4; max-height:400px; overflow:auto; background:var(--hover-bg); padding:8px; border-radius:4px;">
-              \${escapeHtml(data.content || '')}
-            </div>
-            <div style="color:var(--text-secondary); margin-top:8px; font-size:11px;">
-              \${data.path} — \${data.totalLines} lines total
-              \${data.truncated
-                ? data.truncatedByBytes
-                  ? '(truncated at 50KB)'
-                  : \`(\${data.offset}-\${data.lastReadLine}, use offset to read more)\`
-                : '(end of file)'
+
+          // 处理文件内容 - 简洁的行号+代码布局
+          const rawContent = data.content || '';
+          const path = data.path || '';
+          const ext = path.split('.').pop().toLowerCase();
+
+          const lines = rawContent.split('\\n');
+          let startLine = data.offset || 1;
+          const hasLinePrefix = lines.length > 0 && /^\\d+: /.test(lines[0]);
+
+          let resultHtml = '<div class="code-read-container">';
+
+          lines.forEach((line, i) => {
+            let lineNum, codeLine;
+            if (hasLinePrefix) {
+              const match = line.match(/^(\\d+): (.*)$/);
+              lineNum = match ? match[1] : ' ';
+              codeLine = match ? match[2] : line;
+            } else {
+              lineNum = startLine + i;
+              codeLine = line;
+            }
+
+            const codeExts = ['js', 'ts', 'py', 'java', 'c', 'cpp', 'rs', 'go', 'json', 'html', 'css', 'sh', 'bash', 'yaml', 'yml', 'xml', 'sql', 'md'];
+            let highlightedLine = codeLine;
+            if (codeExts.includes(ext)) {
+              const lang = ext === 'ts' ? 'typescript' : (ext === 'js' ? 'javascript' : (ext === 'py' ? 'python' : ext));
+              try {
+                highlightedLine = hljs.highlight(codeLine, { language: lang }).value;
+              } catch (e) {
+                highlightedLine = escapeHtml(codeLine);
               }
-            </div>
-          </div>\`;
+            } else {
+              highlightedLine = escapeHtml(codeLine);
+            }
+
+            resultHtml += \`<div class="code-read-line"><span class="code-read-line-num">\${lineNum}</span><span class="code-read-content">\${highlightedLine}</span></div>\`;
+          });
+
+          resultHtml += '</div>';
+
+          return resultHtml;
         }
       },
       'write': {
@@ -1155,27 +1245,23 @@ class ViewerWorker {
         call: (args) => \`<div class="bash-command">Edit <span class="file-path">\${escapeHtml(args.filePath || '')}</span></div>\`,
         result: (data, success) => {
           if (!success) return formatError(data);
-          // 解析 diff 获取简短摘要
-          const diffLines = (data.diff || '').split('\\n');
-          const changes = [];
-          for (const line of diffLines) {
-            if (line.startsWith('+') && !line.startsWith('+++')) {
-              changes.push('<span style="color:var(--success-color)">' + escapeHtml(line.substring(0, 60)) + '</span>');
-            } else if (line.startsWith('-') && !line.startsWith('---')) {
-              changes.push('<span style="color:var(--error-color)">' + escapeHtml(line.substring(0, 60)) + '</span>');
-            }
-            if (changes.length >= 5) break;
+
+          const diffContent = data.diff || '';
+          if (!diffContent) {
+            return \`<div style="color:var(--success-color)">✓ No changes made</div>\`;
           }
-          return \`<div style="color:var(--success-color)">✓ \${escapeHtml(data.message || 'Edit applied successfully')}</div>
-            <div style="margin-top:8px; font-size:11px; color:var(--text-secondary);">
-              <span style="color:var(--success-color)">+\${data.additions || 0}</span>
-              <span style="color:var(--error-color)"> -\${data.deletions || 0}</span>
-            </div>
-            \${changes.length > 0 ? \`<div style="margin-top:8px; font-family:monospace; font-size:11px; max-height:100px; overflow:hidden;">\${changes.slice(0, 3).join('<br>')}</div>\` : ''}
-            <details style="margin-top:8px;">
-              <summary style="cursor:pointer; color:var(--accent-color);">View full diff</summary>
-              <pre style="background:var(--hover-bg); padding:8px; margin-top:8px; border-radius:4px; font-family:monospace; font-size:11px; max-height:300px; overflow:auto;">\${escapeHtml(data.diff || '')}</pre>
-            </details>\`;
+
+          // 使用 Diff2Html 生成 Diff
+          try {
+            return Diff2Html.html(diffContent, {
+              drawFileList: false,
+              matching: 'lines',
+              outputFormat: 'side-by-side',
+              colorScheme: 'dark'
+            });
+          } catch(e) {
+            return \`<pre style="background:var(--hover-bg); padding:8px;">\${escapeHtml(diffContent)}</pre>\`;
+          }
         }
       },
       'ls': {
@@ -1468,16 +1554,29 @@ class ViewerWorker {
         updateNotificationStatus(notifData);
 
         if (messages.length !== currentMessages.length || messages.length === 0) {
-          currentMessages = messages;
-          render(messages);
+          if (messages.length > currentMessages.length) {
+            // 有新消息：只追加新的
+            const newMessages = messages.slice(currentMessages.length);
+            currentMessages = messages;
+            appendNewMessages(newMessages, currentMessages.length - newMessages.length);
+          } else if (messages.length < currentMessages.length) {
+            // 消息减少：完全重建（极少情况）
+            currentMessages = messages;
+            render(messages);
+          } else {
+            // 长度相同但内容可能是初始加载：完全重建
+            currentMessages = messages;
+            render(messages);
+          }
           statusBadge.textContent = 'Connected';
           statusBadge.classList.remove('disconnected');
         } else {
           const lastMsgChanged = messages.length > 0 &&
             JSON.stringify(messages[messages.length - 1]) !== JSON.stringify(currentMessages[currentMessages.length - 1]);
           if (lastMsgChanged) {
+            // 最后一条消息变化：替换最后一条（避免滚动重置）
             currentMessages = messages;
-            render(messages);
+            updateLastMessage(messages[messages.length - 1]);
           }
         }
 
@@ -1528,6 +1627,290 @@ class ViewerWorker {
       } else {
         statusEl.style.display = 'none';
       }
+    }
+
+    // 生成单条消息的 HTML
+    function renderMessage(msg, index) {
+      const role = msg.role;
+      const msgId = \`msg-\${index}\`;
+      let contentHtml = '';
+      let metaHtml = \`<div class="role-badge">\${role}</div>\`;
+
+      if (role === 'user' || role === 'system') {
+        let style = '';
+        let rowClass = role;
+        if (role === 'system') {
+           // 检测子代理完成消息，简化显示
+           const agentCompleteMatch = msg.content.match(/\\[子代理\\s+(\\S+)\\s+执行完成\\]/);
+           if (agentCompleteMatch) {
+             const agentName = agentCompleteMatch[1];
+             contentHtml = \`<div class="message-content" id="\${msgId}" style="color:var(--success-color);">✓ 子代理 \${agentName} 执行完成</div>\`;
+           } else {
+             const isLong = msg.content.includes('\\n') || msg.content.length > 60;
+             if (isLong) {
+               style = 'text-align: left !important;';
+               rowClass += ' long-content';
+             }
+             contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
+           }
+        } else {
+          contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
+        }
+
+        if (role === 'system') {
+           return \`
+            <div class="message-row \${rowClass}">
+              <div class="message-meta">
+                \${metaHtml}
+              </div>
+              \${contentHtml}
+            </div>
+          \`;
+        }
+        return \`
+          <div class="message-row \${role}">
+            <div class="message-meta">
+              \${metaHtml}
+            </div>
+            \${contentHtml}
+          </div>
+        \`;
+      } else if (role === 'assistant') {
+        let innerContent = '';
+
+        if (msg.reasoning) {
+          innerContent += \`
+            <div class="reasoning-block" id="reasoning-\${msgId}">
+              <div class="reasoning-header" onclick="toggleReasoning('reasoning-\${msgId}')">
+                <svg class="reasoning-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path></svg>
+                <span>Thinking Process</span>
+              </div>
+              <div class="reasoning-content markdown-body">
+                \${marked.parse(msg.reasoning)}
+              </div>
+            </div>
+          \`;
+        }
+
+        // 检测子代理完成消息，简化显示
+        const agentCompletePattern = new RegExp('^\\[子代理\\s+(\\S+)\\s+执行完成\\]:');
+        const agentCompleteMatch = msg.content.match(agentCompletePattern);
+        if (agentCompleteMatch) {
+          const agentName = agentCompleteMatch[1];
+          innerContent += \`<div style="color:var(--success-color);">✓ 子代理 \${agentName} 执行完成</div>\`;
+        } else {
+          innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
+        }
+
+        if (msg.toolCalls && msg.toolCalls.length > 0) {
+          const toolsHtml = msg.toolCalls.map(call => {
+            const displayName = getToolDisplayName(call.name);
+            const template = getToolRenderTemplate(call.name);
+            let innerHtml;
+
+            if (template.call) {
+              innerHtml = applyTemplate(template.call, call.arguments);
+            } else {
+              innerHtml = \`<pre style="margin:0; font-size:12px;">\${JSON.stringify(call.arguments, null, 2)}</pre>\`;
+            }
+
+            return \`
+              <div class="tool-call-container">
+                <div class="tool-header">
+                  <span class="tool-header-name">\${displayName}</span>
+                </div>
+                <div class="tool-content">\${innerHtml}</div>
+              </div>
+            \`;
+          }).join('');
+          innerContent += toolsHtml;
+        }
+
+        contentHtml = \`<div class="message-content" id="\${msgId}">\${innerContent}</div>\`;
+
+      } else if (role === 'tool') {
+        const toolCallId = msg.toolCallId;
+        let toolName = null;
+        let toolArgs = {};
+
+        // 查找对应的工具调用（需要传入完整消息列表）
+        return '';  // 这个需要在完整上下文中处理，暂时返回空
+      }
+
+      return \`
+        <div class="message-row \${role}">
+          <div class="message-meta">
+            \${metaHtml}
+          </div>
+          \${contentHtml}
+        </div>
+      \`;
+    }
+
+    // 追加新消息（保持现有 DOM 状态）
+    function appendNewMessages(newMessages, startIndex) {
+      // 移除空状态
+      const emptyState = container.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+
+      // 获取当前消息数量
+      const currentCount = container.querySelectorAll('.message-row').length;
+
+      newMessages.forEach((msg, i) => {
+        const index = startIndex + i;
+        const msgId = \`msg-\${index}\`;
+        let html = '';
+
+        if (msg.role === 'user' || msg.role === 'system' || msg.role === 'assistant') {
+          html = renderMessage(msg, index);
+        } else if (msg.role === 'tool') {
+          // tool 需要特殊处理，查找对应的 toolCall
+          let toolName = null;
+          let toolArgs = {};
+          const messages = currentMessages;
+          const toolCallId = msg.toolCallId;
+
+          for (const m of messages) {
+            if (m.toolCalls) {
+              const found = m.toolCalls.find(c => c.id === toolCallId);
+              if (found) {
+                toolName = found.name;
+                toolArgs = found.arguments;
+                break;
+              }
+            }
+          }
+
+          const { success, data } = parseToolResult(msg.content);
+          const displayName = getToolDisplayName(toolName);
+          const template = getToolRenderTemplate(toolName);
+
+          let bodyHtml;
+          if (template.result) {
+             bodyHtml = applyTemplate(template.result, data, success, toolArgs);
+          } else {
+             const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+             bodyHtml = \`<pre class="bash-output">\${displayData}</pre>\`;
+          }
+
+          html = \`
+            <div class="message-row \${msg.role}">
+              <div class="message-meta">
+                <div class="role-badge">\${msg.role}</div>
+              </div>
+              <div class="message-content" id="\${msgId}" style="padding:0; overflow:hidden;">
+                <div class="tool-result-header">
+                  <span class="status-dot \${success ? 'success' : 'error'}"></span>
+                  <span>\${displayName}</span>
+                </div>
+                <div class="tool-result-body">\${bodyHtml}</div>
+              </div>
+            </div>
+          \`;
+        }
+
+        // 追加到容器
+        container.insertAdjacentHTML('beforeend', html);
+      });
+
+      // 对新消息应用折叠逻辑
+      applyCollapseLogic(container, startIndex);
+    }
+
+    // 更新最后一条消息
+    function updateLastMessage(msg) {
+      const lastIndex = currentMessages.length - 1;
+      const lastRow = container.querySelectorAll('.message-row')[lastIndex];
+      if (!lastRow) {
+        render(currentMessages);
+        return;
+      }
+
+      const msgId = \`msg-\${lastIndex}\`;
+
+      if (msg.role === 'tool') {
+        // tool 消息更新：重建 tool-result-body
+        const toolCallId = msg.toolCallId;
+        let toolName = null;
+        let toolArgs = {};
+
+        for (const m of currentMessages) {
+          if (m.toolCalls) {
+            const found = m.toolCalls.find(c => c.id === toolCallId);
+            if (found) {
+              toolName = found.name;
+              toolArgs = found.arguments;
+              break;
+            }
+          }
+        }
+
+        const { success, data } = parseToolResult(msg.content);
+        const displayName = getToolDisplayName(toolName);
+        const template = getToolRenderTemplate(toolName);
+
+        let bodyHtml;
+        if (template.result) {
+           bodyHtml = applyTemplate(template.result, data, success, toolArgs);
+        } else {
+           const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+           bodyHtml = \`<pre class="bash-output">\${displayData}</pre>\`;
+        }
+
+        const toolResultBody = lastRow.querySelector('.tool-result-body');
+        if (toolResultBody) {
+          toolResultBody.innerHTML = bodyHtml;
+        }
+      }
+    }
+
+    // 应用折叠逻辑（只处理指定索引后的消息）
+    function applyCollapseLogic(containerElement, startIndex = 0) {
+      const rows = containerElement.querySelectorAll('.message-row');
+      rows.forEach((row, idx) => {
+        if (idx < startIndex) return;  // 跳过旧消息
+
+        const el = row.querySelector('.message-content');
+        if (!el) return;
+
+        const isCollapsible = el.scrollHeight > 160;
+        const isSystem = row.classList.contains('system');
+        const toolName = row.querySelector('.tool-result-header span:last-child')?.textContent || '';
+        const isReadOrEdit = toolName === 'Read' || toolName === 'Edit';
+        const shouldCollapse = isCollapsible && (isSystem || isReadOrEdit);
+
+        if (isCollapsible) {
+           if (shouldCollapse) {
+             el.classList.add('collapsed');
+             const meta = row.querySelector('.message-meta .collapse-toggle svg');
+             if (meta) meta.style.transform = 'rotate(-90deg)';
+           } else {
+             el.classList.remove('collapsed');
+             const meta = row.querySelector('.message-meta .collapse-toggle svg');
+             if (meta) meta.style.transform = 'rotate(0deg)';
+           }
+
+           let btnBar = row.querySelector('.expand-toggle-bar');
+           if (!btnBar) {
+             btnBar = document.createElement('div');
+             btnBar.className = 'expand-toggle-bar';
+             row.appendChild(btnBar);
+           }
+
+           const isCollapsed = el.classList.contains('collapsed');
+           btnBar.innerHTML = \`
+             <button class="expand-toggle-btn" onclick="toggleMessage('\${el.id}')">
+               \${isCollapsed ?
+                 '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> Expand' :
+                 '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> Collapse'}
+             </button>
+           \`;
+
+        } else {
+           const toggle = row.querySelector('.collapse-toggle');
+           if (toggle) toggle.style.display = 'none';
+        }
+      });
     }
 
     function render(messages) {
@@ -1665,7 +2048,10 @@ class ViewerWorker {
 
         const isCollapsible = el.scrollHeight > 160;
         const isSystem = row.classList.contains('system');
-        const shouldCollapse = isCollapsible && isSystem;
+        // 检查是否是 read 或 edit 工具
+        const toolName = row.querySelector('.tool-result-header span:last-child')?.textContent || '';
+        const isReadOrEdit = toolName === 'Read' || toolName === 'Edit';
+        const shouldCollapse = isCollapsible && (isSystem || isReadOrEdit);
 
         if (isCollapsible) {
            if (shouldCollapse) {

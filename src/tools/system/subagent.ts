@@ -12,30 +12,26 @@ import type { Agent } from '../../core/agent.js';
  */
 export const spawnAgentTool: Tool = createTool({
   name: 'spawn_agent',
-  description: '创建一个子代理来执行指定任务。返回实例 ID（格式：类型名_序号）。\n\n重要：子代理完成后，其结果会自动添加到你的上下文中，你将收到 "[子代理 ID_执行完成]:" 格式的消息。此时你可以直接基于结果继续工作，无需调用 list_agents 确认。\n\n支持的子代理类型：\n- "BasicAgent": 基础代理，配备文件操作和命令执行工具\n- "ExplorerAgent": 代码探索者代理，专注于代码库探索和理解，仅配备 read、list、bash 三个核心工具',
+  description: '创建一个子代理实例。子代理创建后处于idle状态，等待通过 send_to_agent 发送指令来激活。返回实例 ID（格式：类型名_序号）。\n\n子代理完成工作后，其结果会自动添加到你的上下文中，你将收到 "[子代理 ID_执行完成]:" 格式的消息。',
   parameters: {
     type: 'object',
     properties: {
       type: {
         type: 'string',
-        description: '子代理类型名，支持 "BasicAgent" 或 "ExplorerAgent"'
-      },
-      instruction: {
-        type: 'string',
-        description: '给子代理的初始指令'
+        description: '子代理类型名'
       }
     },
-    required: ['type', 'instruction']
+    required: ['type']
   },
   render: { call: 'agent-spawn', result: 'agent-spawn' },
-  execute: async ({ type, instruction }, context?: { parentAgent?: Agent }) => {
+  execute: async ({ type }, context?: { parentAgent?: Agent }) => {
     const parentAgent = context?.parentAgent;
     if (!parentAgent) {
       return { error: '无法获取父代理引用' };
     }
 
     const pool = parentAgent.pool;
-    const agentId = await pool.spawn(type, instruction, async (t) => await parentAgent.createAgentByType(t));
+    const agentId = await pool.spawn(type, async (t) => await parentAgent.createAgentByType(t));
 
     return {
       agentId,
@@ -77,13 +73,13 @@ export const listAgentsTool: Tool = createTool({
         agentId: i.id,
         type: i.type,
         status: i.status,
-        initialInstruction: i.initialInstruction,
         createdAt: i.createdAt,
         result: i.result,
         error: i.error,
       })),
       total: instances.length,
-      running: instances.filter(i => i.status === 'running').length,
+      running: instances.filter(i => i.status === 'busy' || i.status === 'idle').length,
+      tips: '子代理工作正常时，你无需重复调用此工具以获取最新状态，可停止输出，等待子代理完成任务后自动添加到上下文中。',
     };
   },
 });
@@ -93,7 +89,7 @@ export const listAgentsTool: Tool = createTool({
  */
 export const sendToAgentTool: Tool = createTool({
   name: 'send_to_agent',
-  description: '向指定的子代理发送后续消息或指令。可以与运行中的子代理进行多轮交互。',
+  description: '向指定的子代理发送指令。可以与运行中的子代理进行多轮交互。子代理运行期间可以执行其他工作，若无需求，应停止输出，待子代理完成任务时会主动唤起',
   parameters: {
     type: 'object',
     properties: {
@@ -121,7 +117,7 @@ export const sendToAgentTool: Tool = createTool({
     return {
       agentId,
       status: 'message_sent',
-      message: '消息已发送到子代理'
+      message: '消息已发送到子代理，可以继续执行其他任务，或停止输出，等待子代理完成任务'
     };
   },
 });

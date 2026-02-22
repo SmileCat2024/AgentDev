@@ -26,7 +26,7 @@ export const listAgentsRender: RenderTemplate = {
       <div>Total: ${data.total} | Running: ${data.running}</div>
       ${data.agents.map((a: any) => `
         <div style="margin-top:4px; padding:4px; background:var(--code-bg); border-radius:4px;">
-          <strong>${a.agentId}</strong> (${a.type}) - <span style="color:${a.status === 'running' ? 'var(--success-color)' : 'var(--warning-color)'}">${a.status}</span>
+          <strong>${a.agentId}</strong> (${a.type}) - <span style="color:${a.status === 'idle' || a.status === 'busy' ? 'var(--success-color)' : 'var(--warning-color)'}">${a.status}</span>
         </div>
       `).join('')}
     </div>`;

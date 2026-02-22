@@ -194,8 +194,7 @@ async function main() {
   // 交互循环
   while (true) {
     const input = await agentHook('编程小助手');
-    if (input === 'exit') break;
-    if (!input) continue;
+    if (input === 'exit' || !input) break;
     console.log(`\n[编程小助手] > ${input}\n---`);
     const result = await programmingAgent.onCall(input);
     console.log(`结果: ${result}\n`);

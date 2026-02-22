@@ -443,6 +443,7 @@ function replace(content: string, oldString: string, newString: string, replaceA
 export const editTool = createTool({
   name: 'edit',
   description: 'Make exact string replacements in a file. Uses multiple intelligent matching strategies including block anchor matching, whitespace normalization, and indentation flexibility. Always provides a diff preview of changes.',
+  render: 'edit',
   parameters: {
     type: 'object',
     properties: {

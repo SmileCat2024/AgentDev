@@ -1,5 +1,11 @@
 {
   "defaultModel": {
+    "provider": "xiaomi",
+    "model": "mimo-v2-flash",
+    "baseUrl": "https://api.xiaomimimo.com/v1",
+    "apiKey": "sk-clpbuks1gc58mci4nb0udslizbf7oueri7x0arb4ygmfb54h"
+  },
+  "defaultModel1": {
     "provider": "bigmodel",
     "model": "glm-4.7",
     "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",

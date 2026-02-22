@@ -13,6 +13,7 @@ import path from 'path';
 export const globTool = createTool({
   name: 'glob',
   description: 'Fast file pattern matching tool that works with any codebase size. Supports glob patterns like "**/*.js" or "src/**/*.ts". Returns matching file paths sorted by modification time.',
+  render: 'glob',
   parameters: {
     type: 'object',
     properties: {

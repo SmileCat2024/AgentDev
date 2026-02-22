@@ -44,6 +44,7 @@ const LIMIT = 100;
 export const lsTool = createTool({
   name: 'ls',
   description: 'List files in a directory with tree structure output. Automatically ignores common build/cache directories.',
+  render: 'ls',
   parameters: {
     type: 'object',
     properties: {

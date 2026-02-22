@@ -512,6 +512,8 @@ class ViewerWorker {
       --error-color: #dc3545;
       --hover-bg: #1f1f1f;
       --active-bg: #2a2a2a;
+      --warning-color: #ffc107;
+      --bg-secondary: var(--hover-bg);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1099,6 +1101,158 @@ class ViewerWorker {
           return \`<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">\${marked.parse(str)}</div>\`;
         }
       },
+
+      // ===== Opencode 工具 =====
+      'read': {
+        call: (args) => {
+          let output = \`<div class="bash-command">Read <span class="file-path">\${escapeHtml(args.filePath || '')}</span></div>\`;
+          if (args.offset !== undefined) {
+            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">lines \${args.offset}\${args.limit ? '-' + (Number(args.offset) + Number(args.limit) - 1) : ''}</div>\`;
+          }
+          return output;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (data.type === 'directory') {
+            return \`<div style="font-family:monospace; font-size:12px; line-height:1.6;">
+              <div style="color:var(--accent-color); margin-bottom:8px;">📁 \${escapeHtml(data.path)}</div>
+              <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:4px;">
+                \${data.entries.map(e => {
+                  const isDir = e.endsWith('/') || e.endsWith('\\\\');
+                  return \`<div style="color:\${isDir ? 'var(--accent-color)' : 'var(--text-primary)'}; padding:2px 4px;">\${escapeHtml(e)}</div>\`;
+                }).join('')}
+              </div>
+              <div style="color:var(--text-secondary); margin-top:8px; font-size:11px;">
+                \${data.entries.length} of \${data.totalEntries} entries shown\${data.truncated ? ' (truncated)' : ''}
+              </div>
+            </div>\`;
+          }
+          // 文件类型
+          return \`<div>
+            <div style="font-family:monospace; font-size:12px; line-height:1.4; max-height:400px; overflow:auto; background:var(--hover-bg); padding:8px; border-radius:4px;">
+              \${escapeHtml(data.content || '')}
+            </div>
+            <div style="color:var(--text-secondary); margin-top:8px; font-size:11px;">
+              \${data.path} — \${data.totalLines} lines total
+              \${data.truncated
+                ? data.truncatedByBytes
+                  ? '(truncated at 50KB)'
+                  : \`(\${data.offset}-\${data.lastReadLine}, use offset to read more)\`
+                : '(end of file)'
+              }
+            </div>
+          </div>\`;
+        }
+      },
+      'write': {
+        call: (args) => \`<div class="bash-command">Write <span class="file-path">\${escapeHtml(args.filePath || '')}</span></div>\`,
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          return \`<div style="color:var(--success-color)">✓ \${escapeHtml(data.message || 'File written successfully')}</div>\`;
+        }
+      },
+      'edit': {
+        call: (args) => \`<div class="bash-command">Edit <span class="file-path">\${escapeHtml(args.filePath || '')}</span></div>\`,
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          // 解析 diff 获取简短摘要
+          const diffLines = (data.diff || '').split('\\n');
+          const changes = [];
+          for (const line of diffLines) {
+            if (line.startsWith('+') && !line.startsWith('+++')) {
+              changes.push('<span style="color:var(--success-color)">' + escapeHtml(line.substring(0, 60)) + '</span>');
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+              changes.push('<span style="color:var(--error-color)">' + escapeHtml(line.substring(0, 60)) + '</span>');
+            }
+            if (changes.length >= 5) break;
+          }
+          return \`<div style="color:var(--success-color)">✓ \${escapeHtml(data.message || 'Edit applied successfully')}</div>
+            <div style="margin-top:8px; font-size:11px; color:var(--text-secondary);">
+              <span style="color:var(--success-color)">+\${data.additions || 0}</span>
+              <span style="color:var(--error-color)"> -\${data.deletions || 0}</span>
+            </div>
+            \${changes.length > 0 ? \`<div style="margin-top:8px; font-family:monospace; font-size:11px; max-height:100px; overflow:hidden;">\${changes.slice(0, 3).join('<br>')}</div>\` : ''}
+            <details style="margin-top:8px;">
+              <summary style="cursor:pointer; color:var(--accent-color);">View full diff</summary>
+              <pre style="background:var(--hover-bg); padding:8px; margin-top:8px; border-radius:4px; font-family:monospace; font-size:11px; max-height:300px; overflow:auto;">\${escapeHtml(data.diff || '')}</pre>
+            </details>\`;
+        }
+      },
+      'ls': {
+        call: (args) => \`<div class="bash-command">List <span class="path">\${escapeHtml(args.dirPath || '.')}</span></div>\`,
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          return \`<div style="font-family:monospace; font-size:11px; line-height:1.4; max-height:400px; overflow:auto; white-space:pre; color:var(--text-primary);">\${escapeHtml(data.tree || '')}</div>
+            <div style="color:var(--text-secondary); padding:4px 0; font-size:11px;">
+              \${data.count} file\${data.count !== 1 ? 's' : ''} found
+              \${data.truncated ? '<span style="color:var(--warning-color)"> (truncated)</span>' : ''}
+            </div>\`;
+        }
+      },
+      'glob': {
+        call: (args) => {
+          let output = \`<div class="bash-command">Glob <span class="pattern">\${escapeHtml(args.pattern || '')}</span></div>\`;
+          if (args.searchPath) {
+            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">in \${escapeHtml(args.searchPath)}</div>\`;
+          }
+          return output;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (!data.files || data.files.length === 0) {
+            return '<div style="color:var(--warning-color)">No files found</div>';
+          }
+          return \`<div style="font-family:monospace; font-size:12px; max-height:300px; overflow:auto;">
+            \${data.files.map(f => \`<div style="color:var(--text-primary); padding:2px 0;">\${escapeHtml(f)}</div>\`).join('')}
+            \${data.truncated ? '<div style="color:var(--warning-color); padding:4px 0;">(Results truncated...)</div>' : ''}
+            <div style="color:var(--text-secondary); padding:4px 0;">Found \${data.count} file\${data.count !== 1 ? 's' : ''}</div>
+          </div>\`;
+        }
+      },
+      'grep': {
+        call: (args) => {
+          let output = \`<div class="bash-command">Grep <span class="pattern">\${escapeHtml(args.pattern || '')}</span></div>\`;
+          if (args.searchPath) {
+            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">in \${escapeHtml(args.searchPath)}</div>\`;
+          }
+          if (args.include) {
+            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">(\${escapeHtml(args.include)})</div>\`;
+          }
+          return output;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (!data.results || data.results.length === 0) {
+            return '<div style="color:var(--warning-color)">No matches found</div>';
+          }
+          let currentFile = '';
+          const output = [];
+          for (const match of data.results) {
+            if (currentFile !== match.path) {
+              if (currentFile !== '') {
+                output.push('</div>');
+              }
+              currentFile = match.path;
+              output.push(\`<div style="margin-top:8px;">
+                <div style="color:var(--accent-color); font-weight:bold; font-size:11px;">\${escapeHtml(match.path)}</div>
+              \`);
+            }
+            output.push(\`<div style="display:flex; gap:8px; font-family:monospace; font-size:11px;">
+              <span style="color:var(--text-secondary); min-width:40px;">:\${match.lineNum}</span>
+              <span style="color:var(--text-primary);">\${escapeHtml(match.lineText)}</span>
+            </div>\`);
+          }
+          if (currentFile !== '') {
+            output.push('</div>');
+          }
+          return \`<div style="max-height:400px; overflow:auto;">
+            \${output.join('')}
+            \${data.truncated ? '<div style="color:var(--warning-color); padding:4px 0;">(Results truncated...)</div>' : ''}
+            <div style="color:var(--text-secondary); padding:4px 0;">Found \${data.matches} match\${data.matches !== 1 ? 'es' : ''}</div>
+          </div>\`;
+        }
+      },
+
       'json': {
         call: (args) => \`<pre style="margin:0; font-size:12px;">\${escapeHtml(JSON.stringify(args, null, 2))}</pre>\`,
         result: (data, success) => {
@@ -1175,15 +1329,15 @@ class ViewerWorker {
       const resultIsInline = resultTemplateName === '__inline__';
 
       const callTemplate = callIsInline
-        ? { call: config?.render?.inlineCall, result: config?.render?.inlineCall }
-        : (RENDER_TEMPLATES[callTemplateName] || RENDER_TEMPLATES['json']);
+        ? config?.render?.inlineCall
+        : (RENDER_TEMPLATES[callTemplateName]?.call || RENDER_TEMPLATES['json'].call);
       const resultTemplate = resultIsInline
-        ? { call: config?.render?.inlineResult, result: config?.render?.inlineResult }
-        : (RENDER_TEMPLATES[resultTemplateName] || RENDER_TEMPLATES['json']);
+        ? config?.render?.inlineResult
+        : (RENDER_TEMPLATES[resultTemplateName]?.result || RENDER_TEMPLATES['json'].result);
 
       return {
-        call: callTemplate.call,
-        result: resultTemplate.result,
+        call: callTemplate,
+        result: resultTemplate,
         isInlineCall: callIsInline,
         isInlineResult: resultIsInline,
       };

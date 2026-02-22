@@ -154,16 +154,6 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
   'list_agents': 'agent-list',
   'send_to_agent': 'agent-send',
   'close_agent': 'agent-close',
-
-  // ===== Opencode 工具（新默认） =====
-  // 注意：opencode 工具使用自己的 .render.ts 文件
-  // 这里仅提供备用映射，实际由工具的 render 属性指定
-  'read': 'file',
-  'write': 'file-write',
-  'edit': 'json',  // edit 有自己的复杂渲染
-  'glob': 'json',  // glob 有自己的渲染
-  'grep': 'json',  // grep 有自己的渲染
-  'ls': 'file-list',
 } as const;
 
 // ============= 工具显示名称映射 =============

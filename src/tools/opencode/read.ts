@@ -57,6 +57,7 @@ async function isBinaryFile(filepath: string): Promise<boolean> {
 export const readTool = createTool({
   name: 'read',
   description: 'Read a file from the local filesystem. Can read files with offset/limit for pagination, and can also read directory contents. For large files, use offset and limit parameters to read in chunks.',
+  render: 'read',
   parameters: {
     type: 'object',
     properties: {

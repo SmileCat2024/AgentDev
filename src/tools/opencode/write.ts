@@ -14,6 +14,7 @@ import { createTwoFilesPatch } from 'diff';
 export const writeTool = createTool({
   name: 'write',
   description: 'Write content to a file. Creates new files or overwrites existing files. THIS TOOL WILL OVERWRITE THE EXISTING FILE IF it exists. Only use this tool when explicitly requested to do so. Always prefer editing existing files using the edit tool when the file already exists.',
+  render: 'write',
   parameters: {
     type: 'object',
     properties: {

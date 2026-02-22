@@ -32,6 +32,7 @@ async function getRipgrepPath(): Promise<string> {
 export const grepTool = createTool({
   name: 'grep',
   description: 'A powerful search tool built on ripgrep. Supports full regex syntax, file type filtering, and context control. Use this tool for content searches; NEVER invoke grep or rg as Bash commands.',
+  render: 'grep',
   parameters: {
     type: 'object',
     properties: {

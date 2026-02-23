@@ -110,15 +110,22 @@ export class AgentPool {
    * 向子代理发送消息（非阻塞）
    */
   async sendTo(id: string, message: string): Promise<void> {
+    const timestamp = new Date().toISOString();
+    console.log(`[DEBUG:sendTo] ${timestamp} agentId=${id}, msg="${message.slice(0, 50)}..."`);
+
     const instance = this._instances.get(id);
     if (!instance) throw new Error(`子代理不存在: ${id}`);
 
     // 更新状态为 busy
+    const oldStatus = instance.status;
     instance.status = 'busy';
+    console.log(`[DEBUG:sendTo] 状态: ${oldStatus} -> busy`);
 
     // 异步执行，立即返回
     instance.agent.onCall(message)
       .then(result => {
+        const thenTime = new Date().toISOString();
+        console.log(`[DEBUG:sendTo.then] ${thenTime} agentId=${id}, 完成，result="${result.slice(0, 50)}..."`);
         // 正常完成
         instance.status = 'idle';
         instance.result = result;
@@ -126,6 +133,8 @@ export class AgentPool {
         this.report(id, result);
       })
       .catch(error => {
+        const catchTime = new Date().toISOString();
+        console.log(`[DEBUG:sendTo.catch] ${catchTime} agentId=${id}, error=${error.message}`);
         // 执行失败
         instance.status = 'failed';
         this._onError(id, error);
@@ -156,16 +165,25 @@ export class AgentPool {
    * @param message 消息内容
    */
   async report(agentId: string, message: string): Promise<void> {
+    const timestamp = new Date().toISOString();
+    const msgPreview = message.slice(0, 50);
+
+    console.log(`[DEBUG:report] ${timestamp} agentId=${agentId}, msg="${msgPreview}..."`);
+    console.trace('[DEBUG:report] 调用栈:');
+
     // 添加到待回传队列
     if (!this._pendingMessages.has(agentId)) {
       this._pendingMessages.set(agentId, []);
     }
     this._pendingMessages.get(agentId)!.push(message);
 
+    console.log(`[DEBUG:report] 入队后队列长度: ${this._pendingMessages.get(agentId)!.length}`);
+
     // 通知等待的解析器
     // 优先查找专门等待此 agent 的解析器
     const resolver = this._messageResolvers.get(agentId);
     if (resolver) {
+      console.log(`[DEBUG:report] 触发专门 resolver: ${agentId}`);
       resolver(message);
       this._messageResolvers.delete(agentId);
       return;
@@ -174,6 +192,7 @@ export class AgentPool {
     // 如果没有专门解析器，查找通用等待解析器（以 wait_ 开头的）
     for (const [key, resolver] of this._messageResolvers) {
       if (key.startsWith('wait_')) {
+        console.log(`[DEBUG:report] 触发通用 resolver: ${key}`);
         resolver(message);
         this._messageResolvers.delete(key);
         break;
@@ -186,10 +205,14 @@ export class AgentPool {
    * @returns { agentId, message }
    */
   async waitForMessage(): Promise<{ agentId: string; message: string }> {
+    const timestamp = new Date().toISOString();
+    console.log(`[DEBUG:waitForMessage] ${timestamp} 开始等待`);
+
     // 检查是否有待处理消息
     for (const [agentId, messages] of this._pendingMessages) {
       if (messages.length > 0) {
         const message = messages.shift()!;
+        console.log(`[DEBUG:waitForMessage] ${timestamp} 从队列取出消息 agentId=${agentId}, 队列剩余: ${messages.length}`);
         if (messages.length === 0) {
           this._pendingMessages.delete(agentId);
         }
@@ -197,15 +220,21 @@ export class AgentPool {
       }
     }
 
+    console.log(`[DEBUG:waitForMessage] ${timestamp} 队列为空，注册 resolver`);
+
     // 等待新消息（无超时，一直等待直到有消息）
     return new Promise((resolve) => {
       // 临时存储解析器（任意子代理都可以触发）
       const tempKey = `wait_${Date.now()}`;
+      console.log(`[DEBUG:waitForMessage] ${timestamp} 注册 resolver: ${tempKey}`);
       this._messageResolvers.set(tempKey, () => {
+        const resolveTime = new Date().toISOString();
+        console.log(`[DEBUG:waitForMessage.resolver] ${resolveTime} resolver 被触发`);
         // 查找发送消息的 agentId
         for (const [agentId, messages] of this._pendingMessages) {
           if (messages.length > 0) {
             const message = messages.shift()!;
+            console.log(`[DEBUG:waitForMessage.resolver] ${resolveTime} 从队列取出消息 agentId=${agentId}, 队列剩余: ${messages.length}`);
             if (messages.length === 0) {
               this._pendingMessages.delete(agentId);
             }
@@ -213,6 +242,7 @@ export class AgentPool {
             return;
           }
         }
+        console.log(`[DEBUG:waitForMessage.resolver] ${resolveTime} 队列为空！`);
       });
     });
   }
@@ -223,18 +253,22 @@ export class AgentPool {
    * 注意：先检查消息队列，避免竞态条件
    */
   hasActiveAgents(): boolean {
+    const timestamp = new Date().toISOString();
     // 优先检查消息队列
-    for (const messages of this._pendingMessages.values()) {
+    for (const [agentId, messages] of this._pendingMessages.entries()) {
       if (messages.length > 0) {
+        console.log(`[DEBUG:hasActiveAgents] ${timestamp} 发现消息队列: ${agentId}, ${messages.length} 条`);
         return true;
       }
     }
     // 再检查 busy 状态的子代理
     for (const instance of this._instances.values()) {
       if (instance.status === 'busy') {
+        console.log(`[DEBUG:hasActiveAgents] ${timestamp} 发现 busy 子代理: ${instance.id}`);
         return true;
       }
     }
+    console.log(`[DEBUG:hasActiveAgents] ${timestamp} 无活跃子代理`);
     return false;
   }
 
@@ -242,9 +276,14 @@ export class AgentPool {
    * 检查是否有待处理的子代理消息
    */
   hasPendingMessages(): boolean {
-    for (const messages of this._pendingMessages.values()) {
-      if (messages.length > 0) return true;
+    const timestamp = new Date().toISOString();
+    for (const [agentId, messages] of this._pendingMessages.entries()) {
+      if (messages.length > 0) {
+        console.log(`[DEBUG:hasPendingMessages] ${timestamp} agentId=${agentId}, ${messages.length} 条消息`);
+        return true;
+      }
     }
+    console.log(`[DEBUG:hasPendingMessages] ${timestamp} 无待处理消息`);
     return false;
   }
 
@@ -253,13 +292,16 @@ export class AgentPool {
    * @returns 消息列表
    */
   consumeAllPendingMessages(): Array<{agentId: string; message: string}> {
+    const timestamp = new Date().toISOString();
     const results: Array<{agentId: string; message: string}> = [];
-    for (const [agentId, messages] of this._pendingMessages) {
+    for (const [agentId, messages] of this._pendingMessages.entries()) {
+      console.log(`[DEBUG:consumeAllPendingMessages] ${timestamp} agentId=${agentId}, ${messages.length} 条消息`);
       for (const msg of messages) {
         results.push({ agentId, message: msg });
       }
     }
     this._pendingMessages.clear();
+    console.log(`[DEBUG:consumeAllPendingMessages] ${timestamp} 总共消费 ${results.length} 条消息`);
     return results;
   }
 
@@ -274,12 +316,16 @@ export class AgentPool {
     reason: 'max_turns_reached' | 'error' | 'cancelled',
     result: string
   ): Promise<void> {
+    const timestamp = new Date().toISOString();
+    console.log(`[DEBUG:handleInterrupt] ${timestamp} agentId=${agentId}, reason=${reason}, result="${result.slice(0, 50)}..."`);
+
     const instance = this._instances.get(agentId);
     if (!instance) return;
 
     const oldStatus = instance.status;
     instance.status = 'idle';
     instance.result = result;
+    console.log(`[DEBUG:handleInterrupt] ${timestamp} 状态: ${oldStatus} -> idle`);
 
     // 报告消息（入队）
     await this.report(agentId, result);
@@ -304,6 +350,9 @@ export class AgentPool {
 
   // 内部方法
   private async _onComplete(id: string, result: string): Promise<void> {
+    const timestamp = new Date().toISOString();
+    console.log(`[DEBUG:_onComplete] ${timestamp} agentId=${id}, result="${result.slice(0, 50)}..."`);
+
     const instance = this._instances.get(id);
     if (!instance) return;
 
@@ -316,6 +365,8 @@ export class AgentPool {
     instance.status = 'idle';
     instance.result = result;
     instance.completedAt = Date.now();
+
+    console.log(`[DEBUG:_onComplete] ${timestamp} 状态: ${oldStatus} -> idle`);
 
     await this._parent.onSubAgentUpdate?.({
       agentId: id,

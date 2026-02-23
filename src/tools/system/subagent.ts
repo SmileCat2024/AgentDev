@@ -8,6 +8,20 @@ import type { Tool } from '../../core/types.js';
 import type { Agent } from '../../core/agent.js';
 
 /**
+ * 获取所有子代理状态列表
+ */
+function getAllAgentsStatus(parentAgent: Agent) {
+  const pool = parentAgent.pool;
+  const instances = pool.list();
+
+  return instances.map(i => ({
+    agentId: i.id,
+    type: i.type,
+    status: i.status,
+  }));
+}
+
+/**
  * spawn_agent - 创建子代理
  */
 export const spawnAgentTool: Tool = createTool({
@@ -36,7 +50,8 @@ export const spawnAgentTool: Tool = createTool({
     return {
       agentId,
       type,
-      status: 'running'
+      status: 'idle',
+      allAgents: getAllAgentsStatus(parentAgent),
     };
   },
 });
@@ -46,7 +61,7 @@ export const spawnAgentTool: Tool = createTool({
  */
 export const listAgentsTool: Tool = createTool({
   name: 'list_agents',
-  description: '列出所有子代理及其状态（ID、类型、状态等）。\n\n注意：子代理的执行结果会自动添加到你的上下文中，你不需要调用此工具来获取结果。此工具主要用于检查子代理的运行状态，而非获取执行结果。',
+  description: '列出所有子代理及其状态（ID、类型、状态等）。\n\n注意：子代理的执行结果会自动添加到你的上下文中，你不需要调用此工具来获取结果。此工具主要用于确认子代理正确启动，不要在运行期间不断监控运行情况',
   parameters: {
     type: 'object',
     properties: {
@@ -79,7 +94,43 @@ export const listAgentsTool: Tool = createTool({
       })),
       total: instances.length,
       running: instances.filter(i => i.status === 'busy' || i.status === 'idle').length,
-      tips: '子代理工作正常时，你无需重复调用此工具以获取最新状态，可停止输出，等待子代理完成任务后自动添加到上下文中。',
+      tips: '当确认子代理工作正常时，你无需重复调用此工具以获取最新状态，可停止输出，等待子代理完成任务后自动添加到上下文中。',
+    };
+  },
+});
+
+/**
+ * wait - 等待子代理完成
+ */
+export const waitTool: Tool = createTool({
+  name: 'wait',
+  description: '调用本工具后，系统将被阻塞，等待子代理返回运行结果后继续运行。可以与 spawn_agent、send_to_agent 等工具在同一轮一起调用，表示执行完这些操作后等待子代理完成。',
+  parameters: {
+    type: 'object',
+    properties: {},
+  },
+  render: { call: 'wait', result: 'wait' },
+  execute: async (_args, context?: { parentAgent?: Agent }) => {
+    const parentAgent = context?.parentAgent;
+    if (!parentAgent) {
+      return { error: '无法获取父代理引用' };
+    }
+
+    const pool = parentAgent.pool;
+
+    // 安全检查：是否有活跃的子代理
+    if (!pool.hasActiveAgents()) {
+      return {
+        error: '当前没有正在执行的子代理（busy状态），调用 wait 无意义。请先使用 spawn_agent 创建子代理或使用 send_to_agent 向子代理发送任务。',
+        allAgents: getAllAgentsStatus(parentAgent),
+      };
+    }
+
+    // 只是一个标志，实际等待逻辑在 agent.ts 的 ReAct 循环中处理
+    return {
+      action: 'waiting_for_subagents',
+      message: '系统将等待子代理完成工作...',
+      allAgents: getAllAgentsStatus(parentAgent),
     };
   },
 });
@@ -89,7 +140,7 @@ export const listAgentsTool: Tool = createTool({
  */
 export const sendToAgentTool: Tool = createTool({
   name: 'send_to_agent',
-  description: '向指定的子代理发送指令。可以与运行中的子代理进行多轮交互。子代理运行期间可以执行其他工作，若无需求，应停止输出，待子代理完成任务时会主动唤起',
+  description: '向指定的子代理发送指令。只能向处于idle状态的子代理发送消息，如果子代理正在执行（busy状态），发送会失败。子代理运行期间可以执行其他工作，若无需求，应停止输出或使用wait工具，待子代理完成任务时会主动唤起',
   parameters: {
     type: 'object',
     properties: {
@@ -112,12 +163,34 @@ export const sendToAgentTool: Tool = createTool({
     }
 
     const pool = parentAgent.pool;
+
+    // 检查子代理是否存在以及状态
+    const instance = pool.get(agentId);
+    if (!instance) {
+      return {
+        error: `子代理不存在: ${agentId}`,
+        allAgents: getAllAgentsStatus(parentAgent),
+      };
+    }
+
+    // 检查子代理是否正在执行
+    if (instance.status === 'busy') {
+      return {
+        error: `子代理 ${agentId} 正在执行任务（busy状态），无法接收新消息。请等待其完成后再发送`,
+        agentId,
+        currentStatus: instance.status,
+        allAgents: getAllAgentsStatus(parentAgent),
+      };
+    }
+
     await pool.sendTo(agentId, message);
 
     return {
       agentId,
       status: 'message_sent',
-      message: '消息已发送到子代理，可以继续执行其他任务，或停止输出，等待子代理完成任务'
+      previousStatus: instance.status,
+      message: '消息已成功发送到子代理，可以继续执行你尚未完成的其他任务，若无必要，请停止输出，等待子代理完成任务',
+      allAgents: getAllAgentsStatus(parentAgent),
     };
   },
 });

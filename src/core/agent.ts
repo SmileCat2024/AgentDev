@@ -328,9 +328,11 @@ export class Agent {
           if (this._pool && this._pool.hasActiveAgents()) {
             // 有活跃子代理 - 等待消息并继续循环
             const result = await this._pool.waitForMessage();
+            const timestamp = new Date().toISOString();
+            console.log(`[DEBUG:主代理-无工具调用] ${timestamp} 收到子代理消息 agentId=${result.agentId}, 插入到 context`);
             context.add({
               role: 'assistant',
-              content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}\n\n(子代理已完成任务，结果已接收，无需调用 list_agents 确认)`,
+              content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
             });
 
             // 推送到 DebugHub
@@ -363,19 +365,50 @@ export class Agent {
         }
 
         // 执行工具
+        let waitCalled = false;
         for (const call of response.toolCalls) {
+          if (call.name === 'wait') {
+            waitCalled = true;
+          }
           await this.executeTool(call, input, context, turn);
         }
 
         // ========== 检查并消费子代理消息（有工具调用后）==========
         if (this._pool && this._pool.hasPendingMessages()) {
           const messages = this._pool.consumeAllPendingMessages();
+          const timestamp = new Date().toISOString();
+          console.log(`[DEBUG:主代理-有工具调用后] ${timestamp} 收到 ${messages.length} 条子代理消息`);
           for (const { agentId, message } of messages) {
+            console.log(`[DEBUG:主代理-有工具调用后] ${timestamp} 插入消息 agentId=${agentId}`);
             context.add({
               role: 'assistant',
-              content: `[子代理 ${agentId} 执行完成]:\n\n${message}\n\n(子代理已完成任务，结果已接收，无需调用 list_agents 确认)`,
+              content: `[子代理 ${agentId} 执行完成]:\n\n${message}`,
             });
           }
+        }
+
+        // ========== 在可能阻塞前先推送消息到 DebugHub（确保工具结果立即显示）==========
+        if (this.debugEnabled && this.agentId && this.debugHub) {
+          this.debugHub.pushMessages(this.agentId, context.getAll());
+        }
+
+        // ========== wait 工具处理：如果有 wait 调用且有活跃子代理，等待消息后继续循环 ==========
+        if (waitCalled && this._pool && this._pool.hasActiveAgents()) {
+          const result = await this._pool.waitForMessage();
+          const timestamp = new Date().toISOString();
+          console.log(`[DEBUG:主代理-wait调用] ${timestamp} 收到子代理消息 agentId=${result.agentId}, 插入到 context`);
+          context.add({
+            role: 'assistant',
+            content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
+          });
+
+          // 推送到 DebugHub
+          if (this.debugEnabled && this.agentId && this.debugHub) {
+            this.debugHub.pushMessages(this.agentId, context.getAll());
+          }
+
+          // 继续下一轮（不执行 Turn Finished，因为等待是中间状态）
+          continue;
         }
 
         // 推送到 DebugHub
@@ -1010,7 +1043,7 @@ export class Agent {
       } else if (call.name.startsWith('mcp.')) {
         // MCP 工具注入 mcpContext
         toolContext = { _mcpContext: this.mcpContext };
-      } else if (['spawn_agent', 'list_agents', 'send_to_agent', 'close_agent'].includes(call.name)) {
+      } else if (['spawn_agent', 'list_agents', 'send_to_agent', 'close_agent', 'wait'].includes(call.name)) {
         // 子代理管理工具注入父代理引用
         toolContext = { parentAgent: this };
       }

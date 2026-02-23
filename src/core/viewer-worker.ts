@@ -1339,6 +1339,70 @@ class ViewerWorker {
         }
       },
 
+      // ===== SubAgent 工具 =====
+      // 主模板（通过工具名直接访问）
+      'spawn_agent': {
+        call: (args) => {
+          return \`<div class="bash-command">Spawn <span class="pattern">\${escapeHtml(args.type || '')}</span> agent</div>\`;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (data.error) {
+            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
+          }
+          return \`<div style="color:var(--success-color)">✓ Agent spawned: <strong>\${escapeHtml(data.agentId || '')}</strong> (\${escapeHtml(data.type || '')}) - \${escapeHtml(data.status || '')}</div>\`;
+        }
+      },
+      'send_to_agent': {
+        call: (args) => {
+          return \`<div class="bash-command">Send to <span class="pattern">\${escapeHtml(args.agentId || '')}</span></div>\`;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (data.error) {
+            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
+          }
+          return \`<div style="color:var(--success-color)">✓ Message sent to \${escapeHtml(data.agentId || '')}</div>\`;
+        }
+      },
+      'wait': {
+        call: () => {
+          return \`<div class="bash-command">⏳ Waiting for sub-agents...</div>\`;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (data.error) {
+            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
+          }
+          return \`<div style="color:var(--info-color)">⏳ \${escapeHtml(data.message || 'Waiting for sub-agents...')}</div>\`;
+        }
+      },
+      // 别名（后端 render.ts 配置使用的 key）
+      'agent-spawn': {
+        call: (args) => {
+          return \`<div class="bash-command">Spawn <span class="pattern">\${escapeHtml(args.type || '')}</span> agent</div>\`;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (data.error) {
+            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
+          }
+          return \`<div style="color:var(--success-color)">✓ Agent spawned: <strong>\${escapeHtml(data.agentId || '')}</strong> (\${escapeHtml(data.type || '')}) - \${escapeHtml(data.status || '')}</div>\`;
+        }
+      },
+      'agent-send': {
+        call: (args) => {
+          return \`<div class="bash-command">Send to <span class="pattern">\${escapeHtml(args.agentId || '')}</span></div>\`;
+        },
+        result: (data, success) => {
+          if (!success) return formatError(data);
+          if (data.error) {
+            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
+          }
+          return \`<div style="color:var(--success-color)">✓ Message sent to \${escapeHtml(data.agentId || '')}</div>\`;
+        }
+      },
+
       'json': {
         call: (args) => \`<pre style="margin:0; font-size:12px;">\${escapeHtml(JSON.stringify(args, null, 2))}</pre>\`,
         result: (data, success) => {
@@ -1640,11 +1704,11 @@ class ViewerWorker {
         let style = '';
         let rowClass = role;
         if (role === 'system') {
-           // 检测子代理完成消息，简化显示
-           const agentCompleteMatch = msg.content.match(/\\[子代理\\s+(\\S+)\\s+执行完成\\]/);
+           // 检测子代理完成消息，简化显示（模仿 glob call 风格）
+           const agentCompleteMatch = msg.content.match(/^\\[子代理\\s+(\\S+)\\s+执行完成\\]:/);
            if (agentCompleteMatch) {
              const agentName = agentCompleteMatch[1];
-             contentHtml = \`<div class="message-content" id="\${msgId}" style="color:var(--success-color);">✓ 子代理 \${agentName} 执行完成</div>\`;
+             contentHtml = \`<div class="message-content" id="\${msgId}"><div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div></div>\`;
            } else {
              const isLong = msg.content.includes('\\n') || msg.content.length > 60;
              if (isLong) {
@@ -1692,12 +1756,11 @@ class ViewerWorker {
           \`;
         }
 
-        // 检测子代理完成消息，简化显示
-        const agentCompletePattern = new RegExp('^\\[子代理\\s+(\\S+)\\s+执行完成\\]:');
-        const agentCompleteMatch = msg.content.match(agentCompletePattern);
+        // 检测子代理完成消息，简化显示（模仿 glob call 风格）
+        const agentCompleteMatch = msg.content.match(/^\[子代理\s+(\S+)\s+执行完成\]:/);
         if (agentCompleteMatch) {
           const agentName = agentCompleteMatch[1];
-          innerContent += \`<div style="color:var(--success-color);">✓ 子代理 \${agentName} 执行完成</div>\`;
+          innerContent += \`<div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div>\`;
         } else {
           innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
         }
@@ -1929,13 +1992,22 @@ class ViewerWorker {
           let style = '';
           let rowClass = role;
           if (role === 'system') {
-             const isLong = msg.content.includes('\\n') || msg.content.length > 60;
-             if (isLong) {
-               style = 'text-align: left !important;';
-               rowClass += ' long-content';
+             // 检测子代理完成消息，简化显示（模仿 glob call 风格）
+             const agentCompleteMatch = msg.content.match(/^\\[子代理\\s+(\\S+)\\s+执行完成\\]:/);
+             if (agentCompleteMatch) {
+               const agentName = agentCompleteMatch[1];
+               contentHtml = \`<div class="message-content" id="\${msgId}"><div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div></div>\`;
+             } else {
+               const isLong = msg.content.includes('\\n') || msg.content.length > 60;
+               if (isLong) {
+                 style = 'text-align: left !important;';
+                 rowClass += ' long-content';
+               }
+               contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
              }
+          } else {
+            contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
           }
-          contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
           
           if (role === 'system') {
              return \`
@@ -1964,7 +2036,14 @@ class ViewerWorker {
             \`;
           }
 
-          innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
+          // 检测子代理完成消息，简化显示（模仿 glob call 风格）
+          const agentCompleteMatch = msg.content.match(/^\[子代理\s+(\S+)\s+执行完成\]:/);
+          if (agentCompleteMatch) {
+            const agentName = agentCompleteMatch[1];
+            innerContent += \`<div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div>\`;
+          } else {
+            innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
+          }
 
           if (msg.toolCalls && msg.toolCalls.length > 0) {
             const toolsHtml = msg.toolCalls.map(call => {

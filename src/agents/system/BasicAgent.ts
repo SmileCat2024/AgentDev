@@ -24,9 +24,8 @@ import {
   calculatorTool,
   invokeSkillTool,
   spawnAgentTool,
-  listAgentsTool,
   sendToAgentTool,
-  closeAgentTool,
+  waitTool,
 } from '../../tools/system/index.js';
 
 // 导入 opencode 文件工具（更强大的文件操作能力）
@@ -60,9 +59,8 @@ const DEFAULT_TOOLS: Tool[] = [
 
   // 子代理管理工具
   spawnAgentTool,
-  listAgentsTool,
   sendToAgentTool,
-  closeAgentTool,
+  waitTool,
 ];
 
 /**

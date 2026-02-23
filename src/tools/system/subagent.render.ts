@@ -52,3 +52,13 @@ export const closeAgentRender: RenderTemplate = {
     return `<div style="color:var(--success-color)">✓ ${data.message}</div>`;
   }
 };
+
+export const waitRender: RenderTemplate = {
+  call: '<div class="bash-command">⏳ Waiting for sub-agents...</div>',
+  result: (data) => {
+    if (data.error) {
+      return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
+    }
+    return `<div style="color:var(--info-color)">⏳ ${data.message || 'Waiting for sub-agent...'}</div>`;
+  }
+};

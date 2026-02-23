@@ -1704,19 +1704,12 @@ class ViewerWorker {
         let style = '';
         let rowClass = role;
         if (role === 'system') {
-           // 检测子代理完成消息，简化显示（模仿 glob call 风格）
-           const agentCompleteMatch = msg.content.match(/^\\[子代理\\s+(\\S+)\\s+执行完成\\]:/);
-           if (agentCompleteMatch) {
-             const agentName = agentCompleteMatch[1];
-             contentHtml = \`<div class="message-content" id="\${msgId}"><div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div></div>\`;
-           } else {
-             const isLong = msg.content.includes('\\n') || msg.content.length > 60;
-             if (isLong) {
-               style = 'text-align: left !important;';
-               rowClass += ' long-content';
-             }
-             contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
+           const isLong = msg.content.includes('\\n') || msg.content.length > 60;
+           if (isLong) {
+             style = 'text-align: left !important;';
+             rowClass += ' long-content';
            }
+           contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
         } else {
           contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
         }
@@ -1756,11 +1749,30 @@ class ViewerWorker {
           \`;
         }
 
-        // 检测子代理完成消息，简化显示（模仿 glob call 风格）
-        const agentCompleteMatch = msg.content.match(/^\[子代理\s+(\S+)\s+执行完成\]:/);
+        // 检测子代理完成消息，使用 tool-call-container 风格渲染（类似 glob）
+        const agentCompletePattern = /^[\\s\\S]*\\[子代理\\s+(\\S+)\\s+执行完成\\]:[\\s\\S]*$/;
+        const agentCompleteMatch = msg.content.match(agentCompletePattern);
         if (agentCompleteMatch) {
           const agentName = agentCompleteMatch[1];
-          innerContent += \`<div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div>\`;
+          // 查找子代理对应的 agentId（使用前端的 allAgents 数组）
+          const subAgent = allAgents.find(a => a.name === agentName);
+          const subAgentId = subAgent ? subAgent.id : null;
+          const clickAttr = subAgentId ? \`onclick="switchAgent('\${subAgentId}')"\` : '';
+          const linkHtml = subAgentId
+            ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>查看消息 ></div>\`
+            : '';
+
+          innerContent += \`
+            <div class="tool-call-container">
+              <div class="tool-header">
+                <span class="tool-header-name">已完成</span>
+              </div>
+              <div class="tool-content">
+                <div class="bash-command">【\${escapeHtml(agentName)}】已完成</div>
+                \${linkHtml}
+              </div>
+            </div>
+          \`;
         } else {
           innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
         }
@@ -1992,19 +2004,12 @@ class ViewerWorker {
           let style = '';
           let rowClass = role;
           if (role === 'system') {
-             // 检测子代理完成消息，简化显示（模仿 glob call 风格）
-             const agentCompleteMatch = msg.content.match(/^\\[子代理\\s+(\\S+)\\s+执行完成\\]:/);
-             if (agentCompleteMatch) {
-               const agentName = agentCompleteMatch[1];
-               contentHtml = \`<div class="message-content" id="\${msgId}"><div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div></div>\`;
-             } else {
-               const isLong = msg.content.includes('\\n') || msg.content.length > 60;
-               if (isLong) {
-                 style = 'text-align: left !important;';
-                 rowClass += ' long-content';
-               }
-               contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
+             const isLong = msg.content.includes('\\n') || msg.content.length > 60;
+             if (isLong) {
+               style = 'text-align: left !important;';
+               rowClass += ' long-content';
              }
+             contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
           } else {
             contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
           }
@@ -2036,11 +2041,30 @@ class ViewerWorker {
             \`;
           }
 
-          // 检测子代理完成消息，简化显示（模仿 glob call 风格）
-          const agentCompleteMatch = msg.content.match(/^\[子代理\s+(\S+)\s+执行完成\]:/);
+          // 检测子代理完成消息，使用 tool-call-container 风格渲染（类似 glob）
+          const agentCompletePattern = /^[\\s\\S]*\\[子代理\\s+(\\S+)\\s+执行完成\\]:[\\s\\S]*$/;
+          const agentCompleteMatch = msg.content.match(agentCompletePattern);
           if (agentCompleteMatch) {
             const agentName = agentCompleteMatch[1];
-            innerContent += \`<div class="bash-command">AgentComplete <span class="pattern">\${escapeHtml(agentName)}</span></div>\`;
+            // 查找子代理对应的 agentId（使用前端的 allAgents 数组）
+            const subAgent = allAgents.find(a => a.name === agentName);
+            const subAgentId = subAgent ? subAgent.id : null;
+            const clickAttr = subAgentId ? \`onclick="switchAgent('\${subAgentId}')"\` : '';
+            const linkHtml = subAgentId
+              ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>查看消息 ></div>\`
+              : '';
+
+            innerContent += \`
+              <div class="tool-call-container">
+                <div class="tool-header">
+                  <span class="tool-header-name">SubAgent</span>
+                </div>
+                <div class="tool-content">
+                  <div class="bash-command">\${escapeHtml(agentName)}已完成</div>
+                  \${linkHtml}
+                </div>
+              </div>
+            \`;
           } else {
             innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
           }

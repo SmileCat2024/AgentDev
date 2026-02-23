@@ -5,13 +5,13 @@
 import type { RenderTemplate } from '../../core/render.js';
 
 export const spawnAgentRender: RenderTemplate = {
-  call: '<div class="bash-command">Spawn <span class="file-path">{{type}}</span> agent: {{instruction}}</div>',
+  call: '<div class="bash-command">启动 <span class="file-path">{{type}}</span> 子代理: {{instruction}}</div>',
   result: (data) => {
     if (data.error) {
       return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
     }
     return `<div style="color:var(--success-color)">
-      ✓ Agent spawned: <strong>${data.agentId}</strong> (${data.type}) - ${data.status}
+      ✓ 子代理已创建: <strong>${data.agentId}</strong> (${data.type}) - ${data.status}
     </div>`;
   }
 };
@@ -34,12 +34,12 @@ export const listAgentsRender: RenderTemplate = {
 };
 
 export const sendToAgentRender: RenderTemplate = {
-  call: '<div class="bash-command">Send to <span class="file-path">{{agentId}}</span>: {{message}}</div>',
+  call: '<div class="bash-command">发送指令到 <span class="file-path">{{agentId}}</span>: {{message}}</div>',
   result: (data) => {
     if (data.error) {
       return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
     }
-    return `<div style="color:var(--success-color)">✓ Message sent to ${data.agentId}</div>`;
+    return `<div style="color:var(--success-color)">✓ 指令已发送到 ${data.agentId}</div>`;
   }
 };
 
@@ -59,6 +59,6 @@ export const waitRender: RenderTemplate = {
     if (data.error) {
       return `<div style="color:var(--error-color)">✗ ${data.error}</div>`;
     }
-    return `<div style="color:var(--info-color)">⏳ ${data.message || 'Waiting for sub-agent...'}</div>`;
+    return `<div style="color:var(--info-color)"> ${data.message || '等待子代理运行结果...'}</div>`;
   }
 };

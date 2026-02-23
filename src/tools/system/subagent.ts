@@ -129,7 +129,7 @@ export const waitTool: Tool = createTool({
     // 只是一个标志，实际等待逻辑在 agent.ts 的 ReAct 循环中处理
     return {
       action: 'waiting_for_subagents',
-      message: '系统将等待子代理完成工作...',
+      message: '系统将在子代理完成任务后继续...',
       allAgents: getAllAgentsStatus(parentAgent),
     };
   },

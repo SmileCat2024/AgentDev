@@ -1,5 +1,6 @@
 /**
  * Write 工具渲染模板
+ * 使用 .render.ts 原版本（带 details 折叠 diff，更实用）
  */
 
 import type { InlineRenderTemplate } from '../../core/types.js';
@@ -33,4 +34,11 @@ export const writeRender: InlineRenderTemplate = {
         <pre style="background:var(--bg-secondary); padding:8px; margin-top:8px; border-radius:4px; font-family:monospace; font-size:11px; max-height:300px; overflow:auto;">${escapeHtml(result.diff || '')}</pre>
       </details>`;
   }
+};
+
+/**
+ * 模板映射表
+ */
+export const TEMPLATES = {
+  'write': writeRender,
 };

@@ -26,3 +26,12 @@ export const shellCommandRender: InlineRenderTemplate = {
   call: '<div class="bash-command">> {{command}}</div>',
   result: (data) => `<pre class="bash-output">${escapeHtml(data)}</pre>`
 };
+
+/**
+ * 模板映射表
+ */
+export const TEMPLATES = {
+  'command': shellCommandRender,
+  'bash': shellCommandRender,
+  'shell': shellCommandRender,
+};

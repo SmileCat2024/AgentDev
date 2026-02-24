@@ -26,3 +26,11 @@ export const calculatorRender: InlineRenderTemplate = {
   call: '<div class="bash-command">{{expression}}</div>',
   result: (data) => `<div class="bash-command" style="color:#d2a8ff">= ${escapeHtml(data)}</div>`
 };
+
+/**
+ * 模板映射表
+ */
+export const TEMPLATES = {
+  'math': calculatorRender,
+  'calculator': calculatorRender,
+};

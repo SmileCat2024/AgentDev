@@ -52,3 +52,10 @@ export const editRender: InlineRenderTemplate = {
       </details>`;
   }
 };
+
+/**
+ * 模板映射表
+ */
+export const TEMPLATES = {
+  'edit': editRender,
+};

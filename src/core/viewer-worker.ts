@@ -5,6 +5,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { join } from 'path';
 import { type Message, type Tool, AgentSession, DebugHubIPCMessage, ToolMetadata } from './types.js';
 import {
   RENDER_TEMPLATES,
@@ -87,6 +88,12 @@ class ViewerWorker {
     // API 端点
     if (url.startsWith('/api/')) {
       this.handleAPI(req, res);
+      return;
+    }
+
+    // 静态文件：工具渲染模板
+    if (url.startsWith('/tools/')) {
+      this.handleStaticToolFile(req, res, url);
       return;
     }
 
@@ -479,6 +486,54 @@ class ViewerWorker {
       // 事件类通知：追加到事件列表
       session.events.push(notification);
       session.lastEventCount++;
+    }
+  }
+
+  /**
+   * 处理静态工具渲染文件
+   * 直接返回已编译的 .js 文件内容
+   */
+  public handleStaticToolFile(req: IncomingMessage, res: ServerResponse, url: string): void {
+    try {
+      // 解析路径: /tools/system/agent.render.js
+      // 需要映射到实际文件: dist/tools/system/subagent.render.js
+      const relativePath = url.substring('/tools/'.length);
+
+      // 模板名到实际文件名的映射
+      const templateToFileMap: Record<string, string> = {
+        'system/agent.render.js': 'system/subagent.render.js',
+        'system/file.render.js': 'system/fs.render.js',
+        'system/skill.render.js': 'system/skill.render.js',
+      };
+
+      const actualPath = templateToFileMap[relativePath] || relativePath;
+      const fullPath = join('dist/tools', actualPath);
+
+      // 读取文件并返回
+      import('fs').then((fs) => {
+        fs.readFile(fullPath, 'utf-8', (err: Error | null, data: string) => {
+          if (err) {
+            console.error(`[Viewer Worker] 读取模板失败: ${fullPath}`, err.message);
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end(`Template not found: ${url}`);
+            return;
+          }
+
+          res.writeHead(200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Access-Control-Allow-Origin': '*',
+          });
+          res.end(data);
+        });
+      }).catch((err) => {
+        console.error('[Viewer Worker] fs 模块加载失败:', err.message);
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Internal server error');
+      });
+    } catch (err: any) {
+      console.error('[Viewer Worker] 静态文件处理错误:', err.message);
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Internal server error');
     }
   }
 
@@ -1077,332 +1132,8 @@ class ViewerWorker {
       return str.replace(/[&<>"']/g, m => map[m]);
     }
 
+    // 默认 fallback 模板（当动态加载失败时使用）
     const RENDER_TEMPLATES = {
-      'file': {
-        call: (args) => \`<div class="bash-command">Read <span class="file-path">\${args.path}</span></div>\`,
-        result: (data, success, args) => {
-          if (!success) return formatError(data);
-          const path = args?.path || '';
-          const ext = path.split('.').pop().toLowerCase();
-          const str = String(data);
-          
-          if (ext === 'md' || ext === 'markdown') {
-             return \`<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">\${marked.parse(str)}</div>\`;
-          }
-          
-          const codeExts = ['js', 'ts', 'py', 'java', 'c', 'cpp', 'rs', 'go', 'json', 'html', 'css', 'sh', 'bash', 'yaml', 'yml', 'xml', 'sql'];
-          if (codeExts.includes(ext)) {
-             const lang = ext === 'ts' ? 'typescript' : (ext === 'js' ? 'javascript' : (ext === 'py' ? 'python' : ext));
-             let highlighted;
-             try {
-               highlighted = hljs.highlight(str, { language: lang }).value;
-             } catch (e) {
-               highlighted = hljs.highlightAuto(str).value;
-             }
-             return \`<pre class="bash-output" style="max-height:500px; overflow:auto; background:#0d1117; padding:12px; border-radius:6px;"><code>\${highlighted}</code></pre>\`;
-          }
-          
-          return \`<pre class="bash-output" style="max-height:300px;">\${escapeHtml(str)}</pre>\`;
-        }
-      },
-      'file-write': {
-        call: (args) => \`<div class="bash-command">Write <span class="file-path">\${args.path}</span></div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          return \`<div style="color:var(--success-color)">✓ File written successfully</div>\`;
-        }
-      },
-      'file-list': {
-        call: (args) => \`<div class="bash-command">List <span class="file-path">\${args.path || '.'}</span></div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          let str = String(data || '');
-          if (str.includes('\\\\n')) str = str.replace(/\\\\n/g, '\\n');
-          const files = str.split('\\n').filter(f => f.trim());
-          
-          if (files.length === 0) return \`<div style="color:var(--text-secondary); font-style:italic; padding:8px;">Empty directory</div>\`;
-          return \`<div class="ls-grid">
-            \${files.map(f => {
-              return \`<div class="ls-item">
-                <span class="ls-icon">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="opacity:0.7"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
-                </span>
-                <span class="ls-name" title="\${escapeHtml(f)}">\${escapeHtml(f)}</span>
-              </div>\`;
-            }).join('')}
-          </div>\`;
-        }
-      },
-      'command': {
-        call: (args) => \`<div class="bash-command">> \${args.command}</div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          return \`<pre class="bash-output">\${escapeHtml(data)}</pre>\`;
-        }
-      },
-      'web': {
-        call: (args) => \`<div>GET <a href="\${args.url}" target="_blank" style="color:var(--accent-color)">\${args.url}</a></div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          return \`<div style="font-size:12px; opacity:0.8;">Fetched \${String(data).length} chars</div>\`;
-        }
-      },
-      'math': {
-        call: (args) => \`<div class="bash-command">\${args.expression}</div>\`,
-        result: (data, success) => {
-           if (!success) return formatError(data);
-           return \`<div class="bash-command" style="color:#d2a8ff">= \${escapeHtml(data)}</div>\`;
-        }
-      },
-      'skill': {
-        call: (args) => \`<div class="bash-command">Invoke Skill <span class="file-path">\${escapeHtml(args.skill || '')}</span></div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          const str = String(data);
-          // invoke_skill 返回的是 markdown 格式的技能文档，直接用 markdown 渲染
-          return \`<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">\${marked.parse(str)}</div>\`;
-        }
-      },
-
-      // ===== Opencode 工具 =====
-      'read': {
-        call: (args) => {
-          let output = \`<div class="bash-command">Read <span class="file-path">\${escapeHtml(args.filePath || '')}</span></div>\`;
-          if (args.offset !== undefined) {
-            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">lines \${args.offset}\${args.limit ? '-' + (Number(args.offset) + Number(args.limit) - 1) : ''}</div>\`;
-          }
-          return output;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-
-          if (data.type === 'directory') {
-            return \`<div style="font-family:monospace; font-size:12px; line-height:1.6;">
-              <div style="color:var(--accent-color); margin-bottom:8px;">📁 \${escapeHtml(data.path)}</div>
-              <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:4px;">
-                \${data.entries.map(e => {
-                  const isDir = e.endsWith('/') || e.endsWith('\\\\');
-                  return \`<div style="color:\${isDir ? 'var(--accent-color)' : 'var(--text-primary)'}; padding:2px 4px;">\${escapeHtml(e)}</div>\`;
-                }).join('')}
-              </div>
-              <div style="color:var(--text-secondary); margin-top:8px; font-size:11px;">
-                \${data.entries.length} of \${data.totalEntries} entries shown\${data.truncated ? ' (truncated)' : ''}
-              </div>
-            </div>\`;
-          }
-
-          // 处理文件内容 - 简洁的行号+代码布局
-          const rawContent = data.content || '';
-          const path = data.path || '';
-          const ext = path.split('.').pop().toLowerCase();
-
-          const lines = rawContent.split('\\n');
-          let startLine = data.offset || 1;
-          const hasLinePrefix = lines.length > 0 && /^\\d+: /.test(lines[0]);
-
-          let resultHtml = '<div class="code-read-container">';
-
-          lines.forEach((line, i) => {
-            let lineNum, codeLine;
-            if (hasLinePrefix) {
-              const match = line.match(/^(\\d+): (.*)$/);
-              lineNum = match ? match[1] : ' ';
-              codeLine = match ? match[2] : line;
-            } else {
-              lineNum = startLine + i;
-              codeLine = line;
-            }
-
-            const codeExts = ['js', 'ts', 'py', 'java', 'c', 'cpp', 'rs', 'go', 'json', 'html', 'css', 'sh', 'bash', 'yaml', 'yml', 'xml', 'sql', 'md'];
-            let highlightedLine = codeLine;
-            if (codeExts.includes(ext)) {
-              const lang = ext === 'ts' ? 'typescript' : (ext === 'js' ? 'javascript' : (ext === 'py' ? 'python' : ext));
-              try {
-                highlightedLine = hljs.highlight(codeLine, { language: lang }).value;
-              } catch (e) {
-                highlightedLine = escapeHtml(codeLine);
-              }
-            } else {
-              highlightedLine = escapeHtml(codeLine);
-            }
-
-            resultHtml += \`<div class="code-read-line"><span class="code-read-line-num">\${lineNum}</span><span class="code-read-content">\${highlightedLine}</span></div>\`;
-          });
-
-          resultHtml += '</div>';
-
-          return resultHtml;
-        }
-      },
-      'write': {
-        call: (args) => \`<div class="bash-command">Write <span class="file-path">\${escapeHtml(args.filePath || '')}</span></div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          return \`<div style="color:var(--success-color)">✓ \${escapeHtml(data.message || 'File written successfully')}</div>\`;
-        }
-      },
-      'edit': {
-        call: (args) => \`<div class="bash-command">Edit <span class="file-path">\${escapeHtml(args.filePath || '')}</span></div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-
-          const diffContent = data.diff || '';
-          if (!diffContent) {
-            return \`<div style="color:var(--success-color)">✓ No changes made</div>\`;
-          }
-
-          // 使用 Diff2Html 生成 Diff
-          try {
-            return Diff2Html.html(diffContent, {
-              drawFileList: false,
-              matching: 'lines',
-              outputFormat: 'side-by-side',
-              colorScheme: 'dark'
-            });
-          } catch(e) {
-            return \`<pre style="background:var(--hover-bg); padding:8px;">\${escapeHtml(diffContent)}</pre>\`;
-          }
-        }
-      },
-      'ls': {
-        call: (args) => \`<div class="bash-command">List <span class="path">\${escapeHtml(args.dirPath || '.')}</span></div>\`,
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          return \`<div style="font-family:monospace; font-size:11px; line-height:1.4; max-height:400px; overflow:auto; white-space:pre; color:var(--text-primary);">\${escapeHtml(data.tree || '')}</div>
-            <div style="color:var(--text-secondary); padding:4px 0; font-size:11px;">
-              \${data.count} file\${data.count !== 1 ? 's' : ''} found
-              \${data.truncated ? '<span style="color:var(--warning-color)"> (truncated)</span>' : ''}
-            </div>\`;
-        }
-      },
-      'glob': {
-        call: (args) => {
-          let output = \`<div class="bash-command">Glob <span class="pattern">\${escapeHtml(args.pattern || '')}</span></div>\`;
-          if (args.searchPath) {
-            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">in \${escapeHtml(args.searchPath)}</div>\`;
-          }
-          return output;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          if (!data.files || data.files.length === 0) {
-            return '<div style="color:var(--warning-color)">No files found</div>';
-          }
-          return \`<div style="font-family:monospace; font-size:12px; max-height:300px; overflow:auto;">
-            \${data.files.map(f => \`<div style="color:var(--text-primary); padding:2px 0;">\${escapeHtml(f)}</div>\`).join('')}
-            \${data.truncated ? '<div style="color:var(--warning-color); padding:4px 0;">(Results truncated...)</div>' : ''}
-            <div style="color:var(--text-secondary); padding:4px 0;">Found \${data.count} file\${data.count !== 1 ? 's' : ''}</div>
-          </div>\`;
-        }
-      },
-      'grep': {
-        call: (args) => {
-          let output = \`<div class="bash-command">Grep <span class="pattern">\${escapeHtml(args.pattern || '')}</span></div>\`;
-          if (args.searchPath) {
-            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">in \${escapeHtml(args.searchPath)}</div>\`;
-          }
-          if (args.include) {
-            output += \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px;">(\${escapeHtml(args.include)})</div>\`;
-          }
-          return output;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          if (!data.results || data.results.length === 0) {
-            return '<div style="color:var(--warning-color)">No matches found</div>';
-          }
-          let currentFile = '';
-          const output = [];
-          for (const match of data.results) {
-            if (currentFile !== match.path) {
-              if (currentFile !== '') {
-                output.push('</div>');
-              }
-              currentFile = match.path;
-              output.push(\`<div style="margin-top:8px;">
-                <div style="color:var(--accent-color); font-weight:bold; font-size:11px;">\${escapeHtml(match.path)}</div>
-              \`);
-            }
-            output.push(\`<div style="display:flex; gap:8px; font-family:monospace; font-size:11px;">
-              <span style="color:var(--text-secondary); min-width:40px;">:\${match.lineNum}</span>
-              <span style="color:var(--text-primary);">\${escapeHtml(match.lineText)}</span>
-            </div>\`);
-          }
-          if (currentFile !== '') {
-            output.push('</div>');
-          }
-          return \`<div style="max-height:400px; overflow:auto;">
-            \${output.join('')}
-            \${data.truncated ? '<div style="color:var(--warning-color); padding:4px 0;">(Results truncated...)</div>' : ''}
-            <div style="color:var(--text-secondary); padding:4px 0;">Found \${data.matches} match\${data.matches !== 1 ? 'es' : ''}</div>
-          </div>\`;
-        }
-      },
-
-      // ===== SubAgent 工具 =====
-      // 主模板（通过工具名直接访问）
-      'spawn_agent': {
-        call: (args) => {
-          return \`<div class="bash-command">Spawn <span class="pattern">\${escapeHtml(args.type || '')}</span> agent</div>\`;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          if (data.error) {
-            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
-          }
-          return \`<div style="color:var(--success-color)">✓ Agent spawned: <strong>\${escapeHtml(data.agentId || '')}</strong> (\${escapeHtml(data.type || '')}) - \${escapeHtml(data.status || '')}</div>\`;
-        }
-      },
-      'send_to_agent': {
-        call: (args) => {
-          return \`<div class="bash-command">Send to <span class="pattern">\${escapeHtml(args.agentId || '')}</span></div>\`;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          if (data.error) {
-            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
-          }
-          return \`<div style="color:var(--success-color)">✓ Message sent to \${escapeHtml(data.agentId || '')}</div>\`;
-        }
-      },
-      'wait': {
-        call: () => {
-          return \`<div class="bash-command">⏳ Waiting for sub-agents...</div>\`;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          if (data.error) {
-            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
-          }
-          return \`<div style="color:var(--info-color)">⏳ \${escapeHtml(data.message || 'Waiting for sub-agents...')}</div>\`;
-        }
-      },
-      // 别名（后端 render.ts 配置使用的 key）
-      'agent-spawn': {
-        call: (args) => {
-          return \`<div class="bash-command">Spawn <span class="pattern">\${escapeHtml(args.type || '')}</span> agent</div>\`;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          if (data.error) {
-            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
-          }
-          return \`<div style="color:var(--success-color)">✓ Agent spawned: <strong>\${escapeHtml(data.agentId || '')}</strong> (\${escapeHtml(data.type || '')}) - \${escapeHtml(data.status || '')}</div>\`;
-        }
-      },
-      'agent-send': {
-        call: (args) => {
-          return \`<div class="bash-command">Send to <span class="pattern">\${escapeHtml(args.agentId || '')}</span></div>\`;
-        },
-        result: (data, success) => {
-          if (!success) return formatError(data);
-          if (data.error) {
-            return \`<div style="color:var(--error-color)">✗ \${escapeHtml(data.error)}</div>\`;
-          }
-          return \`<div style="color:var(--success-color)">✓ Message sent to \${escapeHtml(data.agentId || '')}</div>\`;
-        }
-      },
-
       'json': {
         call: (args) => \`<pre style="margin:0; font-size:12px;">\${escapeHtml(JSON.stringify(args, null, 2))}</pre>\`,
         result: (data, success) => {
@@ -1412,6 +1143,10 @@ class ViewerWorker {
         }
       }
     };
+
+    // 模板缓存
+    const templateCache = new Map();
+
 
     function formatError(data) {
        const text = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
@@ -1469,21 +1204,91 @@ class ViewerWorker {
       }
     }
 
+    /**
+     * 根据模板名解析文件路径
+     */
+    function resolveTemplatePath(templateName) {
+      // 模板名到文件路径的映射
+      const templateToFileMap = {
+        'agent-spawn': 'system/subagent',
+        'agent-list': 'system/subagent',
+        'agent-send': 'system/subagent',
+        'agent-close': 'system/subagent',
+        'wait': 'system/subagent',
+        'file-read': 'system/fs',
+        'file-write': 'system/fs',
+        'file-list': 'system/fs',
+        'skill': 'system/skill',
+        'invoke_skill': 'system/skill',
+        'command': 'system/shell',
+        'bash': 'system/shell',
+        'shell': 'system/shell',
+        'web': 'system/web',
+        'fetch': 'system/web',
+        'math': 'system/math',
+        'calculator': 'system/math',
+        // opencode 工具
+        'read': 'opencode/read',
+        'write': 'opencode/write',
+        'edit': 'opencode/edit',
+        'ls': 'opencode/ls',
+        'glob': 'opencode/glob',
+        'grep': 'opencode/grep',
+      };
+
+      return templateToFileMap[templateName] || 'opencode/' + templateName;
+    }
+
+    /**
+     * 异步加载模板
+     */
+    async function loadTemplate(templateName) {
+      if (templateCache.has(templateName)) {
+        return templateCache.get(templateName);
+      }
+
+      try {
+        const path = resolveTemplatePath(templateName);
+        const module = await import('/tools/' + path + '.render.js');
+        const template = module.TEMPLATES?.[templateName];
+
+        if (template) {
+          templateCache.set(templateName, template);
+          return template;
+        }
+
+        console.warn('[Viewer Worker] 模板 "' + templateName + '" 在文件中未找到');
+        return null;
+      } catch (e) {
+        console.warn('[Viewer Worker] 加载模板失败: ' + templateName, e.message);
+        return null;
+      }
+    }
+
     function getToolRenderTemplate(toolName) {
       const config = toolRenderConfigs[toolName];
       const callTemplateName = (config?.render?.call) || 'json';
       const resultTemplateName = (config?.render?.result) || 'json';
 
-      // 检查是否为内联模板
       const callIsInline = callTemplateName === '__inline__';
       const resultIsInline = resultTemplateName === '__inline__';
 
-      const callTemplate = callIsInline
-        ? config?.render?.inlineCall
-        : (RENDER_TEMPLATES[callTemplateName]?.call || RENDER_TEMPLATES['json'].call);
-      const resultTemplate = resultIsInline
-        ? config?.render?.inlineResult
-        : (RENDER_TEMPLATES[resultTemplateName]?.result || RENDER_TEMPLATES['json'].result);
+      let callTemplate, resultTemplate;
+
+      if (callIsInline) {
+        callTemplate = config?.render?.inlineCall;
+      } else {
+        // 优先从缓存读取
+        const cached = templateCache.get(callTemplateName);
+        callTemplate = cached?.call || RENDER_TEMPLATES['json'].call;
+      }
+
+      if (resultIsInline) {
+        resultTemplate = config?.render?.inlineResult;
+      } else {
+        const cached = templateCache.get(resultTemplateName);
+        resultTemplate = cached?.result || RENDER_TEMPLATES['json'].result;
+      }
 
       return {
         call: callTemplate,
@@ -1589,6 +1394,28 @@ class ViewerWorker {
           toolRenderConfigs[tool.name] = tool;
           TOOL_NAMES[tool.name] = DEFAULT_DISPLAY_NAMES[tool.name] || tool.name;
         }
+
+        // 预加载所有需要的模板
+        const templatesToLoad = new Set();
+        for (const tool of tools) {
+          const renderConfig = tool.render;
+          if (renderConfig) {
+            if (typeof renderConfig === 'string') {
+              templatesToLoad.add(renderConfig);
+            } else if (typeof renderConfig === 'object') {
+              if (renderConfig.call && renderConfig.call !== '__inline__') {
+                templatesToLoad.add(renderConfig.call);
+              }
+              if (renderConfig.result && renderConfig.result !== '__inline__') {
+                templatesToLoad.add(renderConfig.result);
+              }
+            }
+          }
+        }
+
+        // 并行加载所有模板
+        const loadPromises = Array.from(templatesToLoad).map(name => loadTemplate(name));
+        await Promise.all(loadPromises);
 
         render(currentMessages);
       } catch (e) {

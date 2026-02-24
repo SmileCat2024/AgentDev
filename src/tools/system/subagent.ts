@@ -155,7 +155,7 @@ export const sendToAgentTool: Tool = createTool({
     },
     required: ['agentId', 'message']
   },
-  render: { call: 'agent-send', result: 'json' },
+  render: { call: 'agent-send', result: 'agent-send' },
   execute: async ({ agentId, message }, context?: { parentAgent?: Agent }) => {
     const parentAgent = context?.parentAgent;
     if (!parentAgent) {

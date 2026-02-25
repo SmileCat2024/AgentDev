@@ -4,11 +4,8 @@
  */
 
 import { createTool } from '../../core/tool.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import path from 'path';
-
-const execAsync = promisify(exec);
 
 const MAX_LINE_LENGTH = 2000;
 const LIMIT = 100;
@@ -17,13 +14,25 @@ const LIMIT = 100;
  * 获取 ripgrep 路径
  */
 async function getRipgrepPath(): Promise<string> {
-  try {
-    // 尝试使用 rg 命令
-    await execAsync('rg --version');
-    return 'rg';
-  } catch {
-    throw new Error('ripgrep (rg) is not installed. Please install it from https://github.com/BurntSushi/ripgrep');
-  }
+  return new Promise((resolve, reject) => {
+    const child = spawn('rg', ['--version'], { windowsHide: true });
+    let hasOutput = false;
+
+    child.stdout.on('data', () => { hasOutput = true; });
+    child.stderr.on('data', () => { hasOutput = true; });
+
+    child.on('close', (code) => {
+      if (hasOutput || code === 0) {
+        resolve('rg');
+      } else {
+        reject(new Error('ripgrep (rg) is not installed. Please install it from https://github.com/BurntSushi/ripgrep'));
+      }
+    });
+
+    child.on('error', () => {
+      reject(new Error('ripgrep (rg) is not installed. Please install it from https://github.com/BurntSushi/ripgrep'));
+    });
+  });
 }
 
 /**
@@ -63,9 +72,36 @@ export const grepTool = createTool({
     args.push(searchPath);
 
     try {
-      const { stdout } = await execAsync(`${rgPath} ${args.map(a => a.includes(' ') ? `"${a}"` : a).join(' ')}`, {
-        signal: context?.signal,
-        maxBuffer: 10 * 1024 * 1024 // 10MB
+      // 使用 spawn 避免在 Windows 上 shell 解析特殊字符（如 |）的问题
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        const child = spawn(rgPath, args, {
+          windowsHide: true
+        });
+
+        child.stdout.on('data', (chunk) => chunks.push(chunk));
+        child.stderr.on('data', (chunk) => {
+          // ripgrep 将匹配结果输出到 stdout，错误信息到 stderr
+        });
+
+        child.on('error', (err) => reject(err));
+        child.on('close', (code) => {
+          if (context?.signal?.aborted) {
+            return reject(new Error('Search was aborted'));
+          }
+          // code 1 表示没有匹配，不是错误
+          if (code !== 0 && code !== 1) {
+            return reject(new Error(`rg exited with code ${code}`));
+          }
+          resolve(Buffer.concat(chunks).toString('utf-8'));
+        });
+
+        // 支持取消
+        if (context?.signal) {
+          context.signal.addEventListener('abort', () => {
+            child.kill();
+          });
+        }
       });
 
       const lines = stdout.trim().split(/\r?\n/);
@@ -108,17 +144,8 @@ export const grepTool = createTool({
         results: finalMatches
       };
     } catch (error: any) {
-      // ripgrep 返回 1 表示没有匹配，不是错误
-      if (error.signal === 'SIGTERM' || context?.signal?.aborted) {
+      if (error.message?.includes('Search was aborted') || context?.signal?.aborted) {
         throw new Error('Search was aborted');
-      }
-      if (error.code === 1 || (error.stderr && error.stderr.includes('no matches found'))) {
-        return {
-          pattern,
-          matches: 0,
-          truncated: false,
-          results: []
-        };
       }
       throw error;
     }

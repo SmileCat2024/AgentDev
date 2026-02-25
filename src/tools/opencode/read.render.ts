@@ -82,11 +82,9 @@ export const readRender: InlineRenderTemplate = {
       if (codeExts.includes(ext)) {
         const lang = ext === 'ts' ? 'typescript' : (ext === 'js' ? 'javascript' : (ext === 'py' ? 'python' : ext));
         try {
-          // 注意：这里需要在浏览器环境中使用 hljs，所以在 render 函数中无法直接高亮
-          // 实际高亮会在浏览器的 getToolRenderTemplate 中处理
-          highlightedLine = escapeHtml(codeLine);
+          highlightedLine = hljs.highlight(codeLine, { language: lang }).value;
         } catch (e) {
-          highlightedLine = escapeHtml(codeLine);
+          highlightedLine = hljs.highlightAuto(codeLine).value;
         }
       } else {
         highlightedLine = escapeHtml(codeLine);

@@ -188,7 +188,7 @@ class ProgrammingHelperAgent extends BasicAgent {
 async function main() {
   const programmingAgent = new ProgrammingHelperAgent();
 
-  await programmingAgent.withViewer('编程小助手', 2026);
+  await programmingAgent.withViewer('编程小助手', 2026, false);
   console.log('调试页面: http://localhost:2026\n');
 
   // 交互循环

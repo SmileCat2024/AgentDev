@@ -523,14 +523,15 @@ export class Agent {
    *
    * @param name Agent 显示名称（可选，默认使用类名）
    * @param port HTTP 端口（默认 2026，仅在首次调用时生效）
+   * @param openBrowser 是否自动打开浏览器（默认 true）
    */
-  async withViewer(name?: string, port?: number): Promise<this> {
+  async withViewer(name?: string, port?: number, openBrowser?: boolean): Promise<this> {
     this.debugHub = DebugHub.getInstance();
     this.debugEnabled = true;
 
     // 首次调用时启动调试服务器
     if (!this.debugHub.getCurrentAgentId()) {
-      await this.debugHub.start(port);
+      await this.debugHub.start(port, openBrowser);
     }
 
     // 注册自身到 Hub

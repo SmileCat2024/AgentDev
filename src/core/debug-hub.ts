@@ -71,15 +71,16 @@ export class DebugHub {
   /**
    * 启动调试服务器
    * @param port HTTP 端口（默认 2026）
+   * @param openBrowser 是否自动打开浏览器（默认 true）
    */
-  async start(port: number = 2026): Promise<void> {
+  async start(port: number = 2026, openBrowser: boolean = true): Promise<void> {
     if (this.worker) {
       console.log(`[DebugHub] 调试服务器已在端口 ${this.workerPort} 运行`);
       return;
     }
 
     this.workerPort = port;
-    await this.startWorker();
+    await this.startWorker(openBrowser);
     console.log(`[DebugHub] 调试服务器已启动: http://localhost:${port}`);
   }
 
@@ -255,12 +256,13 @@ export class DebugHub {
 
   /**
    * 启动 Worker 进程
+   * @param openBrowser 是否自动打开浏览器
    */
-  private async startWorker(): Promise<void> {
+  private async startWorker(openBrowser: boolean = true): Promise<void> {
     return new Promise((resolve, reject) => {
       const workerPath = join(__dirname, 'viewer-worker.js');
 
-      this.worker = fork(workerPath, [String(this.workerPort)], {
+      this.worker = fork(workerPath, [String(this.workerPort), String(openBrowser)], {
         silent: false,
       });
 

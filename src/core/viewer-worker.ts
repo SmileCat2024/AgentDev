@@ -18,6 +18,7 @@ import {
 
 class ViewerWorker {
   private port: number;
+  private openBrowser: boolean;
   private server: ReturnType<typeof createServer>;
 
   // 多 Agent 会话存储
@@ -30,8 +31,9 @@ class ViewerWorker {
   private readonly MAX_MESSAGES = 10000;
   private readonly MAX_BYTES = 50 * 1024 * 1024; // 50MB
 
-  constructor(port: number) {
+  constructor(port: number, openBrowser: boolean = true) {
     this.port = port;
+    this.openBrowser = openBrowser;
     this.server = createServer();
   }
 
@@ -51,14 +53,16 @@ class ViewerWorker {
         const url = `http://localhost:${this.port}`;
         console.log(`[Viewer Worker] ${url}`);
 
-        // 打开浏览器
-        try {
-          const open = await import('open');
-          await open.default(url).catch(() => {
-            console.warn('[Viewer Worker] 浏览器打开失败，请手动访问: ' + url);
-          });
-        } catch {
-          console.warn('[Viewer Worker] open 模块不可用，请手动访问: ' + url);
+        // 打开浏览器（仅在 openBrowser 为 true 时）
+        if (this.openBrowser) {
+          try {
+            const open = await import('open');
+            await open.default(url).catch(() => {
+              console.warn('[Viewer Worker] 浏览器打开失败，请手动访问: ' + url);
+            });
+          } catch {
+            console.warn('[Viewer Worker] open 模块不可用，请手动访问: ' + url);
+          }
         }
 
         // 通知主进程服务器已启动
@@ -2062,7 +2066,8 @@ class ViewerWorker {
 // ========== Worker 进程入口 ==========
 
 const port = parseInt(process.argv[2] || '2026', 10);
-const worker = new ViewerWorker(port);
+const openBrowser = process.argv[3] !== 'false';  // 默认 true
+const worker = new ViewerWorker(port, openBrowser);
 
 // 立即启动服务器
 worker.start().catch(err => {

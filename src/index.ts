@@ -9,8 +9,10 @@ export { Agent } from './core/agent.js';
 export { Context } from './core/context.js';
 export { createTool, ToolRegistry } from './core/tool.js';
 export { runReactLoop } from './core/loop.js';
-export { MessageViewer } from './core/viewer.js';
 export { DebugHub } from './core/debug-hub.js';
+
+// Feature 系统
+export * from './features/index.js';
 
 // 预置 Agent 类
 export * from './agents/index.js';
@@ -63,6 +65,15 @@ export type {
   AgentSession,
   DebugHubIPCMessage,
 } from './core/types.js';
+
+// Feature 类型
+export type {
+  AgentFeature,
+  FeatureInitContext,
+  FeatureContext,
+  ContextInjector,
+  ToolContextValue,
+} from './core/feature.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';
 

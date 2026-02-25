@@ -8,21 +8,19 @@
  */
 
 import { Agent } from '../../core/agent.js';
+import { MCPFeature, SkillFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
-import type { MCPConfig } from '../../mcp/types.js';
 import { loadConfig } from '../../core/config.js';
 import { createOpenAILLM } from '../../llm/openai.js';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
-import { join } from 'path';
 
 // 导入系统工具（保留必要的非文件操作工具）
 import {
   shellTool,
   webFetchTool,
   calculatorTool,
-  invokeSkillTool,
   spawnAgentTool,
   sendToAgentTool,
   waitTool,
@@ -41,6 +39,7 @@ import {
 /**
  * 默认工具集
  * 使用 opencode 工具替代原 system 文件工具，提供更强的能力
+ * 注意：invokeSkillTool 由 SkillFeature 提供，不在默认工具集中
  */
 const DEFAULT_TOOLS: Tool[] = [
   // 文件操作工具（opencode 系列，能力更强）
@@ -55,7 +54,6 @@ const DEFAULT_TOOLS: Tool[] = [
   shellTool,     // Shell 命令执行
   webFetchTool,  // HTTP 请求
   calculatorTool,// 计算器
-  invokeSkillTool, // 技能调用
 
   // 子代理管理工具
   spawnAgentTool,
@@ -95,7 +93,7 @@ export interface BasicAgentConfig {
   name?: string;
   /** 系统提示词（可选，后续可通过 setPrompt() 设置） */
   systemMessage?: string;
-  /** MCP 配置（可选，将自动加载 .agentdev/mcps/{name}.json） */
+  /** MCP 服务器名称（可选，将自动加载 .agentdev/mcps/{name}.json） */
   mcpServer?: string;
   /** MCP 运行时上下文（可选，如 GitHub Token） */
   mcpContext?: Record<string, unknown>;
@@ -103,22 +101,6 @@ export interface BasicAgentConfig {
   tools?: Tool[];
   /** Skills 目录（可选，默认使用 .agentdev/skills） */
   skillsDir?: string;
-}
-
-/**
- * 加载 MCP 配置
- */
-function loadMCPConfig(serverName: string): MCPConfig | undefined {
-  try {
-    const configPath = join(cwd(), '.agentdev', 'mcps', `${serverName}.json`);
-    if (!existsSync(configPath)) {
-      return undefined;
-    }
-    const content = readFileSync(configPath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -132,6 +114,7 @@ export class BasicAgent extends Agent {
   protected _mcpServer?: string;
   protected _mcpContext?: Record<string, unknown>;
   protected _config?: AgentConfigFile;
+  protected _skillsDir?: string;
 
   /**
    * 构造函数
@@ -148,19 +131,13 @@ export class BasicAgent extends Agent {
       SYSTEM_CURRENT_MODEL: 'unknown', // 稍后更新
     };
 
-    // 构建 MCP 配置
-    const mcpConfig = config.mcpServer ? loadMCPConfig(config.mcpServer) : undefined;
-
     // 构建完整的 Agent 配置
     const agentConfig: AgentConfig = {
       llm: config.llm!, // 如果是 undefined，会在 onInitiate 中延迟加载
       tools: config.tools ?? DEFAULT_TOOLS,
       maxTurns: Infinity,
       systemMessage: config.systemMessage,
-      skillsDir: config.skillsDir ?? '.agentdev/skills',
       name: config.name,
-      mcp: mcpConfig,
-      mcpContext: config.mcpContext,
     };
 
     super(agentConfig);
@@ -169,7 +146,16 @@ export class BasicAgent extends Agent {
     this._systemContext = systemContext;
     this._mcpServer = config.mcpServer;
     this._mcpContext = config.mcpContext;
+    this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
+
+    // 使用新的 Feature API
+    if (config.mcpServer) {
+      this.use(new MCPFeature(config.mcpServer));
+    }
+
+    // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
+    this.use(new SkillFeature(config.skillsDir));
 
     // 如果没有传入 llm，标记需要延迟加载
     if (!config.llm) {

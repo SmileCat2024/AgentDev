@@ -57,7 +57,7 @@ export const grepRender: InlineRenderTemplate = {
           <div style="color:var(--accent-color); font-weight:bold; font-size:11px;">${escapeHtml(match.path)}</div>
         `);
       }
-      output.push(`<div style="display:flex; gap:8px; font-family:monospace; font-size:11px;">
+      output.push(`<div style="display:flex; gap:8px; font-family:&quot;Fira Code&quot;, &quot;Cascadia Code&quot;, &quot;Source Code Pro&quot;, &quot;JetBrains Mono&quot;, ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size:11px;">
         <span style="color:var(--text-secondary); min-width:40px;">:${match.lineNum}</span>
         <span style="color:var(--text-primary);">${escapeHtml(match.lineText)}</span>
       </div>`);

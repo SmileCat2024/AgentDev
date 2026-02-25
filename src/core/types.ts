@@ -153,11 +153,19 @@ export interface AgentConfig {
   maxTurns?: number;
   systemMessage?: string | TemplateSource;
   name?: string;  // Agent 显示名称（用于调试）
-  skillsDir?: string;  // Skills 目录路径
-  /** MCP 配置（可选） */
-  mcp?: MCPConfig;
-  /** MCP 上下文参数（运行时注入，如用户 Token） */
-  mcpContext?: Record<string, unknown>;
+
+  // ========== Feature 系统 ==========
+  /**
+   * Feature 配置
+   *
+   * 新的声明式 Feature 注册方式
+   */
+  features?: {
+    /** 启用的 Feature 列表 */
+    enabled?: string[];
+    /** Feature 特定配置 */
+    [key: string]: unknown;
+  };
 }
 
 // 上下文中间件 - 用于处理消息数组

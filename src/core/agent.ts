@@ -4,8 +4,8 @@
  */
 
 import type { AgentConfig, ToolCall, Tool } from './types.js';
+import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
-import type { SkillMetadata } from '../skills/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
@@ -64,15 +64,8 @@ export class Agent {
   protected debugHub?: DebugHub;
   protected agentId?: string;
   protected debugEnabled: boolean = false;
-  protected skillsDir?: string;
-  protected skills: SkillMetadata[] = [];
-  protected skillsLoaded: boolean = false;
-
-  // MCP 相关
-  protected mcpConnectionManager?: MCPConnectionManager;
-  protected mcpConfig?: AgentConfig['mcp'];
-  protected mcpToolsRegistered: boolean = false;
-  protected mcpContext?: Record<string, unknown>;
+  /** Agent 配置（保存原始配置供 Feature 使用） */
+  protected config: AgentConfig;
 
   // 子代理相关
   protected _pool?: AgentPool;
@@ -81,6 +74,17 @@ export class Agent {
   protected _agentId?: string;
   /** 父代理的 AgentPool 引用（仅子代理有值） */
   protected _parentPool?: import('./agent-pool.js').AgentPool;
+
+  // ========== Feature 系统 ==========
+  /** 已注册的 Features */
+  private features = new Map<string, AgentFeature>();
+  /** 上下文注入器列表 */
+  private contextInjectors: Array<{
+    pattern: string | RegExp;
+    injector: ContextInjector;
+  }> = [];
+  /** Feature 工具是否已注册 */
+  private featureToolsReady: boolean = false;
 
   // ========== 生命周期状态 ==========
   /** Agent 是否已初始化（onInitiate 只触发一次） */
@@ -93,6 +97,7 @@ export class Agent {
   protected _callStartTimes: Map<number, number> = new Map();
 
   constructor(config: AgentConfig) {
+    this.config = config;
     this.llm = config.llm;
     this.maxTurns = config.maxTurns ?? 10;
     this.systemMessage = config.systemMessage;
@@ -109,19 +114,6 @@ export class Agent {
       for (const tool of config.tools) {
         this.tools.register(tool);
       }
-    }
-
-    // Skills 配置
-    if (config.skillsDir) {
-      this.skillsDir = config.skillsDir;
-    }
-
-    // MCP 配置（懒加载，不在构造函数中连接）
-    if (config.mcp) {
-      this.mcpConfig = config.mcp;
-      this.mcpContext = config.mcpContext;
-      // 注意：不在此时建立连接，采用懒加载策略
-      // 连接将在首次调用 MCP 工具时建立
     }
   }
 
@@ -185,8 +177,8 @@ export class Agent {
    * @returns Agent 响应内容
    */
   async onCall(input: string): Promise<string> {
-    // 注册 MCP 工具（懒加载，首次调用时才连接）
-    await this.registerMCPTools();
+    // 确保 Feature 工具已注册（替换原有的 registerMCPTools）
+    await this.ensureFeatureTools();
 
     // 设置通知上下文
     try {
@@ -611,17 +603,14 @@ export class Agent {
    * @returns 渲染后的系统提示词字符串
    */
   private async resolveSystemPrompt(): Promise<string> {
-    // 加载 skills（如果配置了且未加载）
-    if (this.skillsDir && !this.skillsLoaded) {
-      const { discover } = await import('../skills/loader.js');
-      this.skills = await discover({ dir: this.skillsDir });
-      this.skillsLoaded = true;
-    }
+    // 从 SkillFeature 获取 skills（如果已注册）
+    const skillFeature = this.features.get('skill') as any;
+    const skills = skillFeature?.getSkills ? skillFeature.getSkills() : [];
 
     // 使用用户设置的上下文，并注入 skills
     const context: PlaceholderContext = {
       ...this.systemContext,
-      skills: this.skills as any,
+      skills: skills as any,
     };
 
     // 直接字符串
@@ -859,108 +848,6 @@ export class Agent {
     }
   }
 
-  // ========== MCP 集成 ==========
-
-  /**
-   * 注册 MCP 工具（懒加载）
-   *
-   * 首次调用时才建立连接并注册工具
-   */
-  protected async registerMCPTools(): Promise<void> {
-    console.log('[MCP] registerMCPTools called');
-    console.log('[MCP] mcpConfig:', JSON.stringify(this.mcpConfig, null, 2));
-    console.log('[MCP] mcpToolsRegistered:', this.mcpToolsRegistered);
-
-    // 已经注册过，跳过
-    if (this.mcpToolsRegistered || !this.mcpConfig) {
-      console.log('[MCP] Skipping: already registered or no config');
-      return;
-    }
-
-    try {
-      // 创建连接管理器
-      this.mcpConnectionManager = new MCPConnectionManager();
-      const mcpManager = this.mcpConnectionManager; // 保存到局部变量
-      let registeredCount = 0;
-
-      // 遍历配置的 MCP 服务器
-      for (const [serverId, serverConfig] of Object.entries(this.mcpConfig.servers)) {
-        try {
-          // 连接到服务器
-          const mcpServer = await mcpManager.connectServer(
-            serverId,
-            serverConfig
-          );
-
-          // 获取服务器的工具列表
-          const tools = await mcpManager.listTools(serverId);
-          console.log(`[MCP] Server "${serverId}" provides ${tools.length} tools:`, tools.map(t => t.name || '(unnamed)').join(', '));
-
-          // 为每个工具创建适配器并注册
-          for (const tool of tools) {
-            // 添加服务器前缀：mcp.serverId:toolName
-            // 确保 tool.name 存在
-            if (!tool.name) {
-              console.warn(`[MCP] Skipping tool without name:`, tool);
-              continue;
-            }
-
-            // 调试：打印 inputSchema 的结构（仅前 3 个工具）
-            if (registeredCount < 3) {
-              console.log(`[MCP] Tool "${tool.name}" inputSchema:`, JSON.stringify(tool.inputSchema, null, 2));
-            }
-
-            const originalToolName = tool.name; // 保存到局部变量以便闭包使用
-            // 将工具名称中的特殊字符替换为下划线，以符合严格 API 的函数命名规范
-            // 只保留字母、数字和下划线
-            const toolName = `mcp_${serverId}_${originalToolName}`.replace(/[^a-zA-Z0-9_]/g, '_');
-
-            const adaptedTool = new MCPToolAdapter({
-              name: toolName,
-              description: tool.description || `MCP tool: ${originalToolName}`,
-              inputSchema: tool.inputSchema,
-              enabled: true,
-              handler: async (args: any) => {
-                // 调用 MCP 工具 (参数顺序: name, serverName, args)
-                return await mcpManager.callTool(
-                  originalToolName,  // 工具名称
-                  serverId,        // 服务器名称
-                  args              // 工具参数
-                );
-              },
-            }, { serverName: serverId });
-
-            // 注册到工具注册表
-            this.tools.register(adaptedTool);
-            registeredCount++;
-            console.log(`[MCP] Registered tool: ${toolName}`);
-          }
-
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          console.warn(`[MCP] Failed to register tools from "${serverId}": ${errorMsg}`);
-          // 继续处理其他服务器
-        }
-      }
-
-      this.mcpToolsRegistered = true;
-      console.log(`[MCP] Total registered tools: ${registeredCount}`);
-
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[MCP] Failed to register MCP tools: ${errorMsg}`);
-    }
-  }
-
-  /**
-   * 清理 MCP 连接
-   */
-  protected async disposeMCP(): Promise<void> {
-    if (this.mcpConnectionManager) {
-      await this.mcpConnectionManager.dispose();
-    }
-  }
-
   // ========== 内部实现 ==========
 
   /**
@@ -1034,19 +921,21 @@ export class Agent {
 
     try {
       // 执行工具
-      // 为 invoke_skill 注入 skills 上下文
-      // 为 MCP 工具注入 mcpContext 上下文
-      // 为 spawn_agent 注入父代理引用
+      // 使用声明的上下文注入器
       let toolContext: any = undefined;
 
-      if (call.name === 'invoke_skill') {
-        toolContext = { _context: { skills: this.skills } };
-      } else if (call.name.startsWith('mcp.')) {
-        // MCP 工具注入 mcpContext
-        toolContext = { _mcpContext: this.mcpContext };
-      } else if (['spawn_agent', 'list_agents', 'send_to_agent', 'close_agent', 'wait'].includes(call.name)) {
-        // 子代理管理工具注入父代理引用
-        toolContext = { parentAgent: this };
+      for (const { pattern, injector } of this.contextInjectors) {
+        if (typeof pattern === 'string' && pattern === call.name) {
+          toolContext = { ...toolContext, ...injector(call) };
+        } else if (pattern instanceof RegExp && pattern.test(call.name)) {
+          toolContext = { ...toolContext, ...injector(call) };
+        }
+      }
+
+      // 向后兼容：子代理管理工具注入父代理引用
+      // TODO: 未来可提取为 SubAgentFeature
+      if (['spawn_agent', 'list_agents', 'send_to_agent', 'close_agent', 'wait'].includes(call.name)) {
+        toolContext = { ...toolContext, parentAgent: this };
       }
 
       const data = await tool.execute(call.arguments, toolContext);
@@ -1111,8 +1000,16 @@ export class Agent {
       console.warn('[Agent] onDestroy hook error:', error);
     }
 
-    // 清理 MCP 连接
-    await this.disposeMCP();
+    // 清理 Features
+    for (const feature of this.features.values()) {
+      if (feature.onDestroy) {
+        try {
+          await feature.onDestroy({ agentId: this.agentId || '', config: this.config });
+        } catch (error) {
+          console.warn(`[Agent] Feature ${feature.name} cleanup error:`, error);
+        }
+      }
+    }
 
     // 注销 DebugHub
     if (this.debugEnabled && this.agentId && this.debugHub) {
@@ -1122,5 +1019,86 @@ export class Agent {
     // 重置状态
     this._initialized = false;
     this.persistentContext = undefined;
+  }
+
+  // ========== Feature 系统方法 ==========
+
+  /**
+   * 使用 Feature（链式调用）
+   *
+   * @param feature Feature 实例
+   * @returns this，支持链式调用
+   *
+   * @example
+   * ```typescript
+   * const agent = new Agent({ llm })
+   *   .use(new MCPFeature(mcpConfig))
+   *   .use(new SkillFeature({ dir: './skills' }));
+   * ```
+   */
+  use(feature: AgentFeature): this {
+    this.features.set(feature.name, feature);
+
+    // 收集上下文注入器
+    if (feature.getContextInjectors) {
+      for (const [pattern, injector] of feature.getContextInjectors()) {
+        this.contextInjectors.push({ pattern, injector });
+      }
+    }
+
+    return this;
+  }
+
+  /**
+   * 确保 Feature 工具已注册
+   */
+  private async ensureFeatureTools(): Promise<void> {
+    if (this.featureToolsReady) return;
+
+    const initContext: FeatureInitContext = {
+      agentId: this.agentId || '',
+      config: this.config,
+      getFeature: <T extends AgentFeature>(name: string): T | undefined => {
+        return this.features.get(name) as T | undefined;
+      },
+      registerTool: (tool) => this.tools.register(tool),
+    };
+
+    // 处理所有已注册的 Features
+    for (const [name, feature] of this.features) {
+      initContext.featureConfig = this.config.features?.[name];
+
+      // 同步工具
+      if (feature.getTools) {
+        for (const tool of feature.getTools()) {
+          this.tools.register(tool);
+        }
+      }
+
+      // 异步工具
+      if (feature.getAsyncTools) {
+        try {
+          const tools = await feature.getAsyncTools(initContext);
+          for (const tool of tools) {
+            this.tools.register(tool);
+          }
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.warn(`[Agent] Feature ${name} failed to load tools: ${errorMsg}`);
+        }
+      }
+
+      // 初始化钩子
+      if (feature.onInitiate) {
+        try {
+          await feature.onInitiate(initContext);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.warn(`[Agent] Feature ${name} onInitiate failed: ${errorMsg}`);
+        }
+      }
+    }
+
+    this.featureToolsReady = true;
   }
 }

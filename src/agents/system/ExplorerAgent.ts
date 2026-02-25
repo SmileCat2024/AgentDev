@@ -7,13 +7,13 @@
  */
 
 import { Agent } from '../../core/agent.js';
+import { SkillFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfig } from '../../core/config.js';
 import { createOpenAILLM } from '../../llm/openai.js';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
-import { join } from 'path';
 import { TemplateComposer } from '../../template/composer.js';
 
 // 导入系统工具（shell 工具）
@@ -84,6 +84,7 @@ export interface ExplorerAgentConfig {
 export class ExplorerAgent extends Agent {
   protected _systemContext: SystemContext;
   protected _config?: AgentConfigFile;
+  protected _skillsDir?: string;
 
   /**
    * 构造函数
@@ -106,7 +107,6 @@ export class ExplorerAgent extends Agent {
       tools: EXPLORER_TOOLS,  // 固定使用探索工具集
       maxTurns: Infinity,      // 无限交互次数
       systemMessage: config.systemMessage,
-      skillsDir: config.skillsDir ?? '.agentdev/skills',
       name: config.name,
     };
 
@@ -114,7 +114,11 @@ export class ExplorerAgent extends Agent {
 
     // 保存配置
     this._systemContext = systemContext;
+    this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
+
+    // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
+    this.use(new SkillFeature(config.skillsDir));
 
     // 如果没有传入 llm，标记需要延迟加载
     if (!config.llm) {

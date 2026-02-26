@@ -106,7 +106,7 @@ export interface LLMFinishContext {
 }
 
 /**
- * 工具上下文 - onPreToolUse 钩子的参数
+ * 工具上下文 - onToolUse 钩子的参数
  *
  * 提供工具调用时的完整上下文信息
  */
@@ -124,7 +124,7 @@ export interface ToolContext {
 }
 
 /**
- * 工具结果 - onPostToolUse 钩子的参数
+ * 工具结果 - onToolFinished 钩子的参数
  *
  * 提供工具执行后的完整结果信息
  */

@@ -1,6 +1,8 @@
 /**
  * 系统工具统一导出
  * 包含所有内置系统工具及其渲染模板
+ *
+ * 注意：SubAgent 工具已迁移到 SubAgentFeature，不再在此导出
  */
 
 // 导出工具
@@ -9,7 +11,7 @@ export { shellTool } from './shell.js';
 export { webFetchTool } from './web.js';
 export { calculatorTool } from './math.js';
 export { invokeSkillTool } from './skill.js';
-export { spawnAgentTool, listAgentsTool, sendToAgentTool, closeAgentTool, waitTool } from './subagent.js';
+// SubAgent 工具已迁移到 src/features/subagent.ts
 
 // 导出渲染模板
 export { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
@@ -17,6 +19,7 @@ export { shellCommandRender } from './shell.render.js';
 export { webFetchRender } from './web.render.js';
 export { calculatorRender } from './math.render.js';
 export { invokeSkillRender } from './skill.render.js';
+// SubAgent 渲染模板保留（SubAgentFeature 仍使用这些模板）
 export { spawnAgentRender, listAgentsRender, sendToAgentRender, closeAgentRender, waitRender } from './subagent.render.js';
 
 // 导入工具和渲染模板
@@ -25,7 +28,6 @@ import { shellTool } from './shell.js';
 import { webFetchTool } from './web.js';
 import { calculatorTool } from './math.js';
 import { invokeSkillTool } from './skill.js';
-import { spawnAgentTool, listAgentsTool, sendToAgentTool, closeAgentTool, waitTool } from './subagent.js';
 
 import { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
 import { shellCommandRender } from './shell.render.js';
@@ -36,6 +38,7 @@ import { spawnAgentRender, listAgentsRender, sendToAgentRender, closeAgentRender
 
 /**
  * 所有系统工具
+ * 注意：SubAgent 工具已迁移到 SubAgentFeature，不在此列表中
  */
 export const SYSTEM_TOOLS = [
   // 文件系统工具
@@ -55,12 +58,7 @@ export const SYSTEM_TOOLS = [
   // Skills 工具
   invokeSkillTool,
 
-  // SubAgent 工具
-  spawnAgentTool,
-  listAgentsTool,
-  sendToAgentTool,
-  closeAgentTool,
-  waitTool,
+  // SubAgent 工具已迁移到 SubAgentFeature
 ] as const;
 
 /**
@@ -85,7 +83,7 @@ export const SYSTEM_RENDER_TEMPLATES: Record<string, any> = {
   // Skills 工具
   'invoke_skill': invokeSkillRender,
 
-  // SubAgent 工具
+  // SubAgent 工具（保留渲染模板，供 SubAgentFeature 使用）
   'spawn_agent': spawnAgentRender,
   'list_agents': listAgentsRender,
   'send_to_agent': sendToAgentRender,
@@ -95,6 +93,7 @@ export const SYSTEM_RENDER_TEMPLATES: Record<string, any> = {
 
 /**
  * 按名称索引的工具映射
+ * 注意：SubAgent 工具已迁移到 SubAgentFeature，不在此映射中
  */
 export const SYSTEM_TOOLS_MAP = new Map(
   SYSTEM_TOOLS.map(tool => [tool.name, tool])

@@ -7,7 +7,7 @@
  */
 
 import { Agent } from '../../core/agent.js';
-import { SkillFeature } from '../../features/index.js';
+import { SkillFeature, SubAgentFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfig } from '../../core/config.js';
@@ -119,6 +119,9 @@ export class ExplorerAgent extends Agent {
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
     this.use(new SkillFeature(config.skillsDir));
+
+    // 注册 SubAgentFeature（子代理工具和消息处理）
+    this.use(new SubAgentFeature());
 
     // 如果没有传入 llm，标记需要延迟加载
     if (!config.llm) {

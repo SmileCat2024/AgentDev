@@ -8,7 +8,6 @@
 export { Agent } from './core/agent.js';
 export { Context } from './core/context.js';
 export { createTool, ToolRegistry } from './core/tool.js';
-export { runReactLoop } from './core/loop.js';
 export { DebugHub } from './core/debug-hub.js';
 
 // Feature 系统

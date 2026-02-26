@@ -8,7 +8,7 @@
  */
 
 import { Agent } from '../../core/agent.js';
-import { MCPFeature, SkillFeature } from '../../features/index.js';
+import { MCPFeature, SkillFeature, SubAgentFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfig } from '../../core/config.js';
@@ -21,9 +21,6 @@ import {
   shellTool,
   webFetchTool,
   calculatorTool,
-  spawnAgentTool,
-  sendToAgentTool,
-  waitTool,
 } from '../../tools/system/index.js';
 
 // 导入 opencode 文件工具（更强大的文件操作能力）
@@ -39,7 +36,9 @@ import {
 /**
  * 默认工具集
  * 使用 opencode 工具替代原 system 文件工具，提供更强的能力
- * 注意：invokeSkillTool 由 SkillFeature 提供，不在默认工具集中
+ * 注意：
+ * - invokeSkillTool 由 SkillFeature 提供，不在默认工具集中
+ * - 子代理工具由 SubAgentFeature 提供，不在默认工具集中
  */
 const DEFAULT_TOOLS: Tool[] = [
   // 文件操作工具（opencode 系列，能力更强）
@@ -54,11 +53,6 @@ const DEFAULT_TOOLS: Tool[] = [
   shellTool,     // Shell 命令执行
   webFetchTool,  // HTTP 请求
   calculatorTool,// 计算器
-
-  // 子代理管理工具
-  spawnAgentTool,
-  sendToAgentTool,
-  waitTool,
 ];
 
 /**
@@ -156,6 +150,9 @@ export class BasicAgent extends Agent {
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
     this.use(new SkillFeature(config.skillsDir));
+
+    // 注册 SubAgentFeature（子代理工具和消息处理）
+    this.use(new SubAgentFeature());
 
     // 如果没有传入 llm，标记需要延迟加载
     if (!config.llm) {

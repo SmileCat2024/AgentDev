@@ -7,6 +7,81 @@
 
 import type { Tool } from './types.js';
 import type { ToolCall } from './types.js';
+import type { Context } from './context.js';
+import type { LLMResponse } from './types.js';
+
+/**
+ * ReAct 循环钩子接口
+ *
+ * 允许 Feature 在 ReAct 循环的关键执行点注入自定义逻辑
+ * 只有需要介入 ReAct 循环的 Feature 才需要实现此接口
+ */
+export interface ReActLoopHooks {
+  /**
+   * 工具调用完成后钩子
+   *
+   * 调用时机：所有工具 execute() 完成后，turnFinished 钩子之前
+   * 典型用途：子代理消息消费、异步状态更新
+   */
+  afterToolCalls?(ctx: {
+    context: Context;
+    toolCalls: ToolCall[];
+    turn: number;
+  }): Promise<void>;
+
+  /**
+   * 无工具调用时钩子
+   *
+   * 调用时机：LLM 返回没有 toolCalls 的响应时
+   * 典型用途：子代理自动等待、被动状态处理
+   *
+   * @returns 返回 { shouldEnd: false } 表示不结束循环，继续下一轮
+   */
+  beforeNoToolCalls?(ctx: {
+    context: Context;
+    llmResponse: LLMResponse;
+    turn: number;
+  }): Promise<{ shouldEnd?: boolean }>;
+
+  /**
+   * 判断是否需要等待钩子
+   *
+   * 调用时机：检测到 wait 工具被调用时
+   * 典型用途：子代理 wait 机制
+   *
+   * @returns 返回 true 表示需要等待
+   */
+  shouldWaitForSubAgent?(ctx: {
+    waitCalled: boolean;
+    context: Context;
+    turn: number;
+  }): Promise<boolean>;
+
+  /**
+   * 等待完成回调钩子
+   *
+   * 调用时机：shouldWaitForSubAgent 返回 true 且等待完成后
+   * 典型用途：将等待结果注入上下文
+   */
+  afterWait?(ctx: {
+    result: { agentId: string; message: string };
+    context: Context;
+    turn: number;
+  }): Promise<void>;
+
+  /**
+   * 达到最大轮次钩子
+   *
+   * 调用时机：ReAct 循环达到 maxTurns 限制时
+   * 典型用途：子代理中断回传父代理
+   */
+  onMaxTurnsReached?(ctx: {
+    context: Context;
+    result: string;
+    turn: number;
+    agentId?: string;
+  }): Promise<void>;
+}
 
 /**
  * Feature 上下文值类型
@@ -78,4 +153,14 @@ export interface AgentFeature {
    * 清理钩子
    */
   onDestroy?(ctx: FeatureContext): Promise<void>;
+
+  /**
+   * 声明 ReAct 循环钩子（可选）
+   *
+   * 只有需要介入 ReAct 循环执行流程的 Feature 才需要实现
+   * 例如：SubAgentFeature 需要在工具调用后消费子代理消息
+   *
+   * @returns ReAct 循环钩子对象，不需要介入则返回 undefined
+   */
+  getReActLoopHooks?(): ReActLoopHooks | undefined;
 }

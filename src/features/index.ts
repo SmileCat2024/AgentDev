@@ -11,6 +11,7 @@ export type {
   FeatureContext,
   ContextInjector,
   ToolContextValue,
+  ReActLoopHooks,
 } from '../core/feature.js';
 
 // MCP Feature
@@ -19,3 +20,6 @@ export { MCPFeature } from './mcp.js';
 // Skill Feature
 export { SkillFeature } from './skill.js';
 export type { SkillFeatureConfig } from './skill.js';
+
+// SubAgent Feature
+export { SubAgentFeature, AgentPool } from './subagent.js';

@@ -1,9 +1,16 @@
 /**
  * Agent - 组装所有组件
- * 提供简单的使用接口 - v3 重构版
+ * 提供简单的使用接口 - v4 重构版
+ *
+ * 重构说明：
+ * - 钩子执行器移至 agent/hooks-executor.ts
+ * - 生命周期钩子移至 agent/lifecycle-hooks.ts（使用 Mixin 模式）
+ * - 模板解析器移至 agent/template-resolver.ts
+ * - 工具执行器移至 agent/tool-executor.ts
+ * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool } from './types.js';
+import type { AgentConfig, ToolCall, Tool, Message } from './types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -29,72 +36,56 @@ import type {
 } from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
 import { TemplateLoader } from '../template/loader.js';
-import { existsSync } from 'fs';
-import { cwd } from 'process';
-import { MCPConnectionManager } from '../mcp/index.js';
-import { MCPToolAdapter, createMCPToolAdapters } from '../mcp/index.js';
-import { AgentPool } from './agent-pool.js';
 
-// Re-export ContextSnapshot for convenience
+// 导入重构后的模块
+import { HookErrorHandling, executeHook } from './agent/hooks-executor.js';
+import { type LifecycleHooks } from './agent/lifecycle-hooks.js';
+import { TemplateResolver } from './agent/template-resolver.js';
+import { ToolExecutor } from './agent/tool-executor.js';
+import { ReActLoopRunner } from './agent/react-loop.js';
+import type { DebugPusher } from './agent/types.js';
+
+// Re-export ContextSnapshot and HookErrorHandling for convenience
 export type { ContextSnapshot };
+export { HookErrorHandling };
 
-// ========== 错误处理策略枚举 ==========
+// 基础类（不含生命周期钩子）
+class AgentBase {
+  // ========== 属性 ==========
 
-/**
- * 钩子错误处理策略
- */
-export enum HookErrorHandling {
-  /** 静默失败：记录警告，不中断主流程 */
-  Silent = 'silent',
-  /** 传播异常：中断整个 onCall 流程 */
-  Propagate = 'propagate',
-  /** 记录后传播：先记录日志再抛出 */
-  Logged = 'logged',
-}
-
-export class Agent {
   protected llm: AgentConfig['llm'];
   protected tools: ToolRegistry;
   protected maxTurns: number;
   protected systemMessage?: string | TemplateSource;
-  protected systemContext?: PlaceholderContext;
-  protected templateComposer?: TemplateComposer;
+  protected config: AgentConfig;
   protected templateLoader: TemplateLoader;
   protected persistentContext?: Context;
   protected debugHub?: DebugHub;
   protected agentId?: string;
   protected debugEnabled: boolean = false;
-  /** Agent 配置（保存原始配置供 Feature 使用） */
-  protected config: AgentConfig;
 
   // 子代理相关
-  protected _pool?: AgentPool;
-
-  /** 子代理的 ID（仅子代理有值） */
   protected _agentId?: string;
-  /** 父代理的 AgentPool 引用（仅子代理有值） */
-  protected _parentPool?: import('./agent-pool.js').AgentPool;
+  protected _parentPool?: any; // AgentPool reference from parent
 
-  // ========== Feature 系统 ==========
-  /** 已注册的 Features */
+  // Feature 系统
   private features = new Map<string, AgentFeature>();
-  /** 上下文注入器列表 */
   private contextInjectors: Array<{
     pattern: string | RegExp;
     injector: ContextInjector;
   }> = [];
-  /** Feature 工具是否已注册 */
   private featureToolsReady: boolean = false;
 
-  // ========== 生命周期状态 ==========
-  /** Agent 是否已初始化（onInitiate 只触发一次） */
+  // 生命周期状态
   protected _initialized: boolean = false;
-  /** 当前 onCall 的用户输入 */
   protected _currentCallInput?: string;
-  /** 当前 ReAct 循环的轮次 */
   protected _currentTurn: number = 0;
-  /** 记录每个 onCall 的开始时间（用于性能监控） */
   protected _callStartTimes: Map<number, number> = new Map();
+
+  // 模块实例（延迟初始化）
+  private templateResolver?: TemplateResolver;
+  private toolExecutor?: ToolExecutor;
+  private reactRunner?: ReActLoopRunner;
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -105,9 +96,22 @@ export class Agent {
     this.tools = new ToolRegistry();
 
     // 如果 systemMessage 是 TemplateComposer，保存引用
-    if (config.systemMessage instanceof TemplateComposer) {
-      this.templateComposer = config.systemMessage;
-    }
+    const templateComposer = config.systemMessage instanceof TemplateComposer
+      ? config.systemMessage
+      : undefined;
+
+    // 初始化 TemplateResolver
+    this.templateResolver = new TemplateResolver(
+      this.systemMessage,
+      undefined, // systemContext 将在 setSystemContext 中设置
+      templateComposer,
+      this.templateLoader,
+      () => {
+        // 回调：从 SkillFeature 获取 skills
+        const skillFeature = this.features.get('skill') as any;
+        return skillFeature?.getSkills ? skillFeature.getSkills() : [];
+      }
+    );
 
     // 注册工具
     if (config.tools) {
@@ -117,15 +121,12 @@ export class Agent {
     }
   }
 
-  // ========== 生命周期钩子辅助方法 ==========
+  // ========== 钩子错误处理策略 ==========
 
   /**
    * 获取钩子的错误处理策略（可被子类覆盖）
-   * @param hookName 钩子名称
-   * @returns 错误处理策略
    */
-  protected getHookErrorHandling(hookName: string): HookErrorHandling {
-    // 默认策略：Call/LLM/Tool 级别的钩子传播异常，其他静默失败
+  public getHookErrorHandling(hookName: string): HookErrorHandling {
     const propagateHooks = [
       'onCallStart', 'onCallFinish',
       'onLLMStart', 'onLLMFinish',
@@ -134,50 +135,13 @@ export class Agent {
     return propagateHooks.includes(hookName) ? HookErrorHandling.Propagate : HookErrorHandling.Silent;
   }
 
-  /**
-   * 统一的钩子执行包装器（自动处理错误）
-   */
-  private async executeHook<T>(
-    hookName: string,
-    hookFn: () => Promise<T>,
-    context: { input?: string; turn?: number }
-  ): Promise<T | undefined> {
-    try {
-      return await hookFn();
-    } catch (error) {
-      const strategy = this.getHookErrorHandling(hookName);
-      const errorMsg = error instanceof Error ? error.message : String(error);
-
-      switch (strategy) {
-        case HookErrorHandling.Silent:
-          console.warn(`[Agent] Hook ${hookName} failed (silent):`, errorMsg);
-          return undefined;
-
-        case HookErrorHandling.Logged:
-          console.error(`[Agent] Hook ${hookName} failed (logged):`, errorMsg);
-          throw error;
-
-        case HookErrorHandling.Propagate:
-          throw error;
-
-        default:
-          return undefined;
-      }
-    }
-  }
-
   // ========== 公开方法 ==========
 
   /**
    * 唯一的公开入口 - 执行 Agent
-   *
-   * 多次调用会自动复用上下文，实现"追问"效果
-   *
-   * @param input 用户输入
-   * @returns Agent 响应内容
    */
   async onCall(input: string): Promise<string> {
-    // 确保 Feature 工具已注册（替换原有的 registerMCPTools）
+    // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
 
     // 设置通知上下文
@@ -197,26 +161,26 @@ export class Agent {
     this._currentCallInput = input;
     this._callStartTimes.set(callId, callStartTime);
 
-    // 触发 onCallStart（使用 executeHook 包装器）
-    await this.executeHook(
-      'onCallStart',
-      () => this.onCallStart({ input, context, isFirstCall }),
-      { input }
+    // 触发 onCallStart
+    await executeHook(
+      this,
+      () => (this as any).onCallStart({ input, context, isFirstCall }),
+      { hookName: 'onCallStart', input }
     );
 
     try {
       // ========== Agent Initiate（仅首次）==========
       if (!this._initialized) {
-        // 先触发 onInitiate，让子类有机会在加载系统消息前进行配置
-        await this.executeHook(
-          'onInitiate',
-          () => this.onInitiate({ context }),
-          { input }
+        // 先触发 onInitiate
+        await executeHook(
+          this,
+          () => (this as any).onInitiate({ context }),
+          { hookName: 'onInitiate', input }
         );
 
-        // 加载系统提示词（onInitiate 中可能修改了 systemMessage）
-        if (this.systemMessage && context.getAll().length === 0) {
-          const systemMsg = await this.resolveSystemPrompt();
+        // 加载系统提示词
+        if (this.templateResolver && context.getAll().length === 0) {
+          const systemMsg = await this.templateResolver.resolve();
           if (systemMsg) {
             context.add({ role: 'system', content: systemMsg });
           }
@@ -226,246 +190,38 @@ export class Agent {
         context.add({ role: 'user', content: input });
 
         // 推送初始状态到 DebugHub
-        if (this.debugEnabled && this.agentId && this.debugHub) {
-          this.debugHub.pushMessages(this.agentId, context.getAll());
-        }
+        this.pushToDebug(context.getAll());
 
         this._initialized = true;
       } else {
         // 非首次调用，直接添加用户输入
         context.add({ role: 'user', content: input });
-
-        // 推送消息到 DebugHub
-        if (this.debugEnabled && this.agentId && this.debugHub) {
-          this.debugHub.pushMessages(this.agentId, context.getAll());
-        }
+        this.pushToDebug(context.getAll());
       }
+
+      // ========== 初始化执行器（延迟初始化）==========
+      this.ensureExecutorsInitialized();
 
       // ========== ReAct 循环 ==========
-      let completed = false;
-      let finalResponse = '';
-
-      for (let turn = 0; turn < this.maxTurns; turn++) {
-        this._currentTurn = turn;
-
-        // 推送消息到 DebugHub
-        if (this.debugEnabled && this.agentId && this.debugHub) {
-          this.debugHub.pushMessages(this.agentId, context.getAll());
-        }
-
-        // ========== Turn Start ==========
-        await this.executeHook(
-          'onTurnStart',
-          () => this.onTurnStart({ turn, context, input }),
-          { input, turn }
-        );
-
-        // ========== LLM Start ==========
-        const llmStartResult = await this.executeHook(
-          'onLLMStart',
-          () => this.onLLMStart({
-            messages: context.getAll(),
-            tools: this.tools.getAll(),
-            turn,
-          }),
-          { input, turn }
-        );
-
-        // 检查是否被阻止
-        if (llmStartResult?.action === 'block') {
-          // LLM 调用被阻止
-          const blockResponse = llmStartResult.reason || 'LLM call blocked by hook';
-          context.add({
-            role: 'assistant',
-            content: blockResponse,
-          });
-
-          // 跳出循环
-          completed = true;
-          finalResponse = blockResponse;
-          break;
-        }
-
-        // 执行 LLM 调用
-        const llmStartTime = Date.now();
-        const response = await this.llm.chat(
-          context.getAll(),
-          this.tools.getAll()
-        );
-        const llmDuration = Date.now() - llmStartTime;
-
-        // ========== LLM Finish ==========
-        await this.executeHook(
-          'onLLMFinish',
-          () => this.onLLMFinish({ response, turn, duration: llmDuration }),
-          { input, turn }
-        );
-
-        // 添加助手响应
-        context.add({
-          role: 'assistant',
-          content: response.content,
-          toolCalls: response.toolCalls,
-          reasoning: response.reasoning,
-        });
-
-        // 推送消息到 DebugHub
-        if (this.debugEnabled && this.agentId && this.debugHub) {
-          this.debugHub.pushMessages(this.agentId, context.getAll());
-        }
-
-        // 检查是否需要调用工具
-        if (!response.toolCalls || response.toolCalls.length === 0) {
-          // 无工具调用 - 检查是否有活跃子代理
-          if (this._pool && this._pool.hasActiveAgents()) {
-            // 有活跃子代理 - 等待消息并继续循环
-            const result = await this._pool.waitForMessage();
-            const timestamp = new Date().toISOString();
-            console.log(`[DEBUG:主代理-无工具调用] ${timestamp} 收到子代理消息 agentId=${result.agentId}, 插入到 context`);
-            context.add({
-              role: 'assistant',
-              content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
-            });
-
-            // 推送到 DebugHub
-            if (this.debugEnabled && this.agentId && this.debugHub) {
-              this.debugHub.pushMessages(this.agentId, context.getAll());
-            }
-
-            // 继续下一轮
-            continue;
-          }
-
-          // 无活跃子代理 - 真正结束
-          completed = true;
-          finalResponse = response.content;
-
-          // ========== Turn Finished（无工具调用）==========
-          await this.executeHook(
-            'onTurnFinished',
-            () => this.onTurnFinished({
-              turn,
-              context,
-              input,
-              llmResponse: response,
-              toolCallsCount: 0,
-            }),
-            { input, turn }
-          );
-
-          break;
-        }
-
-        // 执行工具
-        let waitCalled = false;
-        for (const call of response.toolCalls) {
-          if (call.name === 'wait') {
-            waitCalled = true;
-          }
-          await this.executeTool(call, input, context, turn);
-        }
-
-        // ========== 检查并消费子代理消息（有工具调用后）==========
-        if (this._pool && this._pool.hasPendingMessages()) {
-          const messages = this._pool.consumeAllPendingMessages();
-          const timestamp = new Date().toISOString();
-          console.log(`[DEBUG:主代理-有工具调用后] ${timestamp} 收到 ${messages.length} 条子代理消息`);
-          for (const { agentId, message } of messages) {
-            console.log(`[DEBUG:主代理-有工具调用后] ${timestamp} 插入消息 agentId=${agentId}`);
-            context.add({
-              role: 'assistant',
-              content: `[子代理 ${agentId} 执行完成]:\n\n${message}`,
-            });
-          }
-        }
-
-        // ========== 在可能阻塞前先推送消息到 DebugHub（确保工具结果立即显示）==========
-        if (this.debugEnabled && this.agentId && this.debugHub) {
-          this.debugHub.pushMessages(this.agentId, context.getAll());
-        }
-
-        // ========== wait 工具处理：如果有 wait 调用且有活跃子代理，等待消息后继续循环 ==========
-        if (waitCalled && this._pool && this._pool.hasActiveAgents()) {
-          const result = await this._pool.waitForMessage();
-          const timestamp = new Date().toISOString();
-          console.log(`[DEBUG:主代理-wait调用] ${timestamp} 收到子代理消息 agentId=${result.agentId}, 插入到 context`);
-          context.add({
-            role: 'assistant',
-            content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
-          });
-
-          // 推送到 DebugHub
-          if (this.debugEnabled && this.agentId && this.debugHub) {
-            this.debugHub.pushMessages(this.agentId, context.getAll());
-          }
-
-          // 继续下一轮（不执行 Turn Finished，因为等待是中间状态）
-          continue;
-        }
-
-        // 推送到 DebugHub
-        if (this.debugEnabled && this.agentId && this.debugHub) {
-          this.debugHub.pushMessages(this.agentId, context.getAll());
-        }
-
-        // ========== Turn Finished（有工具调用）==========
-        await this.executeHook(
-          'onTurnFinished',
-          () => this.onTurnFinished({
-            turn,
-            context,
-            input,
-            llmResponse: response,
-            toolCallsCount: response.toolCalls?.length ?? 0,
-          }),
-          { input, turn }
-        );
-      }
-
-      // 达到最大轮次 - 中断处理
-      if (!completed) {
-        const partialResult = context.getAll()[context.getAll().length - 1]?.content || '';
-
-        // 触发中断钩子
-        const interruptResult = await this.executeHook(
-          'onInterrupt',
-          () => this.onInterrupt({
-            reason: 'max_turns_reached',
-            turn: this._currentTurn,
-            context,
-          }),
-          { input, turn: this._currentTurn }
-        );
-
-        finalResponse = interruptResult as string ?? partialResult;
-
-        // 如果是子代理，报告中断给父代理
-        if (this._agentId && this._parentPool) {
-          await this._parentPool.handleInterrupt(
-            this._agentId,
-            'max_turns_reached',
-            finalResponse
-          );
-        }
-      }
+      const result = await this.reactRunner!.run(input, context, { isFirstCall });
 
       // 保存上下文
       this.persistentContext = context;
 
       // ========== Call Finish（成功）==========
-      await this.executeHook(
-        'onCallFinish',
-        () => this.onCallFinish({
+      await executeHook(
+        this,
+        () => (this as any).onCallFinish({
           input,
           context,
-          response: finalResponse,
-          turns: this._currentTurn + 1,
-          completed: true,
+          response: result.finalResponse,
+          turns: result.turns,
+          completed: result.completed,
         }),
-        { input }
+        { hookName: 'onCallFinish', input }
       );
 
-      return finalResponse;
+      return result.finalResponse;
 
     } catch (error) {
       // ========== Call Finish（异常）==========
@@ -481,16 +237,16 @@ export class Agent {
         );
       }
 
-      await this.executeHook(
-        'onCallFinish',
-        () => this.onCallFinish({
+      await executeHook(
+        this,
+        () => (this as any).onCallFinish({
           input,
           context,
           response: errorMsg,
           turns: this._currentTurn + 1,
           completed: false,
         }),
-        { input }
+        { hookName: 'onCallFinish', input }
       );
 
       throw error;
@@ -511,25 +267,20 @@ export class Agent {
   }
 
   /**
-   * 启用可视化查看器（多 Agent 共享模式）
-   *
-   * @param name Agent 显示名称（可选，默认使用类名）
-   * @param port HTTP 端口（默认 2026，仅在首次调用时生效）
-   * @param openBrowser 是否自动打开浏览器（默认 true）
+   * 启用可视化查看器
    */
   async withViewer(name?: string, port?: number, openBrowser?: boolean): Promise<this> {
     this.debugHub = DebugHub.getInstance();
     this.debugEnabled = true;
 
-    // 首次调用时启动调试服务器
     if (!this.debugHub.getCurrentAgentId()) {
       await this.debugHub.start(port, openBrowser);
     }
 
-    // 注册自身到 Hub
-    this.agentId = this.debugHub.registerAgent(this, name || this.constructor.name);
+    // 确保 Feature 工具已注册（包括 SubAgentFeature 等提供的工具）
+    await this.ensureFeatureTools();
 
-    // 注册工具到 Hub
+    this.agentId = this.debugHub.registerAgent(this, name || this.constructor.name);
     this.debugHub.registerAgentTools(this.agentId, this.tools.getAll());
 
     return this;
@@ -570,70 +321,21 @@ export class Agent {
 
   /**
    * 设置系统提示词模板
-   * @param prompt 模板源（字符串、文件路径、或组合器）
-   * @returns this，支持链式调用
    */
   setSystemPrompt(prompt: string | TemplateSource): this {
-    if (typeof prompt === 'string') {
-      this.systemMessage = prompt;
-      this.templateComposer = undefined;
-    } else if (prompt instanceof TemplateComposer) {
-      this.systemMessage = prompt;
-      this.templateComposer = prompt;
-    } else {
-      // { file: string }
-      this.systemMessage = prompt;
-      this.templateComposer = undefined;
-    }
+    this.templateResolver?.setSystemMessage(prompt);
     return this;
   }
 
   /**
    * 设置占位符上下文变量
-   * @param context 占位符键值对
-   * @returns this，支持链式调用
    */
   setSystemContext(context: PlaceholderContext): this {
-    this.systemContext = context;
+    this.templateResolver?.setSystemContext(context);
     return this;
   }
 
-  /**
-   * 解析系统提示词（渲染模板）
-   * @returns 渲染后的系统提示词字符串
-   */
-  private async resolveSystemPrompt(): Promise<string> {
-    // 从 SkillFeature 获取 skills（如果已注册）
-    const skillFeature = this.features.get('skill') as any;
-    const skills = skillFeature?.getSkills ? skillFeature.getSkills() : [];
-
-    // 使用用户设置的上下文，并注入 skills
-    const context: PlaceholderContext = {
-      ...this.systemContext,
-      skills: skills as any,
-    };
-
-    // 直接字符串
-    if (typeof this.systemMessage === 'string') {
-      const { PlaceholderResolver } = await import('../template/resolver.js');
-      return PlaceholderResolver.resolve(this.systemMessage, context);
-    }
-
-    // TemplateComposer 实例
-    if (this.templateComposer) {
-      const result = await this.templateComposer.render(context);
-      return result.content;
-    }
-
-    // 文件路径 { file: string }
-    if (this.systemMessage && typeof this.systemMessage === 'object' && 'file' in this.systemMessage) {
-      const content = await this.templateLoader.load(this.systemMessage.file);
-      const { PlaceholderResolver } = await import('../template/resolver.js');
-      return PlaceholderResolver.resolve(content, context);
-    }
-
-    return '';
-  }
+  // ========== 向后兼容 API ==========
 
   /**
    * 获取上下文（用于调试，向后兼容）
@@ -649,187 +351,22 @@ export class Agent {
     return this.tools;
   }
 
-  // ========== 可重载的生命周期钩子 ==========
-
-  // ========== Agent 级别钩子 ==========
-
-  /**
-   * Agent 初始化钩子
-   * 只在首次 onCall 时触发一次
-   */
-  protected async onInitiate(ctx: AgentInitiateContext): Promise<void> {
-    // 默认空实现
-  }
-
-  /**
-   * Agent 销毁钩子
-   * 通过 dispose() 方法触发
-   */
-  protected async onDestroy(ctx: AgentDestroyContext): Promise<void> {
-    // 默认空实现
-  }
-
-  // ========== Call 级别钩子 ==========
-
-  /**
-   * 每次 onCall 开始时触发
-   */
-  protected async onCallStart(ctx: CallStartContext): Promise<void> {
-    // 默认空实现
-  }
-
-  /**
-   * 每次 onCall 结束时触发
-   */
-  protected async onCallFinish(ctx: CallFinishContext): Promise<void> {
-    // 默认空实现
-  }
-
-  // ========== Turn 级别钩子 ==========
-
-  /**
-   * 每轮 ReAct 循环开始时触发
-   */
-  protected async onTurnStart(ctx: TurnStartContext): Promise<void> {
-    // 默认空实现
-  }
-
-  /**
-   * 每轮 ReAct 循环结束时触发
-   */
-  protected async onTurnFinished(ctx: TurnFinishedContext): Promise<void> {
-    // 默认空实现
-  }
-
-  // ========== LLM 级别钩子 ==========
-
-  /**
-   * 每次 LLM 调用前触发
-   * 可以通过返回 { action: 'block' } 阻止调用
-   */
-  protected async onLLMStart(ctx: LLMStartContext): Promise<HookResult | undefined> {
-    return undefined;
-  }
-
-  /**
-   * 每次 LLM 调用后触发
-   */
-  protected async onLLMFinish(ctx: LLMFinishContext): Promise<void> {
-    // 默认空实现
-  }
-
-  // ========== Tool 级别钩子（重命名）==========
-
-  /**
-   * 工具使用前钩子（原 onPreToolUse）
-   *
-   * 返回值规则：
-   * - { action: 'block' }  → 阻止工具执行
-   * - { action: 'allow' }  → 允许工具执行
-   * - undefined              → 默认行为（一律放行）
-   *
-   * @param ctx 工具上下文
-   * @returns 钩子结果
-   */
-  protected async onToolUse(ctx: ToolContext): Promise<HookResult | undefined> {
-    return undefined;
-  }
-
-  /**
-   * 工具执行后钩子（原 onPostToolUse）
-   *
-   * @param result 工具执行结果
-   */
-  protected async onToolFinished(result: ToolResult): Promise<void> {
-    // 默认空实现
-  }
-
-  // ========== 向后兼容别名（废弃）==========
-
-  /**
-   * @deprecated 使用 onToolUse 代替
-   */
-  protected async onPreToolUse(ctx: ToolContext): Promise<HookResult | undefined> {
-    return this.onToolUse(ctx);
-  }
-
-  /**
-   * @deprecated 使用 onToolFinished 代替
-   */
-  protected async onPostToolUse(result: ToolResult): Promise<void> {
-    return this.onToolFinished(result);
-  }
-
-  // ========== SubAgent 级别钩子 ==========
-
-  /**
-   * 子代理创建钩子
-   */
-  public async onSubAgentSpawn(ctx: SubAgentSpawnContext): Promise<void> {
-    // 默认空实现
-  }
-
-  /**
-   * 子代理状态更新钩子
-   */
-  public async onSubAgentUpdate(ctx: SubAgentUpdateContext): Promise<void> {
-    // 默认空实现
-  }
-
-  /**
-   * 子代理销毁钩子
-   */
-  public async onSubAgentDestroy(ctx: SubAgentDestroyContext): Promise<void> {
-    // 默认空实现
-  }
-
-  /**
-   * 子代理中断钩子
-   */
-  public async onSubAgentInterrupt(ctx: SubAgentInterruptContext): Promise<void> {
-    // 默认空实现
-  }
-
-  // ========== Agent 中断钩子 ==========
-
-  /**
-   * Agent 中断钩子
-   * 当 ReAct 循环被意外中断时触发（达到最大轮次、错误等）
-   */
-  protected async onInterrupt(ctx: AgentInterruptContext): Promise<string> {
-    // 默认实现：返回中断信息
-    return `[执行被中断: ${ctx.reason}]`;
-  }
-
   // ========== 子代理管理 ==========
 
   /**
    * 子代理向父代理回传消息
-   * @param message 消息内容
    */
   protected async reportToParent(message: string): Promise<void> {
     if (!this._parentPool || !this._agentId) {
-      return; // 不是子代理，忽略
+      return;
     }
     await this._parentPool.report(this._agentId, message);
   }
 
   /**
-   * 获取子代理池
-   */
-  public get pool(): AgentPool {
-    if (!this._pool) {
-      this._pool = new AgentPool(this);
-    }
-    return this._pool;
-  }
-
-  /**
    * 创建 Agent 实例（子类可覆盖）
-   * 异步方法，因为需要使用动态 import()
    */
-  public async createAgentByType(type: string): Promise<Agent> {
-    // 支持的 Agent 类型
+  public async createAgentByType(type: string): Promise<AgentBase> {
     switch (type) {
       case 'ExplorerAgent': {
         const { ExplorerAgent } = await import('../agents/system/ExplorerAgent.js');
@@ -842,159 +379,26 @@ export class Agent {
         const { BasicAgent } = await import('../agents/system/BasicAgent.js');
         return new BasicAgent({
           llm: this.llm,
-          tools: this.tools.getAll().slice(0, 3), // 简化工具集
+          tools: this.tools.getAll().slice(0, 3),
         });
       }
     }
   }
 
-  // ========== 内部实现 ==========
+  // ========== 清理 ==========
 
   /**
-   * 执行单个工具
-   */
-  private async executeTool(
-    call: ToolCall,
-    input: string,
-    context: Context,
-    turn: number
-  ): Promise<void> {
-    const tool = this.tools.get(call.name);
-    const startTime = Date.now();
-
-    const toolCtx: ToolContext = {
-      call,
-      tool: tool!,
-      turn,
-      input,
-      context,
-    };
-
-    // 前置钩子（使用 executeHook 包装器）
-    let blocked = false;
-    let blockReason: string | undefined;
-
-    const hookResult = await this.executeHook(
-      'onToolUse',
-      () => this.onToolUse(toolCtx),
-      { input, turn }
-    );
-
-    if (hookResult) {
-      if (hookResult.action === 'block') {
-        blocked = true;
-        blockReason = hookResult.reason;
-      }
-      // action: 'allow' 或 undefined 都放行
-    }
-
-    const result: ToolResult = {
-      success: false,
-      data: null,
-      error: blockReason || (tool ? undefined : `Tool "${call.name}" not found`),
-      duration: Date.now() - startTime,
-      call,
-      tool: tool!,
-      turn,
-      input,
-      context,
-    };
-
-    if (blocked || !tool) {
-      // 添加阻止结果到上下文
-      // 格式：{ success: false, result: { error: string } }
-      context.add({
-        role: 'tool',
-        toolCallId: call.id,
-        content: JSON.stringify({
-          success: false,
-          result: { error: result.error || 'Tool not found' },
-        }),
-      });
-      await this.executeHook(
-        'onToolFinished',
-        () => this.onToolFinished(result),
-        { input, turn }
-      );
-      return;
-    }
-
-    try {
-      // 执行工具
-      // 使用声明的上下文注入器
-      let toolContext: any = undefined;
-
-      for (const { pattern, injector } of this.contextInjectors) {
-        if (typeof pattern === 'string' && pattern === call.name) {
-          toolContext = { ...toolContext, ...injector(call) };
-        } else if (pattern instanceof RegExp && pattern.test(call.name)) {
-          toolContext = { ...toolContext, ...injector(call) };
-        }
-      }
-
-      // 向后兼容：子代理管理工具注入父代理引用
-      // TODO: 未来可提取为 SubAgentFeature
-      if (['spawn_agent', 'list_agents', 'send_to_agent', 'close_agent', 'wait'].includes(call.name)) {
-        toolContext = { ...toolContext, parentAgent: this };
-      }
-
-      const data = await tool.execute(call.arguments, toolContext);
-      result.success = true;
-      result.data = data;
-
-      // 添加工具结果到上下文
-      // 统一使用 JSON 格式，保持与错误处理的一致性
-      // 注意：这里只对非字符串类型进行 JSON.stringify，避免双重编码
-      const resultData = typeof data === 'string' ? data : JSON.stringify(data);
-      context.add({
-        role: 'tool',
-        toolCallId: call.id,
-        content: JSON.stringify({
-          success: true,
-          result: resultData,
-        }),
-      });
-
-    } catch (error) {
-      result.error = error instanceof Error ? error.message : String(error);
-
-      // 添加错误结果到上下文（让 LLM 知道工具执行失败）
-      // 格式：{ success: false, result: { error: string } }
-      context.add({
-        role: 'tool',
-        toolCallId: call.id,
-        content: JSON.stringify({
-          success: false,
-          result: { error: result.error },
-        }),
-      });
-    }
-
-    result.duration = Date.now() - startTime;
-
-    // 后置钩子（使用 executeHook 包装器）
-    await this.executeHook(
-      'onToolFinished',
-      () => this.onToolFinished(result),
-      { input, turn }
-    );
-  }
-
-  /**
-   * 清理资源（包括 MCP 连接）
+   * 清理资源
    */
   async dispose(): Promise<void> {
-    // 先清理子代理池
-    await this._pool?.shutdown();
-
-    // 触发 onDestroy 钩子
+    // 触发 onDestroy 钩子（SubAgentFeature 的清理会在 Feature.onDestroy 中处理）
     const context = this.persistentContext ?? new Context();
 
     try {
-      await this.executeHook(
-        'onDestroy',
-        () => this.onDestroy({ context }),
-        {}
+      await executeHook(
+        this,
+        () => (this as any).onDestroy({ context }),
+        { hookName: 'onDestroy' }
       );
     } catch (error) {
       console.warn('[Agent] onDestroy hook error:', error);
@@ -1021,25 +425,19 @@ export class Agent {
     this.persistentContext = undefined;
   }
 
-  // ========== Feature 系统方法 ==========
+  // ========== Feature 系统 ==========
 
   /**
    * 使用 Feature（链式调用）
-   *
-   * @param feature Feature 实例
-   * @returns this，支持链式调用
-   *
-   * @example
-   * ```typescript
-   * const agent = new Agent({ llm })
-   *   .use(new MCPFeature(mcpConfig))
-   *   .use(new SkillFeature({ dir: './skills' }));
-   * ```
    */
   use(feature: AgentFeature): this {
     this.features.set(feature.name, feature);
 
-    // 收集上下文注入器
+    // 如果是 SubAgentFeature，设置父代理引用
+    if (feature.name === 'subagent' && (feature as any)._setParentAgent) {
+      (feature as any)._setParentAgent(this);
+    }
+
     if (feature.getContextInjectors) {
       for (const [pattern, injector] of feature.getContextInjectors()) {
         this.contextInjectors.push({ pattern, injector });
@@ -1064,18 +462,15 @@ export class Agent {
       registerTool: (tool) => this.tools.register(tool),
     };
 
-    // 处理所有已注册的 Features
     for (const [name, feature] of this.features) {
       initContext.featureConfig = this.config.features?.[name];
 
-      // 同步工具
       if (feature.getTools) {
         for (const tool of feature.getTools()) {
           this.tools.register(tool);
         }
       }
 
-      // 异步工具
       if (feature.getAsyncTools) {
         try {
           const tools = await feature.getAsyncTools(initContext);
@@ -1088,7 +483,6 @@ export class Agent {
         }
       }
 
-      // 初始化钩子
       if (feature.onInitiate) {
         try {
           await feature.onInitiate(initContext);
@@ -1101,4 +495,92 @@ export class Agent {
 
     this.featureToolsReady = true;
   }
+
+  // ========== 内部方法 ==========
+
+  /**
+   * 确保执行器已初始化（延迟初始化）
+   */
+  private ensureExecutorsInitialized(): void {
+    if (this.toolExecutor && this.reactRunner) return;
+
+    // Debug 推送接口
+    const debugPusher: DebugPusher = {
+      pushMessages: (agentId: string, messages: Message[]) => {
+        if (this.debugHub) {
+          this.debugHub.pushMessages(agentId, messages);
+        }
+      },
+    };
+
+    // 初始化 ToolExecutor
+    this.toolExecutor = new ToolExecutor(
+      this.tools,
+      this.contextInjectors,
+      this,
+      (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
+      (ctx) => (this as any).onToolUse(ctx),
+      (result) => (this as any).onToolFinished(result)
+    );
+
+    // 初始化 ReActLoopRunner
+    this.reactRunner = new ReActLoopRunner(
+      {
+        llm: this.llm,
+        tools: this.tools,
+        maxTurns: this.maxTurns,
+        debugEnabled: this.debugEnabled,
+        agentId: this.agentId,
+        _currentTurn: this._currentTurn,
+        _agentId: this._agentId,
+        _parentPool: this._parentPool,
+        debugPusher,
+        features: this.features,
+      },
+      (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
+      (call, input, context, turn) => this.toolExecutor!.execute(call, input, context, turn),
+      (ctx) => (this as any).onTurnStart(ctx),
+      (ctx) => (this as any).onLLMStart(ctx),
+      (ctx) => (this as any).onLLMFinish(ctx),
+      (ctx) => (this as any).onTurnFinished(ctx),
+      (ctx) => (this as any).onInterrupt(ctx)
+    );
+  }
+
+  /**
+   * 推送到 DebugHub
+   */
+  private pushToDebug(messages: Message[]): void {
+    if (this.debugEnabled && this.agentId && this.debugHub) {
+      this.debugHub.pushMessages(this.agentId, messages);
+    }
+  }
+
+  // ========== 生命周期钩子（默认实现）==========
+
+  protected async onInitiate(_ctx: AgentInitiateContext): Promise<void> {}
+  protected async onDestroy(_ctx: AgentDestroyContext): Promise<void> {}
+  protected async onCallStart(_ctx: CallStartContext): Promise<void> {}
+  protected async onCallFinish(_ctx: CallFinishContext): Promise<void> {}
+  protected async onTurnStart(_ctx: TurnStartContext): Promise<void> {}
+  protected async onTurnFinished(_ctx: TurnFinishedContext): Promise<void> {}
+  protected async onLLMStart(_ctx: LLMStartContext): Promise<HookResult | undefined> { return undefined; }
+  protected async onLLMFinish(_ctx: LLMFinishContext): Promise<void> {}
+  protected async onToolUse(_ctx: ToolContext): Promise<HookResult | undefined> { return undefined; }
+  protected async onToolFinished(_result: ToolResult): Promise<void> {}
+
+  // SubAgent 钩子
+  public async onSubAgentSpawn(_ctx: SubAgentSpawnContext): Promise<void> {}
+  public async onSubAgentUpdate(_ctx: SubAgentUpdateContext): Promise<void> {}
+  public async onSubAgentDestroy(_ctx: SubAgentDestroyContext): Promise<void> {}
+  public async onSubAgentInterrupt(_ctx: SubAgentInterruptContext): Promise<void> {}
+
+  // 中断钩子
+  protected async onInterrupt(ctx: AgentInterruptContext): Promise<string> {
+    return `[执行被中断: ${ctx.reason}]`;
+  }
 }
+
+// 导出 Agent 类
+export { AgentBase as Agent };
+

@@ -1231,6 +1231,12 @@ class ViewerWorker {
         'fetch': 'system/web',
         'math': 'system/math',
         'calculator': 'system/math',
+        // Todo 工具
+        'task-create': 'system/todo',
+        'task-list': 'system/todo',
+        'task-get': 'system/todo',
+        'task-update': 'system/todo',
+        'task-clear': 'system/todo',
         // opencode 工具
         'read': 'opencode/read',
         'write': 'opencode/write',

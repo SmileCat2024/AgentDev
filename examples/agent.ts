@@ -1,4 +1,4 @@
-import { BasicAgent, TemplateComposer } from '../src/index.js';
+import { BasicAgent, TemplateComposer, TodoFeature } from '../src/index.js';
 import { exec } from 'child_process';
 import type {
   AgentInitiateContext,
@@ -40,6 +40,8 @@ class ProgrammingHelperAgent extends BasicAgent {
 
   constructor(config?: { name?: string; mcpServer?: string }) {
     super(config);
+    // 添加 TodoFeature 用于任务管理
+    this.use(new TodoFeature());
   }
 
   protected override async onInitiate(ctx: AgentInitiateContext): Promise<void> {

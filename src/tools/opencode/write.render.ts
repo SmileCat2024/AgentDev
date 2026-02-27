@@ -24,15 +24,32 @@ function escapeHtml(text: any): string {
  * 文件写入渲染模板
  */
 export const writeRender: InlineRenderTemplate = {
-  call: '<div class="bash-command">Write <span class="file-path">{{filePath}}</span></div>',
-  result: (data) => {
-    const result = data as { filePath?: string; existed?: boolean; diff?: string; message?: string };
+  call: (args) => `<div class="bash-command">Write <span class="file-path">${escapeHtml(args.filePath || '')}</span></div>`,
+  result: (data, success) => {
+    if (!success) {
+      const text = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+      return `<div class="tool-error">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+        <span>${escapeHtml(text)}</span>
+      </div>`;
+    }
 
-    return `<div style="color:var(--success-color)">✓ ${result.message || 'File written successfully'}</div>
-      <details style="margin-top:8px;">
-        <summary style="cursor:pointer; color:var(--accent-color);">View diff</summary>
-        <pre style="background:var(--bg-secondary); padding:8px; margin-top:8px; border-radius:4px; font-family:monospace; font-size:11px; max-height:300px; overflow:auto;">${escapeHtml(result.diff || '')}</pre>
-      </details>`;
+    const diffContent = data.diff || '';
+    if (!diffContent) {
+      return `<div style="color:var(--success-color)">✓ File written successfully (no diff available)</div>`;
+    }
+
+    // 使用 Diff2Html 生成 Diff
+    try {
+      return Diff2Html.html(diffContent, {
+        drawFileList: false,
+        matching: 'lines',
+        outputFormat: 'side-by-side',
+        colorScheme: 'dark'
+      });
+    } catch(e) {
+      return `<pre style="background:var(--hover-bg); padding:8px;">${escapeHtml(diffContent)}</pre>`;
+    }
   }
 };
 

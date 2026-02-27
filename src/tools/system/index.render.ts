@@ -14,6 +14,7 @@ export { shellCommandRender } from './shell.render.js';
 export { webFetchRender } from './web.render.js';
 export { calculatorRender } from './math.render.js';
 export { invokeSkillRender } from './skill.render.js';
+export { taskCreateRender, taskListRender, taskGetRender, taskUpdateRender, taskClearRender } from './todo.render.js';
 
 // 导入以便创建映射表
 import { spawnAgentRender, listAgentsRender, sendToAgentRender, closeAgentRender, waitRender } from './subagent.render.js';
@@ -22,6 +23,7 @@ import { shellCommandRender } from './shell.render.js';
 import { webFetchRender } from './web.render.js';
 import { calculatorRender } from './math.render.js';
 import { invokeSkillRender } from './skill.render.js';
+import { taskCreateRender, taskListRender, taskGetRender, taskUpdateRender, taskClearRender } from './todo.render.js';
 
 /**
  * 模板 Key -> 渲染模板 映射表
@@ -55,6 +57,13 @@ export const TEMPLATES: Record<string, any> = {
   // Skills 工具
   'skill': invokeSkillRender,
   'invoke_skill': invokeSkillRender,
+
+  // Todo 工具
+  'task-create': taskCreateRender,
+  'task-list': taskListRender,
+  'task-get': taskGetRender,
+  'task-update': taskUpdateRender,
+  'task-clear': taskClearRender,
 
   // 默认 fallback
   'json': {

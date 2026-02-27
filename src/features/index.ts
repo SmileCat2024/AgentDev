@@ -23,3 +23,7 @@ export type { SkillFeatureConfig } from './skill.js';
 
 // SubAgent Feature
 export { SubAgentFeature, AgentPool } from './subagent.js';
+
+// Todo Feature
+export { TodoFeature } from './todo.js';
+export type { TodoTask, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from './todo.js';

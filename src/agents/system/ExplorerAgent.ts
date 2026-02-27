@@ -10,7 +10,7 @@ import { Agent } from '../../core/agent.js';
 import { SkillFeature, SubAgentFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
-import { loadConfig } from '../../core/config.js';
+import { loadConfigSync } from '../../core/config.js';
 import { createOpenAILLM } from '../../llm/openai.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
@@ -55,10 +55,10 @@ export interface SystemContext {
 /**
  * ExplorerAgent 配置选项
  *
- * 所有参数都是可选的，默认会自动加载配置文件
+ * 所有参数都是可选的，默认会自动同步加载配置文件
  */
 export interface ExplorerAgentConfig {
-  /** LLM 客户端（可选，不传则自动加载配置创建） */
+  /** LLM 客户端（可选，不传则自动同步加载配置创建） */
   llm?: LLMClient;
   /** 配置文件名（可选，默认 'default'） */
   configName?: string;
@@ -79,7 +79,7 @@ export interface ExplorerAgentConfig {
  * - 文档生成
  * - 依赖关系梳理
  *
- * 构造函数不传任何参数时，会自动加载配置文件创建 LLM
+ * 构造函数不传任何参数时，会自动同步加载配置文件创建 LLM
  */
 export class ExplorerAgent extends Agent {
   protected _systemContext: SystemContext;
@@ -101,9 +101,20 @@ export class ExplorerAgent extends Agent {
       SYSTEM_CURRENT_MODEL: 'unknown', // 稍后更新
     };
 
+    // 准备 LLM：如果没传入，同步加载配置
+    let llm = config.llm;
+    let fileConfig: AgentConfigFile | undefined;
+    if (!llm) {
+      const configName = config.configName ?? 'default';
+      fileConfig = loadConfigSync(configName);
+      llm = createOpenAILLM(fileConfig);
+      systemContext.SYSTEM_CURRENT_MODEL = fileConfig.defaultModel.model;
+      console.log(`[ExplorerAgent] 已加载配置: ${configName}, 模型: ${fileConfig.defaultModel.model}`);
+    }
+
     // 构建完整的 Agent 配置
     const agentConfig: AgentConfig = {
-      llm: config.llm!, // 如果是 undefined，会在 onInitiate 中延迟加载
+      llm: llm!,
       tools: EXPLORER_TOOLS,  // 固定使用探索工具集
       maxTurns: Infinity,      // 无限交互次数
       systemMessage: config.systemMessage,
@@ -112,8 +123,9 @@ export class ExplorerAgent extends Agent {
 
     super(agentConfig);
 
-    // 保存配置
+    // 保存配置（必须在 super() 之后）
     this._systemContext = systemContext;
+    this._config = fileConfig;
     this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
 
@@ -122,11 +134,6 @@ export class ExplorerAgent extends Agent {
 
     // 注册 SubAgentFeature（子代理工具和消息处理）
     this.use(new SubAgentFeature());
-
-    // 如果没有传入 llm，标记需要延迟加载
-    if (!config.llm) {
-      (this as any)._pendingConfigName = config.configName ?? 'default';
-    }
   }
 
   /**
@@ -134,9 +141,6 @@ export class ExplorerAgent extends Agent {
    * 配置系统提示词
    */
   protected override async onInitiate(): Promise<void> {
-    // 延迟加载 LLM（如果需要）
-    await this.loadLLMIfNeeded();
-
     // 配置系统提示词
     if (!this.systemMessage) {
       this.setSystemPrompt(new TemplateComposer()
@@ -156,28 +160,5 @@ export class ExplorerAgent extends Agent {
    */
   getSystemContext(): SystemContext {
     return this._systemContext ?? {};
-  }
-
-  /**
-   * 延迟加载 LLM（在 onInitiate 中调用）
-   */
-  protected async loadLLMIfNeeded(): Promise<void> {
-    // 如果已经有 llm，跳过
-    if (this.llm) {
-      return;
-    }
-
-    const configName = (this as any)._pendingConfigName ?? 'default';
-    const config = await loadConfig(configName);
-    this._config = config;
-
-    // 创建 LLM
-    this.llm = createOpenAILLM(config);
-
-    // 更新系统上下文中的模型名称
-    this._systemContext.SYSTEM_CURRENT_MODEL = config.defaultModel.model;
-    this.setSystemContext(this._systemContext);
-
-    console.log(`[ExplorerAgent] 已加载配置: ${configName}, 模型: ${config.defaultModel.model}`);
   }
 }

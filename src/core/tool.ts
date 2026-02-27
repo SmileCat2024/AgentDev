@@ -64,13 +64,51 @@ export function createTool(
  */
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
+  private enabled = new Set<string>();      // 启用的工具名
+  private sources = new Map<string, string>(); // 工具来源追踪
 
   /**
-   * 注册工具
+   * 注册工具（默认启用，记录来源）
    */
-  register(tool: Tool): this {
+  register(tool: Tool, source?: string): this {
     this.tools.set(tool.name, tool);
+    this.enabled.add(tool.name);  // 默认启用
+    if (source) {
+      this.sources.set(tool.name, source);
+    }
     return this;
+  }
+
+  /**
+   * 禁用工具
+   */
+  disable(name: string): boolean {
+    return this.enabled.delete(name);
+  }
+
+  /**
+   * 启用工具
+   */
+  enable(name: string): boolean {
+    if (this.tools.has(name)) {
+      this.enabled.add(name);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 检查工具是否启用
+   */
+  isEnabled(name: string): boolean {
+    return this.enabled.has(name);
+  }
+
+  /**
+   * 获取工具来源（调试用）
+   */
+  getSource(name: string): string | undefined {
+    return this.sources.get(name);
   }
 
   /**
@@ -81,10 +119,12 @@ export class ToolRegistry {
   }
 
   /**
-   * 获取所有工具
+   * 获取所有工具（只返回启用的）
    */
   getAll(): Tool[] {
-    return Array.from(this.tools.values());
+    return Array.from(this.enabled)
+      .map(name => this.tools.get(name))
+      .filter((t): t is Tool => t !== undefined);
   }
 
   /**

@@ -11,7 +11,7 @@ import { Agent } from '../../core/agent.js';
 import { MCPFeature, SkillFeature, SubAgentFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
-import { loadConfig } from '../../core/config.js';
+import { loadConfigSync } from '../../core/config.js';
 import { createOpenAILLM } from '../../llm/openai.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
@@ -76,10 +76,10 @@ export interface SystemContext {
 /**
  * BasicAgent 配置选项
  *
- * 所有参数都是可选的，默认会自动加载配置文件
+ * 所有参数都是可选的，默认会自动同步加载配置文件
  */
 export interface BasicAgentConfig {
-  /** LLM 客户端（可选，不传则自动加载配置创建） */
+  /** LLM 客户端（可选，不传则自动同步加载配置创建） */
   llm?: LLMClient;
   /** 配置文件名（可选，默认 'default'） */
   configName?: string;
@@ -101,7 +101,7 @@ export interface BasicAgentConfig {
  * 基础 Agent 类
  *
  * 封装了通用工具集和系统环境信息，开箱即用
- * 构造函数不传任何参数时，会自动加载配置文件创建 LLM
+ * 构造函数不传任何参数时，会自动同步加载配置文件创建 LLM
  */
 export class BasicAgent extends Agent {
   protected _systemContext: SystemContext;
@@ -109,6 +109,26 @@ export class BasicAgent extends Agent {
   protected _mcpContext?: Record<string, unknown>;
   protected _config?: AgentConfigFile;
   protected _skillsDir?: string;
+
+  /**
+   * 覆盖 onInitiate 钩子：禁用不需要的子代理工具
+   *
+   * BasicAgent 只保留三个子代理工具：
+   * - spawn_agent: 创建子代理
+   * - send_to_agent: 向子代理发送消息
+   * - wait: 等待子代理完成
+   *
+   * 禁用的工具：
+   * - list_agents: 查看子代理列表
+   * - close_agent: 关闭子代理
+   */
+  protected override async onInitiate(ctx: import('../../core/lifecycle.js').AgentInitiateContext): Promise<void> {
+    await super.onInitiate(ctx);
+
+    // 禁用不需要的子代理工具
+    this.getTools().disable('list_agents');
+    this.getTools().disable('close_agent');
+  }
 
   /**
    * 构造函数
@@ -125,9 +145,20 @@ export class BasicAgent extends Agent {
       SYSTEM_CURRENT_MODEL: 'unknown', // 稍后更新
     };
 
+    // 准备 LLM：如果没传入，同步加载配置
+    let llm = config.llm;
+    let fileConfig: AgentConfigFile | undefined;
+    if (!llm) {
+      const configName = config.configName ?? 'default';
+      fileConfig = loadConfigSync(configName);
+      llm = createOpenAILLM(fileConfig);
+      systemContext.SYSTEM_CURRENT_MODEL = fileConfig.defaultModel.model;
+      console.log(`[BasicAgent] 已加载配置: ${configName}, 模型: ${fileConfig.defaultModel.model}`);
+    }
+
     // 构建完整的 Agent 配置
     const agentConfig: AgentConfig = {
-      llm: config.llm!, // 如果是 undefined，会在 onInitiate 中延迟加载
+      llm: llm!,
       tools: config.tools ?? DEFAULT_TOOLS,
       maxTurns: Infinity,
       systemMessage: config.systemMessage,
@@ -136,8 +167,9 @@ export class BasicAgent extends Agent {
 
     super(agentConfig);
 
-    // 保存配置
+    // 保存配置（必须在 super() 之后）
     this._systemContext = systemContext;
+    this._config = fileConfig;
     this._mcpServer = config.mcpServer;
     this._mcpContext = config.mcpContext;
     this._skillsDir = config.skillsDir;
@@ -153,11 +185,6 @@ export class BasicAgent extends Agent {
 
     // 注册 SubAgentFeature（子代理工具和消息处理）
     this.use(new SubAgentFeature());
-
-    // 如果没有传入 llm，标记需要延迟加载
-    if (!config.llm) {
-      (this as any)._pendingConfigName = config.configName ?? 'default';
-    }
   }
 
   /**
@@ -179,28 +206,5 @@ export class BasicAgent extends Agent {
    */
   getMcpContext(): Record<string, unknown> | undefined {
     return this._mcpContext;
-  }
-
-  /**
-   * 延迟加载 LLM（在 onInitiate 中调用）
-   */
-  protected async loadLLMIfNeeded(): Promise<void> {
-    // 如果已经有 llm，跳过
-    if (this.llm) {
-      return;
-    }
-
-    const configName = (this as any)._pendingConfigName ?? 'default';
-    const config = await loadConfig(configName);
-    this._config = config;
-
-    // 创建 LLM
-    this.llm = createOpenAILLM(config);
-
-    // 更新系统上下文中的模型名称
-    this._systemContext.SYSTEM_CURRENT_MODEL = config.defaultModel.model;
-    this.setSystemContext(this._systemContext);
-
-    console.log(`[BasicAgent] 已加载配置: ${configName}, 模型: ${config.defaultModel.model}`);
   }
 }

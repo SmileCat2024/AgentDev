@@ -1,9 +1,14 @@
 /**
  * 配置加载
  * 从 config 目录读取 JSON 配置文件
+ *
+ * 提供两种方式：
+ * - loadConfig() - 异步加载（用于特殊场景）
+ * - loadConfigSync() - 同步加载（推荐，用于 Agent 构造）
  */
 
 import { readFile, readdir } from 'fs/promises';
+import { readFileSync, readdirSync } from 'fs';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -38,7 +43,7 @@ function getProjectRoot(): string {
 }
 
 /**
- * 读取配置文件
+ * 读取配置文件（异步版本）
  * @param name 配置文件名（不含路径和扩展名），默认 'default'
  */
 export async function loadConfig(name: string = 'default'): Promise<AgentConfigFile> {
@@ -47,6 +52,22 @@ export async function loadConfig(name: string = 'default'): Promise<AgentConfigF
   const configPath = resolve(configDir, `${name}.json`);
 
   const content = await readFile(configPath, 'utf-8');
+  const raw = JSON.parse(content);
+
+  // 替换环境变量 ${VAR_NAME}
+  return replaceEnvVars(raw) as AgentConfigFile;
+}
+
+/**
+ * 读取配置文件（同步版本，推荐用于 Agent 构造）
+ * @param name 配置文件名（不含路径和扩展名），默认 'default'
+ */
+export function loadConfigSync(name: string = 'default'): AgentConfigFile {
+  const projectRoot = getProjectRoot();
+  const configDir = join(projectRoot, 'config');
+  const configPath = resolve(configDir, `${name}.json`);
+
+  const content = readFileSync(configPath, 'utf-8');
   const raw = JSON.parse(content);
 
   // 替换环境变量 ${VAR_NAME}

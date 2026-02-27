@@ -448,26 +448,98 @@ class AgentBase {
   }
 
   /**
+   * 启用 Feature 的所有工具
+   *
+   * @example
+   * agent.enable('mcp')  // 启用 MCP 工具
+   */
+  enable(featureName: string): this {
+    const feature = this.features.get(featureName);
+    if (!feature) {
+      console.warn(`[Agent] Feature '${featureName}' 不存在`);
+      return this;
+    }
+
+    const tools = feature.getTools?.() ?? [];
+    let count = 0;
+    for (const tool of tools) {
+      if (this.tools.enable(tool.name)) {
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      console.log(`[Agent] 已启用 Feature '${featureName}' 的 ${count} 个工具`);
+    }
+
+    return this;
+  }
+
+  /**
+   * 禁用 Feature 的所有工具
+   *
+   * @example
+   * agent.disable('mcp')  // 禁用 MCP 工具
+   */
+  disable(featureName: string): this {
+    const feature = this.features.get(featureName);
+    if (!feature) {
+      console.warn(`[Agent] Feature '${featureName}' 不存在`);
+      return this;
+    }
+
+    const tools = feature.getTools?.() ?? [];
+    let count = 0;
+    for (const tool of tools) {
+      if (this.tools.disable(tool.name)) {
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      console.log(`[Agent] 已禁用 Feature '${featureName}' 的 ${count} 个工具`);
+    }
+
+    return this;
+  }
+
+  /**
+   * 检查 Feature 是否启用
+   *
+   * @example
+   * if (agent.isEnabled('mcp')) { ... }
+   */
+  isEnabled(featureName: string): boolean {
+    const feature = this.features.get(featureName);
+    if (!feature) return false;
+
+    const tools = feature.getTools?.() ?? [];
+    if (tools.length === 0) return true; // 空工具视为启用
+
+    return tools.every(t => this.tools.isEnabled(t.name));
+  }
+
+  /**
    * 确保 Feature 工具已注册
    */
   private async ensureFeatureTools(): Promise<void> {
     if (this.featureToolsReady) return;
 
-    const initContext: FeatureInitContext = {
-      agentId: this.agentId || '',
-      config: this.config,
-      getFeature: <T extends AgentFeature>(name: string): T | undefined => {
-        return this.features.get(name) as T | undefined;
-      },
-      registerTool: (tool) => this.tools.register(tool),
-    };
-
     for (const [name, feature] of this.features) {
-      initContext.featureConfig = this.config.features?.[name];
+      // 为每个 Feature 创建独立的 initContext
+      const initContext: FeatureInitContext = {
+        agentId: this.agentId || '',
+        config: this.config,
+        featureConfig: this.config.features?.[name],
+        getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
+          return this.features.get(featureName) as T | undefined;
+        },
+        registerTool: (tool) => this.tools.register(tool, name),
+      };
 
       if (feature.getTools) {
         for (const tool of feature.getTools()) {
-          this.tools.register(tool);
+          this.tools.register(tool, name);  // 传递来源
         }
       }
 
@@ -475,7 +547,7 @@ class AgentBase {
         try {
           const tools = await feature.getAsyncTools(initContext);
           for (const tool of tools) {
-            this.tools.register(tool);
+            this.tools.register(tool, name);  // 传递来源
           }
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);

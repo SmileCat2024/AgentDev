@@ -480,6 +480,10 @@ export class SubAgentFeature implements AgentFeature {
     ]);
   }
 
+  /**
+   * @deprecated 请使用 Agent 生命周期钩子 + handleNoToolCalls 等方法
+   * 将在未来版本中移除
+   */
   getReActLoopHooks(): ReActLoopHooks {
     const self = this;
     return {
@@ -528,6 +532,63 @@ export class SubAgentFeature implements AgentFeature {
         }
       },
     };
+  }
+
+  // ========== 新方式：Agent 生命周期钩子集成 ==========
+
+  /**
+   * 在 onLLMFinish 中调用：处理无工具调用时的子代理等待
+   *
+   * @returns 控制流指令
+   */
+  async handleNoToolCalls(context: Context): Promise<{ action: 'continue' } | undefined> {
+    if (!this.agentPool?.hasActiveAgents()) {
+      return undefined;
+    }
+
+    const result = await this.agentPool.waitForMessage();
+    context.add({
+      role: 'assistant',
+      content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
+    });
+
+    return { action: 'continue' };
+  }
+
+  /**
+   * 在 onToolFinished 中调用：消费子代理消息
+   */
+  async consumeMessages(context: Context): Promise<void> {
+    if (!this.agentPool?.hasPendingMessages()) {
+      return;
+    }
+
+    const messages = this.agentPool.consumeAllPendingMessages();
+    for (const { agentId, message } of messages) {
+      context.add({
+        role: 'assistant',
+        content: `[子代理 ${agentId} 执行完成]:\n\n${message}`,
+      });
+    }
+  }
+
+  /**
+   * 在 onTurnFinished 中调用：处理 wait 工具
+   *
+   * @returns 控制流指令
+   */
+  async handleWait(context: Context): Promise<{ action: 'continue' } | undefined> {
+    if (!this.agentPool?.hasActiveAgents()) {
+      return undefined;
+    }
+
+    const result = await this.agentPool.waitForMessage();
+    context.add({
+      role: 'assistant',
+      content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
+    });
+
+    return { action: 'continue' };
   }
 
   async onDestroy(): Promise<void> {

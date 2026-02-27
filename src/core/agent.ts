@@ -556,18 +556,72 @@ class AgentBase {
     }
   }
 
-  // ========== 生命周期钩子（默认实现）==========
+  // ========== 生命周期钩子（扩展返回值）==========
 
+  // Agent/Call 级：保持 void
   protected async onInitiate(_ctx: AgentInitiateContext): Promise<void> {}
   protected async onDestroy(_ctx: AgentDestroyContext): Promise<void> {}
   protected async onCallStart(_ctx: CallStartContext): Promise<void> {}
   protected async onCallFinish(_ctx: CallFinishContext): Promise<void> {}
   protected async onTurnStart(_ctx: TurnStartContext): Promise<void> {}
-  protected async onTurnFinished(_ctx: TurnFinishedContext): Promise<void> {}
-  protected async onLLMStart(_ctx: LLMStartContext): Promise<HookResult | undefined> { return undefined; }
-  protected async onLLMFinish(_ctx: LLMFinishContext): Promise<void> {}
-  protected async onToolUse(_ctx: ToolContext): Promise<HookResult | undefined> { return undefined; }
-  protected async onToolFinished(_result: ToolResult): Promise<void> {}
+
+  // LLM/Turn 级：扩展返回 HookResult
+  protected async onLLMStart(_ctx: LLMStartContext): Promise<HookResult | undefined> {
+    return undefined;
+  }
+
+  /**
+   * LLM 调用完成钩子（扩展支持流控制）
+   *
+   * @returns
+   * - undefined: 默认行为
+   * - { action: 'continue' }: 继续循环（即使无 toolCalls 也不结束）
+   * - { action: 'end' }: 强制结束循环
+   */
+  protected async onLLMFinish(_ctx: LLMFinishContext): Promise<HookResult | undefined> {
+    // 【新增】默认实现：自动对接 SubAgentFeature
+    const subAgent = this.features.get('subagent') as any;
+    const hasToolCalls = _ctx.response.toolCalls && _ctx.response.toolCalls.length > 0;
+
+    if (!hasToolCalls && subAgent?.handleNoToolCalls) {
+      return subAgent.handleNoToolCalls(_ctx.context);
+    }
+    return undefined;
+  }
+
+  /**
+   * Turn 结束钩子（扩展支持流控制）
+   *
+   * @returns
+   * - undefined: 默认行为
+   * - { action: 'continue' }: 继续下一轮
+   * - { action: 'end' }: 强制结束循环
+   */
+  protected async onTurnFinished(_ctx: TurnFinishedContext): Promise<HookResult | undefined> {
+    // 【新增】默认实现：自动对接 SubAgentFeature
+    const subAgent = this.features.get('subagent') as any;
+    const hasWait = _ctx.llmResponse.toolCalls?.some(c => c.name === 'wait');
+
+    if (hasWait && subAgent?.handleWait) {
+      return subAgent.handleWait(_ctx.context);
+    }
+    return undefined;
+  }
+
+  protected async onToolUse(_ctx: ToolContext): Promise<HookResult | undefined> {
+    return undefined;
+  }
+
+  /**
+   * 工具执行完成钩子
+   *
+   * 【新增】默认实现：自动对接 SubAgentFeature
+   */
+  protected async onToolFinished(_result: ToolResult): Promise<void> {
+    // 【新增】默认实现：自动对接 SubAgentFeature
+    const subAgent = this.features.get('subagent') as any;
+    await subAgent?.consumeMessages?.(_result.context);
+  }
 
   // SubAgent 钩子
   public async onSubAgentSpawn(_ctx: SubAgentSpawnContext): Promise<void> {}

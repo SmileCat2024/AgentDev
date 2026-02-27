@@ -13,6 +13,15 @@ import type { LLMResponse } from './types.js';
 /**
  * ReAct 循环钩子接口
  *
+ * @deprecated 请使用 Agent 生命周期钩子的返回值来控制流程
+ * 此接口将在未来版本中移除
+ *
+ * 旧方式：Feature 实现 getReActLoopHooks()
+ * 新方式：
+ *   1. SubAgentFeature 提供 handleNoToolCalls() 等方法
+ *   2. Agent 在 onLLMFinish 等钩子中调用这些方法
+ *   3. 钩子返回 { action: 'continue' } 或 { action: 'end' }
+ *
  * 允许 Feature 在 ReAct 循环的关键执行点注入自定义逻辑
  * 只有需要介入 ReAct 循环的 Feature 才需要实现此接口
  */

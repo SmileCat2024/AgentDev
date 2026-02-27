@@ -103,6 +103,8 @@ export interface LLMFinishContext {
   turn: number;
   /** 调用耗时(ms) */
   duration: number;
+  /** 消息上下文（可读写） */
+  context: Context;
 }
 
 /**
@@ -150,16 +152,21 @@ export interface ToolResult {
 }
 
 /**
- * 钩子返回值类型
+ * 钩子返回值类型（扩展版）
  *
- * 用于控制工具调用的行为：
- * - undefined: 默认行为（一律放行）
- * - { action: 'block' }: 阻止工具执行，可选提供原因
- * - { action: 'allow' }: 明确允许工具执行
+ * 统一的生命周期钩子控制流指令
+ *
+ * - { action: 'block' }: 阻止工具执行（工具级）
+ * - { action: 'allow' }: 允许工具执行（工具级）
+ * - { action: 'continue' }: 继续循环（循环级，新增）
+ * - { action: 'end' }: 结束循环（循环级，新增）
+ * - undefined: 默认行为
  */
 export type HookResult =
   | { action: 'block'; reason?: string }
   | { action: 'allow' }
+  | { action: 'continue' }        // 新增：继续循环
+  | { action: 'end' }             // 新增：结束循环
   | undefined;
 
 // ========== SubAgent 级别 ==========

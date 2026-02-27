@@ -44,8 +44,8 @@ export class ReActLoopRunner {
     ) => Promise<void>,
     private onTurnStartFn: (ctx: any) => Promise<void>,
     private onLLMStartFn: (ctx: any) => Promise<HookResult | undefined>,
-    private onLLMFinishFn: (ctx: any) => Promise<void>,
-    private onTurnFinishedFn: (ctx: any) => Promise<void>,
+    private onLLMFinishFn: (ctx: any) => Promise<HookResult | undefined>,
+    private onTurnFinishedFn: (ctx: any) => Promise<HookResult | undefined>,
     private onInterruptFn: (ctx: any) => Promise<void>
   ) {
     // 收集 ReAct 循环钩子（延迟收集，确保 features 已注册）
@@ -96,6 +96,7 @@ export class ReActLoopRunner {
     let completed = false;
     let finalResponse = '';
 
+    outerLoop:
     for (let turn = 0; turn < this.agent.maxTurns; turn++) {
       this.agent._currentTurn = turn;
 
@@ -142,9 +143,9 @@ export class ReActLoopRunner {
       const llmDuration = Date.now() - llmStartTime;
 
       // ========== LLM Finish ==========
-      await this.executeHookFn(
+      const llmFinishResult = await this.executeHookFn(
         'onLLMFinish',
-        () => this.onLLMFinishFn({ response, turn, duration: llmDuration }),
+        () => this.onLLMFinishFn({ response, turn, duration: llmDuration, context }),
         { input, turn }
       );
 
@@ -159,16 +160,40 @@ export class ReActLoopRunner {
       // 推送消息到 DebugHub
       this.pushToDebug(context.getAll());
 
+      // 【新增】处理钩子返回的控制流指令
+      if (llmFinishResult?.action === 'end') {
+        completed = true;
+        finalResponse = response.content;
+        break;
+      }
+
       // 检查是否需要调用工具
       if (!response.toolCalls || response.toolCalls.length === 0) {
-        const turnResult = await this.handleNoToolCalls(response, context, input, turn);
-        if (turnResult.completed) {
-          completed = true;
-          finalResponse = turnResult.response;
-          break;
+        // 【修改】如果钩子要求继续，不结束循环
+        if (llmFinishResult?.action === 'continue') {
+          continue outerLoop;
         }
-        // 否则继续下一轮
-        continue;
+
+        // 【保留】向后兼容：调用 ReActLoopHooks（标记废弃）
+        const hookResult = await this.callBeforeNoToolCalls(context, response, turn);
+        if (hookResult?.shouldEnd === false) {
+          continue outerLoop;
+        }
+
+        // 真正结束
+        await this.executeHookFn(
+          'onTurnFinished',
+          () => this.onTurnFinishedFn({
+            turn,
+            context,
+            input,
+            llmResponse: response,
+            toolCallsCount: 0,
+          }),
+          { input, turn }
+        );
+
+        return { completed: true, finalResponse: response.content, turns: turn + 1 };
       }
 
       // 执行工具
@@ -198,7 +223,7 @@ export class ReActLoopRunner {
       this.pushToDebug(context.getAll());
 
       // ========== Turn Finished（有工具调用）==========
-      await this.executeHookFn(
+      const turnFinishResult = await this.executeHookFn(
         'onTurnFinished',
         () => this.onTurnFinishedFn({
           turn,
@@ -209,6 +234,16 @@ export class ReActLoopRunner {
         }),
         { input, turn }
       );
+
+      // 【新增】处理钩子返回的控制流指令
+      if (turnFinishResult?.action === 'end') {
+        completed = true;
+        finalResponse = response.content;
+        break;
+      }
+      if (turnFinishResult?.action === 'continue') {
+        continue outerLoop;
+      }
     }
 
     // 达到最大轮次 - 中断处理

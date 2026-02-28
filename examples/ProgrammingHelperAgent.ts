@@ -11,8 +11,8 @@ import { TemplateComposer } from '../src/template/composer.js';
 import { TodoFeature } from '../src/features/index.js';
 import type {
   AgentInitiateContext,
-  TurnStartContext,
-  TurnFinishedContext,
+  StepStartContext,
+  StepFinishedContext,
   HookResult,
 } from '../src/core/lifecycle.js';
 
@@ -67,15 +67,15 @@ export class ProgrammingHelperAgent extends BasicAgent {
     );
   }
 
-  protected override async onTurnStart(ctx: TurnStartContext): Promise<void> {
-    // TodoFeature 在每轮开始时检查是否需要注入 reminder
+  protected override async onStepStart(ctx: StepStartContext): Promise<void> {
+    // TodoFeature 在每步开始时检查是否需要注入 reminder
     this._todoFeature.checkAndInjectReminder({
       context: ctx.context,
-      callTurn: ctx.callTurn,
+      callIndex: ctx.callIndex,
     });
   }
 
-  protected override async onTurnFinished(ctx: TurnFinishedContext): Promise<HookResult | undefined> {
+  protected override async onStepFinished(ctx: StepFinishedContext): Promise<HookResult | undefined> {
     // TodoFeature 记录本轮是否使用了 todo 工具
     const toolCalls = ctx.llmResponse.toolCalls ?? [];
     this._todoFeature.recordToolUsage(toolCalls);

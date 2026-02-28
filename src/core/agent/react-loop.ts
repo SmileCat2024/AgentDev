@@ -2,6 +2,10 @@
  * ReAct 循环执行器
  *
  * 封装完整的 ReAct 循环逻辑
+ *
+ * 概念：
+ * - Call（调用）: 用户一次完整的输入-输出交互
+ * - Step（步骤）: ReAct 循环中的单次迭代（一次 LLM 调用 + 工具执行）
  */
 
 import type { Context } from '../context.js';
@@ -9,23 +13,22 @@ import type { ToolRegistry } from '../tool.js';
 import type { ToolCall, LLMResponse, Message } from '../types.js';
 import type { ToolResult, HookResult } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
-import type { AgentFeature, ReActLoopHooks } from '../feature.js';
+import type { AgentFeature } from '../feature.js';
 
 /**
  * ReAct 循环执行器类
  */
 export class ReActLoopRunner {
-  private reactLoopHooks?: ReActLoopHooks[];
   private subAgentFeature?: any; // SubAgentFeature reference for direct access
 
   constructor(
     private agent: {
       llm: any;
       tools: ToolRegistry;
-      maxTurns: number;
+      maxTurns: number;  // 实际是 maxSteps，但保留兼容性
       debugEnabled: boolean;
       agentId?: string;
-      _currentTurn: number;
+      _currentStep: number;
       _agentId?: string;
       _parentPool?: any;
       debugPusher?: DebugPusher;
@@ -34,50 +37,26 @@ export class ReActLoopRunner {
     private executeHookFn: (
       hookName: string,
       hookFn: () => Promise<any>,
-      options: { input?: string; turn?: number }
+      options: { input?: string; step?: number }
     ) => Promise<any>,
     private executeToolFn: (
       call: ToolCall,
       input: string,
       context: Context,
-      turn: number,
-      callTurn: number
+      step: number,
+      callIndex: number
     ) => Promise<void>,
-    private onTurnStartFn: (ctx: any) => Promise<void>,
+    private onStepStartFn: (ctx: any) => Promise<void>,
     private onLLMStartFn: (ctx: any) => Promise<HookResult | undefined>,
     private onLLMFinishFn: (ctx: any) => Promise<HookResult | undefined>,
-    private onTurnFinishedFn: (ctx: any) => Promise<HookResult | undefined>,
+    private onStepFinishedFn: (ctx: any) => Promise<HookResult | undefined>,
     private onInterruptFn: (ctx: any) => Promise<void>
   ) {
-    // 收集 ReAct 循环钩子（延迟收集，确保 features 已注册）
-    this.collectHooks();
-  }
-
-  /**
-   * 收集所有 Feature 的 ReAct 循环钩子
-   */
-  private collectHooks(): void {
-    const hooks: ReActLoopHooks[] = [];
-
-    // 从 agent.features 获取所有 Feature 的钩子
+    // 保存 SubAgentFeature 引用
     const features = this.agent.features;
-
     if (features) {
-      for (const feature of features.values()) {
-        if (feature.getReActLoopHooks) {
-          const hook = feature.getReActLoopHooks();
-          if (hook) {
-            hooks.push(hook);
-            // 保存 SubAgentFeature 引用，用于直接访问 AgentPool
-            if (feature.name === 'subagent') {
-              this.subAgentFeature = feature;
-            }
-          }
-        }
-      }
+      this.subAgentFeature = features.get('subagent');
     }
-
-    this.reactLoopHooks = hooks;
   }
 
   /**
@@ -90,26 +69,26 @@ export class ReActLoopRunner {
    */
   async run(input: string, context: Context, options: {
     isFirstCall: boolean;
-    callTurn: number;  // 用户交互次数
+    callIndex: number;  // 用户交互序号
   }): Promise<ReActResult> {
-    const { isFirstCall, callTurn } = options;
+    const { isFirstCall, callIndex } = options;
 
     // ========== ReAct 循环 ==========
     let completed = false;
     let finalResponse = '';
 
     outerLoop:
-    for (let turn = 0; turn < this.agent.maxTurns; turn++) {
-      this.agent._currentTurn = turn;
+    for (let step = 0; step < this.agent.maxTurns; step++) {
+      this.agent._currentStep = step;
 
       // 推送消息到 DebugHub
       this.pushToDebug(context.getAll());
 
-      // ========== Turn Start ==========
+      // ========== Step Start ==========
       await this.executeHookFn(
-        'onTurnStart',
-        () => this.onTurnStartFn({ turn, callTurn, context, input }),
-        { input, turn }
+        'onStepStart',
+        () => this.onStepStartFn({ step, callIndex, context, input }),
+        { input, step }
       );
 
       // ========== LLM Start ==========
@@ -118,15 +97,15 @@ export class ReActLoopRunner {
         () => this.onLLMStartFn({
           messages: context.getAll(),
           tools: this.agent.tools.getAll(),
-          turn,
+          step,
         }),
-        { input, turn }
+        { input, step }
       );
 
       // 检查是否被阻止
       if (llmStartResult?.action === 'block') {
         const blockResponse = llmStartResult.reason || 'LLM call blocked by hook';
-        context.addAssistantMessage({ content: blockResponse }, callTurn);
+        context.addAssistantMessage({ content: blockResponse }, callIndex);
 
         completed = true;
         finalResponse = blockResponse;
@@ -144,17 +123,17 @@ export class ReActLoopRunner {
       // ========== LLM Finish ==========
       const llmFinishResult = await this.executeHookFn(
         'onLLMFinish',
-        () => this.onLLMFinishFn({ response, turn, duration: llmDuration, context }),
-        { input, turn }
+        () => this.onLLMFinishFn({ response, step, duration: llmDuration, context }),
+        { input, step }
       );
 
       // 添加助手响应
-      context.addAssistantMessage(response, callTurn);
+      context.addAssistantMessage(response, callIndex);
 
       // 推送消息到 DebugHub
       this.pushToDebug(context.getAll());
 
-      // 【新增】处理钩子返回的控制流指令
+      // 处理钩子返回的控制流指令
       if (llmFinishResult?.action === 'end') {
         completed = true;
         finalResponse = response.content;
@@ -163,31 +142,26 @@ export class ReActLoopRunner {
 
       // 检查是否需要调用工具
       if (!response.toolCalls || response.toolCalls.length === 0) {
-        // 【修改】如果钩子要求继续，不结束循环
+        // 如果钩子要求继续，不结束循环
         if (llmFinishResult?.action === 'continue') {
-          continue outerLoop;
-        }
-
-        // 【保留】向后兼容：调用 ReActLoopHooks（标记废弃）
-        const hookResult = await this.callBeforeNoToolCalls(context, response, turn);
-        if (hookResult?.shouldEnd === false) {
           continue outerLoop;
         }
 
         // 真正结束
         await this.executeHookFn(
-          'onTurnFinished',
-          () => this.onTurnFinishedFn({
-            turn,
+          'onStepFinished',
+          () => this.onStepFinishedFn({
+            step,
+            callIndex,
             context,
             input,
             llmResponse: response,
             toolCallsCount: 0,
           }),
-          { input, turn }
+          { input, step }
         );
 
-        return { completed: true, finalResponse: response.content, turns: turn + 1 };
+        return { completed: true, finalResponse: response.content, turns: step + 1 };
       }
 
       // 执行工具
@@ -196,51 +170,49 @@ export class ReActLoopRunner {
         if (call.name === 'wait') {
           waitCalled = true;
         }
-        await this.executeToolFn(call, input, context, turn, callTurn);
+        await this.executeToolFn(call, input, context, step, callIndex);
       }
-
-      // 调用 Feature 钩子：afterToolCalls
-      await this.callAfterToolCalls(context, response.toolCalls, turn);
 
       // 推送消息到 DebugHub
       this.pushToDebug(context.getAll());
 
       // wait 工具处理：如果有 wait 调用且有活跃子代理，等待消息后继续循环
-      if (waitCalled) {
-        const waitResult = await this.handleWait(context, turn);
-        if (waitResult.shouldContinue) {
-          continue;
-        }
+      if (waitCalled && this.subAgentFeature?.agentPool) {
+        const waitResult = await this.subAgentFeature.agentPool.waitForMessage();
+        const timestamp = new Date().toISOString();
+        console.log(`[DEBUG:主代理-wait调用] ${timestamp} 收到子代理消息 agentId=${waitResult.agentId}, 插入到 context`);
+        this.pushToDebug(context.getAll());
       }
 
       // 推送到 DebugHub
       this.pushToDebug(context.getAll());
 
-      // ========== Turn Finished（有工具调用）==========
-      const turnFinishResult = await this.executeHookFn(
-        'onTurnFinished',
-        () => this.onTurnFinishedFn({
-          turn,
+      // ========== Step Finished（有工具调用）==========
+      const stepFinishResult = await this.executeHookFn(
+        'onStepFinished',
+        () => this.onStepFinishedFn({
+          step,
+          callIndex,
           context,
           input,
           llmResponse: response,
           toolCallsCount: response.toolCalls?.length ?? 0,
         }),
-        { input, turn }
+        { input, step }
       );
 
-      // 【新增】处理钩子返回的控制流指令
-      if (turnFinishResult?.action === 'end') {
+      // 处理钩子返回的控制流指令
+      if (stepFinishResult?.action === 'end') {
         completed = true;
         finalResponse = response.content;
         break;
       }
-      if (turnFinishResult?.action === 'continue') {
+      if (stepFinishResult?.action === 'continue') {
         continue outerLoop;
       }
     }
 
-    // 达到最大轮次 - 中断处理
+    // 达到最大步数 - 中断处理
     if (!completed) {
       const partialResult = context.getAll()[context.getAll().length - 1]?.content || '';
 
@@ -248,134 +220,21 @@ export class ReActLoopRunner {
       const interruptResult = await this.executeHookFn(
         'onInterrupt',
         () => this.onInterruptFn({
-          reason: 'max_turns_reached',
-          turn: this.agent._currentTurn,
+          reason: 'max_steps_reached',
+          step: this.agent._currentStep,
           context,
         }),
-        { input, turn: this.agent._currentTurn }
+        { input, step: this.agent._currentStep }
       );
 
       finalResponse = interruptResult as string ?? partialResult;
-
-      // 调用 Feature 钩子：onMaxTurnsReached
-      await this.callOnMaxTurnsReached(context, finalResponse, this.agent._currentTurn);
     }
 
     return {
       finalResponse,
       completed,
-      turns: this.agent._currentTurn + 1,
+      turns: this.agent._currentStep + 1,
     };
-  }
-
-  /**
-   * 处理无工具调用的情况
-   */
-  private async handleNoToolCalls(
-    response: LLMResponse,
-    context: Context,
-    input: string,
-    turn: number
-  ): Promise<{ completed: boolean; response: string }> {
-    // 调用 Feature 钩子：beforeNoToolCalls
-    const hookResult = await this.callBeforeNoToolCalls(context, response, turn);
-    if (hookResult?.shouldEnd === false) {
-      // Feature 要求不结束循环
-      return { completed: false, response: '' };
-    }
-
-    // 无活跃子代理 - 真正结束
-    await this.executeHookFn(
-      'onTurnFinished',
-      () => this.onTurnFinishedFn({
-        turn,
-        context,
-        input,
-        llmResponse: response,
-        toolCallsCount: 0,
-      }),
-      { input, turn }
-    );
-
-    return { completed: true, response: response.content };
-  }
-
-  /**
-   * 调用 Feature 钩子：afterToolCalls
-   */
-  private async callAfterToolCalls(context: Context, toolCalls: ToolCall[], turn: number): Promise<void> {
-    if (!this.reactLoopHooks) return;
-
-    for (const hook of this.reactLoopHooks) {
-      if (hook.afterToolCalls) {
-        await hook.afterToolCalls({ context, toolCalls, turn });
-      }
-    }
-  }
-
-  /**
-   * 调用 Feature 钩子：beforeNoToolCalls
-   */
-  private async callBeforeNoToolCalls(
-    context: Context,
-    llmResponse: LLMResponse,
-    turn: number
-  ): Promise<{ shouldEnd?: boolean } | undefined> {
-    if (!this.reactLoopHooks) return undefined;
-
-    for (const hook of this.reactLoopHooks) {
-      if (hook.beforeNoToolCalls) {
-        const result = await hook.beforeNoToolCalls({ context, llmResponse, turn });
-        if (result?.shouldEnd === false) {
-          return result;
-        }
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * 处理 wait 工具
-   */
-  private async handleWait(context: Context, turn: number): Promise<{ shouldContinue: boolean }> {
-    if (!this.reactLoopHooks || !this.subAgentFeature) {
-      return { shouldContinue: false };
-    }
-
-    // 检查是否应该等待
-    for (const hook of this.reactLoopHooks) {
-      if (hook.shouldWaitForSubAgent && await hook.shouldWaitForSubAgent({ waitCalled: true, context, turn })) {
-        // Feature 确认需要等待，执行等待逻辑
-        if (this.subAgentFeature.agentPool) {
-          const result = await this.subAgentFeature.agentPool.waitForMessage();
-          const timestamp = new Date().toISOString();
-          console.log(`[DEBUG:主代理-wait调用] ${timestamp} 收到子代理消息 agentId=${result.agentId}, 插入到 context`);
-
-          // 调用 afterWait 钩子
-          if (hook.afterWait) {
-            await hook.afterWait({ result, context, turn });
-          }
-
-          this.pushToDebug(context.getAll());
-          return { shouldContinue: true }; // 继续下一轮
-        }
-      }
-    }
-
-    return { shouldContinue: false };
-  }
-
-  /**
-   * 调用 Feature 钩子：onMaxTurnsReached
-   */
-  private async callOnMaxTurnsReached(context: Context, result: string, turn: number): Promise<void> {
-    if (!this.reactLoopHooks) return;
-
-    for (const hook of this.reactLoopHooks) {
-      if (hook.onMaxTurnsReached) {
-        await hook.onMaxTurnsReached({ context, result, turn, agentId: this.agent._agentId });
-      }
-    }
   }
 
   /**

@@ -7,6 +7,17 @@ import type { ToolCall, Tool, LLMResponse, Message } from './types.js';
 import { Context } from './context.js';
 import type { Agent } from './agent.js';
 
+// ========== 概念定义 ==========
+/**
+ * Call（调用）: 用户一次完整的输入-输出交互
+ * - 用户输入 → Agent 处理（可能包含多个 ReAct 步骤） → 返回最终输出
+ * - 一个 Call 可能包含多个 Step
+ *
+ * Step（步骤）: ReAct 循环中的单次迭代
+ * - 一次 LLM 调用 + 工具执行（如果有）
+ * - Step 是 Call 内部的执行单元
+ */
+
 // ========== Agent 级别 ==========
 
 /**
@@ -49,22 +60,24 @@ export interface CallFinishContext {
   context: Context;
   /** 最终响应 */
   response: string;
-  /** 执行的轮次数 */
-  turns: number;
+  /** 执行的步骤数 */
+  steps: number;
   /** 是否成功完成 */
   completed: boolean;
 }
 
-// ========== Turn 级别 ==========
+// ========== Step 级别 ==========
 
 /**
- * Turn 开始上下文
+ * Step 开始上下文
+ *
+ * Step 是 ReAct 循环中的单次迭代
  */
-export interface TurnStartContext {
-  /** 当前轮次（从 0 开始） */
-  turn: number;
-  /** 用户交互次数（onCall 次数） */
-  callTurn: number;
+export interface StepStartContext {
+  /** 当前步骤序号（从 0 开始） */
+  step: number;
+  /** 当前调用序号（用户交互次数，从 0 开始） */
+  callIndex: number;
   /** 消息上下文 */
   context: Context;
   /** 原始用户输入 */
@@ -72,9 +85,9 @@ export interface TurnStartContext {
 }
 
 /**
- * Turn 结束上下文
+ * Step 结束上下文
  */
-export interface TurnFinishedContext extends TurnStartContext {
+export interface StepFinishedContext extends StepStartContext {
   /** LLM 响应 */
   llmResponse: LLMResponse;
   /** 执行的工具调用数量 */
@@ -91,8 +104,8 @@ export interface LLMStartContext {
   messages: Message[];
   /** 发送给 LLM 的工具列表 */
   tools: Tool[];
-  /** 当前轮次 */
-  turn: number;
+  /** 当前步骤序号 */
+  step: number;
 }
 
 /**
@@ -101,8 +114,8 @@ export interface LLMStartContext {
 export interface LLMFinishContext {
   /** LLM 响应 */
   response: LLMResponse;
-  /** 当前轮次 */
-  turn: number;
+  /** 当前步骤序号 */
+  step: number;
   /** 调用耗时(ms) */
   duration: number;
   /** 消息上下文（可读写） */
@@ -119,8 +132,8 @@ export interface ToolContext {
   call: ToolCall;
   /** 工具定义 */
   tool: Tool;
-  /** 当前轮次 */
-  turn: number;
+  /** 当前步骤序号 */
+  step: number;
   /** 用户输入 */
   input: string;
   /** 消息上下文（可读写） */
@@ -145,8 +158,8 @@ export interface ToolResult {
   call: ToolCall;
   /** 工具定义 */
   tool: Tool;
-  /** 当前轮次 */
-  turn: number;
+  /** 当前步骤序号 */
+  step: number;
   /** 用户输入 */
   input: string;
   /** 消息上下文 */
@@ -227,9 +240,9 @@ export interface SubAgentDestroyContext {
  */
 export interface AgentInterruptContext {
   /** 中断原因 */
-  reason: 'max_turns_reached' | 'error' | 'cancelled';
-  /** 当前轮次 */
-  turn: number;
+  reason: 'max_steps_reached' | 'error' | 'cancelled';
+  /** 当前步骤序号 */
+  step: number;
   /** 当前消息上下文 */
   context: Context;
 }
@@ -243,7 +256,7 @@ export interface SubAgentInterruptContext {
   /** 子代理类型 */
   type: string;
   /** 中断原因 */
-  reason: 'max_turns_reached' | 'error' | 'cancelled';
+  reason: 'max_steps_reached' | 'error' | 'cancelled';
   /** 中断时的结果 */
   result: string;
 }

@@ -25,7 +25,7 @@ export class ToolExecutor {
     private executeHookFn: (
       hookName: string,
       hookFn: () => Promise<any>,
-      options: { input?: string; turn?: number }
+      options: { input?: string; step?: number }
     ) => Promise<any>,
     private onToolUseFn: (ctx: ToolContext) => Promise<HookResult | undefined>,
     private onToolFinishedFn: (result: ToolResult) => Promise<void>
@@ -38,8 +38,8 @@ export class ToolExecutor {
     call: ToolCall,
     input: string,
     context: Context,
-    turn: number,
-    callTurn: number  // 用户交互次数
+    step: number,
+    callIndex: number  // 用户交互序号
   ): Promise<void> {
     const tool = this.tools.get(call.name);
     const startTime = Date.now();
@@ -47,7 +47,7 @@ export class ToolExecutor {
     const toolCtx: ToolContext = {
       call,
       tool: tool!,
-      turn,
+      step,
       input,
       context,
     };
@@ -59,7 +59,7 @@ export class ToolExecutor {
     const hookResult = await this.executeHookFn(
       'onToolUse',
       () => this.onToolUseFn(toolCtx),
-      { input, turn }
+      { input, step }
     );
 
     if (hookResult) {
@@ -77,7 +77,7 @@ export class ToolExecutor {
       duration: Date.now() - startTime,
       call,
       tool: tool!,
-      turn,
+      step,
       input,
       context,
     };
@@ -88,11 +88,11 @@ export class ToolExecutor {
         success: false,
         result: { error: result.error || 'Tool not found' },
       };
-      context.addToolMessage(call, errorResult, callTurn);
+      context.addToolMessage(call, errorResult, callIndex);
       await this.executeHookFn(
         'onToolFinished',
         () => this.onToolFinishedFn(result),
-        { input, turn }
+        { input, step }
       );
       return;
     }
@@ -119,7 +119,7 @@ export class ToolExecutor {
         success: true,
         result: typeof data === 'string' ? data : JSON.stringify(data),
       };
-      context.addToolMessage(call, successResult, callTurn);
+      context.addToolMessage(call, successResult, callIndex);
 
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error);
@@ -129,7 +129,7 @@ export class ToolExecutor {
         success: false,
         result: { error: result.error },
       };
-      context.addToolMessage(call, failResult, callTurn);
+      context.addToolMessage(call, failResult, callIndex);
     }
 
     result.duration = Date.now() - startTime;
@@ -138,7 +138,7 @@ export class ToolExecutor {
     await this.executeHookFn(
       'onToolFinished',
       () => this.onToolFinishedFn(result),
-      { input, turn }
+      { input, step }
     );
   }
 }

@@ -12,7 +12,6 @@ import type {
   AgentFeature,
   FeatureInitContext,
   FeatureContext,
-  ReActLoopHooks,
 } from '../core/feature.js';
 import { readFile } from 'fs/promises';
 import type { Context } from '../core/context.js';
@@ -175,7 +174,7 @@ export class TodoFeature implements AgentFeature {
 
   /**
    * 记录本轮是否使用了 todo 工具
-   * 在 Agent 的 onTurnFinished 钩子中调用
+   * 在 Agent 的 onStepFinished 钩子中调用
    */
   recordToolUsage(toolCalls: ToolCall[]): void {
     const usedTodoTool = toolCalls.some(call => this.isTodoTool(call.name));
@@ -194,15 +193,15 @@ export class TodoFeature implements AgentFeature {
   }
 
   /**
-   * 在每轮开始时检查是否需要注入 reminder
-   * 在 Agent 的 onTurnStart 钩子中调用
+   * 在每步开始时检查是否需要注入 reminder
+   * 在 Agent 的 onStepStart 钩子中调用
    */
   checkAndInjectReminder(ctx: {
     context: Context;
-    callTurn: number;
+    callIndex: number;
   }): void {
     const threshold = this.getCurrentThreshold();
-    console.log(`[TodoFeature] callTurn=${ctx.callTurn}, counter=${this.consecutiveNoTodoTurns}, threshold=${threshold}, injected=${this.reminderInjected}`);
+    console.log(`[TodoFeature] callIndex=${ctx.callIndex}, counter=${this.consecutiveNoTodoTurns}, threshold=${threshold}, injected=${this.reminderInjected}`);
 
     // 检查是否需要注入 reminder
     if (this.consecutiveNoTodoTurns >= threshold && !this.reminderInjected) {

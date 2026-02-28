@@ -25,8 +25,8 @@ import type {
   AgentInterruptContext,
   CallStartContext,
   CallFinishContext,
-  TurnStartContext,
-  TurnFinishedContext,
+  StepStartContext,
+  StepFinishedContext,
   LLMStartContext,
   LLMFinishContext,
   SubAgentSpawnContext,
@@ -79,8 +79,8 @@ class AgentBase {
   // 生命周期状态
   protected _initialized: boolean = false;
   protected _currentCallInput?: string;
-  protected _currentTurn: number = 0;  // ReAct 循环迭代号
-  protected _callTurn: number = -1;     // 用户交互次数（onCall 次数）
+  protected _currentStep: number = 0;   // ReAct 循环步骤序号
+  protected _callIndex: number = -1;     // 用户交互序号（onCall 次数）
   protected _callStartTimes: Map<number, number> = new Map();
 
   // 模块实例（延迟初始化）
@@ -159,8 +159,8 @@ class AgentBase {
     const callStartTime = Date.now();
     const callId = Date.now();
 
-    // 递增 call turn（用户交互次数）
-    this._callTurn++;
+    // 递增 callIndex（用户交互序号）
+    this._callIndex++;
 
     this._currentCallInput = input;
     this._callStartTimes.set(callId, callStartTime);
@@ -189,12 +189,12 @@ class AgentBase {
         if (this.templateResolver && context.getAll().length === 0) {
           const systemMsg = await this.templateResolver.resolve();
           if (systemMsg) {
-            context.addSystemMessage(systemMsg, this._callTurn);
+            context.addSystemMessage(systemMsg, this._callIndex);
           }
         }
 
         // 添加用户输入
-        context.addUserMessage(input, this._callTurn);
+        context.addUserMessage(input, this._callIndex);
 
         // 推送初始状态到 DebugHub
         this.pushToDebug(context.getAll());
@@ -202,7 +202,7 @@ class AgentBase {
         this._initialized = true;
       } else {
         // 非首次调用，直接添加用户输入
-        context.addUserMessage(input, this._callTurn);
+        context.addUserMessage(input, this._callIndex);
         this.pushToDebug(context.getAll());
       }
 
@@ -210,7 +210,7 @@ class AgentBase {
       this.ensureExecutorsInitialized();
 
       // ========== ReAct 循环 ==========
-      const result = await this.reactRunner!.run(input, context, { isFirstCall, callTurn: this._callTurn });
+      const result = await this.reactRunner!.run(input, context, { isFirstCall, callIndex: this._callIndex });
 
       // 保存上下文
       this.persistentContext = context;
@@ -250,7 +250,7 @@ class AgentBase {
           input,
           context,
           response: errorMsg,
-          turns: this._currentTurn + 1,
+          turns: this._currentStep + 1,
           completed: false,
         }),
         { hookName: 'onCallFinish', input }
@@ -261,7 +261,7 @@ class AgentBase {
     } finally {
       this._callStartTimes.delete(callId);
       this._currentCallInput = undefined;
-      this._currentTurn = 0;
+      this._currentStep = 0;
 
       // 清除通知上下文
       try {
@@ -610,18 +610,18 @@ class AgentBase {
         maxTurns: this.maxTurns,
         debugEnabled: this.debugEnabled,
         agentId: this.agentId,
-        _currentTurn: this._currentTurn,
+        _currentStep: this._currentStep,
         _agentId: this._agentId,
         _parentPool: this._parentPool,
         debugPusher,
         features: this.features,
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
-      (call, input, context, turn, callTurn) => this.toolExecutor!.execute(call, input, context, turn, callTurn),
-      (ctx) => (this as any).onTurnStart(ctx),
+      (call, input, context, step, callIndex) => this.toolExecutor!.execute(call, input, context, step, callIndex),
+      (ctx) => (this as any).onStepStart(ctx),
       (ctx) => (this as any).onLLMStart(ctx),
       (ctx) => (this as any).onLLMFinish(ctx),
-      (ctx) => (this as any).onTurnFinished(ctx),
+      (ctx) => (this as any).onStepFinished(ctx),
       (ctx) => (this as any).onInterrupt(ctx)
     );
   }
@@ -642,9 +642,9 @@ class AgentBase {
   protected async onDestroy(_ctx: AgentDestroyContext): Promise<void> {}
   protected async onCallStart(_ctx: CallStartContext): Promise<void> {}
   protected async onCallFinish(_ctx: CallFinishContext): Promise<void> {}
-  protected async onTurnStart(_ctx: TurnStartContext): Promise<void> {}
+  protected async onStepStart(_ctx: StepStartContext): Promise<void> {}
 
-  // LLM/Turn 级：扩展返回 HookResult
+  // LLM/Step 级：扩展返回 HookResult
   protected async onLLMStart(_ctx: LLMStartContext): Promise<HookResult | undefined> {
     return undefined;
   }
@@ -669,14 +669,14 @@ class AgentBase {
   }
 
   /**
-   * Turn 结束钩子（扩展支持流控制）
+   * Step 结束钩子（扩展支持流控制）
    *
    * @returns
    * - undefined: 默认行为
-   * - { action: 'continue' }: 继续下一轮
+   * - { action: 'continue' }: 继续下一步
    * - { action: 'end' }: 强制结束循环
    */
-  protected async onTurnFinished(_ctx: TurnFinishedContext): Promise<HookResult | undefined> {
+  protected async onStepFinished(_ctx: StepFinishedContext): Promise<HookResult | undefined> {
     // 【新增】默认实现：自动对接 SubAgentFeature
     const subAgent = this.features.get('subagent') as any;
     const hasWait = _ctx.llmResponse.toolCalls?.some(c => c.name === 'wait');

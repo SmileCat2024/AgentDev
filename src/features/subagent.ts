@@ -15,7 +15,6 @@ import type {
   FeatureInitContext,
   FeatureContext,
   ContextInjector,
-  ReActLoopHooks,
 } from '../core/feature.js';
 
 // ========== AgentPool ==========
@@ -331,7 +330,7 @@ export class AgentPool {
    */
   async handleInterrupt(
     agentId: string,
-    reason: 'max_turns_reached' | 'error' | 'cancelled',
+    reason: 'max_steps_reached' | 'error' | 'cancelled',
     result: string
   ): Promise<void> {
     const timestamp = new Date().toISOString();
@@ -480,61 +479,7 @@ export class SubAgentFeature implements AgentFeature {
     ]);
   }
 
-  /**
-   * @deprecated 请使用 Agent 生命周期钩子 + handleNoToolCalls 等方法
-   * 将在未来版本中移除
-   */
-  getReActLoopHooks(): ReActLoopHooks {
-    const self = this;
-    return {
-      async afterToolCalls({ context }) {
-        if (self.agentPool?.hasPendingMessages()) {
-          const messages = self.agentPool.consumeAllPendingMessages();
-          for (const { agentId, message } of messages) {
-            context.add({
-              role: 'assistant',
-              content: `[子代理 ${agentId} 执行完成]:\n\n${message}`,
-            });
-          }
-        }
-      },
-
-      async shouldWaitForSubAgent({ waitCalled }) {
-        return waitCalled && (self.agentPool?.hasActiveAgents() ?? false);
-      },
-
-      async afterWait({ result, context }) {
-        context.add({
-          role: 'assistant',
-          content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
-        });
-      },
-
-      async beforeNoToolCalls({ context }) {
-        if (self.agentPool?.hasActiveAgents()) {
-          const result = await self.agentPool.waitForMessage();
-          context.add({
-            role: 'assistant',
-            content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
-          });
-          return { shouldEnd: false };
-        }
-        return { shouldEnd: true };
-      },
-
-      async onMaxTurnsReached({ result, agentId }) {
-        if (agentId && self.parentAgent && (self.parentAgent as any)._parentPool) {
-          await (self.parentAgent as any)._parentPool.handleInterrupt(
-            agentId,
-            'max_turns_reached',
-            result
-          );
-        }
-      },
-    };
-  }
-
-  // ========== 新方式：Agent 生命周期钩子集成 ==========
+  // ========== Agent 生命周期钩子集成 ==========
 
   /**
    * 在 onLLMFinish 中调用：处理无工具调用时的子代理等待

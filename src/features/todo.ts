@@ -14,7 +14,6 @@ import type {
   FeatureContext,
   ReActLoopHooks,
 } from '../core/feature.js';
-import type { ContextFeature } from '../core/context-types.js';
 import { readFile } from 'fs/promises';
 import type { Context } from '../core/context.js';
 
@@ -95,7 +94,6 @@ export interface TodoFeatureConfig {
  */
 export class TodoFeature implements AgentFeature {
   readonly name = 'todo';
-  readonly dependencies = ['context'];
 
   private tasks = new Map<string, TodoTask>();
   private counter = 0;
@@ -106,7 +104,6 @@ export class TodoFeature implements AgentFeature {
   };
 
   // Reminder 相关状态
-  private context?: ContextFeature;
   private reminderContent = '';
 
   // 连续未使用 todo 工具的轮次计数器
@@ -134,12 +131,7 @@ export class TodoFeature implements AgentFeature {
     ];
   }
 
-  async onInitiate(ctx: FeatureInitContext): Promise<void> {
-    this.context = ctx.getContextFeature();
-    if (!this.context) {
-      throw new Error('TodoFeature requires ContextFeature. Register ContextFeature first: agent.use(new ContextFeature())');
-    }
-
+  async onInitiate(_ctx: FeatureInitContext): Promise<void> {
     console.log(`[TodoFeature] Initialized with reminderThresholdWithTasks=${this.config.reminderThresholdWithTasks}, reminderThresholdWithoutTasks=${this.config.reminderThresholdWithoutTasks}`);
 
     // 如果配置了模板文件，异步加载
@@ -209,8 +201,6 @@ export class TodoFeature implements AgentFeature {
     context: Context;
     callTurn: number;
   }): void {
-    if (!this.context) return;
-
     const threshold = this.getCurrentThreshold();
     console.log(`[TodoFeature] callTurn=${ctx.callTurn}, counter=${this.consecutiveNoTodoTurns}, threshold=${threshold}, injected=${this.reminderInjected}`);
 

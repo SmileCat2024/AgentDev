@@ -308,6 +308,84 @@ export interface AgentSwitchedMsg {
   agentId: string;
 }
 
+// ========== 上下文管理类型 ==========
+/**
+ * 消息标签枚举
+ *
+ * 用于快速分类和过滤消息，一条消息可能有多个标签
+ */
+export type MessageTag =
+  | 'user'           // 用户输入消息
+  | 'system'         // 系统消息
+  | 'assistant'      // LLM 响应消息
+  | 'tool-call'      // assistant 消息且包含 toolCalls
+  | 'tool-result'    // role === 'tool' 的工具执行结果
+  | 'sub-agent'      // 来自子代理的消息（与 assistant/tool-result 组合使用）
+  | 'reminder';      // Feature 注入的提醒消息（与 system 组合使用）
+
+/**
+ * 解析结果结构
+ *
+ * 从消息 content 中提取的结构化信息
+ */
+export interface ParsedContent {
+  /** 从 content 提取的任务 ID（正则匹配 "taskId":"xxx"） */
+  taskIds: string[];
+  /** 从 content 提取的工具调用名称（从 toolCalls 或 content 解析） */
+  toolCalls: string[];
+  /** @ 提及的内容 */
+  mentions: string[];
+  /** 用户可继承扩展更多字段 */
+  [key: string]: any;
+}
+
+/**
+ * 消息元数据
+ *
+ * 用于 addMessage() 的元数据参数
+ */
+export interface MessageMeta {
+  /** ReAct 循环轮次 */
+  turn: number;
+  /** 子代理 ID（子代理消息时填写） */
+  agentId?: string;
+  /** 来源 Feature（reminder 等消息时填写） */
+  source?: string;
+}
+
+/**
+ * 扩展的消息结构
+ *
+ * 在原始 Message 基础上添加元数据
+ * 不破坏现有 Message 类型，保证 LLM 调用兼容性
+ */
+export interface EnrichedMessage extends Message {
+  // === 元数据字段 ===
+
+  /** 唯一标识（用于索引关联） */
+  id: string;
+  /** 消息产生时间戳（毫秒） */
+  timestamp: number;
+  /** 所属 ReAct 循环轮次（从 0 开始） */
+  turn: number;
+  /** 全局消息序号（从 0 开始递增） */
+  sequence: number;
+  /** 来源 Agent ID（子代理消息） */
+  agentId?: string;
+  /** 来源 Feature（如 'todo-feature'，仅 reminder 等） */
+  source?: string;
+
+  // === 分类标签 ===
+
+  /** 消息分类标签（用于快速查询） */
+  tags: MessageTag[];
+
+  // === 解析结果 ===
+
+  /** 从 content 中提取的结构化信息 */
+  parsed: ParsedContent;
+}
+
 // ========== 生命周期类型 re-export ==========
 // 生命周期类型从 lifecycle.ts 导出，保持类型定义集中管理
 export type {

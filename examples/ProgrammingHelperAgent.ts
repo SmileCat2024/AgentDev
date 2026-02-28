@@ -8,7 +8,6 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { ContextFeature } from '../src/features/index.js';
 import { TodoFeature } from '../src/features/index.js';
 import type {
   AgentInitiateContext,
@@ -42,9 +41,8 @@ export class ProgrammingHelperAgent extends BasicAgent {
 
   constructor(config?: ProgrammingHelperAgentConfig) {
     super(config);
-    // 必须先注册 ContextFeature（TodoFeature 依赖它）
-    this.use(new ContextFeature());
     // 注册 TodoFeature 并配置 reminder
+    // 注意：不再需要手动注册 ContextFeature，Context 现在自带消息包装能力
     this._todoFeature = new TodoFeature({
       reminderTemplate: '.agentdev/prompts/reminder-update-todo.md',
       reminderThresholdWithTasks: config?.reminderThresholdWithTasks,

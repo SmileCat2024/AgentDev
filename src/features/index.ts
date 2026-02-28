@@ -14,8 +14,12 @@ export type {
   ReActLoopHooks,
 } from '../core/feature.js';
 
-// ContextFeature
-export { ContextFeature, ContextQuery } from './context.js';
+// ContextFeature (已废弃，保留仅用于向后兼容)
+/** @deprecated 使用 Context 类代替 */
+export { ContextFeature } from './context.js';
+/** @deprecated 使用 Context 类代替 */
+export { ContextQuery } from './context.js';
+/** @deprecated 使用 src/core/types.ts 中的类型 */
 export type {
   MessageTag,
   ParsedContent,

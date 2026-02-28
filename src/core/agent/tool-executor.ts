@@ -9,7 +9,7 @@ import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
 import type { ContextInjector } from '../feature.js';
 import type { ToolContext, ToolResult, HookResult } from '../lifecycle.js';
-import type { ContextFeature } from '../context-types.js';
+import type { ToolExecResult } from '../context.js';
 
 /**
  * 工具执行器类
@@ -28,8 +28,7 @@ export class ToolExecutor {
       options: { input?: string; turn?: number }
     ) => Promise<any>,
     private onToolUseFn: (ctx: ToolContext) => Promise<HookResult | undefined>,
-    private onToolFinishedFn: (result: ToolResult) => Promise<void>,
-    private contextFeature?: ContextFeature
+    private onToolFinishedFn: (result: ToolResult) => Promise<void>
   ) {}
 
   /**
@@ -85,14 +84,11 @@ export class ToolExecutor {
 
     if (blocked || !tool) {
       // 添加阻止结果到上下文
-      context.add({
-        role: 'tool',
-        toolCallId: call.id,
-        content: JSON.stringify({
-          success: false,
-          result: { error: result.error || 'Tool not found' },
-        }),
-      });
+      const errorResult: ToolExecResult = {
+        success: false,
+        result: { error: result.error || 'Tool not found' },
+      };
+      context.addToolMessage(call, errorResult, callTurn);
       await this.executeHookFn(
         'onToolFinished',
         () => this.onToolFinishedFn(result),
@@ -119,40 +115,21 @@ export class ToolExecutor {
       result.data = data;
 
       // 添加工具结果到上下文
-      const resultData = typeof data === 'string' ? data : JSON.stringify(data);
-      const toolMessage: Message = {
-        role: 'tool',
-        toolCallId: call.id,
-        content: JSON.stringify({
-          success: true,
-          result: resultData,
-        }),
+      const successResult: ToolExecResult = {
+        success: true,
+        result: typeof data === 'string' ? data : JSON.stringify(data),
       };
-      context.add(toolMessage);
-
-      // === ContextFeature: feed 工具结果 ===
-      if (this.contextFeature) {
-        this.contextFeature.feed(toolMessage, { turn: callTurn });
-      }
+      context.addToolMessage(call, successResult, callTurn);
 
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error);
 
       // 添加错误结果到上下文
-      const toolMessage: Message = {
-        role: 'tool',
-        toolCallId: call.id,
-        content: JSON.stringify({
-          success: false,
-          result: { error: result.error },
-        }),
+      const failResult: ToolExecResult = {
+        success: false,
+        result: { error: result.error },
       };
-      context.add(toolMessage);
-
-      // === ContextFeature: feed 工具结果 ===
-      if (this.contextFeature) {
-        this.contextFeature.feed(toolMessage, { turn: callTurn });
-      }
+      context.addToolMessage(call, failResult, callTurn);
     }
 
     result.duration = Date.now() - startTime;

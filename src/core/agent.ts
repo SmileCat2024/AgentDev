@@ -75,7 +75,6 @@ class AgentBase {
     injector: ContextInjector;
   }> = [];
   private featureToolsReady: boolean = false;
-  private contextFeature?: import('./context-types.js').ContextFeature;
 
   // 生命周期状态
   protected _initialized: boolean = false;
@@ -190,12 +189,12 @@ class AgentBase {
         if (this.templateResolver && context.getAll().length === 0) {
           const systemMsg = await this.templateResolver.resolve();
           if (systemMsg) {
-            context.add({ role: 'system', content: systemMsg });
+            context.addSystemMessage(systemMsg, this._callTurn);
           }
         }
 
         // 添加用户输入
-        context.add({ role: 'user', content: input });
+        context.addUserMessage(input, this._callTurn);
 
         // 推送初始状态到 DebugHub
         this.pushToDebug(context.getAll());
@@ -203,7 +202,7 @@ class AgentBase {
         this._initialized = true;
       } else {
         // 非首次调用，直接添加用户输入
-        context.add({ role: 'user', content: input });
+        context.addUserMessage(input, this._callTurn);
         this.pushToDebug(context.getAll());
       }
 
@@ -446,11 +445,6 @@ class AgentBase {
       (feature as any)._setParentAgent(this);
     }
 
-    // 如果是 ContextFeature，保存引用
-    if (feature.name === 'context') {
-      this.contextFeature = feature as import('./context-types.js').ContextFeature;
-    }
-
     if (feature.getContextInjectors) {
       for (const [pattern, injector] of feature.getContextInjectors()) {
         this.contextInjectors.push({ pattern, injector });
@@ -548,7 +542,6 @@ class AgentBase {
           return this.features.get(featureName) as T | undefined;
         },
         registerTool: (tool) => this.tools.register(tool, name),
-        getContextFeature: () => this.contextFeature,
       };
 
       if (feature.getTools) {
@@ -606,8 +599,7 @@ class AgentBase {
       this,
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (ctx) => (this as any).onToolUse(ctx),
-      (result) => (this as any).onToolFinished(result),
-      this.contextFeature
+      (result) => (this as any).onToolFinished(result)
     );
 
     // 初始化 ReActLoopRunner

@@ -1,16 +1,32 @@
 /**
  * ContextFeature - 上下文管理功能模块
  *
- * 提供消息的元数据包装、索引和查询能力
- * 其他 Feature 通过 ContextFeature 优雅地访问和查询对话上下文
+ * @deprecated ContextFeature 已内核化为 Context 类的原生能力
+ *
+ * 此文件保留仅为向后兼容，将在未来版本中移除。
+ * 请使用 Context 类的以下方法代替：
+ * - context.addUserMessage(content, turn) - 添加用户消息
+ * - context.addAssistantMessage(response, turn) - 添加助手响应
+ * - context.addToolMessage(call, result, turn) - 添加工具结果
+ * - context.addSystemMessage(content, turn, source) - 添加系统消息
+ * - context.query() - 查询接口
+ *
+ * 迁移指南：
+ * 1. 删除 agent.use(new ContextFeature())
+ * 2. 将 contextFeature.feed() 替换为 context.addXxxMessage()
+ * 3. 将 contextFeature.query() 替换为 context.query()
  *
  * @example
  * ```typescript
+ * // 旧代码（已废弃）
  * agent.use(new ContextFeature());
+ * contextFeature.feed(message, { turn: 0 });
+ * const results = contextFeature.query().byTool('task').exec();
  *
- * // 在其他 Feature 中使用
- * const context = ctx.getContextFeature();
- * const lastUpdate = context.query().byTool('task_update').last();
+ * // 新代码（推荐）
+ * // 无需 use()，Context 现在自带此能力
+ * context.addUserMessage(input, 0);
+ * const results = context.query().byTool('task').exec();
  * ```
  */
 
@@ -204,7 +220,10 @@ export interface ContextFeatureConfig {
 /**
  * ContextFeature 实现
  *
- * 核心职责：
+ * @deprecated 使用 Context 类代替
+ * 此类保留仅为向后兼容，将在未来版本中移除
+ *
+ * 核心职责（已迁移至 Context 类）：
  * 1. 接收原始 Message，包装为 EnrichedMessage
  * 2. 解析 content，提取结构化信息
  * 3. 建立索引（按工具名、taskId 等）
@@ -231,6 +250,9 @@ export class ContextFeature implements AgentFeature {
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {
+    // 废弃警告
+    console.warn('[ContextFeature] 已废弃，Context 现在自带消息包装和查询能力');
+    console.warn('[ContextFeature] 请删除 agent.use(new ContextFeature())');
     // 初始化逻辑
     if (this.config.debug) {
       console.log('[ContextFeature] Initialized');

@@ -10,7 +10,6 @@ import type { ToolCall, LLMResponse, Message } from '../types.js';
 import type { ToolResult, HookResult } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature, ReActLoopHooks } from '../feature.js';
-import type { ContextFeature } from '../context-types.js';
 
 /**
  * ReAct 循环执行器类
@@ -18,7 +17,6 @@ import type { ContextFeature } from '../context-types.js';
 export class ReActLoopRunner {
   private reactLoopHooks?: ReActLoopHooks[];
   private subAgentFeature?: any; // SubAgentFeature reference for direct access
-  private contextFeature?: ContextFeature; // ContextFeature reference
 
   constructor(
     private agent: {
@@ -53,8 +51,6 @@ export class ReActLoopRunner {
   ) {
     // 收集 ReAct 循环钩子（延迟收集，确保 features 已注册）
     this.collectHooks();
-    // 获取 ContextFeature
-    this.contextFeature = this.agent.features?.get('context') as ContextFeature;
   }
 
   /**
@@ -130,16 +126,7 @@ export class ReActLoopRunner {
       // 检查是否被阻止
       if (llmStartResult?.action === 'block') {
         const blockResponse = llmStartResult.reason || 'LLM call blocked by hook';
-        const blockMessage: Message = {
-          role: 'assistant',
-          content: blockResponse,
-        };
-        context.add(blockMessage);
-
-        // === ContextFeature: feed 阻止消息 ===
-        if (this.contextFeature) {
-          this.contextFeature.feed(blockMessage, { turn: callTurn });
-        }
+        context.addAssistantMessage({ content: blockResponse }, callTurn);
 
         completed = true;
         finalResponse = blockResponse;
@@ -162,18 +149,7 @@ export class ReActLoopRunner {
       );
 
       // 添加助手响应
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: response.content,
-        toolCalls: response.toolCalls,
-        reasoning: response.reasoning,
-      };
-      context.add(assistantMessage);
-
-      // === ContextFeature: feed LLM 响应 ===
-      if (this.contextFeature) {
-        this.contextFeature.feed(assistantMessage, { turn: callTurn });
-      }
+      context.addAssistantMessage(response, callTurn);
 
       // 推送消息到 DebugHub
       this.pushToDebug(context.getAll());

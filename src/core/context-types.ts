@@ -1,49 +1,49 @@
 /**
  * ContextFeature 类型定义
  *
- * 定义 EnrichedMessage、MessageTag、ParsedContent 等上下文管理相关类型
+ * @deprecated ContextFeature 已内核化为 Context 类的原生能力
+ * 此文件保留仅为向后兼容，将在未来版本中移除。
+ *
+ * 迁移指南：
+ * - 类型定义已移至 src/core/types.ts
+ * - Context 类现在自带消息包装和查询能力
+ *
+ * 请使用以下导入代替：
+ * ```typescript
+ * import type { MessageTag, ParsedContent, EnrichedMessage, MessageMeta } from './types.js';
+ * ```
  */
 
 import type { Message } from './types.js';
 
-// 前向声明 ContextFeature 类（定义在 features/context.ts）
-export type { ContextFeature } from '../features/context.js';
+// ========== 重导出类型（保持向后兼容） ==========
 
 /**
- * 消息标签枚举
- *
- * 用于快速分类和过滤消息，一条消息可能有多个标签
+ * @deprecated 使用 src/core/types.ts 中的 MessageTag
  */
-export type MessageTag =
-  | 'user'           // 用户输入消息
-  | 'system'         // 系统消息
-  | 'assistant'      // LLM 响应消息
-  | 'tool-call'      // assistant 消息且包含 toolCalls
-  | 'tool-result'    // role === 'tool' 的工具执行结果
-  | 'sub-agent'      // 来自子代理的消息（与 assistant/tool-result 组合使用）
-  | 'reminder';      // Feature 注入的提醒消息（与 system 组合使用）
+export type { MessageTag } from './types.js';
 
 /**
- * 解析结果结构
- *
- * 从消息 content 中提取的结构化信息
- * 用户继承 ContextFeature 可扩展此接口
+ * @deprecated 使用 src/core/types.ts 中的 ParsedContent
  */
-export interface ParsedContent {
-  /** 从 content 提取的任务 ID（正则匹配 "taskId":"xxx"） */
-  taskIds: string[];
-  /** 从 content 提取的工具调用名称（从 toolCalls 或 content 解析） */
-  toolCalls: string[];
-  /** @ 提及的内容 */
-  mentions: string[];
-  /** 用户可继承扩展更多字段 */
-  [key: string]: any;
-}
+export type { ParsedContent } from './types.js';
 
 /**
- * Feed 元数据
+ * @deprecated 使用 src/core/types.ts 中的 EnrichedMessage
+ */
+export type { EnrichedMessage } from './types.js';
+
+/**
+ * @deprecated 使用 src/core/types.ts 中的 MessageMeta
+ */
+export type { MessageMeta } from './types.js';
+
+// ========== 保留的 ContextFeature 专用类型 ==========
+
+/**
+ * Feed 元数据（ContextFeature.feed() 参数）
  *
- * 调用 ContextFeature.feed() 时传递的元数据
+ * @deprecated 使用 MessageMeta 代替
  */
 export interface FeedMetadata {
   /** ReAct 循环轮次 */
@@ -62,35 +62,9 @@ export interface ContextFeatureConfig {
   debug?: boolean;
 }
 
+// ========== 前向声明 ==========
+
 /**
- * 扩展的消息结构
- *
- * 在原始 Message 基础上添加元数据，只在 ContextFeature 内部使用
- * 不破坏现有 Message 类型，保证 LLM 调用兼容性
+ * @deprecated 使用 Context 类代替
  */
-export interface EnrichedMessage extends Message {
-  // === 元数据字段 ===
-
-  /** 唯一标识（用于索引关联） */
-  id: string;
-  /** 消息产生时间戳（毫秒） */
-  timestamp: number;
-  /** 所属 ReAct 循环轮次（从 0 开始） */
-  turn: number;
-  /** 全局消息序号（从 0 开始递增） */
-  sequence: number;
-  /** 来源 Agent ID（子代理消息） */
-  agentId?: string;
-  /** 来源 Feature（如 'todo-feature'，仅 reminder 等） */
-  source?: string;
-
-  // === 分类标签 ===
-
-  /** 消息分类标签（用于快速查询） */
-  tags: MessageTag[];
-
-  // === 解析结果 ===
-
-  /** 从 content 中提取的结构化信息 */
-  parsed: ParsedContent;
-}
+export type { ContextFeature } from '../features/context.js';

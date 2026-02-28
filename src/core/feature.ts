@@ -117,6 +117,8 @@ export interface FeatureInitContext {
   getFeature<T extends AgentFeature>(name: string): T | undefined;
   /** 注册工具 */
   registerTool(tool: Tool): void;
+  /** 获取 ContextFeature（如果已注册） */
+  getContextFeature(): import('./context-types.js').ContextFeature | undefined;
 }
 
 /**

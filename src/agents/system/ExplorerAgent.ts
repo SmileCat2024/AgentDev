@@ -159,6 +159,6 @@ export class ExplorerAgent extends Agent {
    * 获取系统环境信息
    */
   getSystemContext(): SystemContext {
-    return this._systemContext ?? {};
+    return this._systemContext;
   }
 }

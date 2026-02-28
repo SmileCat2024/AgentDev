@@ -75,11 +75,13 @@ class AgentBase {
     injector: ContextInjector;
   }> = [];
   private featureToolsReady: boolean = false;
+  private contextFeature?: import('./context-types.js').ContextFeature;
 
   // 生命周期状态
   protected _initialized: boolean = false;
   protected _currentCallInput?: string;
-  protected _currentTurn: number = 0;
+  protected _currentTurn: number = 0;  // ReAct 循环迭代号
+  protected _callTurn: number = -1;     // 用户交互次数（onCall 次数）
   protected _callStartTimes: Map<number, number> = new Map();
 
   // 模块实例（延迟初始化）
@@ -158,6 +160,12 @@ class AgentBase {
     const callStartTime = Date.now();
     const callId = Date.now();
 
+    // 递增 call turn（用户交互次数）
+    this._callTurn++;
+
+    this._currentCallInput = input;
+    this._callStartTimes.set(callId, callStartTime);
+
     this._currentCallInput = input;
     this._callStartTimes.set(callId, callStartTime);
 
@@ -203,7 +211,7 @@ class AgentBase {
       this.ensureExecutorsInitialized();
 
       // ========== ReAct 循环 ==========
-      const result = await this.reactRunner!.run(input, context, { isFirstCall });
+      const result = await this.reactRunner!.run(input, context, { isFirstCall, callTurn: this._callTurn });
 
       // 保存上下文
       this.persistentContext = context;
@@ -438,6 +446,11 @@ class AgentBase {
       (feature as any)._setParentAgent(this);
     }
 
+    // 如果是 ContextFeature，保存引用
+    if (feature.name === 'context') {
+      this.contextFeature = feature as import('./context-types.js').ContextFeature;
+    }
+
     if (feature.getContextInjectors) {
       for (const [pattern, injector] of feature.getContextInjectors()) {
         this.contextInjectors.push({ pattern, injector });
@@ -535,6 +548,7 @@ class AgentBase {
           return this.features.get(featureName) as T | undefined;
         },
         registerTool: (tool) => this.tools.register(tool, name),
+        getContextFeature: () => this.contextFeature,
       };
 
       if (feature.getTools) {
@@ -592,7 +606,8 @@ class AgentBase {
       this,
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (ctx) => (this as any).onToolUse(ctx),
-      (result) => (this as any).onToolFinished(result)
+      (result) => (this as any).onToolFinished(result),
+      this.contextFeature
     );
 
     // 初始化 ReActLoopRunner
@@ -610,7 +625,7 @@ class AgentBase {
         features: this.features,
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
-      (call, input, context, turn) => this.toolExecutor!.execute(call, input, context, turn),
+      (call, input, context, turn, callTurn) => this.toolExecutor!.execute(call, input, context, turn, callTurn),
       (ctx) => (this as any).onTurnStart(ctx),
       (ctx) => (this as any).onLLMStart(ctx),
       (ctx) => (this as any).onLLMFinish(ctx),

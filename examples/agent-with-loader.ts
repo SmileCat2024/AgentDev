@@ -1,4 +1,4 @@
-import { Agent, createOpenAILLM, loadConfig, loadSystemTools, loadUserTools, TemplateComposer } from '../src/index.js';
+import { Agent, createOpenAILLM, loadConfig, loadSystemTools, loadUserTools, TemplateComposer, SkillFeature, MCPFeature } from '../src/index.js';
 import type { MCPConfig } from '../src/mcp/types.js';
 import { exec } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
@@ -62,9 +62,14 @@ async function main() {
 
   // ========== 加载 MCP 配置 ==========
   const mcpConfig = loadMCPConfig('github');
+  let mcpFeature: MCPFeature | undefined;
   if (mcpConfig) {
     console.log('[MCP] 已加载 GitHub MCP 配置');
     console.log('[MCP] 可用工具将在首次调用时自动注册');
+    mcpFeature = new MCPFeature(mcpConfig);
+    mcpFeature.setMCPContext({
+      GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
+    });
   } else {
     console.log('[MCP] 未找到 GitHub MCP 配置，将使用基础工具集');
   }
@@ -74,12 +79,13 @@ async function main() {
     llm,
     tools: allTools,  // 使用加载的工具
     maxTurns: Infinity,
-    skillsDir: '.agentdev/skills',
-    mcp: mcpConfig,
-    mcpContext: {
-      GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
-    },
   });
+
+  // 注册 Features
+  agent.use(new SkillFeature('.agentdev/skills'));
+  if (mcpFeature) {
+    agent.use(mcpFeature);
+  }
 
   agent.setSystemPrompt(new TemplateComposer()
     .add({ file: '.agentdev/prompts/system.md' })

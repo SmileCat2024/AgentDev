@@ -14,6 +14,16 @@ export type {
   ReActLoopHooks,
 } from '../core/feature.js';
 
+// ContextFeature
+export { ContextFeature, ContextQuery } from './context.js';
+export type {
+  MessageTag,
+  ParsedContent,
+  EnrichedMessage,
+  FeedMetadata,
+  ContextFeatureConfig,
+} from '../core/context-types.js';
+
 // MCP Feature
 export { MCPFeature } from './mcp.js';
 

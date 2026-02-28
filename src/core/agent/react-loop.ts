@@ -10,6 +10,7 @@ import type { ToolCall, LLMResponse, Message } from '../types.js';
 import type { ToolResult, HookResult } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature, ReActLoopHooks } from '../feature.js';
+import type { ContextFeature } from '../context-types.js';
 
 /**
  * ReAct 循环执行器类
@@ -17,6 +18,7 @@ import type { AgentFeature, ReActLoopHooks } from '../feature.js';
 export class ReActLoopRunner {
   private reactLoopHooks?: ReActLoopHooks[];
   private subAgentFeature?: any; // SubAgentFeature reference for direct access
+  private contextFeature?: ContextFeature; // ContextFeature reference
 
   constructor(
     private agent: {
@@ -40,7 +42,8 @@ export class ReActLoopRunner {
       call: ToolCall,
       input: string,
       context: Context,
-      turn: number
+      turn: number,
+      callTurn: number
     ) => Promise<void>,
     private onTurnStartFn: (ctx: any) => Promise<void>,
     private onLLMStartFn: (ctx: any) => Promise<HookResult | undefined>,
@@ -50,6 +53,8 @@ export class ReActLoopRunner {
   ) {
     // 收集 ReAct 循环钩子（延迟收集，确保 features 已注册）
     this.collectHooks();
+    // 获取 ContextFeature
+    this.contextFeature = this.agent.features?.get('context') as ContextFeature;
   }
 
   /**
@@ -89,8 +94,9 @@ export class ReActLoopRunner {
    */
   async run(input: string, context: Context, options: {
     isFirstCall: boolean;
+    callTurn: number;  // 用户交互次数
   }): Promise<ReActResult> {
-    const { isFirstCall } = options;
+    const { isFirstCall, callTurn } = options;
 
     // ========== ReAct 循环 ==========
     let completed = false;
@@ -106,7 +112,7 @@ export class ReActLoopRunner {
       // ========== Turn Start ==========
       await this.executeHookFn(
         'onTurnStart',
-        () => this.onTurnStartFn({ turn, context, input }),
+        () => this.onTurnStartFn({ turn, callTurn, context, input }),
         { input, turn }
       );
 
@@ -124,10 +130,16 @@ export class ReActLoopRunner {
       // 检查是否被阻止
       if (llmStartResult?.action === 'block') {
         const blockResponse = llmStartResult.reason || 'LLM call blocked by hook';
-        context.add({
+        const blockMessage: Message = {
           role: 'assistant',
           content: blockResponse,
-        });
+        };
+        context.add(blockMessage);
+
+        // === ContextFeature: feed 阻止消息 ===
+        if (this.contextFeature) {
+          this.contextFeature.feed(blockMessage, { turn: callTurn });
+        }
 
         completed = true;
         finalResponse = blockResponse;
@@ -150,12 +162,18 @@ export class ReActLoopRunner {
       );
 
       // 添加助手响应
-      context.add({
+      const assistantMessage: Message = {
         role: 'assistant',
         content: response.content,
         toolCalls: response.toolCalls,
         reasoning: response.reasoning,
-      });
+      };
+      context.add(assistantMessage);
+
+      // === ContextFeature: feed LLM 响应 ===
+      if (this.contextFeature) {
+        this.contextFeature.feed(assistantMessage, { turn: callTurn });
+      }
 
       // 推送消息到 DebugHub
       this.pushToDebug(context.getAll());
@@ -202,7 +220,7 @@ export class ReActLoopRunner {
         if (call.name === 'wait') {
           waitCalled = true;
         }
-        await this.executeToolFn(call, input, context, turn);
+        await this.executeToolFn(call, input, context, turn, callTurn);
       }
 
       // 调用 Feature 钩子：afterToolCalls

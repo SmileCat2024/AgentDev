@@ -63,6 +63,8 @@ export interface CallFinishContext {
 export interface TurnStartContext {
   /** 当前轮次（从 0 开始） */
   turn: number;
+  /** 用户交互次数（onCall 次数） */
+  callTurn: number;
   /** 消息上下文 */
   context: Context;
   /** 原始用户输入 */

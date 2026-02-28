@@ -2,26 +2,21 @@
  * Todo Feature - 任务列表管理功能模块
  *
  * 提供任务创建、查询、更新等能力，用于跟踪复杂任务的进度
- *
- * @example
- * ```typescript
- * agent.use(new TodoFeature());
- *
- * // LLM 可以使用的工具：
- * // - task_create: 创建新任务
- * // - task_list: 列出所有任务
- * // - task_get: 获取任务详情
- * // - task_update: 更新任务状态
- * ```
+ * 内置智能提醒功能，自动跟踪工具使用并在合适时机注入提醒
  */
 
 import { createTool } from '../core/tool.js';
 import type { Tool } from '../core/types.js';
+import type { ToolCall } from '../core/types.js';
 import type {
   AgentFeature,
   FeatureInitContext,
   FeatureContext,
+  ReActLoopHooks,
 } from '../core/feature.js';
+import type { ContextFeature } from '../core/context-types.js';
+import { readFile } from 'fs/promises';
+import type { Context } from '../core/context.js';
 
 /**
  * 任务状态
@@ -57,7 +52,7 @@ export interface TodoTask {
 }
 
 /**
- * 任务更新参数（包含临时的 addBlocks/addBlockedBy）
+ * 任务更新参数
  */
 export interface TodoTaskUpdate {
   status?: TaskStatus;
@@ -85,23 +80,46 @@ export interface TodoTaskSummary {
  * TodoFeature 配置
  */
 export interface TodoFeatureConfig {
-  /** 任务存储目录（可选，默认内存存储） */
-  storageDir?: string;
+  /** Reminder 模板文件路径 */
+  reminderTemplate?: string;
+  /** 有待执行任务时的提醒间隔（默认：3 轮） */
+  reminderThresholdWithTasks?: number;
+  /** 无待执行任务时的提醒间隔（默认：6 轮） */
+  reminderThresholdWithoutTasks?: number;
 }
 
 /**
  * TodoFeature 实现
+ *
+ * 提供任务管理和智能提醒功能
  */
 export class TodoFeature implements AgentFeature {
   readonly name = 'todo';
-  readonly dependencies: string[] = [];
+  readonly dependencies = ['context'];
 
   private tasks = new Map<string, TodoTask>();
   private counter = 0;
-  private config?: TodoFeatureConfig;
+  private config: Required<Omit<TodoFeatureConfig, 'reminderTemplate' | 'reminderThresholdWithTasks' | 'reminderThresholdWithoutTasks'>> & {
+    reminderTemplate?: string;
+    reminderThresholdWithTasks?: number;
+    reminderThresholdWithoutTasks?: number;
+  };
 
-  constructor(config?: TodoFeatureConfig) {
-    this.config = config;
+  // Reminder 相关状态
+  private context?: ContextFeature;
+  private reminderContent = '';
+
+  // 连续未使用 todo 工具的轮次计数器
+  private consecutiveNoTodoTurns = 0;
+  // 上一轮是否已注入 reminder（防止重复注入）
+  private reminderInjected = false;
+
+  constructor(config: TodoFeatureConfig = {}) {
+    this.config = {
+      reminderThresholdWithTasks: config.reminderThresholdWithTasks ?? 3,
+      reminderThresholdWithoutTasks: config.reminderThresholdWithoutTasks ?? 6,
+    };
+    this.reminderContent = this.getDefaultReminder();
   }
 
   // ========== AgentFeature 接口实现 ==========
@@ -116,29 +134,104 @@ export class TodoFeature implements AgentFeature {
     ];
   }
 
-  async onInitiate(_ctx: FeatureInitContext): Promise<void> {
-    // 初始化逻辑（如从文件加载任务）
-    // 当前版本仅使用内存存储
+  async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    this.context = ctx.getContextFeature();
+    if (!this.context) {
+      throw new Error('TodoFeature requires ContextFeature. Register ContextFeature first: agent.use(new ContextFeature())');
+    }
+
+    console.log(`[TodoFeature] Initialized with reminderThresholdWithTasks=${this.config.reminderThresholdWithTasks}, reminderThresholdWithoutTasks=${this.config.reminderThresholdWithoutTasks}`);
+
+    // 如果配置了模板文件，异步加载
+    const templatePath = this.config.reminderTemplate;
+    if (templatePath) {
+      try {
+        this.reminderContent = await readFile(templatePath, 'utf-8');
+        console.log('[TodoFeature] Loaded reminder template from: ' + templatePath);
+      } catch (e) {
+        console.log('[TodoFeature] Failed to load template, using default reminder');
+        // 保持默认 reminder
+      }
+    }
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
-    // 清理逻辑（如保存任务到文件）
-    // 当前版本仅使用内存存储
+    this.clearTasks();
   }
 
-  // ========== 公开方法 ==========
+  // ========== 公开 API（供 Agent 使用） ==========
 
   /**
-   * 创建新任务
+   * 设置 reminder 内容
+   */
+  setReminderContent(content: string): void {
+    this.reminderContent = content;
+  }
+
+  /**
+   * 获取当前的提醒阈值（根据任务状态动态调整）
+   */
+  private getCurrentThreshold(): number {
+    // 检查是否有待执行的任务（pending 或 in_progress）
+    const hasActiveTasks = Array.from(this.tasks.values()).some(
+      t => t.status === 'pending' || t.status === 'in_progress'
+    );
+    return hasActiveTasks
+      ? this.config.reminderThresholdWithTasks!
+      : this.config.reminderThresholdWithoutTasks!;
+  }
+
+  /**
+   * 记录本轮是否使用了 todo 工具
+   * 在 Agent 的 onTurnFinished 钩子中调用
+   */
+  recordToolUsage(toolCalls: ToolCall[]): void {
+    const usedTodoTool = toolCalls.some(call => this.isTodoTool(call.name));
+
+    if (usedTodoTool) {
+      // 使用了 todo 工具，重置计数器
+      this.consecutiveNoTodoTurns = 0;
+      this.reminderInjected = false;
+      console.log(`[TodoFeature] Todo tool used, reset counter`);
+    } else {
+      // 未使用 todo 工具，计数器加 1
+      this.consecutiveNoTodoTurns++;
+      const threshold = this.getCurrentThreshold();
+      console.log(`[TodoFeature] No todo tool, counter=${this.consecutiveNoTodoTurns}/${threshold}`);
+    }
+  }
+
+  /**
+   * 在每轮开始时检查是否需要注入 reminder
+   * 在 Agent 的 onTurnStart 钩子中调用
+   */
+  checkAndInjectReminder(ctx: {
+    context: Context;
+    callTurn: number;
+  }): void {
+    if (!this.context) return;
+
+    const threshold = this.getCurrentThreshold();
+    console.log(`[TodoFeature] callTurn=${ctx.callTurn}, counter=${this.consecutiveNoTodoTurns}, threshold=${threshold}, injected=${this.reminderInjected}`);
+
+    // 检查是否需要注入 reminder
+    if (this.consecutiveNoTodoTurns >= threshold && !this.reminderInjected) {
+      console.log('[TodoFeature] Threshold reached, injecting reminder');
+      ctx.context.add({ role: 'system', content: this.reminderContent });
+      this.reminderInjected = true;
+    }
+  }
+
+  // ========== 公开 API（供 Agent 使用） ==========
+
+  /**
+   * 创建任务
    */
   createTask(
     subject: string,
     description: string,
     activeForm: string,
-    options?: {
-      owner?: string;
-      metadata?: Record<string, unknown>;
-    }
+    options?: { owner?: string; metadata?: Record<string, unknown> }
   ): TodoTask {
     this.counter++;
     const task: TodoTask = {
@@ -155,6 +248,7 @@ export class TodoFeature implements AgentFeature {
       updatedAt: Date.now(),
     };
     this.tasks.set(task.id, task);
+    console.log(`[TodoFeature] Created task ${task.id}: ${subject} (total tasks: ${this.tasks.size})`);
     return task;
   }
 
@@ -168,8 +262,12 @@ export class TodoFeature implements AgentFeature {
   /**
    * 列出所有任务摘要
    */
-  listTasks(): TodoTaskSummary[] {
-    return Array.from(this.tasks.values()).map(task => ({
+  listTasks(filter?: { status?: TaskStatus }): TodoTaskSummary[] {
+    let tasks = Array.from(this.tasks.values());
+    if (filter?.status) {
+      tasks = tasks.filter(t => t.status === filter.status);
+    }
+    return tasks.map(task => ({
       id: task.id,
       subject: task.subject,
       status: task.status,
@@ -181,36 +279,22 @@ export class TodoFeature implements AgentFeature {
   /**
    * 更新任务
    */
-  updateTask(
-    taskId: string,
-    updates: TodoTaskUpdate
-  ): TodoTask | undefined {
+  updateTask(taskId: string, updates: TodoTaskUpdate): TodoTask | undefined {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
 
-    // 处理 blocks/blockedBy 的添加
     if (updates.addBlocks) {
       task.blocks = [...new Set([...task.blocks, ...updates.addBlocks])];
     }
     if (updates.addBlockedBy) {
       task.blockedBy = [...new Set([...task.blockedBy, ...updates.addBlockedBy])];
     }
-
-    // 更新其他字段
-    if (updates.status !== undefined) task.status = updates.status;
-    if (updates.subject !== undefined) task.subject = updates.subject;
-    if (updates.description !== undefined) task.description = updates.description;
-    if (updates.activeForm !== undefined) task.activeForm = updates.activeForm;
-    if (updates.owner !== undefined) task.owner = updates.owner;
-    if (updates.metadata !== undefined) task.metadata = updates.metadata;
-
+    Object.assign(task, updates);
     task.updatedAt = Date.now();
 
-    // 如果状态是 deleted，从列表中移除
     if (task.status === 'deleted') {
       this.tasks.delete(taskId);
     }
-
     return task;
   }
 
@@ -224,9 +308,6 @@ export class TodoFeature implements AgentFeature {
 
   // ========== 工具创建方法 ==========
 
-  /**
-   * task_create - 创建新任务
-   */
   private createCreateTool(): Tool {
     const self = this;
     return createTool({
@@ -250,31 +331,16 @@ export class TodoFeature implements AgentFeature {
       parameters: {
         type: 'object',
         properties: {
-          subject: {
-            type: 'string',
-            description: '简短的任务标题，使用祈使句形式（如 "运行测试"）',
-          },
-          description: {
-            type: 'string',
-            description: '详细的任务描述，包括上下文、具体步骤和验收标准',
-          },
-          activeForm: {
-            type: 'string',
-            description: '进行时形式，用于显示任务进行中的状态（如 "正在运行测试"）',
-          },
-          metadata: {
-            type: 'object',
-            description: '可选的元数据信息',
-            additionalProperties: true,
-          },
+          subject: { type: 'string', description: '简短的任务标题，使用祈使句形式（如 "运行测试"）' },
+          description: { type: 'string', description: '详细的任务描述，包括上下文、具体步骤和验收标准' },
+          activeForm: { type: 'string', description: '进行时形式，用于显示任务进行中的状态（如 "正在运行测试"）' },
+          metadata: { type: 'object', description: '可选的元数据信息', additionalProperties: true },
         },
         required: ['subject', 'description', 'activeForm'],
       },
       render: { call: 'task-create', result: 'task-create' },
       execute: ({ subject, description, activeForm, metadata }) => {
         const task = self.createTask(subject, description, activeForm, { metadata });
-        const allTasks = self.listTasks();
-
         return Promise.resolve({
           task: {
             id: task.id,
@@ -284,16 +350,13 @@ export class TodoFeature implements AgentFeature {
             status: task.status,
             blockedBy: task.blockedBy,
           },
-          allTasks,
+          allTasks: self.listTasks(),
           message: `任务已创建，ID: ${task.id}`,
         });
       },
     });
   }
 
-  /**
-   * task_list - 列出所有任务
-   */
   private createListTool(): Tool {
     const self = this;
     return createTool({
@@ -310,11 +373,7 @@ export class TodoFeature implements AgentFeature {
 - subject: 简短描述
 - status: 任务状态（pending/in_progress/completed）
 - owner: 负责人（如果已分配）
-- blockedBy: 阻塞此任务的其他任务 ID 列表
-
-提示：
-- 优先执行 ID 较小的任务
-- 只有 blockedBy 为空且无 owner 的任务可以开始执行`,
+- blockedBy: 阻塞此任务的其他任务 ID 列表`,
       parameters: {
         type: 'object',
         properties: {
@@ -328,31 +387,18 @@ export class TodoFeature implements AgentFeature {
       },
       render: { call: 'task-list', result: 'task-list' },
       execute: ({ status = 'all' }) => {
-        let tasks = self.listTasks();
-        if (status !== 'all') {
-          tasks = tasks.filter(t => t.status === status);
-        }
-
-        const pending = tasks.filter(t => t.status === 'pending').length;
-        const inProgress = tasks.filter(t => t.status === 'in_progress').length;
-        const completed = tasks.filter(t => t.status === 'completed').length;
-
-        return Promise.resolve({
-          tasks,
-          summary: {
-            total: tasks.length,
-            pending,
-            inProgress,
-            completed,
-          },
-        });
+        const tasks = self.listTasks(status === 'all' ? undefined : { status });
+        const summary = {
+          total: tasks.length,
+          pending: tasks.filter(t => t.status === 'pending').length,
+          inProgress: tasks.filter(t => t.status === 'in_progress').length,
+          completed: tasks.filter(t => t.status === 'completed').length,
+        };
+        return Promise.resolve({ tasks, summary });
       },
     });
   }
 
-  /**
-   * task_get - 获取任务详情
-   */
   private createGetTool(): Tool {
     const self = this;
     return createTool({
@@ -362,25 +408,11 @@ export class TodoFeature implements AgentFeature {
 使用时机：
 - 开始工作前了解任务的完整描述和上下文
 - 查看任务的依赖关系（blocks 和 blockedBy）
-- 确认任务是否可以开始执行（检查 blockedBy 是否为空）
-
-返回完整任务详情：
-- subject: 任务标题
-- description: 详细描述
-- status: 任务状态
-- blocks: 此任务阻塞的其他任务列表
-- blockedBy: 阻塞此任务的其他任务列表（必须为空才能开始执行）
-
-提示：
-- 获取任务后，确认 blockedBy 列表为空再开始工作
-- 使用 TaskUpdate 更新任务状态为 in_progress`,
+- 确认任务是否可以开始执行（检查 blockedBy 是否为空）`,
       parameters: {
         type: 'object',
         properties: {
-          taskId: {
-            type: 'string',
-            description: '任务 ID',
-          },
+          taskId: { type: 'string', description: '任务 ID' },
         },
         required: ['taskId'],
       },
@@ -388,11 +420,8 @@ export class TodoFeature implements AgentFeature {
       execute: ({ taskId }) => {
         const task = self.getTask(taskId);
         if (!task) {
-          return Promise.resolve({
-            error: `任务不存在: ${taskId}`,
-          });
+          return Promise.resolve({ error: `任务不存在: ${taskId}` });
         }
-
         return Promise.resolve({
           id: task.id,
           subject: task.subject,
@@ -402,16 +431,11 @@ export class TodoFeature implements AgentFeature {
           owner: task.owner,
           blocks: task.blocks,
           blockedBy: task.blockedBy,
-          createdAt: task.createdAt,
-          updatedAt: task.updatedAt,
         });
       },
     });
   }
 
-  /**
-   * task_update - 更新任务
-   */
   private createUpdateTool(): Tool {
     const self = this;
     return createTool({
@@ -427,62 +451,23 @@ export class TodoFeature implements AgentFeature {
 
 依赖关系管理：
 - addBlocks: 添加此任务阻塞的其他任务 ID
-- addBlockedBy: 添加阻塞此任务的其他任务 ID
-
-其他可更新字段：
-- subject: 任务标题
-- description: 任务描述
-- activeForm: 进行时形式
-- owner: 负责人
-- metadata: 元数据
-
-重要说明：
-- 完成任务时，务必标记为 completed
-- 只有 blockedBy 为空的任务可以被开始执行
-- 删除的任务将从列表中永久移除`,
+- addBlockedBy: 添加阻塞此任务的其他任务 ID`,
       parameters: {
         type: 'object',
         properties: {
-          taskId: {
-            type: 'string',
-            description: '要更新的任务 ID',
-          },
+          taskId: { type: 'string', description: '要更新的任务 ID' },
           status: {
             type: 'string',
             enum: ['pending', 'in_progress', 'completed', 'deleted'],
             description: '任务状态',
           },
-          subject: {
-            type: 'string',
-            description: '新的任务标题',
-          },
-          description: {
-            type: 'string',
-            description: '新的任务描述',
-          },
-          activeForm: {
-            type: 'string',
-            description: '新的进行时形式',
-          },
-          owner: {
-            type: 'string',
-            description: '任务负责人',
-          },
-          addBlocks: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '添加此任务阻塞的其他任务 ID',
-          },
-          addBlockedBy: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '添加阻塞此任务的其他任务 ID',
-          },
-          metadata: {
-            type: 'object',
-            description: '元数据',
-            additionalProperties: true,
-          },
+          subject: { type: 'string', description: '新的任务标题' },
+          description: { type: 'string', description: '新的任务描述' },
+          activeForm: { type: 'string', description: '新的进行时形式' },
+          owner: { type: 'string', description: '任务负责人' },
+          addBlocks: { type: 'array', items: { type: 'string' }, description: '添加此任务阻塞的其他任务 ID' },
+          addBlockedBy: { type: 'array', items: { type: 'string' }, description: '添加阻塞此任务的其他任务 ID' },
+          metadata: { type: 'object', description: '元数据', additionalProperties: true },
         },
         required: ['taskId'],
       },
@@ -490,19 +475,8 @@ export class TodoFeature implements AgentFeature {
       execute: ({ taskId, ...updates }) => {
         const task = self.updateTask(taskId, updates);
         if (!task) {
-          return Promise.resolve({
-            error: `任务不存在: ${taskId}`,
-          });
+          return Promise.resolve({ error: `任务不存在: ${taskId}` });
         }
-
-        if (task.status === 'deleted') {
-          return Promise.resolve({
-            id: task.id,
-            status: 'deleted',
-            message: `任务 ${taskId} 已删除`,
-          });
-        }
-
         return Promise.resolve({
           id: task.id,
           subject: task.subject,
@@ -515,18 +489,11 @@ export class TodoFeature implements AgentFeature {
     });
   }
 
-  /**
-   * task_clear - 清空所有任务
-   */
   private createClearTool(): Tool {
     const self = this;
     return createTool({
       name: 'task_clear',
       description: `清空任务列表中的所有任务。
-
-使用时机：
-- 所有任务已完成，需要开始新的任务列表
-- 当前的任务列表已过时，需要重置
 
 注意：此操作不可逆，所有任务将被永久删除。`,
       parameters: {
@@ -537,10 +504,21 @@ export class TodoFeature implements AgentFeature {
       execute: () => {
         const count = self.tasks.size;
         self.clearTasks();
-        return Promise.resolve({
-          message: `已清空 ${count} 个任务`,
-        });
+        return Promise.resolve({ message: `已清空 ${count} 个任务` });
       },
     });
+  }
+
+  // ========== 私有方法 ==========
+
+  /** 判断是否是 todo 工具 */
+  private isTodoTool(name: string): boolean {
+    return name === 'task_create' || name === 'task_list' ||
+      name === 'task_get' || name === 'task_update' || name === 'task_clear';
+  }
+
+  /** 获取默认 reminder 内容 */
+  private getDefaultReminder(): string {
+    return '最近没有使用任务工具。如果你正在处理需要跟踪进度的任务，考虑使用 `task_create` 添加新任务，使用 `task_update`更新任务状态（开始时设置为 in_progress，完成时设置为 completed）。如果任务列表已过时，也可以考虑清理。仅在与当前工作相关时使用这些工具。这只是温和的提醒——如果不适用请忽略。务必注意：绝不要向用户提及此提醒。';
   }
 }

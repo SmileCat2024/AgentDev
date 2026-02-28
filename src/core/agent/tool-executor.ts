@@ -4,11 +4,12 @@
  * 封装单个工具的执行逻辑
  */
 
-import type { ToolCall } from '../types.js';
+import type { ToolCall, Message } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
 import type { ContextInjector } from '../feature.js';
 import type { ToolContext, ToolResult, HookResult } from '../lifecycle.js';
+import type { ContextFeature } from '../context-types.js';
 
 /**
  * 工具执行器类
@@ -27,7 +28,8 @@ export class ToolExecutor {
       options: { input?: string; turn?: number }
     ) => Promise<any>,
     private onToolUseFn: (ctx: ToolContext) => Promise<HookResult | undefined>,
-    private onToolFinishedFn: (result: ToolResult) => Promise<void>
+    private onToolFinishedFn: (result: ToolResult) => Promise<void>,
+    private contextFeature?: ContextFeature
   ) {}
 
   /**
@@ -37,7 +39,8 @@ export class ToolExecutor {
     call: ToolCall,
     input: string,
     context: Context,
-    turn: number
+    turn: number,
+    callTurn: number  // 用户交互次数
   ): Promise<void> {
     const tool = this.tools.get(call.name);
     const startTime = Date.now();
@@ -117,27 +120,39 @@ export class ToolExecutor {
 
       // 添加工具结果到上下文
       const resultData = typeof data === 'string' ? data : JSON.stringify(data);
-      context.add({
+      const toolMessage: Message = {
         role: 'tool',
         toolCallId: call.id,
         content: JSON.stringify({
           success: true,
           result: resultData,
         }),
-      });
+      };
+      context.add(toolMessage);
+
+      // === ContextFeature: feed 工具结果 ===
+      if (this.contextFeature) {
+        this.contextFeature.feed(toolMessage, { turn: callTurn });
+      }
 
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error);
 
       // 添加错误结果到上下文
-      context.add({
+      const toolMessage: Message = {
         role: 'tool',
         toolCallId: call.id,
         content: JSON.stringify({
           success: false,
           result: { error: result.error },
         }),
-      });
+      };
+      context.add(toolMessage);
+
+      // === ContextFeature: feed 工具结果 ===
+      if (this.contextFeature) {
+        this.contextFeature.feed(toolMessage, { turn: callTurn });
+      }
     }
 
     result.duration = Date.now() - startTime;

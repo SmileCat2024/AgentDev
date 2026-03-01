@@ -21,6 +21,7 @@
 - [工具系统](#工具系统)
 - [Feature 系统](#feature-系统)
 - [模板系统](#模板系统)
+  - [数据源注册系统](#数据源注册系统)
 - [配置管理](#配置管理)
 - [API 参考](#api-参考)
 - [注意事项](#注意事项)
@@ -473,7 +474,39 @@ const prompt = new TemplateComposer()
 | 字符串 | `'text'` | 直接字符串 |
 | 文件 | `{ file: 'path' }` | 从文件加载 |
 | Skills | `{ skills: 'template' }` | 渲染 Skills 列表 |
+| 数据源 | `{ name: 'template' }` | 渲染自定义数据源（Feature 注册） |
 | 条件 | `{ conditional: {...} }` | 条件渲染 |
+
+### 数据源注册系统
+
+Feature 可以通过 `DataSourceRegistry` 注册命名数据源，实现灵活的列表渲染：
+
+```typescript
+import { DataSourceRegistry } from './src/template/data-source.js';
+
+class MyFeature implements AgentFeature {
+  async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    // 注册数据源
+    DataSourceRegistry.register({
+      name: 'myItems',
+      getData: () => this.items,
+      renderItem: (item, template, ctx) => {
+        return PlaceholderResolver.resolve(template, { ...ctx, ...item });
+      },
+    });
+  }
+}
+
+// 在 Agent 模板中使用
+agent.setSystemPrompt(new TemplateComposer()
+  .add('## 项目列表\n')
+  .add({ myItems: '- {{name}}: {{description}}' })
+);
+```
+
+**内置数据源**：`skills`（由 SkillFeature 自动注册）
+
+详见：`docs/data-source-system.md`
 
 ### 占位符
 

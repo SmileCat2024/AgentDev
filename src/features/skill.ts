@@ -27,6 +27,9 @@ import { discover } from '../skills/loader.js';
 import type { SkillMetadata, SkillsOptions } from '../skills/types.js';
 import { join, resolve, isAbsolute } from 'path';
 import { cwd } from 'process';
+import { DataSourceRegistry, createListRenderer } from '../template/data-source.js';
+import type { PlaceholderContext } from '../template/types.js';
+import { PlaceholderResolver } from '../template/resolver.js';
 
 /**
  * Skill Feature 配置类型
@@ -83,12 +86,28 @@ export class SkillFeature implements AgentFeature {
 
   /**
    * 初始化钩子
-   * 执行 Skills 发现
+   * 执行 Skills 发现并注册数据源
    */
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
     if (this.skillsDir) {
       this.skills = await discover({ dir: this.skillsDir });
     }
+
+    // 注册 skills 数据源到全局注册中心
+    DataSourceRegistry.register({
+      name: 'skills',
+      getData: () => this.skills,
+      renderItem: (skill: SkillMetadata, template: string, context: PlaceholderContext) => {
+        // 将 skill 的属性合并到 context
+        const skillContext: PlaceholderContext = {
+          ...context,
+          name: skill.name,
+          description: skill.description,
+          this: skill,
+        };
+        return PlaceholderResolver.resolve(template, skillContext);
+      },
+    });
   }
 
   /**

@@ -6,15 +6,47 @@
  * 模板源
  * - string: 硬编码字符串
  * - { file: string }: 文件路径
- * - { skills: string }: skills 目录路径
+ * - [dataSourceName: string]: 数据源名称（如 skills, tasks 等）
  * - TemplateComposer: 组合模板
+ *
+ * @example
+ * ```typescript
+ * // 静态字符串
+ * 'Hello {{name}}'
+ *
+ * // 文件
+ * { file: 'prompts/system.md' }
+ *
+ * // 数据源（列表渲染）
+ * { skills: '- **{{name}}**: {{description}}' }
+ * { tasks: '- [{{title}}](#{{id}}) ({{priority}})' }
+ *
+ * // 条件渲染
+ * { conditional: { part: { file: 'advanced.md' }, condition: (ctx) => ctx.advanced } }
+ * ```
  */
-export type TemplateSource = string | { file: string } | { skills: string } | import('./composer.js').TemplateComposer;
+export type TemplateSource =
+  | string
+  | { file: string }
+  | { conditional: ConditionalSource }
+  | { [dataSourceName: string]: string }  // 数据源 -> 模板
+  | import('./composer.js').TemplateComposer;
+
+/**
+ * 条件源配置
+ */
+export interface ConditionalSource {
+  /** 条件模板源 */
+  part: TemplateSource;
+  /** 条件函数（true 时渲染） */
+  condition: (context: PlaceholderContext) => boolean;
+}
 
 /**
  * 占位符上下文 - 变量替换的键值对
+ * 支持原始类型和复杂对象（用于数据源渲染）
  */
-export type PlaceholderContext = Record<string, string | number | boolean | undefined>;
+export type PlaceholderContext = Record<string, string | number | boolean | undefined | object>;
 
 /**
  * 模板渲染结果

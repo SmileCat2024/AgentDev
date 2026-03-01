@@ -17,3 +17,7 @@ export { TemplateError } from './types.js';
 export { TemplateLoader } from './loader.js';
 export { PlaceholderResolver } from './resolver.js';
 export { TemplateComposer } from './composer.js';
+
+// 数据源系统
+export { DataSourceRegistry, createListRenderer } from './data-source.js';
+export type { DataSourceRenderer } from './data-source.js';

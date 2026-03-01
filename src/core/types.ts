@@ -401,3 +401,27 @@ export type {
   ToolContext,
   ToolResult,
 } from './lifecycle.js';
+
+// ========== UDS 通信类型 ==========
+
+/**
+ * UDS 配置
+ */
+export interface UDSConfig {
+  /** UDS 路径（默认自动检测平台） */
+  path?: string;
+  /** HTTP 端口（Web 界面） */
+  httpPort?: number;
+  /** 是否自动打开浏览器 */
+  openBrowser?: boolean;
+}
+
+/**
+ * 平台检测后的 UDS 路径
+ */
+export function getDefaultUDSPath(): string {
+  if (process.platform === 'win32') {
+    return '\\\\.\\pipe\\agentdev-viewer';
+  }
+  return '/tmp/agentdev-viewer.sock';
+}

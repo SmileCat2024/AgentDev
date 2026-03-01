@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 管理所有 Agent 的注册和注销
- * - 维护共享的 Viewer Worker 进程
+ * - 连接到独立的 Viewer Worker UDS 服务器
  * - 路由 Agent 消息到 Worker
  *
  * 设计原则：
@@ -12,22 +12,18 @@
  * - 直观：API 简单明了
  */
 
-import { fork, ChildProcess } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import type {
-  Message,
-  Tool,
-  AgentInfo,
-  DebugHubIPCMessage,
-  Notification,
+import { connect, Socket } from 'net';
+import {
+  getDefaultUDSPath,
+  type Message,
+  type Tool,
+  type AgentInfo,
+  type DebugHubIPCMessage,
+  type Notification,
 } from './types.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
 type Agent = any;
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 /**
  * Hub 内部存储的 Agent 数据
@@ -44,20 +40,26 @@ export class DebugHub {
   private agents: Map<string, AgentData> = new Map();
   private currentAgentId: string | null = null;
   private nextId: number = 1;
+  private readonly processId: string;  // 进程唯一标识
 
-  // Worker 进程
-  private worker: ChildProcess | null = null;
+  // UDS 客户端连接
+  private udsClient?: Socket;
+  private udsPath: string;
   private workerPort: number | null = null;
-  private workerReady: boolean = false;
+  private clientReady: boolean = false;
 
   // 注册锁（防止并发竞争）
   private registrationLock: boolean = false;
 
-  // 待发送的消息队列（Worker 启动前）
+  // 待发送的消息队列（连接建立前）
   private messageQueue: DebugHubIPCMessage[] = [];
 
   // ========== 单例 ==========
-  private constructor() {}
+  private constructor() {
+    this.udsPath = process.env.AGENTDEV_UDS_PATH || getDefaultUDSPath();
+    // 使用进程 PID 作为唯一标识，确保多进程环境下 Agent ID 不冲突
+    this.processId = String(process.pid);
+  }
 
   static getInstance(): DebugHub {
     if (!DebugHub.instance) {
@@ -70,28 +72,29 @@ export class DebugHub {
 
   /**
    * 启动调试服务器
-   * @param port HTTP 端口（默认 2026）
-   * @param openBrowser 是否自动打开浏览器（默认 true）
+   * @param port HTTP 端口（默认 2026，仅用于显示）
+   * @param openBrowser 是否自动打开浏览器（默认 true，已废弃参数）
    */
   async start(port: number = 2026, openBrowser: boolean = true): Promise<void> {
-    if (this.worker) {
-      console.log(`[DebugHub] 调试服务器已在端口 ${this.workerPort} 运行`);
+    if (this.udsClient) {
+      console.log(`[DebugHub] 已连接到 ViewerWorker`);
       return;
     }
 
-    this.workerPort = port;
-    await this.startWorker(openBrowser);
-    console.log(`[DebugHub] 调试服务器已启动: http://localhost:${port}`);
+    this.workerPort = port;  // 保留用于信息显示
+    await this.connectToWorker();
+    console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
   }
 
   /**
    * 停止调试服务器
    */
   stop(): void {
-    if (this.worker) {
+    if (this.udsClient) {
       this.sendToWorker({ type: 'stop' });
-      this.worker = null;
-      this.workerReady = false;
+      this.udsClient.end();
+      this.udsClient = undefined;
+      this.clientReady = false;
     }
   }
 
@@ -109,7 +112,7 @@ export class DebugHub {
     this.registrationLock = true;
 
     try {
-      const id = `agent-${this.nextId++}`;
+      const id = `agent-${this.nextId++}-${this.processId}`;
       const info: AgentInfo = {
         id,
         name: name || agent.constructor.name,
@@ -255,76 +258,86 @@ export class DebugHub {
   // ========== 内部方法 ==========
 
   /**
-   * 启动 Worker 进程
-   * @param openBrowser 是否自动打开浏览器
+   * 连接到 UDS 服务器
    */
-  private async startWorker(openBrowser: boolean = true): Promise<void> {
+  private async connectToWorker(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const workerPath = join(__dirname, 'viewer-worker.js');
+      this.udsClient = connect(this.udsPath);
 
-      this.worker = fork(workerPath, [String(this.workerPort), String(openBrowser)], {
-        silent: false,
+      this.udsClient.on('connect', () => {
+        this.clientReady = true;
+        console.log(`[DebugHub] 已连接到 ViewerWorker: ${this.udsPath}`);
+
+        // 发送队列中的消息
+        for (const msg of this.messageQueue) {
+          this.sendViaUDS(msg);
+        }
+        this.messageQueue = [];
+
+        // 设置当前 Agent
+        if (this.currentAgentId) {
+          this.sendToWorker({
+            type: 'set-current-agent',
+            agentId: this.currentAgentId,
+          });
+        }
+
+        resolve();
       });
 
-      // 等待 Worker 就绪
-      const onReady = (msg: any) => {
-        if (msg.type === 'ready') {
-          this.workerReady = true;
-          this.worker?.off('message', onReady);
-
-          // 发送队列中的消息
-          for (const queuedMsg of this.messageQueue) {
-            this.worker!.send(queuedMsg);
+      this.udsClient.on('data', (data: Buffer) => {
+        const lines = data.toString().split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            this.handleWorkerMessage(msg);
+          } catch (err) {
+            console.error('[DebugHub] Worker 消息解析失败:', err);
           }
-          this.messageQueue = [];
-
-          // 设置当前 Agent
-          if (this.currentAgentId) {
-            this.sendToWorker({
-              type: 'set-current-agent',
-              agentId: this.currentAgentId,
-            });
-          }
-
-          resolve();
         }
-      };
-
-      this.worker.on('message', onReady);
-
-      // 错误处理
-      this.worker.on('error', (err: Error) => {
-        reject(new Error(`Worker 启动失败: ${err.message}`));
       });
 
-      // 崩溃恢复
-      this.worker.on('exit', (code: number) => {
-        if (code !== 0 && this.worker) {
-          console.warn('[DebugHub] Worker 崩溃，正在重启...');
-          this.workerReady = false;
-          setTimeout(() => {
-            this.startWorker().catch(err => {
-              console.error('[DebugHub] Worker 重启失败:', err);
-            });
-          }, 1000);
-        }
+      this.udsClient.on('error', (err: Error) => {
+        reject(new Error(`连接 ViewerWorker 失败 (${this.udsPath}): ${err.message}\n请先启动 ViewerWorker 服务器`));
+      });
+
+      this.udsClient.on('close', () => {
+        this.clientReady = false;
+        console.warn('[DebugHub] 与 ViewerWorker 的连接已断开');
       });
     });
+  }
+
+  /**
+   * 处理来自 Worker 的消息
+   */
+  private handleWorkerMessage(msg: any): void {
+    switch (msg.type) {
+      case 'agent-switched':
+        console.log(`[DebugHub] 当前 Agent 已切换: ${msg.agentId}`);
+        break;
+    }
+  }
+
+  /**
+   * 通过 UDS 发送消息
+   */
+  private sendViaUDS(msg: DebugHubIPCMessage): void {
+    if (this.udsClient && this.clientReady) {
+      this.udsClient.write(JSON.stringify(msg) + '\n');
+    } else {
+      this.messageQueue.push(msg);
+    }
   }
 
   /**
    * 发送消息到 Worker
    */
   private sendToWorker(msg: DebugHubIPCMessage): void {
-    if (!this.worker) {
+    if (!this.udsClient) {
       return;
     }
-
-    if (this.workerReady) {
-      this.worker.send(msg);
-    } else {
-      // Worker 未就绪，加入队列
-      this.messageQueue.push(msg);
-    }
+    this.sendViaUDS(msg);
   }
 }

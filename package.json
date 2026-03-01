@@ -9,7 +9,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "agent": "tsx examples/agent.ts",
-    "agt": "tsx examples/agent.ts"
+    "agt": "tsx examples/agent.ts",
+    "viewer": "node dist/cli/viewer.js"
   },
   "dependencies": {
     "@openai/agents": "^0.4.6",

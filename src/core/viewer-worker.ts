@@ -2,11 +2,14 @@
 /**
  * Viewer Worker - 在独立进程中运行 HTTP 服务器
  * 支持多 Agent 调试，共享单端口
+ * 支持通过 UDS（Unix Domain Socket）或 Windows Named Pipe 接收来自多进程的连接
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { createServer as createNetServer, Server, Socket } from 'net';
+import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, AgentSession, DebugHubIPCMessage, ToolMetadata } from './types.js';
+import { type Message, type Tool, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   RENDER_TEMPLATES,
   SYSTEM_RENDER_MAP,
@@ -20,6 +23,9 @@ class ViewerWorker {
   private port: number;
   private openBrowser: boolean;
   private server: ReturnType<typeof createServer>;
+  private udsPath: string;
+  private udsServer?: Server;
+  private udsClients: Map<string, Socket> = new Map();
 
   // 多 Agent 会话存储
   private agentSessions: Map<string, AgentSession> = new Map();
@@ -31,14 +37,19 @@ class ViewerWorker {
   private readonly MAX_MESSAGES = 10000;
   private readonly MAX_BYTES = 50 * 1024 * 1024; // 50MB
 
-  constructor(port: number, openBrowser: boolean = true) {
+  constructor(port: number, openBrowser: boolean = true, udsPath?: string) {
     this.port = port;
     this.openBrowser = openBrowser;
+    this.udsPath = udsPath || getDefaultUDSPath();
     this.server = createServer();
   }
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
+      // 先启动 UDS 服务器
+      this.startUDSServer();
+
+      // 再启动 HTTP 服务器
       this.server.on('request', (req, res) => this.handleRequest(req, res));
 
       this.server.on('error', (err: any) => {
@@ -73,6 +84,90 @@ class ViewerWorker {
         resolve();
       });
     });
+  }
+
+  // ========== UDS 服务器 ==========
+
+  /**
+   * 启动 UDS 服务器
+   */
+  private startUDSServer(): void {
+    // 清理旧 socket 文件（非 Windows）
+    if (process.platform !== 'win32' && existsSync(this.udsPath)) {
+      try {
+        unlinkSync(this.udsPath);
+      } catch {}
+    }
+
+    this.udsServer = createNetServer((socket: Socket) => {
+      const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
+      this.udsClients.set(clientId, socket);
+
+      let buffer = '';
+      socket.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg: DebugHubIPCMessage = JSON.parse(line);
+            this.handleUDSMessage(msg, socket);
+          } catch (err) {
+            console.error('[Viewer Worker] UDS 消息解析失败:', err);
+          }
+        }
+      });
+
+      socket.on('close', () => {
+        this.udsClients.delete(clientId);
+      });
+
+      socket.on('error', (err) => {
+        console.error('[Viewer Worker] UDS 客户端错误:', err);
+      });
+    });
+
+    // 添加错误处理
+    this.udsServer.on('error', (err: Error) => {
+      console.error(`[Viewer Worker] UDS 服务器错误: ${err.message}`);
+    });
+
+    this.udsServer.listen(this.udsPath, () => {
+      console.log(`[Viewer Worker] UDS 服务器已启动: ${this.udsPath}`);
+    });
+  }
+
+  /**
+   * 处理 UDS 消息（复用现有处理方法）
+   */
+  private handleUDSMessage(msg: DebugHubIPCMessage, socket: Socket): void {
+    switch (msg.type) {
+      case 'register-agent':
+        this.handleRegisterAgent(msg);
+        break;
+      case 'push-messages':
+        this.handlePushMessages(msg);
+        break;
+      case 'register-tools':
+        this.handleRegisterTools(msg);
+        break;
+      case 'set-current-agent':
+        this.handleSetCurrentAgent(msg);
+        // 发送确认
+        socket.write(JSON.stringify({ type: 'agent-switched', agentId: msg.agentId }) + '\n');
+        break;
+      case 'unregister-agent':
+        this.handleUnregisterAgent(msg);
+        break;
+      case 'push-notification':
+        this.handlePushNotification(msg);
+        break;
+      case 'stop':
+        this.handleStop();
+        break;
+    }
   }
 
   // ========== HTTP 请求处理 ==========
@@ -1332,10 +1427,15 @@ class ViewerWorker {
     function renderAgentList() {
       agentList.innerHTML = allAgents.map(a => {
         const isActive = a.id === currentAgentId;
+        // Agent ID 格式：agent-{序号}-{进程PID}
+        const parts = a.id.split('-');
+        const agentNum = parts[1] || '?';
+        const pid = parts[2] || '';
+        const displayId = pid ? '#'.concat(agentNum, ' (', pid, ')') : '#'.concat(agentNum);
         return \`
           <div class="agent-item \${isActive ? 'active' : ''}" onclick="switchAgent('\${a.id}')">
             <div class="agent-name">\${escapeHtml(a.name)}</div>
-            <div class="agent-meta">#\${a.id.split('-')[1] || a.id} · \${a.messageCount} msgs</div>
+            <div class="agent-meta">\${displayId} · \${a.messageCount} msgs</div>
           </div>
         \`;
       }).join('');
@@ -2069,50 +2169,62 @@ class ViewerWorker {
   }
 }
 
-// ========== Worker 进程入口 ==========
+// 导出 ViewerWorker 类供外部使用
+export { ViewerWorker };
 
-const port = parseInt(process.argv[2] || '2026', 10);
-const openBrowser = process.argv[3] !== 'false';  // 默认 true
-const worker = new ViewerWorker(port, openBrowser);
+// ========== Worker 进程入口（仅当直接运行时执行）==========
 
-// 立即启动服务器
-worker.start().catch(err => {
-  console.error('[Viewer Worker] 启动失败:', err);
-  process.exit(1);
-});
+// 检查是否为主模块（不是被其他模块导入）
+const isMainModule = (url: string): boolean => {
+  const mainPath = process.argv[1].replace(/\\/g, '/');
+  const modulePath = url.startsWith('file://') ? url.substring(7) : url;
+  return modulePath.endsWith(mainPath) || mainPath.endsWith(modulePath);
+};
 
-// 监听主进程消息
-process.on('message', (msg: DebugHubIPCMessage) => {
-  switch (msg.type) {
-    case 'register-agent':
-      worker.handleRegisterAgent(msg);
-      break;
-    case 'push-messages':
-      worker.handlePushMessages(msg);
-      break;
-    case 'register-tools':
-      worker.handleRegisterTools(msg);
-      break;
-    case 'set-current-agent':
-      worker.handleSetCurrentAgent(msg);
-      break;
-    case 'unregister-agent':
-      worker.handleUnregisterAgent(msg);
-      break;
-    case 'push-notification':
-      worker.handlePushNotification(msg);
-      break;
-    case 'stop':
-      worker.handleStop();
-      break;
-  }
-});
+if (isMainModule(import.meta.url)) {
+  const port = parseInt(process.argv[2] || process.env.AGENTDEV_PORT || '2026', 10);
+  const openBrowser = process.argv[3] !== 'false' && process.env.AGENTDEV_OPEN_BROWSER !== 'false';
+  const udsPath = process.env.AGENTDEV_UDS_PATH || process.argv[4];
+  const worker = new ViewerWorker(port, openBrowser, udsPath);
 
-// 优雅退出
-process.on('SIGINT', () => {
-  process.exit(0);
-});
+  worker.start().catch(err => {
+    console.error('[Viewer Worker] 启动失败:', err);
+    process.exit(1);
+  });
 
-process.on('SIGTERM', () => {
-  process.exit(0);
-});
+  // 监听主进程消息
+  process.on('message', (msg: DebugHubIPCMessage) => {
+    switch (msg.type) {
+      case 'register-agent':
+        worker.handleRegisterAgent(msg);
+        break;
+      case 'push-messages':
+        worker.handlePushMessages(msg);
+        break;
+      case 'register-tools':
+        worker.handleRegisterTools(msg);
+        break;
+      case 'set-current-agent':
+        worker.handleSetCurrentAgent(msg);
+        break;
+      case 'unregister-agent':
+        worker.handleUnregisterAgent(msg);
+        break;
+      case 'push-notification':
+        worker.handlePushNotification(msg);
+        break;
+      case 'stop':
+        worker.handleStop();
+        break;
+    }
+  });
+
+  // 优雅退出
+  process.on('SIGINT', () => {
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    process.exit(0);
+  });
+}

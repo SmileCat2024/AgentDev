@@ -445,6 +445,11 @@ class AgentBase {
       (feature as any)._setParentAgent(this);
     }
 
+    // 如果是 UserInputFeature，设置父代理引用
+    if (feature.name === 'user-input' && (feature as any)._setParentAgent) {
+      (feature as any)._setParentAgent(this);
+    }
+
     if (feature.getContextInjectors) {
       for (const [pattern, injector] of feature.getContextInjectors()) {
         this.contextInjectors.push({ pattern, injector });

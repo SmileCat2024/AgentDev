@@ -20,6 +20,7 @@ import {
   type AgentInfo,
   type DebugHubIPCMessage,
   type Notification,
+  type RequestInputMsg,
 } from './types.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
@@ -41,6 +42,9 @@ export class DebugHub {
   private currentAgentId: string | null = null;
   private nextId: number = 1;
   private readonly processId: string;  // 进程唯一标识
+
+  // 输入请求回调映射：requestId → resolver
+  private pendingInputRequests = new Map<string, (input: string) => void>();
 
   // UDS 客户端连接
   private udsClient?: Socket;
@@ -82,8 +86,15 @@ export class DebugHub {
     }
 
     this.workerPort = port;  // 保留用于信息显示
-    await this.connectToWorker();
-    console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
+    try {
+      await this.connectToWorker();
+      console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
+    } catch (err) {
+      // 连接失败只警告，不抛出异常
+      console.warn(`[DebugHub] 无法连接到 ViewerWorker: ${(err as Error).message}`);
+      console.warn(`[DebugHub] 调试功能将被禁用。请先启动 ViewerWorker 服务器。`);
+      this.clientReady = false;
+    }
   }
 
   /**
@@ -243,6 +254,13 @@ export class DebugHub {
   }
 
   /**
+   * 检查是否已连接到 ViewerWorker
+   */
+  isConnected(): boolean {
+    return this.clientReady && !!this.udsClient;
+  }
+
+  /**
    * 推送通知
    * @param agentId Agent ID
    * @param notification 通知对象
@@ -252,6 +270,40 @@ export class DebugHub {
       type: 'push-notification',
       agentId,
       notification,
+    });
+  }
+
+  /**
+   * 请求用户输入
+   * @param agentId Agent ID
+   * @param prompt 提示信息
+   * @param timeout 超时时间（毫秒），默认 300000（5分钟）
+   * @returns Promise<string> 用户输入内容
+   */
+  requestUserInput(agentId: string, prompt: string, timeout: number = 300000): Promise<string> {
+    const requestId = `input-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    return new Promise((resolve, reject) => {
+      // 设置超时定时器
+      const timer = setTimeout(() => {
+        this.pendingInputRequests.delete(requestId);
+        reject(new Error(`User input timeout after ${timeout}ms`));
+      }, timeout);
+
+      // 存储 resolve 函数
+      this.pendingInputRequests.set(requestId, (input: string) => {
+        clearTimeout(timer);
+        resolve(input);
+      });
+
+      // 发送请求到 ViewerWorker
+      this.sendToWorker({
+        type: 'request-input',
+        agentId,
+        requestId,
+        prompt,
+        timeout,
+      } as RequestInputMsg);
     });
   }
 
@@ -317,6 +369,17 @@ export class DebugHub {
       case 'agent-switched':
         console.log(`[DebugHub] 当前 Agent 已切换: ${msg.agentId}`);
         break;
+
+      // 处理用户输入响应
+      case 'input-response':
+        const resolver = this.pendingInputRequests.get(msg.requestId);
+        if (resolver) {
+          resolver(msg.input);
+          this.pendingInputRequests.delete(msg.requestId);
+        } else {
+          console.warn(`[DebugHub] 未知输入响应: ${msg.requestId}`);
+        }
+        break;
     }
   }
 
@@ -326,9 +389,8 @@ export class DebugHub {
   private sendViaUDS(msg: DebugHubIPCMessage): void {
     if (this.udsClient && this.clientReady) {
       this.udsClient.write(JSON.stringify(msg) + '\n');
-    } else {
-      this.messageQueue.push(msg);
     }
+    // 未连接时丢弃消息，不再队列（避免内存泄漏）
   }
 
   /**

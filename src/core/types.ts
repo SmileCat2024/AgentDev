@@ -211,6 +211,8 @@ export interface AgentSession {
   currentState: Notification | null;
   events: Notification[];
   lastEventCount: number;
+  // 所属 UDS 客户端连接 ID（用于多进程输入响应路由）
+  clientId?: string;
 }
 
 /**
@@ -224,6 +226,7 @@ export type DebugHubIPCMessage =
   | SetCurrentAgentMsg
   | UnregisterAgentMsg
   | PushNotificationMsg
+  | RequestInputMsg
   | StopMsg;
 
 /**
@@ -287,11 +290,33 @@ export interface PushNotificationMsg {
 }
 
 /**
+ * 请求用户输入
+ */
+export interface RequestInputMsg {
+  type: 'request-input';
+  agentId: string;
+  requestId: string;
+  prompt: string;
+  timeout?: number;
+}
+
+/**
+ * 用户输入响应（Worker → Agent，通过 UDS）
+ */
+export interface InputResponseMsg {
+  type: 'input-response';
+  agentId: string;
+  requestId: string;
+  input: string;
+}
+
+/**
  * Worker → 主进程 消息
  */
 export type WorkerIPCMessage =
   | ReadyMsg
-  | AgentSwitchedMsg;
+  | AgentSwitchedMsg
+  | InputResponseMsg;
 
 /**
  * Worker 就绪

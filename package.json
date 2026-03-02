@@ -10,6 +10,7 @@
     "dev": "tsc --watch",
     "agent": "tsx examples/agent.ts",
     "agt": "tsx examples/agent.ts",
+    "server": "tsx examples/server.ts",
     "viewer": "node dist/cli/viewer.js"
   },
   "dependencies": {

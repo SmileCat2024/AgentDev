@@ -86,6 +86,43 @@ class ViewerWorker {
     });
   }
 
+  /**
+   * 停止服务器
+   */
+  async stop(): Promise<void> {
+    return new Promise((resolve) => {
+      // 关闭 HTTP 服务器
+      if (this.server) {
+        this.server.close(() => {
+          console.log('[Viewer Worker] HTTP 服务器已关闭');
+        });
+      }
+
+      // 关闭 UDS 服务器
+      if (this.udsServer) {
+        this.udsServer.close(() => {
+          console.log('[Viewer Worker] UDS 服务器已关闭');
+        });
+      }
+
+      // 关闭所有 UDS 客户端连接
+      for (const [id, socket] of this.udsClients) {
+        socket.destroy();
+        console.log(`[Viewer Worker] 客户端连接已关闭: ${id}`);
+      }
+      this.udsClients.clear();
+
+      // 清理 Unix socket 文件（非 Windows）
+      if (process.platform !== 'win32' && this.udsPath && existsSync(this.udsPath)) {
+        try {
+          unlinkSync(this.udsPath);
+        } catch {}
+      }
+
+      resolve();
+    });
+  }
+
   // ========== UDS 服务器 ==========
 
   /**
@@ -99,9 +136,15 @@ class ViewerWorker {
       } catch {}
     }
 
+    // 客户端连接计数器，用于生成唯一 ID
+    let connectionCounter = 0;
+
     this.udsServer = createNetServer((socket: Socket) => {
-      const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
+      // 使用计数器生成唯一 ID，而不是依赖 remoteAddress/port（Windows 命名管道可能返回 undefined）
+      const clientId = `client-${++connectionCounter}-${Date.now()}`;
       this.udsClients.set(clientId, socket);
+
+      console.log(`[Viewer Worker] 新的 UDS 客户端连接: ${clientId}, 当前连接数: ${this.udsClients.size}`);
 
       let buffer = '';
       socket.on('data', (data: Buffer) => {
@@ -113,7 +156,7 @@ class ViewerWorker {
           if (!line.trim()) continue;
           try {
             const msg: DebugHubIPCMessage = JSON.parse(line);
-            this.handleUDSMessage(msg, socket);
+            this.handleUDSMessage(msg, socket, clientId);
           } catch (err) {
             console.error('[Viewer Worker] UDS 消息解析失败:', err);
           }
@@ -122,10 +165,12 @@ class ViewerWorker {
 
       socket.on('close', () => {
         this.udsClients.delete(clientId);
+        console.log(`[Viewer Worker] UDS 客户端断开: ${clientId}, 当前连接数: ${this.udsClients.size}`);
       });
 
       socket.on('error', (err) => {
         console.error('[Viewer Worker] UDS 客户端错误:', err);
+        this.udsClients.delete(clientId);
       });
     });
 
@@ -142,10 +187,10 @@ class ViewerWorker {
   /**
    * 处理 UDS 消息（复用现有处理方法）
    */
-  private handleUDSMessage(msg: DebugHubIPCMessage, socket: Socket): void {
+  private handleUDSMessage(msg: DebugHubIPCMessage, socket: Socket, clientId: string): void {
     switch (msg.type) {
       case 'register-agent':
-        this.handleRegisterAgent(msg);
+        this.handleRegisterAgent(msg, clientId);
         break;
       case 'push-messages':
         this.handlePushMessages(msg);
@@ -163,6 +208,9 @@ class ViewerWorker {
         break;
       case 'push-notification':
         this.handlePushNotification(msg);
+        break;
+      case 'request-input':
+        this.handleRequestInput(msg);
         break;
       case 'stop':
         this.handleStop();
@@ -250,6 +298,20 @@ class ViewerWorker {
     const notifMatch = url.match(/^\/api\/agents\/([^/]+)\/notification$/);
     if (notifMatch && req.method === 'GET') {
       this.handleGetAgentNotification(req, res, notifMatch[1]);
+      return;
+    }
+
+    // GET /api/agents/:id/input-requests - 获取输入请求列表
+    const inputReqMatch = url.match(/^\/api\/agents\/([^/]+)\/input-requests$/);
+    if (inputReqMatch && req.method === 'GET') {
+      this.handleGetInputRequests(req, res, inputReqMatch[1]);
+      return;
+    }
+
+    // POST /api/agents/:id/input - 提交用户输入
+    const inputPostMatch = url.match(/^\/api\/agents\/([^/]+)\/input$/);
+    if (inputPostMatch && req.method === 'POST') {
+      this.handlePostInput(req, res, inputPostMatch[1]);
       return;
     }
 
@@ -412,6 +474,95 @@ class ViewerWorker {
     }));
   }
 
+  /**
+   * 获取输入请求列表
+   */
+  private handleGetInputRequests(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    const pendingRequests = ((session as any).pendingInputRequests as Map<string, any>) || new Map();
+    const requests = Array.from(pendingRequests.entries()).map(([requestId, data]) => ({
+      requestId,
+      prompt: data.prompt,
+      timestamp: data.timestamp,
+    }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(requests));
+  }
+
+  /**
+   * 提交用户输入
+   */
+  private handlePostInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { requestId, input } = JSON.parse(body);
+
+        const session = this.agentSessions.get(agentId);
+        const pendingRequests = (session as any).pendingInputRequests as Map<string, any> | undefined;
+        if (!session || !pendingRequests?.has(requestId)) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Request not found or expired' }));
+          return;
+        }
+
+        // 移除请求
+        pendingRequests.delete(requestId);
+
+        // 通过 UDS 发送响应到正确的客户端
+        const targetClientId = session.clientId;
+        if (targetClientId) {
+          const targetSocket = this.udsClients.get(targetClientId);
+          if (targetSocket) {
+            try {
+              targetSocket.write(JSON.stringify({
+                type: 'input-response',
+                agentId,
+                requestId,
+                input,
+              }) + '\n');
+              console.log(`[Viewer Worker] 输入响应已发送到 ${targetClientId}: ${requestId}`);
+            } catch (writeError) {
+              console.error('[Viewer Worker] UDS 写入失败:', writeError);
+            }
+          } else {
+            console.warn(`[Viewer Worker] 目标客户端连接不存在: ${targetClientId}`);
+          }
+        } else {
+          // 向后兼容：如果没有记录 clientId，广播到所有客户端
+          console.warn('[Viewer Worker] Agent 未记录 clientId，尝试广播到所有客户端');
+          for (const [cid, socket] of this.udsClients) {
+            try {
+              socket.write(JSON.stringify({
+                type: 'input-response',
+                agentId,
+                requestId,
+                input,
+              }) + '\n');
+              console.log(`[Viewer Worker] 输入响应广播到 ${cid}`);
+            } catch (writeError) {
+              console.error(`[Viewer Worker] 向 ${cid} 广播失败:`, writeError);
+            }
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+    });
+  }
+
   // ========== 会话管理 ==========
 
   /**
@@ -473,16 +624,21 @@ class ViewerWorker {
   /**
    * 处理注册 Agent
    */
-  public handleRegisterAgent(msg: any): void {
+  public handleRegisterAgent(msg: any, clientId?: string): void {
     const { agentId, name, createdAt } = msg;
-    this.getOrCreateSession(agentId, name);
+    const session = this.getOrCreateSession(agentId, name);
+
+    // 记录所属客户端连接（用于多进程输入响应路由）
+    if (clientId) {
+      session.clientId = clientId;
+    }
 
     // 首个 Agent 自动成为当前
     if (this.agentSessions.size === 1) {
       this.currentAgentId = agentId;
     }
 
-    console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})`);
+    console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})${clientId ? ` [client: ${clientId}]` : ''}`);
   }
 
   /**
@@ -586,6 +742,37 @@ class ViewerWorker {
       session.events.push(notification);
       session.lastEventCount++;
     }
+  }
+
+  /**
+   * 处理用户输入请求
+   */
+  public handleRequestInput(msg: any): void {
+    const { agentId, requestId, prompt } = msg;
+    console.log(`[Viewer Worker] 收到输入请求: agentId=${agentId}, requestId=${requestId}`);
+
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      console.warn(`[Viewer Worker] Unknown agent for input request: ${agentId}`);
+      return;
+    }
+
+    this.updateSessionActivity(agentId);
+
+    // 初始化 pendingInputRequests（如不存在）
+    let pendingRequests = (session as any).pendingInputRequests as Map<string, any>;
+    if (!pendingRequests) {
+      pendingRequests = new Map();
+      (session as any).pendingInputRequests = pendingRequests;
+    }
+
+    // 存储请求
+    pendingRequests.set(requestId, {
+      prompt,
+      timestamp: Date.now(),
+    });
+
+    console.log(`[Viewer Worker] Input request 已存储: ${requestId}, 当前队列大小: ${pendingRequests.size}`);
   }
 
   /**
@@ -760,6 +947,7 @@ class ViewerWorker {
       flex-direction: column;
       min-width: 0;
       background-color: var(--bg-color);
+      position: relative; /* For positioning input container */
     }
 
     header {
@@ -804,7 +992,7 @@ class ViewerWorker {
       flex: 1;
       overflow-y: auto;
       padding: 24px;
-      padding-bottom: 100px;
+      padding-bottom: 200px; /* 增加底部空间，避免输入框遮挡最新消息 */
       display: flex;
       flex-direction: column;
       gap: 24px;
@@ -1158,6 +1346,76 @@ class ViewerWorker {
       background: transparent !important;
     }
 
+    /* 用户输入容器（默认隐藏） */
+    #user-input-container {
+      display: none;
+      position: absolute;
+      bottom: 50px;
+      left: 0;
+      right: 0;
+      z-index: 1000;
+      display: flex;
+      justify-content: center;
+      pointer-events: none; /* 让空白区域不阻挡点击 */
+    }
+
+    #user-input-container:not(:empty) {
+      display: flex;
+    }
+
+    .user-input-card {
+      pointer-events: auto;
+      background: #090909; /* 稍微浅一点点的黑 */
+      border: 1px solid #222;
+      border-radius: 24px;
+      padding: 18px 24px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8);
+      width: 85%;
+      max-width: 800px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .user-input-header {
+      display: none;
+    }
+
+    .user-input-prompt {
+      display: none; 
+    }
+
+    .user-input-textarea {
+      width: 100%;
+      background: transparent;
+      color: var(--text-primary);
+      border: none;
+      padding: 0;
+      font-family: inherit; /* 跟随 body 字体，即用户消息的字体 */
+      font-size: 16px;
+      line-height: 1.6;
+      resize: none;
+      box-sizing: border-box;
+      outline: none;
+      min-height: 26px;
+      max-height: 300px; 
+    }
+    
+    .user-input-textarea::placeholder {
+      color: #444;
+    }
+
+    .user-input-textarea:focus {
+      border-color: transparent;
+    }
+
+    .user-input-footer {
+      display: none;
+    }
+
+    .user-input-submit {
+      display: none;
+    }
+
   </style>
 </head>
 <body>
@@ -1194,6 +1452,8 @@ class ViewerWorker {
     <div id="chat-container">
       <div class="empty-state">Waiting for messages...</div>
     </div>
+    
+    <div id="user-input-container"></div>
   </div>
 
   <script>
@@ -1541,10 +1801,11 @@ class ViewerWorker {
           return;
         }
 
-        // 并行请求消息和通知
-        const [msgsRes, notifRes] = await Promise.all([
+        // 并行请求消息、通知和输入请求
+        const [msgsRes, notifRes, inputRes] = await Promise.all([
           fetch(\`/api/agents/\${currentAgentId}/messages\`),
           fetch(\`/api/agents/\${currentAgentId}/notification\`),
+          fetch(\`/api/agents/\${currentAgentId}/input-requests\`),
         ]);
 
         const data = await msgsRes.json();
@@ -1553,6 +1814,13 @@ class ViewerWorker {
         // 处理通知状态
         const notifData = await notifRes.json();
         updateNotificationStatus(notifData);
+
+        // 处理输入请求（只在变化时重新渲染）
+        const inputRequests = await inputRes.json();
+        if (JSON.stringify(inputRequests) !== JSON.stringify(window.lastInputRequests || [])) {
+          window.lastInputRequests = inputRequests;
+          renderInputRequests(inputRequests);
+        }
 
         if (messages.length !== currentMessages.length || messages.length === 0) {
           if (messages.length > currentMessages.length) {
@@ -1627,6 +1895,76 @@ class ViewerWorker {
         statusEl.classList.remove('active');
       } else {
         statusEl.style.display = 'none';
+      }
+    }
+
+    // 渲染输入请求
+    function renderInputRequests(requests) {
+      const container = document.getElementById('user-input-container');
+      if (!container) return;
+
+      // 清空现有内容
+      container.innerHTML = '';
+
+      for (const req of requests) {
+        const card = document.createElement('div');
+        card.className = 'user-input-card';
+        // 极简设计：只有 Textarea
+        card.innerHTML = \`
+          <textarea class="user-input-textarea" rows="1" id="input-\${req.requestId}"
+            onkeydown="handleInputKey(event, '\${req.requestId}')"
+            oninput="autoResize(this)"
+            placeholder="正在与Agent对话"></textarea>
+        \`;
+        container.appendChild(card);
+        
+        // Auto-focus
+        setTimeout(() => {
+          const el = document.getElementById(\`input-\${req.requestId}\`);
+          if(el) {
+             el.focus();
+             autoResize(el);
+          }
+        }, 50);
+      }
+    }
+
+    function autoResize(textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+    }
+
+    function handleInputKey(event, requestId) {
+      if (event.key === 'Enter') {
+        if (event.ctrlKey || event.shiftKey) {
+          // Ctrl+Enter or Shift+Enter for new line
+          // default behavior is new line, but we might want to ensure it works
+          return; 
+        } else {
+          // Enter for submit
+          event.preventDefault();
+          submitInput(requestId);
+        }
+      }
+    }
+
+    // 提交输入
+    async function submitInput(requestId) {
+      const textarea = document.getElementById(\`input-\${requestId}\`);
+      const input = textarea ? textarea.value : '';
+
+      try {
+        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requestId, input })
+        });
+        if (res.ok) {
+          // 刷新输入请求列表
+          poll();
+        }
+      } catch (e) {
+        console.error('提交输入失败:', e);
       }
     }
 
@@ -2182,6 +2520,16 @@ const isMainModule = (url: string): boolean => {
 };
 
 if (isMainModule(import.meta.url)) {
+  // 全局错误处理
+  process.on('uncaughtException', (err) => {
+    console.error('[Viewer Worker] 未捕获的异常:', err);
+    console.error(err.stack);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[Viewer Worker] 未处理的 Promise 拒绝:', reason);
+  });
+
   const port = parseInt(process.argv[2] || process.env.AGENTDEV_PORT || '2026', 10);
   const openBrowser = process.argv[3] !== 'false' && process.env.AGENTDEV_OPEN_BROWSER !== 'false';
   const udsPath = process.env.AGENTDEV_UDS_PATH || process.argv[4];
@@ -2212,6 +2560,9 @@ if (isMainModule(import.meta.url)) {
         break;
       case 'push-notification':
         worker.handlePushNotification(msg);
+        break;
+      case 'request-input':
+        worker.handleRequestInput(msg);
         break;
       case 'stop':
         worker.handleStop();

@@ -26,3 +26,7 @@ export { SubAgentFeature, AgentPool } from './subagent.js';
 // Todo Feature
 export { TodoFeature } from './todo.js';
 export type { TodoTask, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from './todo.js';
+
+// UserInput Feature
+export { UserInputFeature } from './user-input.js';
+export type { UserInputFeatureConfig } from './user-input.js';

@@ -5,7 +5,8 @@
 ## 特性
 
 - **Feature 插件系统** - 可外挂的功能模块，支持 MCP、Skills、子代理等
-- **5级生命周期钩子** - Agent/Call/Step/LLM/Tool 全方位控制
+- **4级生命周期钩子** - Agent/Call/Step/Tool 全方位控制
+- **反向钩子装饰器** - 使用装饰器注册流程控制逻辑
 - **Context 内核化** - 消息包装和查询能力内置
 - **灵活的工具系统** - 双文件模式（定义+渲染），支持前端动态模板
 - **内置可视化调试** - DebugHub 多 Agent 调试中心
@@ -65,7 +66,11 @@ npm run build
 ### 运行 Agent
 
 ```bash
-npm run agt    # 启动 agent（端口 2026）
+# 终端 1：启动调试服务器
+npm run server
+
+# 终端 2：启动 agent
+npm run agt
 ```
 
 ---
@@ -116,7 +121,7 @@ context.getByTurn(callIndex);
 Feature 是可外挂的功能模块，提供：
 - 工具注册
 - 上下文注入
-- 生命周期钩子
+- 生命周期钩子（正向和反向）
 
 ---
 
@@ -128,7 +133,7 @@ Feature 是可外挂的功能模块，提供：
 AgentDev/
 ├── src/
 │   ├── core/                  # 核心模块
-│   │   ├── agent/            # Agent 子模块（重构后）
+│   │   ├── agent/            # Agent 子模块
 │   │   │   ├── hooks-executor.ts   # 钩子执行器
 │   │   │   ├── lifecycle-hooks.ts  # 生命周期钩子
 │   │   │   ├── react-loop.ts       # ReAct 循环
@@ -139,6 +144,8 @@ AgentDev/
 │   │   ├── tool.ts            # 工具系统
 │   │   ├── feature.ts         # Feature 接口
 │   │   ├── lifecycle.ts       # 生命周期类型
+│   │   ├── hooks-decorator.ts # 反向钩子装饰器
+│   │   ├── hooks-registry.ts  # 钩子注册表
 │   │   ├── debug-hub.ts       # 调试中心
 │   │   └── config.ts          # 配置管理
 │   ├── agents/                # 预置 Agent
@@ -149,7 +156,8 @@ AgentDev/
 │   │   ├── mcp.js            # MCP 集成
 │   │   ├── skill.js          # Skills 系统
 │   │   ├── subagent.js       # 子代理
-│   │   └── todo.js           # 任务管理
+│   │   ├── todo.js           # 任务管理
+│   │   └── user-input.ts     # 用户输入
 │   ├── tools/                 # 工具定义
 │   │   ├── opencode/         # 文件操作（read, write, edit...）
 │   │   ├── system/           # 系统工具（shell, web, math...）
@@ -175,7 +183,7 @@ AgentDev/
       │         │         │
 ┌─────▼───┐ ┌──▼────┐ ┌──▼──────┐
 │ Feature │ │ Tool  │ │ Template │
-│ System  │ │Registry│ │Composer │
+│ System  │ │Registry│ │ Composer │
 └─────────┘ └───────┘ └─────────┘
 ```
 
@@ -183,15 +191,68 @@ AgentDev/
 
 ## 生命周期钩子
 
-AgentDev 提供 5 级生命周期钩子系统：
+AgentDev 提供 4 级生命周期钩子系统 + 反向钩子装饰器：
 
-| 级别 | 钩子 | 调用时机 | 返回值支持 |
-|------|------|----------|-----------|
+### 正向钩子（通知）
+
+| 级别 | 钩子 | 调用时机 | 返回值 |
+|------|------|----------|--------|
 | **Agent** | `onInitiate`, `onDestroy` | 一次初始化/销毁 | void |
 | **Call** | `onCallStart`, `onCallFinish` | 每次 `onCall()` | void |
 | **Step** | `onStepStart`, `onStepFinished` | 每轮 ReAct 循环 | HookResult |
-| **LLM** | `onLLMStart`, `onLLMFinish` | LLM 调用前后 | HookResult |
 | **Tool** | `onToolUse`, `onToolFinished` | 工具执行前后 | HookResult |
+
+### 反向钩子（流程控制）
+
+Feature 使用装饰器注册反向钩子，实现流程控制：
+
+```typescript
+import { StepFinish, ToolUse, ToolFinished, Decision } from '../core/hooks-decorator.js';
+
+export class MyFeature implements AgentFeature {
+  // 流程控制型：单个 Feature 内只能修饰一个方法
+  @ToolUse
+  async blockDangerousTools(ctx) {
+    if (ctx.call.name === 'dangerous_tool') {
+      return Decision.Deny; // 阻止执行
+    }
+    return Decision.Continue; // 使用默认行为（允许执行）
+  }
+
+  @StepFinish
+  async handleSubAgents(ctx) {
+    if (this.hasActiveAgents()) {
+      await this.waitForAgents();
+      return Decision.Approve; // 强制继续循环
+    }
+    return Decision.Continue; // 使用默认行为
+  }
+
+  // 纯通知型：可修饰多个方法
+  @ToolFinished
+  async logToolExecution(ctx) {
+    console.log(`Tool ${ctx.toolName} executed`);
+  }
+
+  @ToolFinished
+  async trackMetrics(ctx) {
+    this.metrics.record(ctx.duration);
+  }
+}
+```
+
+### Decision 枚举
+
+| 值 | 含义 | 使用场景 |
+|---|------|---------|
+| `Approve` | 确认/继续 | 强制继续循环或确认操作 |
+| `Deny` | 拒绝/停止 | 强制结束循环或阻止操作 |
+| `Continue` | 使用默认行为 | 交给系统默认逻辑 |
+
+**默认行为规则**：
+- `@StepFinish` Continue → 无工具时自然结束，有工具时继续循环
+- `@ToolUse` Continue → 允许工具执行
+- `@ToolFinished` 纯通知，无决策
 
 ### 钩子返回值（HookResult）
 
@@ -202,48 +263,6 @@ type HookResult =
   | { action: 'continue' }                // 继续循环
   | { action: 'end' }                     // 结束循环
   | undefined;                            // 默认行为
-```
-
-### 错误处理策略
-
-```typescript
-enum HookErrorHandling {
-  Silent,    // 记录警告，继续执行
-  Propagate, // 抛出错误，中断流程
-  Logged,    // 记录错误然后抛出
-}
-```
-
-默认策略：
-- **Agent/Step** 钩子：`Silent`
-- **Call/LLM/Tool** 钩子：`Propagate`
-
-### 使用示例
-
-```typescript
-class MyAgent extends Agent {
-  // 阻止特定工具执行
-  protected async onToolUse(ctx: ToolContext): Promise<HookResult> {
-    if (ctx.call.name === 'dangerous_tool') {
-      return { action: 'block', reason: '此工具已被禁用' };
-    }
-    return undefined;
-  }
-
-  // 强制继续循环
-  protected async onLLMFinish(ctx: LLMFinishContext): Promise<HookResult> {
-    if (!ctx.response.toolCalls?.length) {
-      // 即使没有工具调用，也继续循环
-      return { action: 'continue' };
-    }
-    return undefined;
-  }
-
-  // 记录每次调用完成
-  protected async onCallFinish(ctx: CallFinishContext): Promise<void> {
-    console.log(`调用完成: ${ctx.response} (${ctx.turns} 轮)`);
-  }
-}
 ```
 
 ---
@@ -280,74 +299,32 @@ export const myTool = createTool({
   execute: async (args) => {
     return `处理结果: ${args.input}`;
   },
-  render: 'my-template'  // 模板名称
-}, import.meta.url);     // 传递源文件路径用于自动查找渲染文件
+  render: 'my-template'
+}, import.meta.url);
 ```
 
 **文件 2：渲染模板**
 
 ```typescript
 // src/tools/user/my-tool.render.ts
-import { escapeHtml, formatError } from '../system/index.render.js';
+import { escapeHtml } from '../system/index.render.js';
 
-// 渲染函数
 export const render = {
   call: (data: { input: string }) => `
     <div class="tool-call">
       <strong>输入:</strong> ${escapeHtml(data.input)}
     </div>
   `,
-  result: (data: { output: string }, success: boolean) => {
-    if (!success) {
-      return `<div class="error">${formatError(data.output as string)}</div>`;
-    }
-    return `
-      <div class="tool-result">
-        <strong>输出:</strong> ${escapeHtml(data.output)}
-      </div>
-    `;
-  }
+  result: (data: { output: string }) => `
+    <div class="tool-result">
+      <strong>输出:</strong> ${escapeHtml(data.output)}
+    </div>
+  `
 };
 
-// 模板映射表
 export const TEMPLATES = {
   'my-template': render
 };
-```
-
-### 注册工具
-
-```typescript
-// 在 index.render.ts 中添加导出
-export * from './my-tool.render.js';
-
-// 在模板映射表中添加
-export const TEMPLATES = {
-  // ...其他模板
-  'my-template': render
-};
-
-// 在 src/core/viewer-worker.ts 的 templateToFileMap 中添加
-const templateToFileMap = {
-  // ...其他映射
-  'my-template': 'user/my-tool'
-};
-```
-
-### Render 字段格式
-
-```typescript
-// 格式 A: 简写（call 和 result 使用同一模板）
-render: 'my-template'
-
-// 格式 B: 对象（call 和 result 使用不同模板）
-render: { call: 'my-call', result: 'my-result' }
-
-// 格式 C: 内联（直接定义渲染函数）
-render: {
-  call: (data) => `<div>...</div>`,
-  result: (data, success) => success ? `<div>...</div>` : `<div>错误</div>`
-}
 ```
 
 ### 内置工具
@@ -366,6 +343,7 @@ render: {
 | **Feature 工具** | `invoke_skill` | 调用 Skill（SkillFeature） |
 | | `spawn_agent` | 创建子代理（SubAgentFeature） |
 | | `wait` | 等待子代理（SubAgentFeature） |
+| | `get_user_input` | 获取用户输入（UserInputFeature） |
 
 ---
 
@@ -436,13 +414,27 @@ const agent = new BasicAgent({
 
 #### SubAgentFeature
 
-子代理管理和通信：
+子代理管理和通信（使用反向钩子装饰器）：
 
 ```typescript
 // 自动启用，提供 spawn_agent、wait 等工具
 const result = await agent.onCall(`
   创建一个子代理来分析这个文件
 `);
+```
+
+#### UserInputFeature
+
+通过调试界面获取用户输入：
+
+```typescript
+import { UserInputFeature } from './src/features/user-input.js';
+
+const agent = new BasicAgent()
+  .use(new UserInputFeature({ timeout: 300000 }))
+  .withViewer('MyAgent', 2026);
+
+const input = await userInputFeature.getUserInput('请输入：');
 ```
 
 ---
@@ -467,26 +459,15 @@ const prompt = new TemplateComposer()
   .build(context);
 ```
 
-### 模板来源
-
-| 来源 | 格式 | 说明 |
-|------|------|------|
-| 字符串 | `'text'` | 直接字符串 |
-| 文件 | `{ file: 'path' }` | 从文件加载 |
-| Skills | `{ skills: 'template' }` | 渲染 Skills 列表 |
-| 数据源 | `{ name: 'template' }` | 渲染自定义数据源（Feature 注册） |
-| 条件 | `{ conditional: {...} }` | 条件渲染 |
-
 ### 数据源注册系统
 
-Feature 可以通过 `DataSourceRegistry` 注册命名数据源，实现灵活的列表渲染：
+Feature 可以通过 `DataSourceRegistry` 注册命名数据源：
 
 ```typescript
 import { DataSourceRegistry } from './src/template/data-source.js';
 
 class MyFeature implements AgentFeature {
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
-    // 注册数据源
     DataSourceRegistry.register({
       name: 'myItems',
       getData: () => this.items,
@@ -496,32 +477,9 @@ class MyFeature implements AgentFeature {
     });
   }
 }
-
-// 在 Agent 模板中使用
-agent.setSystemPrompt(new TemplateComposer()
-  .add('## 项目列表\n')
-  .add({ myItems: '- {{name}}: {{description}}' })
-);
 ```
 
 **内置数据源**：`skills`（由 SkillFeature 自动注册）
-
-详见：`docs/data-source-system.md`
-
-### 占位符
-
-模板支持 `{{key}}` 占位符，从 PlaceholderContext 解析：
-
-```typescript
-agent.setSystemContext({
-  name: '助手',
-  version: '1.0.0',
-  currentDate: new Date().toISOString()
-});
-
-// 模板: "我是 {{name}}，版本 {{version}}"
-// 结果: "我是 助手，版本 1.0.0"
-```
 
 ---
 
@@ -539,29 +497,11 @@ agent.setSystemContext({
     "baseUrl": "https://api.openai.com/v1",
     "apiKey": "${OPENAI_API_KEY}"
   },
-  "defaultModel1": {
-    "provider": "anthropic",
-    "model": "claude-sonnet-4-6",
-    "baseUrl": "https://api.anthropic.com/v1",
-    "apiKey": "${ANTHROPIC_API_KEY}"
-  },
   "agent": {
     "maxTurns": 10,
     "temperature": 0.7
   }
 }
-```
-
-### 加载配置
-
-```typescript
-import { loadConfigSync } from './src/core/config.js';
-
-// 同步加载
-const config = loadConfigSync('default');
-
-// 列出所有配置
-const configs = listConfigs();  // ['default', 'production', ...]
 ```
 
 ### 环境变量
@@ -591,7 +531,6 @@ const agent = new Agent({
   systemMessage: '你是一个助手'
 });
 
-// 主要方法
 const response = await agent.onCall('用户输入');
 agent.setSystemPrompt('新的系统提示词');
 agent.setSystemContext({ key: 'value' });
@@ -615,39 +554,6 @@ const agent = new BasicAgent({
 const result = await agent.onCall('你好');
 ```
 
-### 创建工具
-
-```typescript
-import { createTool } from './src/core/tool.js';
-
-const tool = createTool({
-  name: 'tool_name',
-  description: '工具描述',
-  parameters: {
-    type: 'object',
-    properties: {
-      param1: { type: 'string', description: '参数1' }
-    }
-  },
-  execute: async (args, context) => {
-    return '执行结果';
-  },
-  render: 'template-name'  // 可选
-}, import.meta.url);
-```
-
-### DebugHub
-
-```typescript
-import { DebugHub } from './src/core/debug-hub.js';
-
-const agent = await new BasicAgent()
-  .withViewer('MyAgent', 2026, true);  // name, port, openBrowser
-
-// DebugHub 会自动启动调试服务器
-// 访问 http://localhost:2026 查看调试界面
-```
-
 ---
 
 ## 注意事项
@@ -661,18 +567,9 @@ npm run build  # 编译 .render.ts → .js
 npm run agt    # 运行 agent
 ```
 
-原因：工具的渲染模板需要从 `.render.ts` 编译为 `.js` 才能被前端动态加载。
-
 ### 端口冲突
 
 默认调试端口为 **2026**。如遇"地址已使用"错误：
-
-```typescript
-// 更换端口
-await agent.withViewer('MyAgent', 3000, true);
-```
-
-或关闭占用进程：
 
 ```bash
 # Windows
@@ -684,92 +581,24 @@ lsof -i :2026
 kill -9 <pid>
 ```
 
-### Windows 路径处理
-
-返回路径时使用反引号包裹，避免 markdown 转义：
-
-```typescript
-// ❌ 错误：\c 会被渲染为特殊字符
-return `路径：${basePath}`;
-
-// ✅ 正确：用反引号包裹
-return `路径：\`${basePath}\``;
-```
-
 ### 钩子执行顺序
-
-钩子按以下顺序执行：
 
 ```
 onCallStart
   → onInitiate (首次)
   → [ReAct Loop]
     → onStepStart
-    → onLLMStart
-    → onLLMFinish
-    → onToolUse (每个工具)
-    → onToolFinished (每个工具)
+    → 反向钩子 @StepStart (纯通知，多个)
+    → LLM 调用
+    → [每个工具]
+      → 反向钩子 @ToolUse (流程控制，单个) ← 可在此阻塞
+      → onToolUse
+      → 工具执行
+      → onToolFinished
+      → 反向钩子 @ToolFinished (纯通知，多个)
     → onStepFinished
+    → 反向钩子 @StepFinish (流程控制，单个)
   → onCallFinish
-```
-
-### 工具上下文注入
-
-某些工具需要额外的上下文参数：
-
-```typescript
-// invoke_skill 需要注入 skills 列表
-// 在 agent.executeTool() 中自动处理
-const data = await tool.execute(args, {
-  _context: { skills: this.skills }
-});
-```
-
----
-
-## 开发指南
-
-### 创建自定义 Agent
-
-```typescript
-import { Agent } from './src/core/agent.js';
-
-class MyAgent extends Agent {
-  protected async onInitiate(ctx: AgentInitiateContext): Promise<void> {
-    console.log('Agent 初始化');
-  }
-
-  protected async onToolUse(ctx: ToolContext): Promise<HookResult> {
-    if (ctx.call.name === 'restricted') {
-      return { action: 'block', reason: '不允许此工具' };
-    }
-    return undefined;
-  }
-}
-```
-
-### 创建自定义 Feature
-
-```typescript
-import type { AgentFeature } from './src/core/feature.js';
-
-class MyFeature implements AgentFeature {
-  readonly name = 'my-feature';
-
-  getTools() {
-    return [myTool1, myTool2];
-  }
-
-  getContextInjectors() {
-    return new Map([
-      ['my_tool', (call) => ({ customContext: 'value' })]
-    ]);
-  }
-
-  async onInitiate(ctx: FeatureInitContext): Promise<void> {
-    console.log('Feature 初始化');
-  }
-}
 ```
 
 ---
@@ -777,9 +606,3 @@ class MyFeature implements AgentFeature {
 ## 许可证
 
 MIT
-
----
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！

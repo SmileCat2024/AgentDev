@@ -642,16 +642,67 @@ class ViewerWorker {
   }
 
   /**
-   * 处理推送消息
+   * 处理推送消息（带去重优化）
+   *
+   * 只有在消息真正变化时才更新会话并触发前端更新
    */
   public handlePushMessages(msg: any): void {
     const { agentId, messages } = msg;
     const session = this.agentSessions.get(agentId);
-    if (session) {
+    if (!session) return;
+
+    // 消息变化检测
+    const messagesChanged = this.hasMessagesChanged(session, messages);
+
+    // 只有消息真正变化时才更新
+    if (messagesChanged) {
       session.messages = messages;
+      // 更新最后一条消息的签名，用于下次比较
+      session._lastMessageSig = this.getLastMessageSignature(messages);
       this.updateSessionActivity(agentId);
       this.enforceMemoryLimits(session);
     }
+  }
+
+  /**
+   * 检查消息是否发生变化
+   */
+  private hasMessagesChanged(session: AgentSession, newMessages: any[]): boolean {
+    // 快速检查：消息数量
+    if (newMessages.length !== session.messages.length) {
+      return true;
+    }
+
+    // 如果没有消息，直接返回 false
+    if (newMessages.length === 0) {
+      return false;
+    }
+
+    // 比较最后一条消息的签名（新消息总是追加到末尾）
+    const newSig = this.getLastMessageSignature(newMessages);
+    const oldSig = (session as any)._lastMessageSig;
+
+    return newSig !== oldSig;
+  }
+
+  /**
+   * 获取最后一条消息的签名（用于变化检测）
+   *
+   * 使用消息的 role、content 和 toolCalls 生成签名
+   */
+  private getLastMessageSignature(messages: any[]): string {
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg) return '';
+
+    // 提取关键字段生成签名
+    const sig = {
+      r: lastMsg.role,
+      c: lastMsg.content,
+      // 工具调用只比较数量和名称（因为 toolCalls 可能包含动态 ID）
+      tc: lastMsg.toolCalls?.map((tc: any) => ({ n: tc.name, a: tc.arguments }))
+    };
+
+    return JSON.stringify(sig);
   }
 
   /**

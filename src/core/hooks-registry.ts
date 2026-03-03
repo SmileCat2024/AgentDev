@@ -40,11 +40,17 @@ export class HooksRegistry {
   collectFromFeature(feature: AgentFeature): void {
     const metadata = getDecoratorMetadata(feature);
 
-    for (const [lifecycle, methodName] of metadata.hookDecisions.entries()) {
+    for (const [lifecycle, methodNameOrList] of metadata.hookDecisions.entries()) {
       if (!this.hooks.has(lifecycle)) {
         this.hooks.set(lifecycle, []);
       }
-      this.hooks.get(lifecycle)!.push({ feature, methodName });
+      const hookList = this.hooks.get(lifecycle)!;
+
+      // 支持多个方法（用逗号分隔）
+      const methodNames = methodNameOrList.split(',');
+      for (const methodName of methodNames) {
+        hookList.push({ feature, methodName: methodName.trim() });
+      }
     }
   }
 
@@ -55,10 +61,10 @@ export class HooksRegistry {
    */
   removeFromFeature(feature: AgentFeature): void {
     for (const hooks of this.hooks.values()) {
-      const index = hooks.findIndex(h => h.feature === feature);
-      if (index !== -1) {
-        hooks.splice(index, 1);
-      }
+      // 过滤掉属于该 Feature 的所有钩子
+      const filtered = hooks.filter(h => h.feature !== feature);
+      hooks.length = 0;
+      hooks.push(...filtered);
     }
   }
 

@@ -11,7 +11,7 @@ import type { ContextInjector } from '../feature.js';
 import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext } from '../lifecycle.js';
 import type { ToolExecResult } from '../context.js';
 import type { HooksRegistry } from '../hooks-registry.js';
-import { CoreLifecycle, normalizeDecision } from '../lifecycle.js';
+import { CoreLifecycle, normalizeDecision, Decision } from '../lifecycle.js';
 
 /**
  * 工具执行器类
@@ -65,15 +65,24 @@ export class ToolExecutor {
       { input, step }
     );
 
-    // ========== ToolUse 反向钩子 ==========
-    await this.hooksRegistry.executeVoid(CoreLifecycle.ToolUse, toolCtx);
-
     if (hookResult) {
       if (hookResult.action === 'block') {
         blocked = true;
         blockReason = hookResult.reason;
       }
       // action: 'allow' 或 undefined 都放行
+    }
+
+    // ========== ToolUse 反向钩子（流程控制）==========
+    const useDecisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.ToolUse, toolCtx);
+    const useDecision = normalizeDecision(useDecisionResult);
+
+    // 处理反向钩子的决策
+    if (useDecision === Decision.Deny) {
+      blocked = true;
+      blockReason = typeof useDecisionResult === 'object' && useDecisionResult.reason
+        ? useDecisionResult.reason
+        : 'Tool blocked by reverse hook';
     }
 
     const result: ToolResult = {
@@ -103,12 +112,12 @@ export class ToolExecutor {
         { input, step }
       );
 
-      // ========== ToolFinished 反向钩子 ==========
+      // ========== ToolFinished 反向钩子（纯通知）==========
       const decisionCtx: ToolFinishedDecisionContext = {
         ...result,
         toolName: call.name,
       };
-      await this.hooksRegistry.executeDecision(CoreLifecycle.ToolFinished, decisionCtx);
+      await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
 
       return;
     }
@@ -157,18 +166,11 @@ export class ToolExecutor {
       { input, step }
     );
 
-    // ========== ToolFinished 反向钩子 ==========
+    // ========== ToolFinished 反向钩子（纯通知）==========
     const decisionCtx: ToolFinishedDecisionContext = {
       ...result,
       toolName: call.name,
     };
-    const decisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.ToolFinished, decisionCtx);
-    const decision = normalizeDecision(decisionResult);
-
-    // 处理反向钩子的决策
-    if (decision === 'deny') {
-      // 阻止后续操作（对于工具执行来说，已经完成了，这里主要是记录日志）
-      console.log(`[ToolExecutor] 工具 ${call.name} 被反向钩子拒绝`);
-    }
+    await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
   }
 }

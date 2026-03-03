@@ -213,6 +213,8 @@ export interface AgentSession {
   lastEventCount: number;
   // 所属 UDS 客户端连接 ID（用于多进程输入响应路由）
   clientId?: string;
+  // 内部：上次最后一条消息的签名（用于推送去重）
+  _lastMessageSig?: string;
 }
 
 /**

@@ -69,9 +69,19 @@ const DecisionReturnTypeMap: Record<CoreLifecycle, 'void' | 'DecisionResult'> = 
   [CoreLifecycle.CallFinish]: 'void',
   [CoreLifecycle.StepStart]: 'void',
   [CoreLifecycle.StepFinish]: 'DecisionResult',  // Step 结束时可以决定是否继续循环
-  [CoreLifecycle.ToolUse]: 'void',
-  [CoreLifecycle.ToolFinished]: 'DecisionResult', // 工具完成后可以决定如何处理
+  [CoreLifecycle.ToolUse]: 'DecisionResult',      // 工具使用前可以决定是否阻塞执行
+  [CoreLifecycle.ToolFinished]: 'void',           // 工具完成后仅做通知（无流程控制）
 };
+
+/**
+ * 流程控制型钩子集合
+ *
+ * 这些钩子返回 DecisionResult，在单个 Feature 内只能使用一次
+ */
+const DECISION_HOOKS = new Set<CoreLifecycle>([
+  CoreLifecycle.StepFinish,
+  CoreLifecycle.ToolUse,      // 工具执行前可阻塞
+]);
 
 // ========== 装饰器工厂 ==========
 
@@ -99,15 +109,22 @@ function createHookDecorator(lifecycle: CoreLifecycle) {
       constructor._hookDecisions = new Map<CoreLifecycle, string>();
     }
 
-    // 唯一性检查：每个装饰器在类中只能使用一次
-    if (constructor._hookDecisions.has(lifecycle)) {
+    // 唯一性检查：流程控制型钩子在类中只能使用一次
+    // 非流程控制型钩子（void 返回值）可以使用多次
+    if (DECISION_HOOKS.has(lifecycle) && constructor._hookDecisions.has(lifecycle)) {
       throw new Error(
-        `装饰器 @${lifecycle} 在 ${constructor.name} 中只能使用一次`
+        `流程控制型装饰器 @${lifecycle} 在 ${constructor.name} 中只能使用一次`
       );
     }
 
-    // 注册元数据
-    constructor._hookDecisions.set(lifecycle, propertyKey);
+    // 注册元数据（非流程控制型钩子允许多个方法）
+    const existing = constructor._hookDecisions.get(lifecycle);
+    if (existing) {
+      // 追加方法名（用逗号分隔）
+      constructor._hookDecisions.set(lifecycle, `${existing},${propertyKey}`);
+    } else {
+      constructor._hookDecisions.set(lifecycle, propertyKey);
+    }
 
     // 保存期望的签名（供运行时验证）
     constructor._hookSignatures = constructor._hookSignatures || new Map();
@@ -209,7 +226,10 @@ export const StepFinish = createHookDecorator(CoreLifecycle.StepFinish);
  * 工具使用装饰器
  *
  * 标记在工具使用前执行的方法
- * 返回 void（仅做处理，不控制流程）
+ * 返回 DecisionResult（有流程控制能力）
+ * - Decision.Approve: 允许工具执行
+ * - Decision.Deny: 阻止工具执行（返回错误）
+ * - Decision.Continue: 使用默认行为（允许执行）
  */
 export const ToolUse = createHookDecorator(CoreLifecycle.ToolUse);
 
@@ -217,10 +237,7 @@ export const ToolUse = createHookDecorator(CoreLifecycle.ToolUse);
  * 工具完成装饰器
  *
  * 标记在工具执行完成后执行的方法
- * 返回 DecisionResult（有流程控制能力）
- * - Decision.Approve: 继续执行
- * - Decision.Deny: 阻止后续操作
- * - Decision.Continue: 使用默认行为
+ * 返回 void（仅做处理，不控制流程）
  */
 export const ToolFinished = createHookDecorator(CoreLifecycle.ToolFinished);
 
@@ -281,17 +298,17 @@ export type StepFinishHook = HookMethod<
 >;
 
 /**
- * ToolUse 反向钩子类型
+ * ToolUse 反向钩子类型（有流程控制）
  */
-export type ToolUseHook = HookMethod<ToolContext, void | Promise<void>>;
-
-/**
- * ToolFinished 反向钩子类型（有流程控制）
- */
-export type ToolFinishedHook = HookMethod<
-  ToolFinishedDecisionContext,
+export type ToolUseHook = HookMethod<
+  ToolContext,
   DecisionResult | Promise<DecisionResult>
 >;
+
+/**
+ * ToolFinished 反向钩子类型（仅通知）
+ */
+export type ToolFinishedHook = HookMethod<ToolFinishedDecisionContext, void | Promise<void>>;
 
 // ========== 重新导出决策枚举和类型 ==========
 

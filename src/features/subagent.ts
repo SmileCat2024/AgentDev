@@ -487,26 +487,26 @@ export class SubAgentFeature implements AgentFeature {
    * 触发时机：wait 工具执行完成后
    * 处理逻辑：
    * 1. 检测刚才执行的工具是否是 wait
-   * 2. 如果不是，返回 Continue
+   * 2. 如果不是，直接返回（不处理）
    * 3. 如果是，检查是否有 busy 状态的子代理
-   * 4. 如果没有，返回 Continue（wait 工具内部已做检查）
-   * 5. 如果有，调用 agentPool.waitForMessage() 阻塞等待
-   * 6. 消息插入到主代理 context
-   * 7. 返回 Approve（继续下一轮）
+   * 4. 如果有，调用 agentPool.waitForMessage() 阻塞等待（await 阻塞主循环）
+   * 5. 消息插入到主代理 context
+   *
+   * 注意：这是纯通知钩子（void），流程控制通过 await 阻塞实现
    */
   @ToolFinished
-  async handleWaitTool(ctx: ToolFinishedDecisionContext): Promise<import('../core/hooks-decorator.js').DecisionResult> {
-    // 1. 检测是否是 wait 工具
+  async handleWaitTool(ctx: ToolFinishedDecisionContext): Promise<void> {
+    // 1. 只处理 wait 工具
     if (ctx.toolName !== 'wait') {
-      return Decision.Continue;
+      return;
     }
 
     // 2. 检查是否有 busy 子代理
     if (!this.agentPool?.hasActiveAgents()) {
-      return Decision.Continue;
+      return;
     }
 
-    // 3. 阻塞等待
+    // 3. 阻塞等待（await 本身就会让主循环等待）
     const result = await this.agentPool.waitForMessage();
 
     // 4. 消息插入到 context
@@ -514,9 +514,6 @@ export class SubAgentFeature implements AgentFeature {
       role: 'assistant',
       content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
     });
-
-    // 5. 继续下一轮
-    return Decision.Approve;
   }
 
   /**

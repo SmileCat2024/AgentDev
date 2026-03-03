@@ -99,6 +99,14 @@ ehthumbs_vista.db
 .claude/
 docs/
 .agentdev/
-desktop/
+
+# Desktop App - 忽略打包产物和依赖，但保留源代码
+desktop/dist/
+desktop/node_modules/
+desktop/package-lock.json
+# Desktop 临时文件（图标转换脚本等）
+desktop/*.js.bak
+desktop/*.tmp
+desktop/nul
 
 CLAUDE.md

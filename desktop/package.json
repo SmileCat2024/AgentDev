@@ -1,0 +1,58 @@
+{
+  "name": "desktop-browser",
+  "version": "1.0.0",
+  "description": "AgentDev Debugger - Desktop App",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64",
+    "build:dir": "electron-builder --dir --win --x64"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.agentdev.debugger",
+    "productName": "AgentDev Debugger",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!**/*.md",
+      "!convert-*.js",
+      "!check-ico.js",
+      "!nul"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/cli/viewer.js",
+        "to": "app/cli/viewer.js"
+      },
+      {
+        "from": "../dist/core",
+        "to": "app/core"
+      },
+      {
+        "from": "agentdev.ico",
+        "to": "agentdev.ico"
+      },
+      {
+        "from": "C:\\nvm4w\\nodejs\\node.exe",
+        "to": "node.exe"
+      }
+    ],
+    "win": {
+      "target": ["dir"],
+      "icon": "build/icon.ico",
+      "signingHashAlgorithms": [],
+      "signAndEditExecutable": false
+    }
+  },
+  "dependencies": {
+    "png-to-ico": "^3.0.1"
+  }
+}

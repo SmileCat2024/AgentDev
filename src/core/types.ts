@@ -207,6 +207,8 @@ export interface AgentSession {
   tools: ToolMetadata[];
   createdAt: number;
   lastActive: number;
+  // 项目根目录（用于定位模板文件）
+  projectRoot?: string;
   // 通知系统扩展
   currentState: Notification | null;
   events: Notification[];
@@ -239,6 +241,7 @@ export interface RegisterAgentMsg {
   agentId: string;
   name: string;
   createdAt: number;
+  projectRoot?: string; // 项目根目录，用于模板文件加载
 }
 
 /**

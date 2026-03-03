@@ -625,8 +625,13 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt } = msg;
+    const { agentId, name, createdAt, projectRoot } = msg;
     const session = this.getOrCreateSession(agentId, name);
+
+    // 存储项目根目录（用于模板文件加载）
+    if (projectRoot) {
+      session.projectRoot = projectRoot;
+    }
 
     // 记录所属客户端连接（用于多进程输入响应路由）
     if (clientId) {
@@ -844,7 +849,18 @@ class ViewerWorker {
       };
 
       const actualPath = templateToFileMap[relativePath] || relativePath;
-      const fullPath = join('dist/tools', actualPath);
+
+      // 获取当前 Agent 的项目根目录，用于绝对路径解析
+      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
+      const projectRoot = currentSession?.projectRoot;
+
+      // 计算完整路径：优先使用项目根目录，否则回退到相对路径
+      let fullPath: string;
+      if (projectRoot) {
+        fullPath = join(projectRoot, 'dist/tools', actualPath);
+      } else {
+        fullPath = join('dist/tools', actualPath);
+      }
 
       // 读取文件并返回
       import('fs').then((fs) => {

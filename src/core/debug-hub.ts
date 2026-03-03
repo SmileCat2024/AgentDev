@@ -143,6 +143,7 @@ export class DebugHub {
         agentId: id,
         name: info.name,
         createdAt: info.registeredAt,
+        projectRoot: process.cwd(), // 传递项目根目录，用于模板文件加载
       });
 
       console.log(`[DebugHub] Agent 已注册: ${id} (${info.name})`);

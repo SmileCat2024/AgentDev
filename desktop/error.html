@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      font-family: sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background: #1e1e1e;
+      color: #fff;
+    }
+    .btn {
+      background: #007acc;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div style="text-align:center">
+    <h1 style="color:#f48771">启动失败</h1>
+    <p>调试服务器启动失败，请检查端口 2026 是否被占用。</p>
+    <button class="btn" onclick="location.reload()">重试</button>
+  </div>
+</body>
+</html>

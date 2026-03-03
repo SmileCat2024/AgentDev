@@ -11,15 +11,17 @@
 import type { Context } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
 import type { ToolCall, LLMResponse, Message } from '../types.js';
-import type { ToolResult, HookResult } from '../lifecycle.js';
+import type { ToolResult, HookResult, StepFinishDecisionContext } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
+import type { HooksRegistry } from '../hooks-registry.js';
+import { CoreLifecycle, Decision, normalizeDecision } from '../lifecycle.js';
 
 /**
  * ReAct 循环执行器类
  */
 export class ReActLoopRunner {
-  private subAgentFeature?: any; // SubAgentFeature reference for direct access
+  private hooksRegistry: HooksRegistry;
 
   constructor(
     private agent: {
@@ -33,6 +35,7 @@ export class ReActLoopRunner {
       _parentPool?: any;
       debugPusher?: DebugPusher;
       features?: Map<string, AgentFeature>;
+      hooksRegistry: HooksRegistry;
     },
     private executeHookFn: (
       hookName: string,
@@ -47,16 +50,10 @@ export class ReActLoopRunner {
       callIndex: number
     ) => Promise<void>,
     private onStepStartFn: (ctx: any) => Promise<void>,
-    private onLLMStartFn: (ctx: any) => Promise<HookResult | undefined>,
-    private onLLMFinishFn: (ctx: any) => Promise<HookResult | undefined>,
     private onStepFinishedFn: (ctx: any) => Promise<HookResult | undefined>,
     private onInterruptFn: (ctx: any) => Promise<void>
   ) {
-    // 保存 SubAgentFeature 引用
-    const features = this.agent.features;
-    if (features) {
-      this.subAgentFeature = features.get('subagent');
-    }
+    this.hooksRegistry = agent.hooksRegistry;
   }
 
   /**
@@ -91,26 +88,8 @@ export class ReActLoopRunner {
         { input, step }
       );
 
-      // ========== LLM Start ==========
-      const llmStartResult = await this.executeHookFn(
-        'onLLMStart',
-        () => this.onLLMStartFn({
-          messages: context.getAll(),
-          tools: this.agent.tools.getAll(),
-          step,
-        }),
-        { input, step }
-      );
-
-      // 检查是否被阻止
-      if (llmStartResult?.action === 'block') {
-        const blockResponse = llmStartResult.reason || 'LLM call blocked by hook';
-        context.addAssistantMessage({ content: blockResponse }, callIndex);
-
-        completed = true;
-        finalResponse = blockResponse;
-        break;
-      }
+      // 执行反向钩子 @StepStart（void 返回，仅做处理）
+      await this.hooksRegistry.executeVoid(CoreLifecycle.StepStart, { step, callIndex, context, input });
 
       // 执行 LLM 调用
       const llmStartTime = Date.now();
@@ -120,35 +99,17 @@ export class ReActLoopRunner {
       );
       const llmDuration = Date.now() - llmStartTime;
 
-      // ========== LLM Finish ==========
-      const llmFinishResult = await this.executeHookFn(
-        'onLLMFinish',
-        () => this.onLLMFinishFn({ response, step, duration: llmDuration, context }),
-        { input, step }
-      );
-
       // 添加助手响应
       context.addAssistantMessage(response, callIndex);
 
       // 推送消息到 DebugHub
       this.pushToDebug(context.getAll());
 
-      // 处理钩子返回的控制流指令
-      if (llmFinishResult?.action === 'end') {
-        completed = true;
-        finalResponse = response.content;
-        break;
-      }
-
       // 检查是否需要调用工具
-      if (!response.toolCalls || response.toolCalls.length === 0) {
-        // 如果钩子要求继续，不结束循环
-        if (llmFinishResult?.action === 'continue') {
-          continue outerLoop;
-        }
-
-        // 真正结束
-        await this.executeHookFn(
+      const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
+      if (!hasToolCalls) {
+        // 无工具调用：执行 StepFinish 钩子
+        const stepFinishResult = await this.executeHookFn(
           'onStepFinished',
           () => this.onStepFinishedFn({
             step,
@@ -161,6 +122,41 @@ export class ReActLoopRunner {
           { input, step }
         );
 
+        // 执行反向钩子 @StepFinish（有流程控制）
+        const stepFinishDecisionCtx: StepFinishDecisionContext = {
+          step,
+          callIndex,
+          context,
+          input,
+          llmResponse: response,
+          toolCallsCount: 0,
+          hasActiveSubAgents: this.checkActiveSubAgents(),
+          hasPendingMessages: this.checkPendingMessages(),
+          waitCalled: false,
+        };
+        const decisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
+        const stepFinishDecision = normalizeDecision(decisionResult);
+
+        // 处理钩子返回的控制流指令
+        if (stepFinishResult?.action === 'end') {
+          completed = true;
+          finalResponse = response.content;
+          break;
+        }
+
+        // 处理反向钩子的决策
+        if (stepFinishDecision === Decision.Deny) {
+          completed = true;
+          finalResponse = response.content;
+          break;
+        }
+
+        // 如果反向钩子要求继续（Approve），不结束循环
+        if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
+          continue outerLoop;
+        }
+
+        // 真正结束
         return { completed: true, finalResponse: response.content, turns: step + 1 };
       }
 
@@ -174,17 +170,6 @@ export class ReActLoopRunner {
       }
 
       // 推送消息到 DebugHub
-      this.pushToDebug(context.getAll());
-
-      // wait 工具处理：如果有 wait 调用且有活跃子代理，等待消息后继续循环
-      if (waitCalled && this.subAgentFeature?.agentPool) {
-        const waitResult = await this.subAgentFeature.agentPool.waitForMessage();
-        const timestamp = new Date().toISOString();
-        console.log(`[DEBUG:主代理-wait调用] ${timestamp} 收到子代理消息 agentId=${waitResult.agentId}, 插入到 context`);
-        this.pushToDebug(context.getAll());
-      }
-
-      // 推送到 DebugHub
       this.pushToDebug(context.getAll());
 
       // ========== Step Finished（有工具调用）==========
@@ -201,13 +186,36 @@ export class ReActLoopRunner {
         { input, step }
       );
 
+      // 执行反向钩子 @StepFinish（有流程控制）
+      const stepFinishDecisionCtx: StepFinishDecisionContext = {
+        step,
+        callIndex,
+        context,
+        input,
+        llmResponse: response,
+        toolCallsCount: response.toolCalls?.length ?? 0,
+        hasActiveSubAgents: this.checkActiveSubAgents(),
+        hasPendingMessages: this.checkPendingMessages(),
+        waitCalled,
+      };
+      const stepFinishDecisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
+      const stepFinishDecision = normalizeDecision(stepFinishDecisionResult);
+
       // 处理钩子返回的控制流指令
       if (stepFinishResult?.action === 'end') {
         completed = true;
         finalResponse = response.content;
         break;
       }
-      if (stepFinishResult?.action === 'continue') {
+
+      // 处理反向钩子的决策
+      if (stepFinishDecision === Decision.Deny) {
+        completed = true;
+        finalResponse = response.content;
+        break;
+      }
+
+      if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
         continue outerLoop;
       }
     }
@@ -235,6 +243,22 @@ export class ReActLoopRunner {
       completed,
       turns: this.agent._currentStep + 1,
     };
+  }
+
+  /**
+   * 检查是否有活跃的子代理
+   */
+  private checkActiveSubAgents(): boolean {
+    const subAgentFeature = this.agent.features?.get('subagent') as any;
+    return subAgentFeature?.agentPool?.hasActiveAgents?.() ?? false;
+  }
+
+  /**
+   * 检查是否有待处理的子代理消息
+   */
+  private checkPendingMessages(): boolean {
+    const subAgentFeature = this.agent.features?.get('subagent') as any;
+    return subAgentFeature?.agentPool?.hasPendingMessages?.() ?? false;
   }
 
   /**

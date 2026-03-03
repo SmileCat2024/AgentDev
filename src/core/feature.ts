@@ -43,6 +43,24 @@ export interface FeatureContext {
   config: import('./types.js').AgentConfig;
 }
 
+// ========== 正向钩子（纯通知，void 返回）==========
+
+/**
+ * Feature 初始化上下文
+ */
+export interface FeatureInitContext {
+  /** Agent ID */
+  agentId: string;
+  /** Agent 配置 */
+  config: import('./types.js').AgentConfig;
+  /** Feature 特定配置 */
+  featureConfig?: unknown;
+  /** 获取其他 Feature */
+  getFeature<T extends AgentFeature>(name: string): T | undefined;
+  /** 注册工具 */
+  registerTool(tool: Tool): void;
+}
+
 /**
  * Agent Feature 接口
  *
@@ -78,4 +96,8 @@ export interface AgentFeature {
    * 清理钩子
    */
   onDestroy?(ctx: FeatureContext): Promise<void>;
+
+  // ========== 反向钩子通过装饰器注册，无需接口声明 ==========
+  // 使用 hooks-decorator.ts 中提供的装饰器来标记反向钩子方法
+  // 例如：@ToolFinished, @LLMFinish, @StepFinish 等
 }

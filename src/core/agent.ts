@@ -27,8 +27,6 @@ import type {
   CallFinishContext,
   StepStartContext,
   StepFinishedContext,
-  LLMStartContext,
-  LLMFinishContext,
   SubAgentSpawnContext,
   SubAgentUpdateContext,
   SubAgentDestroyContext,
@@ -44,6 +42,10 @@ import { TemplateResolver } from './agent/template-resolver.js';
 import { ToolExecutor } from './agent/tool-executor.js';
 import { ReActLoopRunner } from './agent/react-loop.js';
 import type { DebugPusher } from './agent/types.js';
+
+// 导入钩子注册表
+import { HooksRegistry, type HookExecutionResult } from './hooks-registry.js';
+import { CoreLifecycle, Decision } from './lifecycle.js';
 
 // Re-export ContextSnapshot and HookErrorHandling for convenience
 export type { ContextSnapshot };
@@ -75,6 +77,9 @@ class AgentBase {
     injector: ContextInjector;
   }> = [];
   private featureToolsReady: boolean = false;
+
+  // 反向钩子注册表
+  private hooksRegistry = new HooksRegistry();
 
   // 生命周期状态
   protected _initialized: boolean = false;
@@ -445,11 +450,6 @@ class AgentBase {
       (feature as any)._setParentAgent(this);
     }
 
-    // 如果是 UserInputFeature，设置父代理引用
-    if (feature.name === 'user-input' && (feature as any)._setParentAgent) {
-      (feature as any)._setParentAgent(this);
-    }
-
     if (feature.getContextInjectors) {
       for (const [pattern, injector] of feature.getContextInjectors()) {
         this.contextInjectors.push({ pattern, injector });
@@ -575,6 +575,9 @@ class AgentBase {
           console.warn(`[Agent] Feature ${name} onInitiate failed: ${errorMsg}`);
         }
       }
+
+      // 收集反向钩子
+      this.hooksRegistry.collectFromFeature(feature);
     }
 
     this.featureToolsReady = true;
@@ -604,7 +607,8 @@ class AgentBase {
       this,
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (ctx) => (this as any).onToolUse(ctx),
-      (result) => (this as any).onToolFinished(result)
+      (result) => (this as any).onToolFinished(result),
+      this.hooksRegistry
     );
 
     // 初始化 ReActLoopRunner
@@ -620,12 +624,11 @@ class AgentBase {
         _parentPool: this._parentPool,
         debugPusher,
         features: this.features,
+        hooksRegistry: this.hooksRegistry,
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (call, input, context, step, callIndex) => this.toolExecutor!.execute(call, input, context, step, callIndex),
       (ctx) => (this as any).onStepStart(ctx),
-      (ctx) => (this as any).onLLMStart(ctx),
-      (ctx) => (this as any).onLLMFinish(ctx),
       (ctx) => (this as any).onStepFinished(ctx),
       (ctx) => (this as any).onInterrupt(ctx)
     );
@@ -649,30 +652,6 @@ class AgentBase {
   protected async onCallFinish(_ctx: CallFinishContext): Promise<void> {}
   protected async onStepStart(_ctx: StepStartContext): Promise<void> {}
 
-  // LLM/Step 级：扩展返回 HookResult
-  protected async onLLMStart(_ctx: LLMStartContext): Promise<HookResult | undefined> {
-    return undefined;
-  }
-
-  /**
-   * LLM 调用完成钩子（扩展支持流控制）
-   *
-   * @returns
-   * - undefined: 默认行为
-   * - { action: 'continue' }: 继续循环（即使无 toolCalls 也不结束）
-   * - { action: 'end' }: 强制结束循环
-   */
-  protected async onLLMFinish(_ctx: LLMFinishContext): Promise<HookResult | undefined> {
-    // 【新增】默认实现：自动对接 SubAgentFeature
-    const subAgent = this.features.get('subagent') as any;
-    const hasToolCalls = _ctx.response.toolCalls && _ctx.response.toolCalls.length > 0;
-
-    if (!hasToolCalls && subAgent?.handleNoToolCalls) {
-      return subAgent.handleNoToolCalls(_ctx.context);
-    }
-    return undefined;
-  }
-
   /**
    * Step 结束钩子（扩展支持流控制）
    *
@@ -682,13 +661,7 @@ class AgentBase {
    * - { action: 'end' }: 强制结束循环
    */
   protected async onStepFinished(_ctx: StepFinishedContext): Promise<HookResult | undefined> {
-    // 【新增】默认实现：自动对接 SubAgentFeature
-    const subAgent = this.features.get('subagent') as any;
-    const hasWait = _ctx.llmResponse.toolCalls?.some(c => c.name === 'wait');
-
-    if (hasWait && subAgent?.handleWait) {
-      return subAgent.handleWait(_ctx.context);
-    }
+    // 移除硬编码依赖：反向钩子通过 HooksRegistry 执行
     return undefined;
   }
 
@@ -698,13 +671,9 @@ class AgentBase {
 
   /**
    * 工具执行完成钩子
-   *
-   * 【新增】默认实现：自动对接 SubAgentFeature
    */
   protected async onToolFinished(_result: ToolResult): Promise<void> {
-    // 【新增】默认实现：自动对接 SubAgentFeature
-    const subAgent = this.features.get('subagent') as any;
-    await subAgent?.consumeMessages?.(_result.context);
+    // 移除硬编码依赖：反向钩子通过 HooksRegistry 执行
   }
 
   // SubAgent 钩子

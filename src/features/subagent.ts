@@ -2,6 +2,11 @@
  * SubAgent Feature - 子代理功能模块
  *
  * 提供子代理创建、管理、消息回传等完整能力
+ *
+ * 重构说明：
+ * - 使用装饰器实现反向钩子
+ * - 移除旧的方法（handleNoToolCalls, handleWait, consumeMessages）
+ * - 通过 @ToolFinished 和 @LLMFinish 装饰器实现子代理等待机制
  */
 
 import { createTool } from '../core/tool.js';
@@ -9,13 +14,21 @@ import type { Tool } from '../core/types.js';
 import type { Agent } from '../core/agent.js';
 import type { Context } from '../core/context.js';
 import type { ToolCall } from '../core/types.js';
-import type { SubAgentStatus, SubAgentUpdateContext } from '../core/lifecycle.js';
+import type { SubAgentStatus } from '../core/lifecycle.js';
 import type {
   AgentFeature,
   FeatureInitContext,
   FeatureContext,
   ContextInjector,
 } from '../core/feature.js';
+import {
+  ToolFinished,
+  StepFinish,
+  type ToolFinishedHook,
+  type StepFinishHook,
+} from '../core/hooks-decorator.js';
+import type { ToolFinishedDecisionContext, StepFinishDecisionContext } from '../core/lifecycle.js';
+import { Decision } from '../core/lifecycle.js';
 
 // ========== AgentPool ==========
 
@@ -305,24 +318,6 @@ export class AgentPool {
   }
 
   /**
-   * 消费所有待处理的子代理消息
-   * @returns 消息列表
-   */
-  consumeAllPendingMessages(): Array<{agentId: string; message: string}> {
-    const timestamp = new Date().toISOString();
-    const results: Array<{agentId: string; message: string}> = [];
-    for (const [agentId, messages] of this._pendingMessages.entries()) {
-      console.log(`[DEBUG:consumeAllPendingMessages] ${timestamp} agentId=${agentId}, ${messages.length} 条消息`);
-      for (const msg of messages) {
-        results.push({ agentId, message: msg });
-      }
-    }
-    this._pendingMessages.clear();
-    console.log(`[DEBUG:consumeAllPendingMessages] ${timestamp} 总共消费 ${results.length} 条消息`);
-    return results;
-  }
-
-  /**
    * 处理子代理中断
    * @param agentId 子代理 ID
    * @param reason 中断原因
@@ -421,6 +416,11 @@ export class AgentPool {
  * 子代理 Feature
  *
  * 提供子代理创建、管理、消息回传等完整能力
+ *
+ * 重构说明：
+ * - 使用装饰器实现反向钩子
+ * - @ToolFinished: 处理 wait 工具完成后的等待逻辑
+ * - @LLMFinish: 处理无工具调用时的子代理等待逻辑
  */
 export class SubAgentFeature implements AgentFeature {
   readonly name = 'subagent';
@@ -434,7 +434,7 @@ export class SubAgentFeature implements AgentFeature {
   }
 
   /**
-   * 获取 AgentPool（供 ReAct 循环访问）
+   * 获取 AgentPool（供外部访问）
    */
   get pool(): AgentPool | undefined {
     return this.agentPool;
@@ -479,61 +479,80 @@ export class SubAgentFeature implements AgentFeature {
     ]);
   }
 
-  // ========== Agent 生命周期钩子集成 ==========
+  // ========== 反向钩子（使用装饰器）==========
 
   /**
-   * 在 onLLMFinish 中调用：处理无工具调用时的子代理等待
+   * 处理 wait 工具
    *
-   * @returns 控制流指令
+   * 触发时机：wait 工具执行完成后
+   * 处理逻辑：
+   * 1. 检测刚才执行的工具是否是 wait
+   * 2. 如果不是，返回 Continue
+   * 3. 如果是，检查是否有 busy 状态的子代理
+   * 4. 如果没有，返回 Continue（wait 工具内部已做检查）
+   * 5. 如果有，调用 agentPool.waitForMessage() 阻塞等待
+   * 6. 消息插入到主代理 context
+   * 7. 返回 Approve（继续下一轮）
    */
-  async handleNoToolCalls(context: Context): Promise<{ action: 'continue' } | undefined> {
-    if (!this.agentPool?.hasActiveAgents()) {
-      return undefined;
+  @ToolFinished
+  async handleWaitTool(ctx: ToolFinishedDecisionContext): Promise<import('../core/hooks-decorator.js').DecisionResult> {
+    // 1. 检测是否是 wait 工具
+    if (ctx.toolName !== 'wait') {
+      return Decision.Continue;
     }
 
+    // 2. 检查是否有 busy 子代理
+    if (!this.agentPool?.hasActiveAgents()) {
+      return Decision.Continue;
+    }
+
+    // 3. 阻塞等待
     const result = await this.agentPool.waitForMessage();
-    context.add({
+
+    // 4. 消息插入到 context
+    ctx.context.add({
       role: 'assistant',
       content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
     });
 
-    return { action: 'continue' };
+    // 5. 继续下一轮
+    return Decision.Approve;
   }
 
   /**
-   * 在 onToolFinished 中调用：消费子代理消息
-   */
-  async consumeMessages(context: Context): Promise<void> {
-    if (!this.agentPool?.hasPendingMessages()) {
-      return;
-    }
-
-    const messages = this.agentPool.consumeAllPendingMessages();
-    for (const { agentId, message } of messages) {
-      context.add({
-        role: 'assistant',
-        content: `[子代理 ${agentId} 执行完成]:\n\n${message}`,
-      });
-    }
-  }
-
-  /**
-   * 在 onTurnFinished 中调用：处理 wait 工具
+   * 处理无工具调用时的子代理等待
    *
-   * @returns 控制流指令
+   * 触发时机：Step 结束时
+   * 处理逻辑：
+   * 1. 检查是否有 busy 状态的子代理
+   * 2. 如果没有，返回 Continue（正常结束）
+   * 3. 如果有，调用 agentPool.waitForMessage() 阻塞等待
+   * 4. 消息插入到主代理 context
+   * 5. 返回 Approve（重启 ReAct 循环）
    */
-  async handleWait(context: Context): Promise<{ action: 'continue' } | undefined> {
-    if (!this.agentPool?.hasActiveAgents()) {
-      return undefined;
+  @StepFinish
+  async handleNoToolCalls(ctx: StepFinishDecisionContext): Promise<import('../core/hooks-decorator.js').DecisionResult> {
+    // 只在无工具调用时处理
+    if (ctx.llmResponse.toolCalls && ctx.llmResponse.toolCalls.length > 0) {
+      return Decision.Continue;
     }
 
+    // 1. 检查是否有活跃子代理
+    if (!this.agentPool?.hasActiveAgents()) {
+      return Decision.Continue;
+    }
+
+    // 2. 阻塞等待
     const result = await this.agentPool.waitForMessage();
-    context.add({
+
+    // 3. 消息插入到 context
+    ctx.context.add({
       role: 'assistant',
       content: `[子代理 ${result.agentId} 执行完成]:\n\n${result.message}`,
     });
 
-    return { action: 'continue' };
+    // 4. 重启 ReAct 循环
+    return Decision.Approve;
   }
 
   async onDestroy(): Promise<void> {
@@ -663,7 +682,7 @@ export class SubAgentFeature implements AgentFeature {
           };
         }
 
-        // 只是一个标志，实际等待逻辑在 ReAct 循环中通过钩子处理
+        // 只是一个标志，实际等待逻辑由反向钩子处理
         return {
           action: 'waiting_for_subagents',
           message: '系统将在子代理完成任务后继续...',

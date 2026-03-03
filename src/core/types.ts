@@ -420,12 +420,28 @@ export type {
   CallFinishContext,
   StepStartContext,
   StepFinishedContext,
-  LLMStartContext,
-  LLMFinishContext,
   HookResult,
   ToolContext,
   ToolResult,
 } from './lifecycle.js';
+
+// ========== 决策上下文类型 ==========
+/**
+ * 决策上下文（反向钩子参数）
+ *
+ * 所有决策上下文的联合类型
+ */
+export type DecisionContext =
+  | import('./lifecycle.js').AgentInitiateContext
+  | import('./lifecycle.js').AgentDestroyContext
+  | import('./lifecycle.js').CallStartContext
+  | import('./lifecycle.js').CallFinishContext
+  | import('./lifecycle.js').StepStartContext
+  | import('./lifecycle.js').StepFinishedContext
+  | import('./lifecycle.js').ToolContext
+  | import('./lifecycle.js').ToolResult
+  | import('./lifecycle.js').StepFinishDecisionContext
+  | import('./lifecycle.js').ToolFinishedDecisionContext;
 
 // ========== UDS 通信类型 ==========
 

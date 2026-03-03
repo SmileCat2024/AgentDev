@@ -21,8 +21,6 @@ export class UserInputFeature implements AgentFeature {
   readonly name = 'user-input';
   readonly dependencies: string[] = [];
 
-  private agent?: any;  // 保存 Agent 引用，实时获取 debugHub
-  private agentId?: string;
   private defaultTimeout: number;
 
   constructor(config: UserInputFeatureConfig = {}) {
@@ -30,25 +28,17 @@ export class UserInputFeature implements AgentFeature {
   }
 
   /**
-   * 设置父 Agent 引用（由 Agent.use() 调用）
-   */
-  _setParentAgent(agent: any): void {
-    this.agent = agent;
-    this.agentId = agent.agentId;
-  }
-
-  /**
    * 请求用户输入（核心方法）
    */
   async requestUserInput(prompt: string, timeout?: number): Promise<string> {
-    // 实时获取 debugHub（支持 use() 在 withViewer() 之前调用的情况）
-    const debugHub = this.agent?.debugHub;
-    if (!debugHub) {
-      throw new Error('DebugHub not available. UserInputFeature requires withViewer() to be called first.');
-    }
-    const agentId = this.agent?.agentId ?? this.agentId;
+    // 直接获取 DebugHub 实例
+    const debugHub = DebugHub.getInstance();
+
+    // 获取当前注册的 agentId（从 DebugHub）
+    const agentId = debugHub.getCurrentAgentId();
+
     if (!agentId) {
-      throw new Error('Agent ID not available. Ensure the agent is properly initialized.');
+      throw new Error('Agent ID not available. UserInputFeature requires withViewer() to be called first.');
     }
 
     return debugHub.requestUserInput(
@@ -91,9 +81,8 @@ export class UserInputFeature implements AgentFeature {
     ];
   }
 
-  async onInitiate(ctx: FeatureInitContext): Promise<void> {
-    // 记录 agentId（可能在 _setParentAgent 中被覆盖）
-    this.agentId = ctx.agentId;
+  async onInitiate(_ctx: FeatureInitContext): Promise<void> {
+    // 不再需要保存 agentId，直接从 DebugHub 获取
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {

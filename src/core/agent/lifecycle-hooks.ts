@@ -12,8 +12,6 @@ import type {
   CallFinishContext,
   StepStartContext,
   StepFinishedContext,
-  LLMStartContext,
-  LLMFinishContext,
   SubAgentSpawnContext,
   SubAgentUpdateContext,
   SubAgentDestroyContext,
@@ -31,9 +29,7 @@ export interface LifecycleHooks {
   onCallStart(ctx: CallStartContext): Promise<void>;
   onCallFinish(ctx: CallFinishContext): Promise<void>;
   onStepStart(ctx: StepStartContext): Promise<void>;
-  onStepFinished(ctx: StepFinishedContext): Promise<void>;
-  onLLMStart(ctx: LLMStartContext): Promise<void>;
-  onLLMFinish(ctx: LLMFinishContext): Promise<void>;
+  onStepFinished(ctx: StepFinishedContext): Promise<HookResult | undefined>;
   onToolUse(ctx: ToolContext): Promise<HookResult | undefined>;
   onToolFinished(result: ToolResult): Promise<void>;
   onSubAgentSpawn(ctx: SubAgentSpawnContext): Promise<void>;

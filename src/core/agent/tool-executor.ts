@@ -8,8 +8,10 @@ import type { ToolCall, Message } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
 import type { ContextInjector } from '../feature.js';
-import type { ToolContext, ToolResult, HookResult } from '../lifecycle.js';
+import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext } from '../lifecycle.js';
 import type { ToolExecResult } from '../context.js';
+import type { HooksRegistry } from '../hooks-registry.js';
+import { CoreLifecycle, normalizeDecision } from '../lifecycle.js';
 
 /**
  * 工具执行器类
@@ -28,7 +30,8 @@ export class ToolExecutor {
       options: { input?: string; step?: number }
     ) => Promise<any>,
     private onToolUseFn: (ctx: ToolContext) => Promise<HookResult | undefined>,
-    private onToolFinishedFn: (result: ToolResult) => Promise<void>
+    private onToolFinishedFn: (result: ToolResult) => Promise<void>,
+    private hooksRegistry: HooksRegistry
   ) {}
 
   /**
@@ -52,7 +55,7 @@ export class ToolExecutor {
       context,
     };
 
-    // 前置钩子
+    // ========== ToolUse 正向钩子 ==========
     let blocked = false;
     let blockReason: string | undefined;
 
@@ -61,6 +64,9 @@ export class ToolExecutor {
       () => this.onToolUseFn(toolCtx),
       { input, step }
     );
+
+    // ========== ToolUse 反向钩子 ==========
+    await this.hooksRegistry.executeVoid(CoreLifecycle.ToolUse, toolCtx);
 
     if (hookResult) {
       if (hookResult.action === 'block') {
@@ -89,11 +95,21 @@ export class ToolExecutor {
         result: { error: result.error || 'Tool not found' },
       };
       context.addToolMessage(call, errorResult, callIndex);
+
+      // ========== ToolFinished 正向钩子 ==========
       await this.executeHookFn(
         'onToolFinished',
         () => this.onToolFinishedFn(result),
         { input, step }
       );
+
+      // ========== ToolFinished 反向钩子 ==========
+      const decisionCtx: ToolFinishedDecisionContext = {
+        ...result,
+        toolName: call.name,
+      };
+      await this.hooksRegistry.executeDecision(CoreLifecycle.ToolFinished, decisionCtx);
+
       return;
     }
 
@@ -134,11 +150,25 @@ export class ToolExecutor {
 
     result.duration = Date.now() - startTime;
 
-    // 后置钩子
+    // ========== ToolFinished 正向钩子 ==========
     await this.executeHookFn(
       'onToolFinished',
       () => this.onToolFinishedFn(result),
       { input, step }
     );
+
+    // ========== ToolFinished 反向钩子 ==========
+    const decisionCtx: ToolFinishedDecisionContext = {
+      ...result,
+      toolName: call.name,
+    };
+    const decisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.ToolFinished, decisionCtx);
+    const decision = normalizeDecision(decisionResult);
+
+    // 处理反向钩子的决策
+    if (decision === 'deny') {
+      // 阻止后续操作（对于工具执行来说，已经完成了，这里主要是记录日志）
+      console.log(`[ToolExecutor] 工具 ${call.name} 被反向钩子拒绝`);
+    }
   }
 }

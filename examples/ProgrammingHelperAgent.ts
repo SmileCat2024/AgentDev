@@ -9,12 +9,7 @@ import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
 import { TodoFeature } from '../src/features/index.js';
-import type {
-  AgentInitiateContext,
-  StepStartContext,
-  StepFinishedContext,
-  HookResult,
-} from '../src/core/lifecycle.js';
+import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**
  * 编程小助手配置选项
@@ -35,20 +30,24 @@ export interface ProgrammingHelperAgentConfig extends BasicAgentConfig {
  *
  * 专业的编程助手，擅长代码编写、调试和优化
  * 继承 BasicAgent 获得所有基础设施能力
+ *
+ * 设计说明：
+ * - TodoFeature 通过反向钩子（@StepStart, @StepFinished）自动处理提醒逻辑
+ * - 无需在此类中重写 onStepStart/onStepFinished
  */
 export class ProgrammingHelperAgent extends BasicAgent {
-  private _todoFeature: TodoFeature;
-
   constructor(config?: ProgrammingHelperAgentConfig) {
     super(config);
+
     // 注册 TodoFeature 并配置 reminder
-    // 注意：不再需要手动注册 ContextFeature，Context 现在自带消息包装能力
-    this._todoFeature = new TodoFeature({
+    // TodoFeature 会通过反向钩子自动处理：
+    // - @StepStart: 检查并注入 reminder
+    // - @StepFinished: 记录工具使用情况
+    this.use(new TodoFeature({
       reminderTemplate: '.agentdev/prompts/reminder-update-todo.md',
       reminderThresholdWithTasks: config?.reminderThresholdWithTasks,
       reminderThresholdWithoutTasks: config?.reminderThresholdWithoutTasks,
-    });
-    this.use(this._todoFeature);
+    }));
   }
 
   protected override async onInitiate(ctx: AgentInitiateContext): Promise<void> {
@@ -65,20 +64,5 @@ export class ProgrammingHelperAgent extends BasicAgent {
       .add('\n\n## MCP 工具\n\n')
       .add('除了标准工具外，你还可以使用 MCP (Model Context Protocol) 工具。MCP 工具的名称以 "mcp_" 开头。这些工具提供了与外部服务集成的能力。\n')
     );
-  }
-
-  protected override async onStepStart(ctx: StepStartContext): Promise<void> {
-    // TodoFeature 在每步开始时检查是否需要注入 reminder
-    this._todoFeature.checkAndInjectReminder({
-      context: ctx.context,
-      callIndex: ctx.callIndex,
-    });
-  }
-
-  protected override async onStepFinished(ctx: StepFinishedContext): Promise<HookResult | undefined> {
-    // TodoFeature 记录本轮是否使用了 todo 工具
-    const toolCalls = ctx.llmResponse.toolCalls ?? [];
-    this._todoFeature.recordToolUsage(toolCalls);
-    return undefined;
   }
 }

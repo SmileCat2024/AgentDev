@@ -292,7 +292,15 @@ class AgentBase {
     // 确保 Feature 工具已注册（包括 SubAgentFeature 等提供的工具）
     await this.ensureFeatureTools();
 
-    this.agentId = this.debugHub.registerAgent(this, name || this.constructor.name);
+    // 收集 Feature 模板路径
+    const featureTemplates: Record<string, string> = {};
+    for (const feature of this.features.values()) {
+      if (feature.getTemplatePaths) {
+        Object.assign(featureTemplates, feature.getTemplatePaths());
+      }
+    }
+
+    this.agentId = this.debugHub.registerAgent(this, name || this.constructor.name, featureTemplates);
     this.debugHub.registerAgentTools(this.agentId, this.tools.getAll());
 
     return this;

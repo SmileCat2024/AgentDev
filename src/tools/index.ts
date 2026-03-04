@@ -4,7 +4,6 @@ export {
   listDirTool,
   webFetchTool,
   calculatorTool,
-  invokeSkillTool,
   getSystemTool,
   isSystemTool,
   SYSTEM_RENDER_TEMPLATES,

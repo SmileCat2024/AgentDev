@@ -1,14 +1,20 @@
 /**
- * Skill 工具
- * 用于动态加载和展示技能的详细文档
+ * Skill Feature 工具定义
+ *
+ * 提供 invoke_skill 工具，用于动态加载和展示技能的详细文档
  */
 
 import { readFile } from 'fs/promises';
 import { dirname, normalize } from 'path';
-import { createTool } from '../../core/tool.js';
 import type { Tool } from '../../core/types.js';
 import type { SkillMetadata } from '../../skills/types.js';
+import { createTool } from '../../core/tool.js';
 
+/**
+ * invoke_skill 工具
+ *
+ * 调用并展开指定技能的详细文档
+ */
 export const invokeSkillTool: Tool = createTool({
   name: 'invoke_skill',
   description: '调用并展开指定技能的详细文档。技能提供专门的能力和领域知识。',

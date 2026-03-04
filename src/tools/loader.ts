@@ -64,10 +64,9 @@ async function importToolModules(basePath: string): Promise<ToolModule[]> {
     './system/': async () => {
       const modules = await Promise.all([
         import('./system/fs.js'),
-        import('./system/shell.js'),
         import('./system/web.js'),
         import('./system/math.js'),
-        import('./system/skill.js'),
+        // Note: shell and skill tools moved to features/
       ]);
       return modules as ToolModule[];
     },
@@ -80,10 +79,9 @@ async function importToolModules(basePath: string): Promise<ToolModule[]> {
     'system/': async () => {
       const modules = await Promise.all([
         import('./system/fs.js'),
-        import('./system/shell.js'),
         import('./system/web.js'),
         import('./system/math.js'),
-        import('./system/skill.js'),
+        // Note: shell and skill tools moved to features/
       ]);
       return modules as ToolModule[];
     },

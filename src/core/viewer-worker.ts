@@ -33,6 +33,9 @@ class ViewerWorker {
   // 当前选中的 Agent ID
   private currentAgentId: string | null = null;
 
+  // Feature 模板路径映射（模板名 -> 文件路径）
+  private featureTemplateMap: Record<string, string> = {};
+
   // 内存限制配置
   private readonly MAX_MESSAGES = 10000;
   private readonly MAX_BYTES = 50 * 1024 * 1024; // 50MB
@@ -625,7 +628,7 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt, projectRoot } = msg;
+    const { agentId, name, createdAt, projectRoot, featureTemplates } = msg;
     const session = this.getOrCreateSession(agentId, name);
 
     // 存储项目根目录（用于模板文件加载）
@@ -638,12 +641,25 @@ class ViewerWorker {
       session.clientId = clientId;
     }
 
+    // 收集 Feature 模板路径
+    if (featureTemplates && typeof featureTemplates === 'object') {
+      Object.assign(this.featureTemplateMap, featureTemplates);
+    }
+
     // 首个 Agent 自动成为当前
     if (this.agentSessions.size === 1) {
       this.currentAgentId = agentId;
     }
 
     console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})${clientId ? ` [client: ${clientId}]` : ''}`);
+  }
+
+  /**
+   * 清空 Feature 模板映射（当 Agent 断开连接时调用）
+   */
+  private clearFeatureTemplates(agentId: string): void {
+    // 可以在这里实现基于 agentId 的清理逻辑
+    // 目前简单实现：不清空，因为多个 Agent 可能共享 Feature
   }
 
   /**
@@ -1632,9 +1648,18 @@ class ViewerWorker {
 
     /**
      * 根据模板名解析文件路径
+     * 优先查找 Feature 模板，然后回退到系统模板
      */
+    const self = this;
+
     function resolveTemplatePath(templateName) {
-      // 模板名到文件路径的映射
+      // 1. 优先查找 Feature 模板
+      const featurePath = self.featureTemplateMap[templateName];
+      if (featurePath) {
+        return featurePath;
+      }
+
+      // 2. 回退到系统模板映射
       const templateToFileMap = {
         'agent-spawn': 'system/subagent',
         'agent-list': 'system/subagent',
@@ -1673,6 +1698,7 @@ class ViewerWorker {
 
     /**
      * 异步加载模板
+     * 支持从 Feature 目录或系统目录加载
      */
     async function loadTemplate(templateName) {
       if (templateCache.has(templateName)) {
@@ -1681,12 +1707,40 @@ class ViewerWorker {
 
       try {
         const path = resolveTemplatePath(templateName);
-        const module = await import('/tools/' + path + '.render.js');
-        const template = module.TEMPLATES?.[templateName];
 
-        if (template) {
-          templateCache.set(templateName, template);
-          return template;
+        // 检查是否是 Feature 模板（绝对路径）
+        const isFeatureTemplate = path.startsWith('/') || path.includes(':');
+        let module;
+
+        if (isFeatureTemplate) {
+          // Feature 模板：使用绝对路径加载
+          // 开发环境支持 .ts 扩展名兼容
+          try {
+            module = await import(path);
+          } catch (e) {
+            // 尝试 .js → .ts 回退（开发环境）
+            if (path.endsWith('.js')) {
+              const tsPath = path.replace('.js', '.ts');
+              module = await import(tsPath);
+            } else {
+              throw e;
+            }
+          }
+          // Feature 模板使用 default export
+          const template = module.default;
+          if (template) {
+            templateCache.set(templateName, template);
+            return template;
+          }
+        } else {
+          // 系统模板：使用相对路径加载
+          module = await import('/tools/' + path + '.render.js');
+          const template = module.TEMPLATES?.[templateName];
+
+          if (template) {
+            templateCache.set(templateName, template);
+            return template;
+          }
         }
 
         console.warn('[Viewer Worker] 模板 "' + templateName + '" 在文件中未找到');

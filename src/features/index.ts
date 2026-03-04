@@ -14,22 +14,22 @@ export type {
 } from '../core/feature.js';
 
 // MCP Feature
-export { MCPFeature } from './mcp.js';
+export { MCPFeature } from './mcp/index.js';
 
 // Skill Feature
-export { SkillFeature } from './skill.js';
-export type { SkillFeatureConfig } from './skill.js';
+export { SkillFeature } from './skill/index.js';
+export type { SkillFeatureConfig } from './skill/index.js';
 
 // SubAgent Feature
-export { SubAgentFeature, AgentPool } from './subagent.js';
+export { SubAgentFeature, AgentPool } from './subagent/index.js';
 
 // Todo Feature
-export { TodoFeature } from './todo.js';
-export type { TodoTask, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from './todo.js';
+export { TodoFeature } from './todo/index.js';
+export type { TodoTask, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from './todo/index.js';
 
 // UserInput Feature
-export { UserInputFeature } from './user-input.js';
-export type { UserInputFeatureConfig } from './user-input.js';
+export { UserInputFeature } from './user-input/index.js';
+export type { UserInputFeatureConfig } from './user-input/index.js';
 
 // Shell Feature
-export { ShellFeature } from './shell.js';
+export { ShellFeature } from './shell/index.js';

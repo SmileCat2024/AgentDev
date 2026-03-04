@@ -7,10 +7,10 @@
  * - 前端显示输入框，用户提交后返回给 Agent
  */
 
-import { createTool } from '../core/tool.js';
-import type { Tool } from '../core/types.js';
-import type { AgentFeature, FeatureInitContext, FeatureContext } from '../core/feature.js';
-import { DebugHub } from '../core/debug-hub.js';
+import { createTool } from '../../core/tool.js';
+import type { Tool } from '../../core/types.js';
+import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../core/feature.js';
+import { DebugHub } from '../../core/debug-hub.js';
 
 export interface UserInputFeatureConfig {
   /** 默认超时时间（毫秒），默认 5 分钟 */
@@ -87,5 +87,12 @@ export class UserInputFeature implements AgentFeature {
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
     // 清理资源（如有）
+  }
+
+  /**
+   * 模板路径声明（无模板）
+   */
+  getTemplatePaths(): Record<string, string> {
+    return {};
   }
 }

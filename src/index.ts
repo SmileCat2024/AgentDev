@@ -26,8 +26,8 @@ export type { ToolContext, ToolResult, HookResult } from './core/lifecycle.js';
 export * as fsTools from './tools/system/fs.js';
 export * as webTools from './tools/system/web.js';
 export * as mathTools from './tools/system/math.js';
-export * as skillTools from './tools/system/skill.js';
-// Shell 工具已迁移到 src/features/shell.ts (ShellFeature)
+// Shell 工具已迁移到 src/features/shell/ (ShellFeature)
+// Skill 工具已迁移到 src/features/skill/ (SkillFeature)
 
 // 消息
 export { system, user, assistant, toolResult, createMessage } from './core/message.js';

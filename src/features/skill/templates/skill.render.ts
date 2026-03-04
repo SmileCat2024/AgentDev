@@ -3,7 +3,7 @@
  * 使用 viewer-worker.ts HTML 中的版本（Markdown 渲染）
  */
 
-import type { InlineRenderTemplate } from '../../core/types.js';
+import type { InlineRenderTemplate } from '../../../core/types.js';
 
 /**
  * HTML 转义辅助函数
@@ -34,20 +34,12 @@ function formatError(data: any): string {
 /**
  * Skill 调用渲染模板（Markdown 渲染）
  */
-export const invokeSkillRender: InlineRenderTemplate = {
-  call: (args) => `<div class="bash-command">Invoke Skill <span class="file-path">${escapeHtml(args.skill || '')}</span></div>`,
-  result: (data, success) => {
+export default {
+  call: (args: any) => `<div class="bash-command">Invoke Skill <span class="file-path">${escapeHtml(args.skill || '')}</span></div>`,
+  result: (data: any, success?: boolean) => {
     if (!success) return formatError(data);
     const str = String(data);
     // invoke_skill 返回的是 markdown 格式的技能文档，直接用 markdown 渲染
-    return `<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">${marked.parse(str)}</div>`;
+    return `<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">${(globalThis as any).marked?.parse(str) || str}</div>`;
   }
-};
-
-/**
- * 模板映射表
- */
-export const TEMPLATES = {
-  'skill': invokeSkillRender,
-  'invoke_skill': invokeSkillRender,
-};
+} as const satisfies InlineRenderTemplate;

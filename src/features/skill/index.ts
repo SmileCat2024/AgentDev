@@ -14,22 +14,28 @@
  * ```
  */
 
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import type {
   AgentFeature,
   FeatureInitContext,
   ContextInjector,
   ToolContextValue,
-} from '../core/feature.js';
-import type { Tool } from '../core/types.js';
-import type { ToolCall } from '../core/types.js';
-import { invokeSkillTool } from '../tools/system/skill.js';
-import { discover } from '../skills/loader.js';
-import type { SkillMetadata, SkillsOptions } from '../skills/types.js';
-import { join, resolve, isAbsolute } from 'path';
+} from '../../core/feature.js';
+import type { Tool } from '../../core/types.js';
+import type { ToolCall } from '../../core/types.js';
+import { invokeSkillTool } from './tools.js';
+import { discover } from '../../skills/loader.js';
+import type { SkillMetadata, SkillsOptions } from '../../skills/types.js';
+import { join as pathJoin, resolve, isAbsolute } from 'path';
 import { cwd } from 'process';
-import { DataSourceRegistry, createListRenderer } from '../template/data-source.js';
-import type { PlaceholderContext } from '../template/types.js';
-import { PlaceholderResolver } from '../template/resolver.js';
+import { DataSourceRegistry, createListRenderer } from '../../template/data-source.js';
+import type { PlaceholderContext } from '../../template/types.js';
+import { PlaceholderResolver } from '../../template/resolver.js';
+
+// ESM 中获取 __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 /**
  * Skill Feature 配置类型
@@ -63,7 +69,7 @@ export class SkillFeature implements AgentFeature {
       this.skillsDir = input.dir;
     } else {
       // 默认路径
-      this.skillsDir = join(cwd(), '.agentdev', 'skills');
+      this.skillsDir = pathJoin(cwd(), '.agentdev', 'skills');
     }
   }
 
@@ -72,6 +78,16 @@ export class SkillFeature implements AgentFeature {
    */
   getTools(): Tool[] {
     return [invokeSkillTool];
+  }
+
+  /**
+   * 模板路径声明
+   */
+  getTemplatePaths(): Record<string, string> {
+    return {
+      'skill': join(__dirname, 'templates', 'skill.render.js'),
+      'invoke_skill': join(__dirname, 'templates', 'skill.render.js'),
+    };
   }
 
   /**

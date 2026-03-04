@@ -16,21 +16,27 @@
  * ```
  */
 
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import type {
   AgentFeature,
   FeatureInitContext,
   FeatureContext,
   ContextInjector,
   ToolContextValue,
-} from '../core/feature.js';
-import type { Tool } from '../core/types.js';
-import type { ToolCall } from '../core/types.js';
-import { MCPConnectionManager } from '../mcp/connection-manager.js';
-import { MCPToolAdapter } from '../mcp/mcp-adapter.js';
-import type { MCPConfig, MCPServerConfig } from '../mcp/types.js';
+} from '../../core/feature.js';
+import type { Tool } from '../../core/types.js';
+import type { ToolCall } from '../../core/types.js';
+import { MCPConnectionManager } from '../../mcp/connection-manager.js';
+import { MCPToolAdapter } from '../../mcp/mcp-adapter.js';
+import type { MCPConfig, MCPServerConfig } from '../../mcp/types.js';
 import { existsSync, readFileSync } from 'fs';
-import { join, resolve, isAbsolute } from 'path';
+import { join as pathJoin, resolve, isAbsolute } from 'path';
 import { cwd } from 'process';
+
+// ESM 中获取 __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 /**
  * MCP Feature 配置类型
@@ -51,7 +57,7 @@ function loadMCPConfig(input: string): MCPConfig | undefined {
       configPath = resolve(cwd(), input);
     } else {
       // 服务器名称，使用默认路径
-      configPath = join(cwd(), '.agentdev', 'mcps', `${input}.json`);
+      configPath = pathJoin(cwd(), '.agentdev', 'mcps', `${input}.json`);
     }
 
     if (!existsSync(configPath)) {
@@ -91,9 +97,26 @@ export class MCPFeature implements AgentFeature {
   }
 
   /**
+   * 获取同步工具（无）
+   */
+  getTools(): Tool[] {
+    return [];
+  }
+
+  /**
+   * 模板路径声明
+   */
+  getTemplatePaths(): Record<string, string> {
+    return {
+      'mcp-tool': join(__dirname, 'templates', 'mcp-tool.render.js'),
+      'mcp-result': join(__dirname, 'templates', 'mcp-tool.render.js'),
+    };
+  }
+
+  /**
    * 获取异步工具（需要连接 MCP 服务器）
    */
-  async getAsyncTools(ctx: FeatureInitContext): Promise<Tool[]> {
+  async getAsyncTools(_ctx: FeatureInitContext): Promise<Tool[]> {
     if (!this.config) {
       return [];
     }

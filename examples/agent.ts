@@ -1,5 +1,5 @@
 import { ProgrammingHelperAgent } from './ProgrammingHelperAgent.js';
-import { UserInputFeature } from '../src/features/user-input.js';
+import { UserInputFeature } from '../src/features/index.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { cwd } from 'process';

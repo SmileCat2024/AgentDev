@@ -2,43 +2,35 @@
  * 系统工具统一导出
  * 包含所有内置系统工具及其渲染模板
  *
- * 注意：SubAgent 工具已迁移到 SubAgentFeature，不再在此导出
+ * 注意：
+ * - Shell 工具已迁移到 src/features/shell/ (ShellFeature)
+ * - Skill 工具已迁移到 src/features/skill/ (SkillFeature)
+ * - SubAgent 工具已迁移到 src/features/subagent/ (SubAgentFeature)
+ * - Todo 工具已迁移到 src/features/todo/ (TodoFeature)
  */
 
 // 导出工具
 export { readFileTool, writeFileTool, listDirTool } from './fs.js';
 export { webFetchTool } from './web.js';
 export { calculatorTool } from './math.js';
-export { invokeSkillTool } from './skill.js';
-// Shell 工具已迁移到 src/features/shell.ts (ShellFeature)
-// SubAgent 工具已迁移到 src/features/subagent.ts
 
 // 导出渲染模板
 export { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
 export { webFetchRender } from './web.render.js';
 export { calculatorRender } from './math.render.js';
-export { invokeSkillRender } from './skill.render.js';
-// SubAgent 渲染模板保留（SubAgentFeature 仍使用这些模板）
-export { spawnAgentRender, listAgentsRender, sendToAgentRender, closeAgentRender, waitRender } from './subagent.render.js';
-// Shell 渲染模板保留（ShellFeature 仍使用这些模板）
-export { shellCommandRender } from './shell.render.js';
 
-// 导入工具和渲染模板
+// 导入以便在内部使用
 import { readFileTool, writeFileTool, listDirTool } from './fs.js';
 import { webFetchTool } from './web.js';
 import { calculatorTool } from './math.js';
-import { invokeSkillTool } from './skill.js';
 
 import { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
 import { webFetchRender } from './web.render.js';
 import { calculatorRender } from './math.render.js';
-import { invokeSkillRender } from './skill.render.js';
-import { spawnAgentRender, listAgentsRender, sendToAgentRender, closeAgentRender, waitRender } from './subagent.render.js';
-import { shellCommandRender as _shellCommandRender } from './shell.render.js';
 
 /**
  * 所有系统工具
- * 注意：Shell 工具已迁移到 ShellFeature，SubAgent 工具已迁移到 SubAgentFeature，不在此列表中
+ * 注意：Shell、Skill、SubAgent、Todo 工具已迁移到各自的 Feature 模块
  */
 export const SYSTEM_TOOLS = [
   // 文件系统工具
@@ -52,11 +44,10 @@ export const SYSTEM_TOOLS = [
   // 数学工具
   calculatorTool,
 
-  // Skills 工具
-  invokeSkillTool,
-
   // Shell 工具已迁移到 ShellFeature
+  // Skill 工具已迁移到 SkillFeature
   // SubAgent 工具已迁移到 SubAgentFeature
+  // Todo 工具已迁移到 TodoFeature
 ] as const;
 
 /**
@@ -69,29 +60,20 @@ export const SYSTEM_RENDER_TEMPLATES: Record<string, any> = {
   'write_file': writeFileRender,
   'list_directory': listDirRender,
 
-  // Shell 工具（保留渲染模板，供 ShellFeature 使用）
-  'run_shell_command': _shellCommandRender,
-
   // Web 工具
   'web_fetch': webFetchRender,
 
   // Math 工具
   'calculator': calculatorRender,
 
-  // Skills 工具
-  'invoke_skill': invokeSkillRender,
-
-  // SubAgent 工具（保留渲染模板，供 SubAgentFeature 使用）
-  'spawn_agent': spawnAgentRender,
-  'list_agents': listAgentsRender,
-  'send_to_agent': sendToAgentRender,
-  'close_agent': closeAgentRender,
-  'wait': waitRender,
+  // Shell 渲染模板已迁移到 ShellFeature
+  // Skill 渲染模板已迁移到 SkillFeature
+  // SubAgent 渲染模板已迁移到 SubAgentFeature
+  // Todo 渲染模板已迁移到 TodoFeature
 };
 
 /**
  * 按名称索引的工具映射
- * 注意：SubAgent 工具已迁移到 SubAgentFeature，不在此映射中
  */
 export const SYSTEM_TOOLS_MAP = new Map(
   SYSTEM_TOOLS.map(tool => [tool.name, tool])

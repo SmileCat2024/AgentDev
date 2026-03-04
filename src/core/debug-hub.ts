@@ -113,9 +113,10 @@ export class DebugHub {
    * 注册 Agent
    * @param agent Agent 实例
    * @param name 显示名称（可选，默认使用类名）
+   * @param featureTemplates Feature 模板路径映射（可选）
    * @returns 分配的 agentId
    */
-  registerAgent(agent: Agent, name?: string): string {
+  registerAgent(agent: Agent, name?: string, featureTemplates?: Record<string, string>): string {
     // 等待注册锁
     while (this.registrationLock) {
       // 简单的忙等待（实际场景中竞争很少）
@@ -144,6 +145,7 @@ export class DebugHub {
         name: info.name,
         createdAt: info.registeredAt,
         projectRoot: process.cwd(), // 传递项目根目录，用于模板文件加载
+        featureTemplates, // 传递 Feature 模板路径映射
       });
 
       console.log(`[DebugHub] Agent 已注册: ${id} (${info.name})`);

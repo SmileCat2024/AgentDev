@@ -242,6 +242,7 @@ export interface RegisterAgentMsg {
   name: string;
   createdAt: number;
   projectRoot?: string; // 项目根目录，用于模板文件加载
+  featureTemplates?: Record<string, string>; // Feature 模板路径映射
 }
 
 /**

@@ -83,6 +83,12 @@ export interface AgentFeature {
   getAsyncTools?(ctx: FeatureInitContext): Promise<Tool[]>;
 
   /**
+   * 声明渲染模板路径
+   * 返回模板名到文件路径的映射，用于 ViewerWorker 动态加载
+   */
+  getTemplatePaths?(): Record<string, string>;
+
+  /**
    * 声明上下文注入器
    */
   getContextInjectors?(): Map<string | RegExp, ContextInjector>;

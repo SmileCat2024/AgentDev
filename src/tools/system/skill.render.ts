@@ -40,7 +40,7 @@ export const invokeSkillRender: InlineRenderTemplate = {
     if (!success) return formatError(data);
     const str = String(data);
     // invoke_skill 返回的是 markdown 格式的技能文档，直接用 markdown 渲染
-    return `<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">${str}</div>`;
+    return `<div class="file-content markdown-body" style="padding:12px; background:#0d1117; border-radius:6px; font-size:13px; max-height:600px; overflow-y:auto;">${marked.parse(str)}</div>`;
   }
 };
 

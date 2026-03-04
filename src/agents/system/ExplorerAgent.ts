@@ -7,7 +7,7 @@
  */
 
 import { Agent } from '../../core/agent.js';
-import { SkillFeature, SubAgentFeature } from '../../features/index.js';
+import { SkillFeature, SubAgentFeature, ShellFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
@@ -15,9 +15,6 @@ import { createOpenAILLM } from '../../llm/openai.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
 import { TemplateComposer } from '../../template/composer.js';
-
-// 导入系统工具（shell 工具）
-import { shellTool } from '../../tools/system/index.js';
 
 // 导入 opencode 只读探索工具
 import { readTool, globTool, grepTool, lsTool } from '../../tools/opencode/index.js';
@@ -31,7 +28,6 @@ const EXPLORER_TOOLS: Tool[] = [
   globTool,     // 文件搜索：glob 模式匹配
   grepTool,     // 内容搜索：基于 ripgrep
   lsTool,       // 目录列表：树形结构、自动忽略
-  shellTool,    // Shell 命令执行（仅用于只读操作，如 git status, ls, find 等）
 ];
 
 /**
@@ -128,6 +124,9 @@ export class ExplorerAgent extends Agent {
     this._config = fileConfig;
     this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
+
+    // 注册 ShellFeature（Git Bash 命令执行）
+    this.use(new ShellFeature());
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
     this.use(new SkillFeature(config.skillsDir));

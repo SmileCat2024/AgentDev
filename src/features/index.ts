@@ -30,3 +30,6 @@ export type { TodoTask, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from '.
 // UserInput Feature
 export { UserInputFeature } from './user-input.js';
 export type { UserInputFeatureConfig } from './user-input.js';
+
+// Shell Feature
+export { ShellFeature } from './shell.js';

@@ -7,47 +7,44 @@
 
 // 导出工具
 export { readFileTool, writeFileTool, listDirTool } from './fs.js';
-export { shellTool } from './shell.js';
 export { webFetchTool } from './web.js';
 export { calculatorTool } from './math.js';
 export { invokeSkillTool } from './skill.js';
+// Shell 工具已迁移到 src/features/shell.ts (ShellFeature)
 // SubAgent 工具已迁移到 src/features/subagent.ts
 
 // 导出渲染模板
 export { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
-export { shellCommandRender } from './shell.render.js';
 export { webFetchRender } from './web.render.js';
 export { calculatorRender } from './math.render.js';
 export { invokeSkillRender } from './skill.render.js';
 // SubAgent 渲染模板保留（SubAgentFeature 仍使用这些模板）
 export { spawnAgentRender, listAgentsRender, sendToAgentRender, closeAgentRender, waitRender } from './subagent.render.js';
+// Shell 渲染模板保留（ShellFeature 仍使用这些模板）
+export { shellCommandRender } from './shell.render.js';
 
 // 导入工具和渲染模板
 import { readFileTool, writeFileTool, listDirTool } from './fs.js';
-import { shellTool } from './shell.js';
 import { webFetchTool } from './web.js';
 import { calculatorTool } from './math.js';
 import { invokeSkillTool } from './skill.js';
 
 import { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
-import { shellCommandRender } from './shell.render.js';
 import { webFetchRender } from './web.render.js';
 import { calculatorRender } from './math.render.js';
 import { invokeSkillRender } from './skill.render.js';
 import { spawnAgentRender, listAgentsRender, sendToAgentRender, closeAgentRender, waitRender } from './subagent.render.js';
+import { shellCommandRender as _shellCommandRender } from './shell.render.js';
 
 /**
  * 所有系统工具
- * 注意：SubAgent 工具已迁移到 SubAgentFeature，不在此列表中
+ * 注意：Shell 工具已迁移到 ShellFeature，SubAgent 工具已迁移到 SubAgentFeature，不在此列表中
  */
 export const SYSTEM_TOOLS = [
   // 文件系统工具
   readFileTool,
   writeFileTool,
   listDirTool,
-
-  // Shell 工具
-  shellTool,
 
   // Web 工具
   webFetchTool,
@@ -58,6 +55,7 @@ export const SYSTEM_TOOLS = [
   // Skills 工具
   invokeSkillTool,
 
+  // Shell 工具已迁移到 ShellFeature
   // SubAgent 工具已迁移到 SubAgentFeature
 ] as const;
 
@@ -71,8 +69,8 @@ export const SYSTEM_RENDER_TEMPLATES: Record<string, any> = {
   'write_file': writeFileRender,
   'list_directory': listDirRender,
 
-  // Shell 工具
-  'run_shell_command': shellCommandRender,
+  // Shell 工具（保留渲染模板，供 ShellFeature 使用）
+  'run_shell_command': _shellCommandRender,
 
   // Web 工具
   'web_fetch': webFetchRender,

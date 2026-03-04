@@ -2,7 +2,6 @@ export {
   readFileTool,
   writeFileTool,
   listDirTool,
-  shellTool,
   webFetchTool,
   calculatorTool,
   invokeSkillTool,

@@ -8,7 +8,7 @@
  */
 
 import { Agent } from '../../core/agent.js';
-import { MCPFeature, SkillFeature, SubAgentFeature } from '../../features/index.js';
+import { MCPFeature, SkillFeature, SubAgentFeature, ShellFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
@@ -18,7 +18,6 @@ import { cwd, platform } from 'process';
 
 // 导入系统工具（保留必要的非文件操作工具）
 import {
-  shellTool,
   webFetchTool,
   calculatorTool,
 } from '../../tools/system/index.js';
@@ -50,7 +49,6 @@ const DEFAULT_TOOLS: Tool[] = [
   lsTool,        // 目录列表：树形结构、自动忽略
 
   // 系统工具
-  shellTool,     // Shell 命令执行
   webFetchTool,  // HTTP 请求
   calculatorTool,// 计算器
 ];
@@ -179,6 +177,9 @@ export class BasicAgent extends Agent {
     if (config.mcpServer) {
       this.use(new MCPFeature(config.mcpServer));
     }
+
+    // 注册 ShellFeature（Git Bash 命令执行）
+    this.use(new ShellFeature());
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
     this.use(new SkillFeature(config.skillsDir));

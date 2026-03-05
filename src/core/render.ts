@@ -132,6 +132,8 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
 
   // Shell 工具
   'run_shell_command': 'command',
+  'bash': 'command',
+  'shell': 'command',
 
   // Web 工具
   'web_fetch': 'web',
@@ -156,6 +158,8 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
 export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   // ===== 系统工具 =====
   'run_shell_command': 'Bash',
+  'bash': 'Bash',
+  'shell': 'Bash',
   'read_file': 'Read File',
   'write_file': 'Write File',
   'list_directory': 'LS',

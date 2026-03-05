@@ -152,12 +152,30 @@ AgentDev/
 │   │   └── system/
 │   │       ├── BasicAgent.ts      # 基础 Agent
 │   │       └── ExplorerAgent.ts   # 探索 Agent
-│   ├── features/              # Feature 模块
-│   │   ├── mcp.js            # MCP 集成
-│   │   ├── skill.js          # Skills 系统
-│   │   ├── subagent.js       # 子代理
-│   │   ├── todo.js           # 任务管理
-│   │   └── user-input.ts     # 用户输入
+│   ├── features/              # Feature 模块（目录结构）
+│   │   ├── mcp/              # MCP 集成
+│   │   │   ├── index.ts
+│   │   │   └── templates/
+│   │   ├── skill/            # Skills 系统
+│   │   │   ├── index.ts
+│   │   │   ├── tools.ts
+│   │   │   └── templates/
+│   │   ├── subagent/         # 子代理
+│   │   │   ├── index.ts
+│   │   │   ├── tools.ts
+│   │   │   ├── pool.ts
+│   │   │   └── templates/
+│   │   ├── todo/             # 任务管理
+│   │   │   ├── index.ts
+│   │   │   ├── tools.ts
+│   │   │   ├── types.ts
+│   │   │   └── templates/
+│   │   ├── shell/            # Shell 命令
+│   │   │   ├── index.ts
+│   │   │   └── tools.ts
+│   │   ├── user-input/       # 用户输入
+│   │   │   └── index.ts
+│   │   └── index.ts          # 统一导出
 │   ├── tools/                 # 工具定义
 │   │   ├── opencode/         # 文件操作（read, write, edit...）
 │   │   ├── system/           # 系统工具（shell, web, math...）
@@ -364,6 +382,9 @@ interface AgentFeature {
   /** 获取异步工具 */
   getAsyncTools?(ctx: FeatureInitContext): Promise<Tool[]>;
 
+  /** 获取模板路径映射（Feature 目录化后新增） */
+  getTemplatePaths?(): Record<string, string>;
+
   /** 上下文注入器 */
   getContextInjectors?(): Map<string | RegExp, ContextInjector>;
 
@@ -374,6 +395,23 @@ interface AgentFeature {
   onDestroy?(ctx: FeatureContext): Promise<void>;
 }
 ```
+
+### Feature 目录结构
+
+```
+src/features/feature-name/
+├── index.ts           # Feature 类（必需）
+├── tools.ts           # 工具定义（如有工具）
+├── templates/         # 渲染模板（如有渲染）
+│   └── *.render.ts
+├── types.ts           # 类型定义（按需）
+└── pool.ts            # 辅助类（按需）
+```
+
+**要点**：
+- 工具使用工厂函数创建（需要 Feature 实例访问）
+- 模板通过 `getTemplatePaths()` 声明映射
+- 前端加载时优先查找 Feature 模板，再回退到系统模板
 
 ### 使用 Feature
 
@@ -428,7 +466,7 @@ const result = await agent.onCall(`
 通过调试界面获取用户输入：
 
 ```typescript
-import { UserInputFeature } from './src/features/user-input.js';
+import { UserInputFeature } from './src/features/index.js';
 
 const agent = new BasicAgent()
   .use(new UserInputFeature({ timeout: 300000 }))

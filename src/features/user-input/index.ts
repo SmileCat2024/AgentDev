@@ -13,7 +13,7 @@ import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../cor
 import { DebugHub } from '../../core/debug-hub.js';
 
 export interface UserInputFeatureConfig {
-  /** 默认超时时间（毫秒），默认 5 分钟 */
+  /** 默认超时时间（毫秒），默认无限等待 */
   timeout?: number;
 }
 
@@ -24,7 +24,7 @@ export class UserInputFeature implements AgentFeature {
   private defaultTimeout: number;
 
   constructor(config: UserInputFeatureConfig = {}) {
-    this.defaultTimeout = config.timeout ?? 300000; // 5 分钟
+    this.defaultTimeout = config.timeout ?? Infinity; // 无限等待
   }
 
   /**

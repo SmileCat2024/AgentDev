@@ -116,6 +116,62 @@ export const RENDER_TEMPLATES: Record<string, RenderTemplate> = {
       return `<div style="color:var(--success-color)">✓ ${data.message || 'Agent closed'}</div>`;
     }
   },
+
+  // ----- Safe Trash Delete -----
+  'trash-delete': {
+    call: (args) => {
+      const paths = args.paths || [];
+      const pathList = Array.isArray(paths) ? paths : [paths];
+      const displayPaths = pathList.slice(0, 3).map((p: string) => escapeHtml(p)).join(', ');
+      const more = pathList.length > 3 ? ` +${pathList.length - 3} more` : '';
+      return `<div class="bash-command">Safe delete <span class="file-path">${displayPaths}${more}</span></div>`;
+    },
+    result: (data) => {
+      const movedCount = data.moved_count || 0;
+      const failed = data.failed || [];
+      const failedCount = failed.length;
+
+      if (movedCount > 0 && failedCount === 0) {
+        return `<div style="color:var(--success-color)">✓ Moved ${movedCount} item(s) to trash</div>`;
+      }
+      if (movedCount > 0) {
+        return `<div style="color:var(--warning-color)">⚠ Moved ${movedCount}, ${failedCount} failed</div>`;
+      }
+      return `<div style="color:var(--text-secondary)">No files moved</div>`;
+    }
+  },
+
+  // ----- Safe Trash List -----
+  'trash-list': {
+    call: '<div class="bash-command">List trash</div>',
+    result: (data) => {
+      const total = data.total || 0;
+      const files = data.files || [];
+      if (total === 0) {
+        return `<div style="color:var(--text-secondary)">Trash is empty</div>`;
+      }
+      return `<div style="font-size:12px; color:var(--text-secondary);">${total} item(s) in trash</div>`;
+    }
+  },
+
+  // ----- Safe Trash Restore -----
+  'trash-restore': {
+    call: (args) => `<div class="bash-command">Restore <span class="pattern">${escapeHtml(args.target)}</span></div>`,
+    result: (data) => {
+      const restored = data.restored || [];
+      const failed = data.failed || [];
+      const restoredCount = restored.length;
+      const failedCount = failed.length;
+
+      if (restoredCount > 0 && failedCount === 0) {
+        return `<div style="color:var(--success-color)">✓ Restored ${restoredCount} item(s)</div>`;
+      }
+      if (restoredCount > 0 || failedCount > 0) {
+        return `<div style="color:var(--warning-color)">Restored ${restoredCount}, ${failedCount} failed</div>`;
+      }
+      return `<div style="color:var(--text-secondary)">Nothing restored</div>`;
+    }
+  },
 } as const;
 
 // ============= 默认映射 =============
@@ -134,6 +190,11 @@ export const SYSTEM_RENDER_MAP: Record<string, string> = {
   'run_shell_command': 'command',
   'bash': 'command',
   'shell': 'command',
+
+  // Safe Trash 工具
+  'safe_trash_delete': 'trash-delete',
+  'safe_trash_list': 'trash-list',
+  'safe_trash_restore': 'trash-restore',
 
   // Web 工具
   'web_fetch': 'web',
@@ -170,6 +231,11 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'list_agents': 'List Agents',
   'send_to_agent': 'Send to Agent',
   'close_agent': 'Close Agent',
+
+  // ===== Safe Trash 工具 =====
+  'safe_trash_delete': 'Safe Delete',
+  'safe_trash_list': 'Trash List',
+  'safe_trash_restore': 'Restore',
 
   // ===== Opencode 工具 =====
   'read': 'Read',

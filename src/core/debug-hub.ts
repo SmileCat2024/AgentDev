@@ -280,22 +280,25 @@ export class DebugHub {
    * 请求用户输入
    * @param agentId Agent ID
    * @param prompt 提示信息
-   * @param timeout 超时时间（毫秒），默认 300000（5分钟）
+   * @param timeout 超时时间（毫秒），默认 Infinity（无限等待）
    * @returns Promise<string> 用户输入内容
    */
-  requestUserInput(agentId: string, prompt: string, timeout: number = 300000): Promise<string> {
+  requestUserInput(agentId: string, prompt: string, timeout: number = Infinity): Promise<string> {
     const requestId = `input-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     return new Promise((resolve, reject) => {
-      // 设置超时定时器
-      const timer = setTimeout(() => {
-        this.pendingInputRequests.delete(requestId);
-        reject(new Error(`User input timeout after ${timeout}ms`));
-      }, timeout);
+      // 设置超时定时器（仅在 timeout 为有限数值时）
+      let timer: NodeJS.Timeout | undefined;
+      if (timeout !== Infinity) {
+        timer = setTimeout(() => {
+          this.pendingInputRequests.delete(requestId);
+          reject(new Error(`User input timeout after ${timeout}ms`));
+        }, timeout);
+      }
 
       // 存储 resolve 函数
       this.pendingInputRequests.set(requestId, (input: string) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolve(input);
       });
 

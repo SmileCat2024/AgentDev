@@ -207,7 +207,8 @@ export function parseTrashInfo(
 }
 
 /**
- * 解析 rm 命令字符串
+ * 解析 rm 命令字符串（支持引号包裹的路径）
+ * 类似 Python 的 shlex.split()
  */
 export function parseRmCommand(rmCommand: string): {
   files: string[];
@@ -220,13 +221,58 @@ export function parseRmCommand(rmCommand: string): {
     return { files: [], force: false, interactive: false, recursive: false };
   }
   
-  const parts = trimmed.split(/\s+/);
+  // 解析引号和参数（类似 Python shlex.split）
+  const parts: string[] = [];
+  let current = '';
+  let inQuote = false;
+  let quoteChar = '';
+  
+  for (let i = 0; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    const nextChar = trimmed[i + 1] || '';
+    
+    if (inQuote) {
+      if (char === quoteChar) {
+        // 检查是否是转义的引号
+        if (nextChar === quoteChar) {
+          current += char;
+          i++; // 跳过下一个字符
+        } else {
+          inQuote = false;
+        }
+      } else {
+        current += char;
+      }
+    } else if (char === '"' || char === "'" || char === '`') {
+      inQuote = true;
+      quoteChar = char;
+    } else if (char === ' ' || char === '	') {
+      if (current) {
+        parts.push(current);
+        current = '';
+      }
+    } else {
+      current += char;
+    }
+  }
+  
+  if (current) {
+    parts.push(current);
+  }
+  
   const files: string[] = [];
   let force = false;
   let interactive = false;
   let recursive = false;
 
-  for (const part of parts) {
+  for (let part of parts) {
+    // 移除引号
+    if ((part.startsWith('"') && part.endsWith('"')) ||
+        (part.startsWith("'") && part.endsWith("'")) ||
+        (part.startsWith('`') && part.endsWith('`'))) {
+      part = part.slice(1, -1);
+    }
+    
     if (!part) continue; // 跳过空字符串
     
     if (part.startsWith('-')) {

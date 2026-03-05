@@ -8,7 +8,7 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { TodoFeature } from '../src/features/index.js';
+import { AuditFeature, TodoFeature } from '../src/features/index.js';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**
@@ -48,6 +48,9 @@ export class ProgrammingHelperAgent extends BasicAgent {
       reminderThresholdWithTasks: config?.reminderThresholdWithTasks,
       reminderThresholdWithoutTasks: config?.reminderThresholdWithoutTasks,
     }));
+
+    this.use(new AuditFeature());
+
   }
 
   protected override async onInitiate(ctx: AgentInitiateContext): Promise<void> {

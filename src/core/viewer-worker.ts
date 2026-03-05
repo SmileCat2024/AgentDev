@@ -642,8 +642,12 @@ class ViewerWorker {
     }
 
     // 收集 Feature 模板路径
+    console.log(`[handleRegisterAgent DEBUG] Received featureTemplates:`, featureTemplates);
     if (featureTemplates && typeof featureTemplates === 'object') {
+      console.log(`[handleRegisterAgent DEBUG] Merging featureTemplateMap`);
+      console.log(`[handleRegisterAgent DEBUG] Current featureTemplateMap keys before:`, Object.keys(this.featureTemplateMap));
       Object.assign(this.featureTemplateMap, featureTemplates);
+      console.log(`[handleRegisterAgent DEBUG] Current featureTemplateMap keys after:`, Object.keys(this.featureTemplateMap));
     }
 
     // 首个 Agent 自动成为当前
@@ -901,6 +905,68 @@ class ViewerWorker {
       });
     } catch (err: any) {
       console.error('[Viewer Worker] 静态文件处理错误:', err.message);
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Internal server error');
+    }
+  }
+
+  /**
+   * 处理 Feature 渲染模板文件
+   * 解析路径: /features/shell/trash-delete.render.js
+   * 映射到: dist/features/shell/templates/trash-delete.render.js
+   */
+  public handleFeatureTemplate(req: IncomingMessage, res: ServerResponse, url: string): void {
+    console.log('[Viewer Worker DEBUG] handleFeatureTemplate called:', url);
+    try {
+      // 解析路径: /features/shell/trash-delete.render.js
+      const match = url.match(/^\/features\/([^/]+)\/(.+\.render\.js)$/);
+      console.log('[Viewer Worker DEBUG] URL match result:', match);
+      if (!match) {
+        console.log(`[Viewer Worker DEBUG] URL does not match pattern`);
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Invalid feature template path');
+        return;
+      }
+
+      const [, featureName, templateFile] = match;
+      console.log('[Viewer Worker DEBUG] featureName:', featureName, 'templateFile:', templateFile);
+
+      // 获取当前 Agent 的项目根目录
+      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
+      const projectRoot = currentSession?.projectRoot || process.cwd();
+      console.log('[Viewer Worker DEBUG] currentAgentId:', this.currentAgentId, 'projectRoot:', projectRoot);
+      console.log('[Viewer Worker DEBUG] session exists:', !!currentSession);
+
+      // 构建文件路径: {projectRoot}/dist/features/{featureName}/templates/{templateFile}
+      const fullPath = join(projectRoot, 'dist', 'features', featureName, 'templates', templateFile);
+      console.log('[Viewer Worker DEBUG] fullPath:', fullPath);
+
+      // 读取文件并返回
+      import('fs').then((fs) => {
+        console.log('[Viewer Worker DEBUG] fs module loaded, reading file...');
+        fs.readFile(fullPath, 'utf-8', (err: any, data: string) => {
+          if (err) {
+            console.error('[Viewer Worker DEBUG] 读取 Feature 模板失败:', fullPath, err.message);
+            console.error('[Viewer Worker DEBUG] Error code:', err.code, 'errno:', err.errno);
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end(`Feature template not found: ${url}`);
+            return;
+          }
+
+          console.log('[Viewer Worker DEBUG] Successfully read template, size:', data.length, 'bytes');
+          res.writeHead(200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Access-Control-Allow-Origin': '*',
+          });
+          res.end(data);
+        });
+      }).catch((err) => {
+        console.error('[Viewer Worker DEBUG] fs 模块加载失败:', err.message);
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Internal server error');
+      });
+    } catch (err: any) {
+      console.error('[Viewer Worker DEBUG] Feature 模板处理错误:', err.message);
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Internal server error');
     }
@@ -1653,13 +1719,9 @@ class ViewerWorker {
     const self = this;
 
     function resolveTemplatePath(templateName) {
-      // 1. 优先查找 Feature 模板
-      const featurePath = self.featureTemplateMap[templateName];
-      if (featurePath) {
-        return featurePath;
-      }
-
-      // 2. 回退到系统模板映射
+      console.log('[resolveTemplatePath DEBUG] Looking for:', templateName);
+      
+      // 直接使用系统模板映射
       const templateToFileMap = {
         'agent-spawn': 'system/subagent',
         'agent-list': 'system/subagent',
@@ -1674,6 +1736,13 @@ class ViewerWorker {
         'command': 'system/shell',
         'bash': 'system/shell',
         'shell': 'system/shell',
+        // Safe Trash 工具
+        'trash-delete': 'system/trash',
+        'trash-list': 'system/trash',
+        'trash-restore': 'system/trash',
+        'safe_trash_delete': 'system/trash',
+        'safe_trash_list': 'system/trash',
+        'safe_trash_restore': 'system/trash',
         'web': 'system/web',
         'fetch': 'system/web',
         'math': 'system/math',
@@ -1693,7 +1762,10 @@ class ViewerWorker {
         'grep': 'opencode/grep',
       };
 
-      return templateToFileMap[templateName] || 'opencode/' + templateName;
+      const basePath = templateToFileMap[templateName] || 'opencode/' + templateName;
+
+      // 返回完整的 HTTP 路径供 import() 使用
+      return '/tools/' + basePath + '.render.js';
     }
 
     /**
@@ -1701,46 +1773,38 @@ class ViewerWorker {
      * 支持从 Feature 目录或系统目录加载
      */
     async function loadTemplate(templateName) {
+      console.log('[loadTemplate DEBUG] Loading:', templateName);
+      console.log('[loadTemplate DEBUG] Cached templates:', Array.from(templateCache.keys()));
+      
       if (templateCache.has(templateName)) {
+        console.log('[loadTemplate DEBUG] Found in cache');
         return templateCache.get(templateName);
       }
 
       try {
         const path = resolveTemplatePath(templateName);
 
-        // 检查是否是 Feature 模板（绝对路径）
-        const isFeatureTemplate = path.startsWith('/') || path.includes(':');
-        let module;
+        // 统一使用 URL 方式加载模板
+        // Feature 模板: /features/shell/trash-delete.render.js
+        // 系统模板: /tools/system/shell.render.js
+        const module = await import(path);
+        console.log('[loadTemplate DEBUG] Module imported from:', path);
+        console.log('[loadTemplate DEBUG] Module exports:', Object.keys(module));
 
-        if (isFeatureTemplate) {
-          // Feature 模板：使用绝对路径加载
-          // 开发环境支持 .ts 扩展名兼容
-          try {
-            module = await import(path);
-          } catch (e) {
-            // 尝试 .js → .ts 回退（开发环境）
-            if (path.endsWith('.js')) {
-              const tsPath = path.replace('.js', '.ts');
-              module = await import(tsPath);
-            } else {
-              throw e;
-            }
-          }
-          // Feature 模板使用 default export
-          const template = module.default;
-          if (template) {
-            templateCache.set(templateName, template);
-            return template;
-          }
-        } else {
-          // 系统模板：使用相对路径加载
-          module = await import('/tools/' + path + '.render.js');
-          const template = module.TEMPLATES?.[templateName];
+        // 1. 优先使用 default export（Feature 模板）
+        let template = module.default;
+        if (template) {
+          console.log('[loadTemplate DEBUG] Using default export');
+          templateCache.set(templateName, template);
+          return template;
+        }
 
-          if (template) {
-            templateCache.set(templateName, template);
-            return template;
-          }
+        // 2. 尝试从 TEMPLATES 对象获取（系统模板）
+        if (module.TEMPLATES && module.TEMPLATES[templateName]) {
+          console.log('[loadTemplate DEBUG] Using TEMPLATES["' + templateName + '"]');
+          template = module.TEMPLATES[templateName];
+          templateCache.set(templateName, template);
+          return template;
         }
 
         console.warn('[Viewer Worker] 模板 "' + templateName + '" 在文件中未找到');
@@ -1888,6 +1952,8 @@ class ViewerWorker {
 
         // 预加载所有需要的模板
         const templatesToLoad = new Set();
+        console.log('[Template Preload DEBUG] Tools received:', tools.map(t => ({ name: t.name, render: t.render })));
+        
         for (const tool of tools) {
           const renderConfig = tool.render;
           if (renderConfig) {
@@ -1904,9 +1970,12 @@ class ViewerWorker {
           }
         }
 
+        console.log('[Template Preload DEBUG] Templates to load:', Array.from(templatesToLoad));
+        
         // 并行加载所有模板
         const loadPromises = Array.from(templatesToLoad).map(name => loadTemplate(name));
         await Promise.all(loadPromises);
+        console.log('[Template Preload DEBUG] All templates loaded');
 
         render(currentMessages);
       } catch (e) {

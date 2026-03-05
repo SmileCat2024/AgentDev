@@ -15,11 +15,13 @@
 export { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
 export { webFetchRender } from './web.render.js';
 export { calculatorRender } from './math.render.js';
+export { trashDeleteRender, trashListRender, trashRestoreRender } from './trash.render.js';
 
 // 导入以便创建映射表
 import { readFileRender, writeFileRender, listDirRender } from './fs.render.js';
 import { webFetchRender } from './web.render.js';
 import { calculatorRender } from './math.render.js';
+import { trashDeleteRender, trashListRender, trashRestoreRender } from './trash.render.js';
 
 /**
  * 模板 Key -> 渲染模板 映射表
@@ -39,6 +41,11 @@ export const TEMPLATES: Record<string, any> = {
 
   // Math 工具
   'calculator': calculatorRender,
+
+  // Safe Trash 工具
+  'trash-delete': trashDeleteRender,
+  'trash-list': trashListRender,
+  'trash-restore': trashRestoreRender,
 
   // 默认 fallback
   'json': {

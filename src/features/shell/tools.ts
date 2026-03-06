@@ -36,7 +36,7 @@ export function createShellCommandTool(description: string): Tool {
       },
       required: ['command'],
     },
-    render: { call: 'command', result: 'command' },
+    render: { call: 'bash', result: 'bash' },
     execute: async ({ command }) => {
       console.log(`[shell] ${command}`);
       try {

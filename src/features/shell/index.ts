@@ -64,10 +64,13 @@ export class ShellFeature implements AgentFeature {
   }
 
   /**
-   * 模板路径声明（垃圾桶工具模板）
+   * 模板路径声明（垃圾桶工具 + bash 工具模板）
    */
   getTemplatePaths(): Record<string, string> {
     return {
+      // Bash 工具模板
+      'bash': join(__dirname, 'templates', 'bash.render.js'),
+      // 垃圾桶工具模板
       'safe_trash_delete': join(__dirname, 'templates', 'trash-delete.render.js'),
       'safe_trash_list': join(__dirname, 'templates', 'trash-list.render.js'),
       'safe_trash_restore': join(__dirname, 'templates', 'trash-restore.render.js'),

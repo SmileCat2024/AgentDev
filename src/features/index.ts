@@ -37,3 +37,6 @@ export { ShellFeature } from './shell/index.js';
 // Audit Feature
 export { AuditFeature } from './audit/index.js';
 export type { AuditResult, AuditFeatureConfig } from './audit/index.js';
+
+// OpencodeBasic Feature
+export { OpencodeBasicFeature } from './opencode-basic/index.js';

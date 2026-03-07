@@ -8,7 +8,7 @@
  */
 
 import { Agent } from '../../core/agent.js';
-import { MCPFeature, SkillFeature, SubAgentFeature, ShellFeature } from '../../features/index.js';
+import { MCPFeature, SkillFeature, SubAgentFeature, ShellFeature, OpencodeBasicFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
@@ -22,32 +22,14 @@ import {
   calculatorTool,
 } from '../../tools/system/index.js';
 
-// 导入 opencode 文件工具（更强大的文件操作能力）
-import {
-  readTool,
-  writeTool,
-  editTool,
-  globTool,
-  grepTool,
-  lsTool,
-} from '../../tools/opencode/index.js';
-
 /**
  * 默认工具集
- * 使用 opencode 工具替代原 system 文件工具，提供更强的能力
  * 注意：
+ * - 文件操作工具（read/write/edit/glob/grep/ls）由 OpencodeBasicFeature 提供
  * - invokeSkillTool 由 SkillFeature 提供，不在默认工具集中
  * - 子代理工具由 SubAgentFeature 提供，不在默认工具集中
  */
 const DEFAULT_TOOLS: Tool[] = [
-  // 文件操作工具（opencode 系列，能力更强）
-  readTool,      // 高级读取：分页、二进制检测、行号、目录支持
-  writeTool,     // 写入：带 diff 预览
-  editTool,      // 编辑：9种智能匹配策略
-  globTool,      // 文件搜索：glob 模式匹配
-  grepTool,      // 内容搜索：基于 ripgrep
-  lsTool,        // 目录列表：树形结构、自动忽略
-
   // 系统工具
   webFetchTool,  // HTTP 请求
   calculatorTool,// 计算器
@@ -177,6 +159,9 @@ export class BasicAgent extends Agent {
     if (config.mcpServer) {
       this.use(new MCPFeature(config.mcpServer));
     }
+
+    // 注册 OpencodeBasicFeature（文件操作工具集）
+    this.use(new OpencodeBasicFeature());
 
     // 注册 ShellFeature（Git Bash 命令执行）
     this.use(new ShellFeature());

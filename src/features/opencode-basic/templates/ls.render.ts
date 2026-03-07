@@ -2,7 +2,7 @@
  * LS 工具渲染模板
  */
 
-import type { InlineRenderTemplate } from '../../core/types.js';
+import type { InlineRenderTemplate } from '../../../core/types.js';
 
 /**
  * HTML 转义辅助函数
@@ -22,7 +22,7 @@ function escapeHtml(text: any): string {
 /**
  * LS 目录列表渲染模板
  */
-export const lsRender: InlineRenderTemplate = {
+export default {
   call: (args) => `<div class="bash-command">List <span class="path">${escapeHtml(args.dirPath || '.')}</span></div>`,
   result: (data, success) => {
     if (!success) {
@@ -39,11 +39,4 @@ export const lsRender: InlineRenderTemplate = {
         ${data.truncated ? '<span style="color:var(--warning-color)"> (truncated)</span>' : ''}
       </div>`;
   }
-};
-
-/**
- * 模板映射表
- */
-export const TEMPLATES = {
-  'ls': lsRender,
-};
+} as const satisfies InlineRenderTemplate;

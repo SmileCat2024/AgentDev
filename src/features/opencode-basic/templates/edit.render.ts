@@ -1,9 +1,8 @@
 /**
- * Write 工具渲染模板
- * 使用 .render.ts 原版本（带 details 折叠 diff，更实用）
+ * Edit 工具渲染模板
  */
 
-import type { InlineRenderTemplate } from '../../core/types.js';
+import type { InlineRenderTemplate } from '../../../core/types.js';
 
 /**
  * HTML 转义辅助函数
@@ -21,10 +20,10 @@ function escapeHtml(text: any): string {
 }
 
 /**
- * 文件写入渲染模板
+ * 文件编辑渲染模板
  */
-export const writeRender: InlineRenderTemplate = {
-  call: (args) => `<div class="bash-command">Write <span class="file-path">${escapeHtml(args.filePath || '')}</span></div>`,
+export default {
+  call: (args) => `<div class="bash-command">Edit <span class="file-path">${escapeHtml(args.filePath || '')}</span></div>`,
   result: (data, success) => {
     if (!success) {
       const text = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
@@ -36,7 +35,7 @@ export const writeRender: InlineRenderTemplate = {
 
     const diffContent = data.diff || '';
     if (!diffContent) {
-      return `<div style="color:var(--success-color)">✓ File written successfully (no diff available)</div>`;
+      return `<div style="color:var(--success-color)">✓ No changes made</div>`;
     }
 
     // 使用 Diff2Html 生成 Diff
@@ -51,11 +50,4 @@ export const writeRender: InlineRenderTemplate = {
       return `<pre style="background:var(--hover-bg); padding:8px;">${escapeHtml(diffContent)}</pre>`;
     }
   }
-};
-
-/**
- * 模板映射表
- */
-export const TEMPLATES = {
-  'write': writeRender,
-};
+} as const satisfies InlineRenderTemplate;

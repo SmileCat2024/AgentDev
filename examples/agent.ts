@@ -36,7 +36,7 @@ async function main() {
   const hasGitHubMCP = existsSync(join(cwd(), '.agentdev', 'mcps', 'github.json'));
 
   // 创建用户输入 Feature
-  const userInputFeature = new UserInputFeature({ timeout: 300000 });
+  const userInputFeature = new UserInputFeature();
 
   const programmingAgent = new ProgrammingHelperAgent({
     name: '编程小助手',

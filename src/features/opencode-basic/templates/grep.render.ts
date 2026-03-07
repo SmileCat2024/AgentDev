@@ -3,7 +3,7 @@
  * 使用 viewer-worker.ts HTML 中的版本（函数模板，更灵活）
  */
 
-import type { InlineRenderTemplate } from '../../core/types.js';
+import type { InlineRenderTemplate } from '../../../core/types.js';
 
 /**
  * HTML 转义辅助函数
@@ -23,7 +23,7 @@ function escapeHtml(text: any): string {
 /**
  * Grep 搜索渲染模板
  */
-export const grepRender: InlineRenderTemplate = {
+export default {
   call: (args) => {
     let output = `<div class="bash-command">Grep <span class="pattern">${escapeHtml(args.pattern || '')}</span></div>`;
     if (args.searchPath) {
@@ -71,11 +71,4 @@ export const grepRender: InlineRenderTemplate = {
       <div style="color:var(--text-secondary); padding:4px 0;">Found ${data.matches} match${data.matches !== 1 ? 'es' : ''}</div>
     </div>`;
   }
-};
-
-/**
- * 模板映射表
- */
-export const TEMPLATES = {
-  'grep': grepRender,
-};
+} as const satisfies InlineRenderTemplate;

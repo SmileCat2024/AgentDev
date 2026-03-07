@@ -3,7 +3,7 @@
  * 使用 viewer-worker.ts HTML 中的版本（带代码高亮、行号显示）
  */
 
-import type { InlineRenderTemplate } from '../../core/types.js';
+import type { InlineRenderTemplate } from '../../../core/types.js';
 
 /**
  * HTML 转义辅助函数
@@ -23,7 +23,7 @@ function escapeHtml(text: any): string {
 /**
  * 文件读取渲染模板
  */
-export const readRender: InlineRenderTemplate = {
+export default {
   call: (args) => {
     let output = `<div class="bash-command">Read <span class="file-path">${escapeHtml(args.filePath || '')}</span></div>`;
     if (args.offset !== undefined) {
@@ -97,11 +97,4 @@ export const readRender: InlineRenderTemplate = {
 
     return resultHtml;
   }
-};
-
-/**
- * 模板映射表
- */
-export const TEMPLATES = {
-  'read': readRender,
-};
+} as const satisfies InlineRenderTemplate;

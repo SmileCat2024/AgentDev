@@ -14,25 +14,14 @@ export {
   databaseQueryTool,
 } from './user/index.js';
 
-export {
-  globTool,
-  grepTool,
-  lsTool,
-  readTool,
-  writeTool,
-  editTool,
-  getOpencodeTool,
-  isOpencodeTool,
-  OPENCODE_RENDER_TEMPLATES,
-  OPENCODE_TOOLS_MAP,
-} from './opencode/index.js';
+// Opencode 工具已迁移到 OpencodeBasicFeature
+// 如需使用，请导入 OpencodeBasicFeature：
+// import { OpencodeBasicFeature } from '../features/index.js';
 
 import { SYSTEM_TOOLS } from './system/index.js';
 import { USER_TOOLS } from './user/index.js';
-import { OPENCODE_TOOLS } from './opencode/index.js';
 
 export const ALL_TOOLS = [
   ...SYSTEM_TOOLS,
   ...USER_TOOLS,
-  ...OPENCODE_TOOLS,
 ] as const;

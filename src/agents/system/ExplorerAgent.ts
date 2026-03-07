@@ -7,28 +7,14 @@
  */
 
 import { Agent } from '../../core/agent.js';
-import { SkillFeature, SubAgentFeature, ShellFeature } from '../../features/index.js';
-import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
+import { SkillFeature, SubAgentFeature, ShellFeature, OpencodeBasicFeature } from '../../features/index.js';
+import type { AgentConfig, LLMClient } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
 import { createOpenAILLM } from '../../llm/openai.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
 import { TemplateComposer } from '../../template/composer.js';
-
-// 导入 opencode 只读探索工具
-import { readTool, globTool, grepTool, lsTool } from '../../tools/opencode/index.js';
-
-/**
- * ExplorerAgent 专用工具集（只读探索工具）
- * 专注于代码库探索，不包含任何修改能力
- */
-const EXPLORER_TOOLS: Tool[] = [
-  readTool,     // 高级读取：分页、二进制检测、行号、目录支持
-  globTool,     // 文件搜索：glob 模式匹配
-  grepTool,     // 内容搜索：基于 ripgrep
-  lsTool,       // 目录列表：树形结构、自动忽略
-];
 
 /**
  * 系统环境信息上下文
@@ -111,8 +97,8 @@ export class ExplorerAgent extends Agent {
     // 构建完整的 Agent 配置
     const agentConfig: AgentConfig = {
       llm: llm!,
-      tools: EXPLORER_TOOLS,  // 固定使用探索工具集
-      maxTurns: Infinity,      // 无限交互次数
+      tools: [],              // 工具由 Feature 提供
+      maxTurns: Infinity,     // 无限交互次数
       systemMessage: config.systemMessage,
       name: config.name,
     };
@@ -124,6 +110,9 @@ export class ExplorerAgent extends Agent {
     this._config = fileConfig;
     this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
+
+    // 注册 OpencodeBasicFeature（文件操作工具集）
+    this.use(new OpencodeBasicFeature());
 
     // 注册 ShellFeature（Git Bash 命令执行）
     this.use(new ShellFeature());
@@ -137,9 +126,17 @@ export class ExplorerAgent extends Agent {
 
   /**
    * Agent 初始化钩子
-   * 配置系统提示词
+   * 配置系统提示词，禁用写入和编辑工具（只读模式）
    */
   protected override async onInitiate(): Promise<void> {
+    // 禁用文件修改工具（ExplorerAgent 只用于只读探索）
+    this.getTools().disable('write');
+    this.getTools().disable('edit');
+
+    // 禁用 ShellFeature 的安全删除工具
+    this.getTools().disable('safe_trash_delete');
+    this.getTools().disable('safe_trash_list');
+    this.getTools().disable('safe_trash_restore');
     // 配置系统提示词
     if (!this.systemMessage) {
       this.setSystemPrompt(new TemplateComposer()

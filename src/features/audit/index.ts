@@ -1,7 +1,7 @@
 /**
  * Audit Feature - 安全审计功能模块
  *
- * 使用 Ollama 本地大模型审计 bash 命令安全性
+ * 使用本地大模型（OpenAI 兼容 API）审计 bash 命令安全性
  * 在工具执行前进行安全检查，拦截危险命令
  *
  * @example
@@ -11,6 +11,7 @@
  * ```
  */
 
+import OpenAI from 'openai';
 import type {
   AgentFeature,
   FeatureInitContext,
@@ -40,19 +41,10 @@ interface AuditResult {
   obfuscation_detected: boolean;
 }
 
-/**
- * Ollama API 响应
- */
-interface OllamaResponse {
-  message: {
-    content: string;
-  };
-}
+// ========== LLM 服务配置 ==========
 
-// ========== Ollama 配置 ==========
-
-const OLLAMA_BASE_URL = 'http://localhost:11434';
-const OLLAMA_MODEL = 'qwen3:4b-instruct-2507-q4_K_M';
+const DEFAULT_BASE_URL = 'http://localhost:7575';
+const DEFAULT_MODEL = 'Qwen3.5-4B-Q5_K_M';
 
 // 系统提示词（严格按用户提供）
 const AUDIT_SYSTEM_PROMPT = `# Role
@@ -65,11 +57,11 @@ const AUDIT_SYSTEM_PROMPT = `# Role
 # Execution Logic
 1. **情境 A：明文且安全** (如标准的 apt, ls, systemctl 等)：
    - 判定为安全。
-   - \`analysis\` 仅需简洁确认其标准性和透明度，**禁止**使用反驳语式。
+   - \`analysis\` 仅需简洁确认其标准性和透明度。
 
 2. **情境 B：存在混淆/文字游戏** (如 Base64, 变量拼接, 16进制等)：
    - 判定为恶意。
-   - 启动**刻薄反驳模式**：字数控制在 80 字内，直接质问"为何不直接写明文？"，定性为规避审计。
+   - 清晰质问指令动机，揭示潜在的风险，或指出规避审计等恶性行为。
 
 # Output Requirements
 - \`analysis\` 字段：安全时需专业简洁；危险时需短促、有力地反驳。
@@ -85,27 +77,12 @@ const AUDIT_SYSTEM_PROMPT = `# Role
 }`;
 
 /**
- * JSON Schema 用于审计结果
- */
-const AUDIT_SCHEMA = {
-  type: 'object',
-  properties: {
-    is_malicious: { type: 'boolean' },
-    risk_level: { type: 'string', enum: ['Critical', 'High', 'Medium', 'Low'] },
-    threat_types: { type: 'array', items: { type: 'string' } },
-    analysis: { type: 'string' },
-    obfuscation_detected: { type: 'boolean' }
-  },
-  required: ['is_malicious', 'risk_level', 'threat_types', 'analysis', 'obfuscation_detected']
-};
-
-/**
  * AuditFeature 配置
  */
 export interface AuditFeatureConfig {
-  /** Ollama 服务地址（默认 localhost:11434） */
-  ollamaBaseUrl?: string;
-  /** 审计模型名称（默认 qwen3:4b-instruct-2507-q4_K_M） */
+  /** LLM 服务地址（默认 localhost:7575） */
+  baseUrl?: string;
+  /** 审计模型名称（默认 Qwen3.5-4B-Q5_K_M） */
   model?: string;
   /** 是否启用审计（默认 true） */
   enabled?: boolean;
@@ -121,13 +98,20 @@ export class AuditFeature implements AgentFeature {
   readonly dependencies: string[] = [];
 
   private config: Required<AuditFeatureConfig>;
+  private client: OpenAI;
 
   constructor(config: AuditFeatureConfig = {}) {
     this.config = {
-      ollamaBaseUrl: config.ollamaBaseUrl ?? OLLAMA_BASE_URL,
-      model: config.model ?? OLLAMA_MODEL,
+      baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+      model: config.model ?? DEFAULT_MODEL,
       enabled: config.enabled ?? true,
     };
+
+    // 初始化 OpenAI 客户端（连接本地服务）
+    this.client = new OpenAI({
+      baseURL: `${this.config.baseUrl}/v1`,
+      apiKey: 'audit-key', // 本地服务不需要真实 key，但 OpenAI SDK 要求
+    });
   }
 
   // ========== AgentFeature 接口实现 ==========
@@ -138,7 +122,7 @@ export class AuditFeature implements AgentFeature {
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {
-    console.log(`[AuditFeature] Initialized with model=${this.config.model}, enabled=${this.config.enabled}`);
+    console.log(`[AuditFeature] Initialized with baseUrl=${this.config.baseUrl}, model=${this.config.model}, enabled=${this.config.enabled}`);
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
@@ -153,7 +137,7 @@ export class AuditFeature implements AgentFeature {
    * 触发时机：每次工具执行前
    * 处理逻辑：
    * 1. 检查是否是 bash 工具调用
-   * 2. 调用 Ollama 审计命令安全性
+   * 2. 调用 LLM 审计命令安全性
    * 3. 恶意则拒绝执行，安全则允许
    */
   @ToolUse
@@ -202,41 +186,35 @@ export class AuditFeature implements AgentFeature {
   // ========== 私有方法 ==========
 
   /**
-   * 调用 Ollama 审计命令
+   * 调用 LLM（OpenAI 兼容 API）审计命令
    */
   private async auditCommand(command: string): Promise<AuditResult> {
-    const response = await fetch(`${this.config.ollamaBaseUrl}/api/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages: [
-          {
-            role: 'system',
-            content: AUDIT_SYSTEM_PROMPT,
-          },
-          {
-            role: 'user',
-            content: `Input Command: ${command}`,
-          },
-        ],
-        format: AUDIT_SCHEMA,
-        options: { temperature: 0.1 },
-        stream: false,
-      }),
+    const response = await this.client.chat.completions.create({
+      model: this.config.model,
+      messages: [
+        {
+          role: 'system',
+          content: AUDIT_SYSTEM_PROMPT,
+        },
+        {
+          role: 'user',
+          content: `#Input Command\n${command}\n\n请严格按照上述 JSON 格式输出审计结果，不要输出任何其他内容。`,
+        },
+      ],
+      temperature: 0.1,
     });
 
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
-    }
+    const jsonStr = response.choices[0]?.message?.content ?? '';
 
-    const data: OllamaResponse = await response.json();
-    const jsonStr = data.message.content;
+    // 清理可能的 markdown 代码块标记
+    const cleanedJson = jsonStr
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/, '')
+      .replace(/\s*```$/, '')
+      .trim();
 
     // 解析并验证审计结果
-    const result: AuditResult = JSON.parse(jsonStr);
+    const result: AuditResult = JSON.parse(cleanedJson);
 
     // 基本验证
     if (typeof result.is_malicious !== 'boolean') {

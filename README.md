@@ -287,63 +287,207 @@ type HookResult =
 
 ## 工具系统
 
-### 工具定义模式
+### 工具渲染模板概述
 
-每个工具由 **2 个文件**组成：
+每个工具可以配置前端渲染模板，用于在调试界面中美观地展示工具调用和结果。
+
+**两种工具类型**：
+1. **Feature 工具**：属于某个 Feature 模块，模板放在 Feature 的 `templates/` 目录
+2. **系统工具**：独立的工具文件，模板放在 `src/tools/` 目录
+
+---
+
+### 创建 Feature 工具（推荐）
+
+**目录结构**：
 
 ```
-src/tools/category/
-├── [name].ts           # 工具定义
-└── [name].render.ts    # 渲染模板
+src/features/my-feature/
+├── index.ts           # Feature 类
+├── tools.ts           # 工具定义
+└── templates/         # 渲染模板目录
+    └── my-tool.render.ts
 ```
 
-### 创建工具
-
-**文件 1：工具定义**
+**步骤 1：创建渲染模板**
 
 ```typescript
-// src/tools/user/my-tool.ts
-import { createTool } from '../../core/tool.js';
+// src/features/my-feature/templates/my-tool.render.ts
+import type { InlineRenderTemplate } from '../../../core/types.js';
 
-export const myTool = createTool({
-  name: 'my_tool',
-  description: '我的自定义工具',
-  parameters: {
-    type: 'object',
-    properties: {
-      input: { type: 'string', description: '输入参数' }
-    }
-  },
-  execute: async (args) => {
-    return `处理结果: ${args.input}`;
-  },
-  render: 'my-template'
-}, import.meta.url);
-```
+function escapeHtml(text: unknown): string {
+  const str = String(text);
+  return str.replace(/[&<>"']/g, m => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;',
+    '"': '&quot;', "'": '&#39;'
+  })[m]!);
+}
 
-**文件 2：渲染模板**
-
-```typescript
-// src/tools/user/my-tool.render.ts
-import { escapeHtml } from '../system/index.render.js';
-
-export const render = {
-  call: (data: { input: string }) => `
+const myToolRender: InlineRenderTemplate = {
+  // 调用时显示
+  call: (args: { input: string }) => `
     <div class="tool-call">
-      <strong>输入:</strong> ${escapeHtml(data.input)}
+      <strong>输入:</strong> ${escapeHtml(args.input)}
     </div>
   `,
-  result: (data: { output: string }) => `
+
+  // 结果显示
+  result: (data: unknown) => `
     <div class="tool-result">
-      <strong>输出:</strong> ${escapeHtml(data.output)}
+      <strong>输出:</strong> ${escapeHtml(data)}
     </div>
   `
 };
 
-export const TEMPLATES = {
-  'my-template': render
+export default myToolRender;
+```
+
+**步骤 2：创建工具定义**
+
+```typescript
+// src/features/my-feature/tools.ts
+import { createTool } from '../../core/tool.js';
+import type { Tool } from '../../core/types.js';
+
+export const myTool: Tool = createTool({
+  name: 'my_tool',
+  description: '我的工具',
+  parameters: {
+    type: 'object',
+    properties: {
+      input: { type: 'string' }
+    }
+  },
+  // 引用模板名称（与文件名对应）
+  render: { call: 'my-tool', result: 'my-tool' },
+
+  execute: async ({ input }) => {
+    return `处理结果: ${input}`;
+  }
+});
+```
+
+**步骤 3：在 Feature 类中注册模板**
+
+```typescript
+// src/features/my-feature/index.ts
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import type { AgentFeature } from '../../core/types.js';
+import { myTool } from './tools.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+export class MyFeature implements AgentFeature {
+  readonly name = 'my-feature';
+  readonly dependencies: string[] = [];
+
+  getTools() {
+    return [myTool];
+  }
+
+  // 声明模板路径映射（模板名 -> 文件路径）
+  getTemplatePaths(): Record<string, string> {
+    return {
+      'my-tool': join(__dirname, 'templates', 'my-tool.render.js'),
+    };
+  }
+}
+```
+
+---
+
+### 创建系统工具
+
+**目录结构**：
+
+```
+src/tools/system/
+├── my-tool.ts           # 工具定义
+└── index.render.ts      # 统一的模板导出
+```
+
+**步骤 1：创建工具定义**
+
+```typescript
+// src/tools/system/my-tool.ts
+import { createTool } from '../../core/tool.js';
+import type { Tool } from '../../core/types.js';
+
+export const mySystemTool: Tool = createTool({
+  name: 'my_system_tool',
+  description: '系统工具',
+  parameters: {
+    type: 'object',
+    properties: {
+      param: { type: 'string' }
+    }
+  },
+  render: { call: 'my-system-tool', result: 'my-system-tool' },
+
+  execute: async ({ param }) => {
+    return `系统处理: ${param}`;
+  }
+});
+```
+
+**步骤 2：在 index.render.ts 中导出模板**
+
+```typescript
+// src/tools/system/index.render.ts
+import type { InlineRenderTemplate } from '../../core/types.js';
+
+function escapeHtml(text: unknown): string {
+  // ...（同上）
+}
+
+const mySystemToolRender: InlineRenderTemplate = {
+  call: (args) => `<div>系统工具: ${escapeHtml(args.param)}</div>`,
+  result: (data) => `<div>结果: ${escapeHtml(data)}</div>`
+};
+
+// 统一导出所有渲染模板
+export const TEMPLATES: Record<string, any> = {
+  'my-system-tool': mySystemToolRender,
+  // ... 其他模板
 };
 ```
+
+**步骤 3：更新 viewer-worker.ts 的系统模板映射**
+
+```typescript
+// src/core/viewer-worker.ts
+const SYSTEM_TEMPLATE_MAP = {
+  // ... 其他映射
+  'my-system-tool': 'system/index',
+};
+```
+
+---
+
+### Render 配置格式
+
+| 格式 | 说明 | 示例 |
+|------|------|------|
+| **字符串简写** | call 和 result 使用相同模板 | `render: 'my-template'` |
+| **对象配置** | call 和 result 使用不同模板 | `render: { call: 'call-tpl', result: 'result-tpl' }` |
+| **内联模板** | 直接定义模板（不推荐） | `render: { call: { call: fn }, result: { result: fn } }` |
+
+---
+
+### 模板文件命名规范
+
+| 工具名 | 模板文件名 | 模板名 |
+|--------|-----------|--------|
+| `my_tool` | `my-tool.render.ts` | `my-tool` |
+| `safe_trash_delete` | `safe-trash-delete.render.ts` | `safe-trash-delete` |
+| `invokeSkill` | `invoke-skill.render.ts` | `invoke-skill` |
+
+**规则**：
+- 工具名的 snake_case → 模板名的 kebab-case
+- 模板文件名必须与模板名一致
+
+---
 
 ### 内置工具
 
@@ -355,13 +499,16 @@ export const TEMPLATES = {
 | | `glob` | 文件搜索（glob 模式） |
 | | `grep` | 内容搜索（基于 ripgrep） |
 | | `ls` | 目录列表（树形结构） |
-| **系统工具** | `shell` | Shell 命令执行 |
+| **系统工具** | `bash` | Shell 命令执行（Shell Feature） |
 | | `web` | HTTP 请求 |
 | | `math` | 计算器 |
 | **Feature 工具** | `invoke_skill` | 调用 Skill（SkillFeature） |
 | | `spawn_agent` | 创建子代理（SubAgentFeature） |
 | | `wait` | 等待子代理（SubAgentFeature） |
 | | `get_user_input` | 获取用户输入（UserInputFeature） |
+| | `safe_trash_delete` | 安全删除（Shell Feature） |
+| | `safe_trash_list` | 垃圾桶列表（Shell Feature） |
+| | `safe_trash_restore` | 恢复文件（Shell Feature） |
 
 ---
 
@@ -603,6 +750,56 @@ const result = await agent.onCall('你好');
 ```bash
 npm run build  # 编译 .render.ts → .js
 npm run agt    # 运行 agent
+```
+
+**原因**：工具的渲染模板需要从 TypeScript 编译为 JavaScript 才能被前端动态加载。
+
+### 渲染模板常见问题
+
+**问题 1：工具显示 JSON 而非自定义模板**
+
+| 原因 | 解决方案 |
+|------|----------|
+| 模板文件不存在 | 检查 `dist/` 目录下是否有编译后的 `.render.js` 文件 |
+| 模板导出格式错误 | Feature 模板使用 `export default`，系统模板导出 `TEMPLATES` 对象 |
+| 模板名拼写错误 | 确认工具的 `render` 配置与 `getTemplatePaths()` 中的 key 一致 |
+
+**问题 2：浏览器控制台出现 404 错误**
+
+```
+GET http://localhost:2026/features/my-feature/my-tool.render.js 404
+```
+
+| 检查项 | 命令 |
+|--------|------|
+| 文件是否存在 | `ls dist/features/my-feature/templates/` |
+| 路径映射是否正确 | 在浏览器控制台检查 `FEATURE_TEMPLATE_MAP` |
+| 重新编译 | `npm run build` |
+
+**问题 3：模板加载返回 undefined**
+
+```javascript
+// 浏览器控制台
+console.log(FEATURE_TEMPLATE_MAP['my-tool']);  // undefined
+```
+
+**排查步骤**：
+1. 检查 `getTemplatePaths()` 是否返回了正确的映射
+2. 检查路径是否使用 `.js` 扩展名（编译后）
+3. 检查 Agent 是否成功注册到 DebugHub
+
+**调试技巧**：
+
+```javascript
+// 浏览器控制台
+// 1. 检查 Feature 模板映射
+console.log('Feature Templates:', FEATURE_TEMPLATE_MAP);
+
+// 2. 检查系统模板映射
+console.log('System Templates:', SYSTEM_TEMPLATE_MAP);
+
+// 3. 手动测试模板解析
+console.log('Resolved Path:', resolveTemplatePath('my-tool'));
 ```
 
 ### 端口冲突

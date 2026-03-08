@@ -170,10 +170,7 @@ class AgentBase {
     this._currentCallInput = input;
     this._callStartTimes.set(callId, callStartTime);
 
-    this._currentCallInput = input;
-    this._callStartTimes.set(callId, callStartTime);
-
-    // 触发 onCallStart
+    // 触发 onCallStart（正向钩子）
     await executeHook(
       this,
       () => (this as any).onCallStart({ input, context, isFirstCall }),
@@ -190,7 +187,7 @@ class AgentBase {
           { hookName: 'onInitiate', input }
         );
 
-        // 加载系统提示词
+        // 加载系统提示词（必须在反向钩子之前，确保 context 为空）
         if (this.templateResolver && context.getAll().length === 0) {
           const systemMsg = await this.templateResolver.resolve();
           if (systemMsg) {
@@ -198,18 +195,16 @@ class AgentBase {
           }
         }
 
-        // 添加用户输入
-        context.addUserMessage(input, this._callIndex);
-
-        // 推送初始状态到 DebugHub
-        this.pushToDebug(context.getAll());
-
         this._initialized = true;
-      } else {
-        // 非首次调用，直接添加用户输入
-        context.addUserMessage(input, this._callIndex);
-        this.pushToDebug(context.getAll());
       }
+
+      // ========== CallStart 反向钩子 ==========
+      // 在系统提示词之后、用户输入之前调用，确保 Feature 可以正确注入消息
+      await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall });
+
+      // 添加用户输入
+      context.addUserMessage(input, this._callIndex);
+      this.pushToDebug(context.getAll());
 
       // ========== 初始化执行器（延迟初始化）==========
       this.ensureExecutorsInitialized();
@@ -232,6 +227,15 @@ class AgentBase {
         }),
         { hookName: 'onCallFinish', input }
       );
+
+      // ========== CallFinish 反向钩子 ==========
+      await this.hooksRegistry.executeVoid(CoreLifecycle.CallFinish, {
+        input,
+        context,
+        response: result.finalResponse,
+        steps: result.turns,
+        completed: result.completed,
+      });
 
       return result.finalResponse;
 
@@ -260,6 +264,15 @@ class AgentBase {
         }),
         { hookName: 'onCallFinish', input }
       );
+
+      // ========== CallFinish 反向钩子（异常）==========
+      await this.hooksRegistry.executeVoid(CoreLifecycle.CallFinish, {
+        input,
+        context,
+        response: errorMsg,
+        steps: this._currentStep + 1,
+        completed: false,
+      });
 
       throw error;
 

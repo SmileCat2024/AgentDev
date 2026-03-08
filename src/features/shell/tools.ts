@@ -43,7 +43,11 @@ export function createShellCommandTool(description: string): Tool {
         // 使用 --rcfile 加载自定义配置，-i 确保是交互式 shell（函数生效）
         const bashCommand = `"${GIT_BASH}" --rcfile "${CUSTOM_BASHRC}" -i -c "${command.replace(/"/g, '\\"')}"`;
         const { stdout, stderr } = await execAsync(bashCommand);
-        return stdout || stderr;
+        // 过滤掉 bash 在非 TTY 环境下的作业控制警告
+        const cleanStderr = stderr?.split('\n')
+          .filter(line => !line.includes('process group') && !line.includes('job control'))
+          .join('\n') || '';
+        return stdout || cleanStderr;
       } catch (error: any) {
         const output = error.stdout || error.stderr || error.message;
         throw new Error(output);

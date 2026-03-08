@@ -111,3 +111,8 @@ desktop/*.tmp
 desktop/nul
 
 CLAUDE.md
+pyproject.toml
+.gitignore
+uv.lock
+requirements.txt
+src/features/visual/python/__pycache__/enum.cpython-312.pyc

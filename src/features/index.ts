@@ -40,3 +40,7 @@ export type { AuditResult, AuditFeatureConfig } from './audit/index.js';
 
 // OpencodeBasic Feature
 export { OpencodeBasicFeature } from './opencode-basic/index.js';
+
+// Visual Feature
+export { VisualFeature } from './visual/index.js';
+export type { WindowInfo, CaptureResult, VisualUnderstandingResult, VisualFeatureConfig } from './visual/index.js';

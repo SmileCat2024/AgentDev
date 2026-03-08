@@ -8,7 +8,7 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature } from '../src/features/index.js';
+import { AuditFeature, TodoFeature, VisualFeature } from '../src/features/index.js';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**
@@ -51,6 +51,11 @@ export class ProgrammingHelperAgent extends BasicAgent {
 
     this.use(new AuditFeature());
 
+    // 注册 VisualFeature - 提供窗口截图和视觉理解能力
+    // - onCallStart 钩子：每次对话开始时自动注入当前窗口状态
+    // - capture_and_understand_window 工具：截图指定窗口并进行视觉理解
+    this.use(new VisualFeature());
+
   }
 
   protected override async onInitiate(ctx: AgentInitiateContext): Promise<void> {
@@ -66,6 +71,13 @@ export class ProgrammingHelperAgent extends BasicAgent {
       .add({ skills: '- **{{name}}**: {{description}}' })
       .add('\n\n## MCP 工具\n\n')
       .add('除了标准工具外，你还可以使用 MCP (Model Context Protocol) 工具。MCP 工具的名称以 "mcp_" 开头。这些工具提供了与外部服务集成的能力。\n')
+      .add('\n\n## 视觉理解能力\n\n')
+      .add('你可以使用 `capture_and_understand_window` 工具来截取指定窗口的截图，并使用视觉模型理解其内容。')
+      .add('这个功能可以帮助你：')
+      .add('\n- 查看和分析当前打开的窗口内容')
+      .add('- 理解用户界面的状态和布局')
+      .add('- 获取应用窗口的视觉信息')
+      .add('\n\n每次对话开始时，你会自动收到当前系统窗口状态的摘要信息。')
     );
   }
 }

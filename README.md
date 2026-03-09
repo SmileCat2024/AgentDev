@@ -543,6 +543,43 @@ interface AgentFeature {
 }
 ```
 
+### 输入缓存机制
+
+Feature 可通过 `@CallStart` 钩子修改待注入的输入内容：
+
+```typescript
+import { CallStart } from '../core/hooks-decorator.js';
+
+export class MyFeature implements AgentFeature {
+  private _enabled: boolean = false;
+
+  @CallStart
+  async processInput(ctx: CallStartContext): Promise<void> {
+    const currentInput = ctx.agent?.getUserInput() ?? ctx.input;
+
+    // 示例：检测并去除命令前缀
+    const match = currentInput.match(/^\/(\w+)\s*(.*)$/);
+    if (match) {
+      const [, command, pureContent] = match;
+      ctx.agent?.setUserInput(pureContent); // 更新缓存
+
+      if (command === 'toggle') {
+        this._enabled = !this._enabled;
+      }
+    }
+
+    // 根据状态注入信息
+    if (this._enabled) {
+      ctx.context.add({ role: 'system', content: 'Feature 已启用' });
+    }
+  }
+}
+```
+
+**API**：
+- `ctx.agent.getUserInput()` - 获取当前输入缓存
+- `ctx.agent.setUserInput(input)` - 设置输入缓存
+
 ### Feature 目录结构
 
 ```

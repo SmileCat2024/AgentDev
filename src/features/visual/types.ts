@@ -82,7 +82,7 @@ export interface VisualFeatureConfig {
    * - 'python' - 系统默认 Python
    * - 'uv python' - uv 管理的 Python
    * - 'uv' - 使用 uv run（需要配置 pythonArgs）
-   * - 完整路径如 'C:\\Python312\\python.exe'
+   * - 完整路径如 'C:\\\Python312\\\python.exe'
    */
   pythonPath?: string;
   /**
@@ -101,11 +101,11 @@ export interface VisualFeatureConfig {
    * 示例：
    * ```
    * # 系统组件
-   * C:\Windows\explorer.exe
+   * C:\\Windows\\explorer.exe
    * # 输入法
-   * C:\Windows\System32\ctfmon.exe
+   * C:\\Windows\\System32\\ctfmon.exe
    * # 通配符匹配
-   * C:\Program Files\WindowsApps\Microsoft.InputApp_*
+   * C:\\Program Files\\WindowsApps\\Microsoft.InputApp_*
    * ```
    */
   ignoreFilePath?: string;
@@ -113,4 +113,75 @@ export interface VisualFeatureConfig {
   enableWindowInfo?: boolean;
   /** 是否在初始化时检测 Python 环境（默认 true） */
   checkPythonEnv?: boolean;
+
+  // ========== 后台监控配置 ==========
+  /**
+   * 后台监控配置
+   */
+  monitoring?: {
+    /** 是否启用后台监控 */
+    enabled?: boolean;
+    /** 轮询间隔（毫秒），默认 250 */
+    pollInterval?: number;
+
+    // ========== 截图 Worker 配置 ==========
+    /** 截图 Worker 数量，默认 3 */
+    captureWorkerCount?: number;
+    /** 分析 Worker 数量，默认 1（单线程，避免连接压力） */
+    analysisWorkerCount?: number;
+
+    // ========== 截图策略（激进）==========
+    /** 同一窗口两次截图的最小间隔（毫秒），默认 5 秒 */
+    minCaptureInterval?: number;
+    /** 失去焦点多久后重新获得焦点需要重新截图（毫秒），默认 15 秒 */
+    focusChangeCaptureThreshold?: number;
+    /** 焦点持续多久后需要重新截图（毫秒），默认 30 秒 */
+    longFocusCaptureThreshold?: number;
+    /** 焦点状态持续多久后需要截图（毫秒），默认 10 秒 */
+    focusDurationCaptureThreshold?: number;
+
+    // ========== 分析策略（保守）==========
+    /** 同一窗口两次分析的最小间隔（毫秒），默认 60 秒 */
+    minAnalysisInterval?: number;
+    /** 失去焦点多久后重新获得焦点需要重新分析（毫秒），默认 30 秒 */
+    focusChangeAnalysisThreshold?: number;
+    /** 焦点持续多久后需要重新分析（毫秒），默认 60 秒 */
+    longFocusAnalysisThreshold?: number;
+    /** 缓存过期时间（毫秒），默认 300 秒（5分钟） */
+    analysisTTL?: number;
+  };
+
+  // ========== 缓存管理配置 ==========
+  /**
+   * 缓存管理配置
+   */
+  cache?: {
+    /** 缓存根目录，默认 .agentdev/visual-cache */
+    cacheDir?: string;
+    /** 最大总大小（字节），默认 500MB */
+    maxSize?: number;
+    /** 最大文件数，默认 100 */
+    maxCount?: number;
+    /** 每个窗口保留的最大截图数量，默认 5 */
+    maxCapturesPerWindow?: number;
+    /** 截图TTL（毫秒），默认 7天 */
+    imageTTL?: number;
+    /** 分析结果TTL（毫秒），默认 7天 */
+    analysisTTL?: number;
+    /** 清理间隔（毫秒），默认 10分钟 */
+    cleanupInterval?: number;
+  };
+
+  // ========== 错误处理配置 ==========
+  /**
+   * 错误处理配置
+   */
+  errorHandling?: {
+    /** 最大重试次数，默认 1 */
+    maxRetries?: number;
+    /** 任务超时时间（毫秒），默认 30秒 */
+    taskTimeout?: number;
+    /** 是否跳过空图，默认 true */
+    skipEmptyImage?: boolean;
+  };
 }

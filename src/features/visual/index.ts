@@ -59,6 +59,10 @@ import type {
   VisualFeatureConfig,
 } from './types.js';
 import { createCaptureAndUnderstandTool } from './tools.js';
+import { WindowMonitorService } from './monitor.js';
+import { CaptureWorkerPool } from './capture-worker.js';
+import { AnalysisWorkerPool } from './analysis-worker.js';
+import { VisualCacheManager, type CacheMetadataEntry } from './cache.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -102,6 +106,15 @@ export class VisualFeature implements AgentFeature {
     baseUrl: string;
   };
   private client: OpenAI;
+
+  // 后台监控服务
+  private windowMonitorService: WindowMonitorService | null = null;
+  private captureWorkerPool: CaptureWorkerPool | null = null;
+  private analysisWorkerPool: AnalysisWorkerPool | null = null;
+  private cacheManager: VisualCacheManager | null = null;
+
+  // 视觉模式开关（通过 /visual 命令控制）
+  private _visualEnabled: boolean = false;
 
   constructor(config: VisualFeatureConfig = {}) {
     this.config = {
@@ -152,6 +165,9 @@ export class VisualFeature implements AgentFeature {
     if (this.config.checkPythonEnv) {
       await this.checkPythonEnvironment();
     }
+
+    // 初始化后台监控服务
+    await this.initializeMonitoring();
   }
 
   // ========== 私有方法 ==========
@@ -216,13 +232,162 @@ except ImportError as e:
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
-    // 无需清理
+    // 停止后台监控服务
+    await this.stopMonitoring();
+  }
+
+  // ========== 后台监控服务初始化 ==========
+
+  /**
+   * 初始化后台监控服务
+   */
+  private async initializeMonitoring(): Promise<void> {
+    const monitoringEnabled = this.config.monitoring?.enabled ?? true;
+
+    if (!monitoringEnabled) {
+      console.log('[VisualFeature] Background monitoring is disabled');
+      return;
+    }
+
+    console.log('[VisualFeature] Initializing background monitoring...');
+
+    try {
+      // 1. 初始化缓存管理器
+      const cacheConfig = {
+        cacheDir: this.config.cache?.cacheDir,
+        maxSize: this.config.cache?.maxSize,
+        maxCount: this.config.cache?.maxCount,
+        maxCapturesPerWindow: this.config.cache?.maxCapturesPerWindow ?? 5,
+        imageTTL: this.config.cache?.imageTTL,
+        analysisTTL: this.config.cache?.analysisTTL,
+        cleanupInterval: this.config.cache?.cleanupInterval,
+      };
+
+      this.cacheManager = new VisualCacheManager(cacheConfig);
+      await this.cacheManager.initialize();
+
+      // 2. 初始化窗口监控服务
+      const monitoringConfig = {
+        enabled: true,
+        pollInterval: this.config.monitoring?.pollInterval ?? 250,
+        pythonPath: this.config.pythonPath,
+        pythonArgs: this.config.pythonArgs,
+        ignoreFilePath: this.config.ignoreFilePath,
+        // Worker 数量
+        captureWorkerCount: this.config.monitoring?.captureWorkerCount ?? 3,
+        analysisWorkerCount: this.config.monitoring?.analysisWorkerCount ?? 1,
+        // 截图策略（激进）
+        minCaptureInterval: this.config.monitoring?.minCaptureInterval,
+        focusChangeCaptureThreshold: this.config.monitoring?.focusChangeCaptureThreshold,
+        longFocusCaptureThreshold: this.config.monitoring?.longFocusCaptureThreshold,
+        focusDurationCaptureThreshold: this.config.monitoring?.focusDurationCaptureThreshold,
+        // 分析策略（保守）
+        minAnalysisInterval: this.config.monitoring?.minAnalysisInterval,
+        focusChangeAnalysisThreshold: this.config.monitoring?.focusChangeAnalysisThreshold,
+        longFocusAnalysisThreshold: this.config.monitoring?.longFocusAnalysisThreshold,
+        analysisTTL: this.config.monitoring?.analysisTTL,
+      };
+
+      this.windowMonitorService = new WindowMonitorService(monitoringConfig);
+
+      // 3. 初始化 Capture Worker 池
+      if (this.captureWorkerPool === null && this.windowMonitorService !== null && this.cacheManager !== null) {
+        const captureWorkerConfig = {
+          workerCount: monitoringConfig.captureWorkerCount ?? 3,
+          pythonPath: this.config.pythonPath,
+          pythonArgs: this.config.pythonArgs,
+        };
+
+        this.captureWorkerPool = new CaptureWorkerPool(
+          captureWorkerConfig,
+          this.windowMonitorService,
+          this.cacheManager
+        );
+      }
+
+      // 4. 初始化 Analysis Worker 池
+      if (this.analysisWorkerPool === null && this.windowMonitorService !== null && this.cacheManager !== null) {
+        const analysisWorkerConfig = {
+          workerCount: monitoringConfig.analysisWorkerCount ?? 2,
+          client: this.client,
+          model: this.config.model,
+          maxRetries: this.config.errorHandling?.maxRetries ?? 1,
+          analysisTTL: this.config.monitoring?.analysisTTL ?? 300 * 1000, // 5分钟
+        };
+
+        this.analysisWorkerPool = new AnalysisWorkerPool(
+          analysisWorkerConfig,
+          this.windowMonitorService,
+          this.cacheManager
+        );
+      }
+
+      // 5. 启动监控服务和两个 Worker 池
+      if (this.windowMonitorService) {
+        this.windowMonitorService.startPolling();
+      }
+
+      if (this.captureWorkerPool) {
+        this.captureWorkerPool.start();
+      }
+
+      if (this.analysisWorkerPool) {
+        this.analysisWorkerPool.start();
+      }
+
+      console.log('[VisualFeature] Background monitoring initialized successfully');
+    } catch (error) {
+      console.error('[VisualFeature] Failed to initialize background monitoring:', error);
+      // 失败不阻塞Feature初始化
+    }
+  }
+
+  /**
+   * 停止后台监控服务
+   */
+  private async stopMonitoring(): Promise<void> {
+    console.log('[VisualFeature] Stopping background monitoring...');
+
+    try {
+      // 1. 停止轮询
+      if (this.windowMonitorService) {
+        this.windowMonitorService.stop();
+        this.windowMonitorService = null;
+      }
+
+      // 2. 停止 Capture Worker 池
+      if (this.captureWorkerPool) {
+        await this.captureWorkerPool.stop();
+        this.captureWorkerPool = null;
+      }
+
+      // 3. 停止 Analysis Worker 池
+      if (this.analysisWorkerPool) {
+        await this.analysisWorkerPool.stop();
+        this.analysisWorkerPool = null;
+      }
+
+      // 4. 停止缓存管理器
+      if (this.cacheManager) {
+        await this.cacheManager.stop();
+        this.cacheManager = null;
+      }
+
+      console.log('[VisualFeature] Background monitoring stopped');
+    } catch (error) {
+      console.error('[VisualFeature] Error stopping monitoring:', error);
+    }
   }
 
   // ========== 反向钩子（装饰器）==========
 
   /**
-   * 每次用户发起新的 onCall() 时注入窗口状态
+   * 处理 /visual 命令并注入窗口信息
+   *
+   * 逻辑：
+   * 1. 检测 /visual 命令，切换视觉模式开关
+   * 2. 如果是命令，更新输入缓存为纯净内容（去除命令前缀）
+   * 3. 如果视觉模式开启（包括刚开启的），立即注入窗口信息
    */
   @CallStart
   async injectWindowInfo(ctx: CallStartContext): Promise<void> {
@@ -230,10 +395,49 @@ except ImportError as e:
       return;
     }
 
+    // 步骤 1：检测斜杠命令格式
+    const currentInput = ctx.agent?.getUserInput() ?? ctx.input;
+    const match = currentInput.match(/^\/(\w+)\s*(.*)$/);
+
+    if (match) {
+      // 是斜杠命令
+      const [, command, pureContent] = match;
+
+      // 更新输入缓存为纯净内容（去除命令前缀）
+      ctx.agent?.setUserInput(pureContent);
+
+      // 处理 /visual 命令：切换开关
+      if (command === 'visual') {
+        this._visualEnabled = !this._visualEnabled;
+        const status = this._visualEnabled ? '开启' : '关闭';
+        ctx.context.add({
+          role: 'system',
+          content: `[视觉模式已${status}]`
+        });
+        console.log(`[VisualFeature] 视觉模式已${status}`);
+      }
+    }
+
+    // 步骤 2：如果视觉模式开启（包括刚开启的），注入窗口信息
+    if (!this._visualEnabled) {
+      return;
+    }
+
     try {
       const windows = await this.enumerateWindows();
+
+      // 如果有缓存，添加预热的分析结果
+      if (this.cacheManager) {
+        const cachedAnalyses = this.formatCachedAnalyses(windows);
+        if (cachedAnalyses) {
+          ctx.context.add({ role: 'system', content: cachedAnalyses });
+        }
+      }
+
+      // 基础窗口信息
       const message = this.formatWindowMessage(windows);
       ctx.context.add({ role: 'system', content: message });
+
       console.log(`[VisualFeature] Injected window info for ${windows.length} windows`);
     } catch (error) {
       console.warn(`[VisualFeature] Failed to inject window info:`, error);
@@ -303,7 +507,7 @@ except ImportError as e:
    */
   private formatWindowMessage(windows: WindowInfo[]): string {
     const lines = [
-      '# 当前系统窗口状态',
+      '## 当前系统窗口状态',
       '',
       `检测到 ${windows.length} 个可见窗口：`,
       '',
@@ -321,7 +525,7 @@ except ImportError as e:
 
     // 生成详细信息
     for (const [processName, wins] of byProcess.entries()) {
-      lines.push(`## ${processName}`);
+      lines.push(`### ${processName}`);
       for (const win of wins) {
         lines.push(
           `- **${win.title}** (HWND: \`${win.hwnd}\`)`,
@@ -336,6 +540,44 @@ except ImportError as e:
 
     lines.push('---');
     lines.push('*提示：你可以使用 `capture_and_understand_window` 工具来获取特定窗口的详细截图和内容分析。*');
+
+    return lines.join('\n');
+  }
+
+  /**
+   * 格式化缓存的窗口分析结果
+   */
+  private formatCachedAnalyses(windows: WindowInfo[]): string | null {
+    if (!this.cacheManager) return null;
+
+    const entries = this.cacheManager.getAllEntries();
+    if (entries.length === 0) return null;
+
+    const lines = [
+      '## 窗口视觉理解缓存',
+      '',
+      `已缓存 ${entries.length} 个窗口的分析结果（由后台监控自动生成）：`,
+      '',
+    ];
+
+    // 按窗口匹配并添加分析结果
+    for (const entry of entries) {
+      // 查找匹配的窗口信息
+      const win = windows.find(w => w.hwnd === entry.hwnd);
+      if (win) {
+        lines.push(`## ${win.title} (HWND: \`${entry.hwnd}\`)`);
+      } else {
+        lines.push(`## ${entry.title} (HWND: \`${entry.hwnd}\`)`);
+      }
+
+      lines.push(`**分析结果：**`);
+      lines.push(entry.analysis.description);
+      lines.push(`*分析时间：${new Date(entry.analysis.createdAt).toLocaleString()}*`);
+      lines.push('');
+    }
+
+    lines.push('---');
+    lines.push('*注：这些分析结果由后台监控自动生成，可能不是最新状态。如需最新分析，请使用 `capture_and_understand_window` 工具。*');
 
     return lines.join('\n');
   }

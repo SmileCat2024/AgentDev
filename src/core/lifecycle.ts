@@ -132,6 +132,8 @@ export interface CallStartContext {
   context: Context;
   /** 是否首次调用 */
   isFirstCall: boolean;
+  /** Agent 实例（用于访问 setUserInput/getUserInput 等 API） */
+  agent?: any;
 }
 
 /**

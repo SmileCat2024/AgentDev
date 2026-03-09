@@ -88,6 +88,9 @@ class AgentBase {
   protected _callIndex: number = -1;     // 用户交互序号（onCall 次数）
   protected _callStartTimes: Map<number, number> = new Map();
 
+  // 用户输入缓存（用于 Feature 修改待注入的输入内容）
+  private _pendingInput: string | null = null;
+
   // 模块实例（延迟初始化）
   private templateResolver?: TemplateResolver;
   private toolExecutor?: ToolExecutor;
@@ -142,6 +145,30 @@ class AgentBase {
   }
 
   // ========== 公开方法 ==========
+
+  /**
+   * 设置待注入的用户输入
+   *
+   * Feature 可以在 CallStart 钩子中调用此方法来修改即将注入到上下文的输入内容
+   * 典型用法：处理斜杠命令，去除命令前缀后更新输入
+   *
+   * @param input 新的输入内容
+   */
+  setUserInput(input: string): void {
+    this._pendingInput = input;
+  }
+
+  /**
+   * 获取当前待注入的用户输入
+   *
+   * Feature 可以在 CallStart 钩子中调用此方法来获取当前输入缓存
+   * 用于链式处理或条件判断
+   *
+   * @returns 当前输入缓存，如果未设置则返回空字符串
+   */
+  getUserInput(): string {
+    return this._pendingInput ?? '';
+  }
 
   /**
    * 唯一的公开入口 - 执行 Agent
@@ -200,10 +227,16 @@ class AgentBase {
 
       // ========== CallStart 反向钩子 ==========
       // 在系统提示词之后、用户输入之前调用，确保 Feature 可以正确注入消息
-      await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall });
 
-      // 添加用户输入
-      context.addUserMessage(input, this._callIndex);
+      // 设置输入缓存（Feature 可以在钩子中通过 setUserInput 修改）
+      this._pendingInput = input;
+
+      // 执行反向钩子，Feature 可以在此期间修改 _pendingInput
+      await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall, agent: this });
+
+      // 添加用户输入（使用可能被 Feature 修改过的缓存）
+      const finalInput = this._pendingInput ?? input;
+      context.addUserMessage(finalInput, this._callIndex);
       this.pushToDebug(context.getAll());
 
       // ========== 初始化执行器（延迟初始化）==========
@@ -280,6 +313,9 @@ class AgentBase {
       this._callStartTimes.delete(callId);
       this._currentCallInput = undefined;
       this._currentStep = 0;
+
+      // 清理输入缓存
+      this._pendingInput = null;
 
       // 清除通知上下文
       try {

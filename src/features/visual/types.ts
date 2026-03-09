@@ -71,10 +71,26 @@ export interface VisualUnderstandingResult {
  * VisualFeature 配置
  */
 export interface VisualFeatureConfig {
+  // ========== 自动视觉理解配置（后台监控使用）==========
   /** LLM 服务地址（默认 localhost:7575） */
   baseUrl?: string;
   /** 视觉理解模型名称（默认 Qwen3.5-4B-Q5_K_M） */
   model?: string;
+
+  // ========== 主动视觉理解配置（工具调用使用）==========
+  /**
+   * 主动视觉理解服务配置
+   *
+   * 用于用户主动调用 capture_and_understand_window_advanced 工具时使用
+   * 使用更大的模型（如 Qwen3.5-9B-Q4_K_M）提供更准确的理解
+   */
+  advancedVision?: {
+    /** LLM 服务地址（默认 localhost:7577） */
+    baseUrl?: string;
+    /** 视觉理解模型名称（默认 Qwen3.5-9B-Q4_K_M） */
+    model?: string;
+  };
+
   /**
    * Python 可执行文件路径（默认 'python'）
    *

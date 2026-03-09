@@ -192,6 +192,50 @@ export class VisualCacheManager {
     await this.cleanup();
   }
 
+  /**
+   * 清空所有缓存（删除所有缓存文件和元数据）
+   */
+  async clear(): Promise<void> {
+    console.log('[VisualCacheManager] Clearing all cache...');
+
+    try {
+      // 1. 删除所有截图文件
+      const { readdir, unlink } = await import('fs/promises');
+      const imageFiles = await readdir(this.imagesDir).catch(() => []);
+      for (const file of imageFiles) {
+        const imagePath = join(this.imagesDir, file);
+        await unlink(imagePath).catch(err => {
+          console.warn(`[VisualCacheManager] Failed to delete image ${imagePath}:`, err);
+        });
+      }
+
+      // 2. 删除所有分析文件
+      const analysisFiles = await readdir(this.analysesDir).catch(() => []);
+      for (const file of analysisFiles) {
+        const analysisPath = join(this.analysesDir, file);
+        await unlink(analysisPath).catch(err => {
+          console.warn(`[VisualCacheManager] Failed to delete analysis ${analysisPath}:`, err);
+        });
+      }
+
+      // 3. 重置元数据
+      this.metadata = {
+        version: '1.0',
+        lastCleanup: 0,
+        totalSize: 0,
+        count: 0,
+        entries: {},
+      };
+
+      // 4. 保存清空后的元数据
+      await this.saveMetadata();
+
+      console.log('[VisualCacheManager] Cache cleared successfully');
+    } catch (error) {
+      console.error('[VisualCacheManager] Error clearing cache:', error);
+    }
+  }
+
   // ========== 文件操作 ==========
 
   /**

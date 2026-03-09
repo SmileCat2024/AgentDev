@@ -58,7 +58,7 @@ import type {
   VisualUnderstandingResult,
   VisualFeatureConfig,
 } from './types.js';
-import { createCaptureAndUnderstandTool } from './tools.js';
+import { createCaptureAndUnderstandTool, createCaptureAndUnderstandAdvancedTool } from './tools.js';
 import { WindowMonitorService } from './monitor.js';
 import { CaptureWorkerPool } from './capture-worker.js';
 import { AnalysisWorkerPool } from './analysis-worker.js';
@@ -70,6 +70,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_BASE_URL = 'http://localhost:7575';
 const DEFAULT_MODEL = 'Qwen3.5-4B-Q5_K_M';
+
+// 主动视觉理解默认配置
+const DEFAULT_ADVANCED_BASE_URL = 'http://localhost:7577';
+const DEFAULT_ADVANCED_MODEL = 'Qwen3.5-9B-Q4_K_M';
 
 /**
  * 获取项目本地 Python 路径
@@ -104,8 +108,11 @@ export class VisualFeature implements AgentFeature {
     checkPythonEnv: boolean;
     model: string;
     baseUrl: string;
+    advancedBaseUrl: string;
+    advancedModel: string;
   };
   private client: OpenAI;
+  private advancedClient: OpenAI; // 主动视觉理解客户端
 
   // 后台监控服务
   private windowMonitorService: WindowMonitorService | null = null;
@@ -116,20 +123,50 @@ export class VisualFeature implements AgentFeature {
   // 视觉模式开关（通过 /visual 命令控制）
   private _visualEnabled: boolean = false;
 
+  // 增量注入状态跟踪
+  private injectionState: {
+    isFirstInjection: boolean;
+    lastInjectedWindows: Map<string, {
+      title: string;
+      status: string;
+      processPath: string;
+      isForeground: boolean;
+    }>;
+    lastInjectedAnalyses: Map<string, string>; // hwnd -> description hash
+    focusHistory: string[]; // 最近焦点切换的窗口 hwnd 列表（最多 3 个）
+    lastForegroundHwnd: string | null;
+  };
+
   constructor(config: VisualFeatureConfig = {}) {
+    // 初始化增量注入状态
+    this.injectionState = {
+      isFirstInjection: true,
+      lastInjectedWindows: new Map(),
+      lastInjectedAnalyses: new Map(),
+      focusHistory: [],
+      lastForegroundHwnd: null,
+    };
     this.config = {
       baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
       model: config.model ?? DEFAULT_MODEL,
+      advancedBaseUrl: config.advancedVision?.baseUrl ?? DEFAULT_ADVANCED_BASE_URL,
+      advancedModel: config.advancedVision?.model ?? DEFAULT_ADVANCED_MODEL,
       pythonPath: config.pythonPath ?? getDefaultPythonPath(),
       pythonArgs: config.pythonArgs,
       enableWindowInfo: config.enableWindowInfo ?? true,
       checkPythonEnv: config.checkPythonEnv ?? true,
     };
 
-    // 初始化 OpenAI 客户端（连接本地服务）
+    // 初始化 OpenAI 客户端（自动视觉理解，后台监控使用）
     this.client = new OpenAI({
       baseURL: `${this.config.baseUrl}/v1`,
       apiKey: 'visual-key', // 本地服务不需要真实 key
+    });
+
+    // 初始化主动视觉理解客户端（工具调用使用）
+    this.advancedClient = new OpenAI({
+      baseURL: `${this.config.advancedBaseUrl}/v1`,
+      apiKey: 'visual-key',
     });
   }
 
@@ -141,11 +178,21 @@ export class VisualFeature implements AgentFeature {
 
   async getAsyncTools(_ctx: FeatureInitContext): Promise<Tool[]> {
     return [
+      // 基础视觉理解工具（4B 模型，快速）
       createCaptureAndUnderstandTool(
         this.client,
         this.config.model ?? DEFAULT_MODEL,
         this.config.pythonPath,
-        this.config.pythonArgs
+        this.config.pythonArgs,
+        this.cacheManager // 传递 cacheManager 以支持缓存回退
+      ),
+      // 高级视觉理解工具（9B 模型，更准确）
+      createCaptureAndUnderstandAdvancedTool(
+        this.advancedClient,
+        this.config.advancedModel ?? DEFAULT_ADVANCED_MODEL,
+        this.config.pythonPath,
+        this.config.pythonArgs,
+        this.cacheManager // 传递 cacheManager 以支持缓存回退
       ),
     ];
   }
@@ -266,6 +313,9 @@ except ImportError as e:
       this.cacheManager = new VisualCacheManager(cacheConfig);
       await this.cacheManager.initialize();
 
+      // 清空缓存，为本次运行做好准备
+      await this.cacheManager.clear();
+
       // 2. 初始化窗口监控服务
       const monitoringConfig = {
         enabled: true,
@@ -382,12 +432,16 @@ except ImportError as e:
   // ========== 反向钩子（装饰器）==========
 
   /**
-   * 处理 /visual 命令并注入窗口信息
+   * 处理 /visual 命令并注入窗口信息（增量版本）
    *
    * 逻辑：
    * 1. 检测 /visual 命令，切换视觉模式开关
    * 2. 如果是命令，更新输入缓存为纯净内容（去除命令前缀）
    * 3. 如果视觉模式开启（包括刚开启的），立即注入窗口信息
+   *
+   * 增量注入策略：
+   * - 第一次：全量注入（所有窗口 + 所有缓存）
+   * - 后续：只注入变化部分（窗口状态变化 + 新的分析结果）
    */
   @CallStart
   async injectWindowInfo(ctx: CallStartContext): Promise<void> {
@@ -410,6 +464,16 @@ except ImportError as e:
       if (command === 'visual') {
         this._visualEnabled = !this._visualEnabled;
         const status = this._visualEnabled ? '开启' : '关闭';
+
+        // 重置增量注入状态
+        if (this._visualEnabled) {
+          this.injectionState.isFirstInjection = true;
+          this.injectionState.lastInjectedWindows.clear();
+          this.injectionState.lastInjectedAnalyses.clear();
+          this.injectionState.focusHistory = [];
+          this.injectionState.lastForegroundHwnd = null;
+        }
+
         ctx.context.add({
           role: 'system',
           content: `[视觉模式已${status}]`
@@ -424,21 +488,32 @@ except ImportError as e:
     }
 
     try {
-      const windows = await this.enumerateWindows();
-
-      // 如果有缓存，添加预热的分析结果
-      if (this.cacheManager) {
-        const cachedAnalyses = this.formatCachedAnalyses(windows);
-        if (cachedAnalyses) {
-          ctx.context.add({ role: 'system', content: cachedAnalyses });
+      // 获取当前焦点窗口（用于焦点历史追踪）
+      const foregroundHwnd = await this.getForegroundWindow();
+      if (foregroundHwnd && foregroundHwnd !== this.injectionState.lastForegroundHwnd) {
+        // 焦点切换了，记录到历史
+        this.injectionState.focusHistory.push(foregroundHwnd);
+        // 只保留最近 3 个
+        if (this.injectionState.focusHistory.length > 3) {
+          this.injectionState.focusHistory.shift();
         }
+        this.injectionState.lastForegroundHwnd = foregroundHwnd;
       }
 
-      // 基础窗口信息
-      const message = this.formatWindowMessage(windows);
-      ctx.context.add({ role: 'system', content: message });
+      const windows = await this.enumerateWindows();
 
-      console.log(`[VisualFeature] Injected window info for ${windows.length} windows`);
+      // 合并注入：窗口状态变化 + 缓存分析变化
+      const message = this.formatIncrementalMessage(windows, foregroundHwnd);
+
+      if (message) {
+        ctx.context.add({ role: 'system', content: message });
+
+        const injectionType = this.injectionState.isFirstInjection ? '全量' : '增量';
+        console.log(`[VisualFeature] ${injectionType}注入窗口信息 (${windows.length} 个窗口)`);
+      }
+
+      // 更新状态（标记非首次注入）
+      this.injectionState.isFirstInjection = false;
     } catch (error) {
       console.warn(`[VisualFeature] Failed to inject window info:`, error);
       // 失败时不阻塞，只记录警告
@@ -503,7 +578,43 @@ except ImportError as e:
   }
 
   /**
-   * 格式化窗口信息为系统消息
+   * 获取当前焦点窗口句柄
+   */
+  private async getForegroundWindow(): Promise<string | null> {
+    const scriptPath = join(__dirname, 'python', 'get_foreground_window.py');
+
+    return new Promise((resolve) => {
+      const args = this.config.pythonArgs
+        ? [...this.config.pythonArgs, scriptPath]
+        : [scriptPath];
+
+      const child = spawn(this.config.pythonPath, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+
+      let stdout = '';
+
+      child.stdout?.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      child.on('close', (code) => {
+        if (code === 0 && stdout.trim()) {
+          resolve(stdout.trim());
+        } else {
+          resolve(null);
+        }
+      });
+
+      child.on('error', () => {
+        resolve(null);
+      });
+    });
+  }
+
+  /**
+   * 格式化窗口信息为系统消息（全量版本，用于首次注入）
    */
   private formatWindowMessage(windows: WindowInfo[]): string {
     const lines = [
@@ -527,11 +638,12 @@ except ImportError as e:
     for (const [processName, wins] of byProcess.entries()) {
       lines.push(`### ${processName}`);
       for (const win of wins) {
+        // 不显示窗口尺寸位置，显示进程 exe 路径
         lines.push(
           `- **${win.title}** (HWND: \`${win.hwnd}\`)`,
           `  - 类名: ${win.class_name}`,
           `  - 状态: ${win.status}`,
-          `  - 位置: (${win.position.x}, ${win.position.y}) 尺寸: ${win.position.width}x${win.position.height}`,
+          `  - 进程路径: \`${win.process_path}\``,
           `  - PID: ${win.pid}${win.is_always_on_top ? ' | 置顶' : ''}`
         );
         lines.push('');
@@ -545,7 +657,7 @@ except ImportError as e:
   }
 
   /**
-   * 格式化缓存的窗口分析结果
+   * 格式化缓存的窗口分析结果（全量版本，用于首次注入）
    */
   private formatCachedAnalyses(windows: WindowInfo[]): string | null {
     if (!this.cacheManager) return null;
@@ -553,33 +665,331 @@ except ImportError as e:
     const entries = this.cacheManager.getAllEntries();
     if (entries.length === 0) return null;
 
-    const lines = [
-      '## 窗口视觉理解缓存',
-      '',
-      `已缓存 ${entries.length} 个窗口的分析结果（由后台监控自动生成）：`,
-      '',
-    ];
+    const lines: string[] = [];
 
     // 按窗口匹配并添加分析结果
     for (const entry of entries) {
       // 查找匹配的窗口信息
       const win = windows.find(w => w.hwnd === entry.hwnd);
       if (win) {
-        lines.push(`## ${win.title} (HWND: \`${entry.hwnd}\`)`);
+        lines.push(`### ${win.title} (HWND: \`${entry.hwnd}\`)`);
       } else {
-        lines.push(`## ${entry.title} (HWND: \`${entry.hwnd}\`)`);
+        lines.push(`### ${entry.title} (HWND: \`${entry.hwnd}\`)`);
       }
 
-      lines.push(`**分析结果：**`);
-      lines.push(entry.analysis.description);
+      lines.push(`**分析结果：** ${entry.analysis.description}`);
       lines.push(`*分析时间：${new Date(entry.analysis.createdAt).toLocaleString()}*`);
       lines.push('');
     }
 
-    lines.push('---');
-    lines.push('*注：这些分析结果由后台监控自动生成，可能不是最新状态。如需最新分析，请使用 `capture_and_understand_window` 工具。*');
+    return lines.length > 0 ? lines.join('\n') : null;
+  }
+
+  // ========== 增量注入相关方法 ==========
+
+  /**
+   * 计算简单哈希（用于检测内容变化）
+   */
+  private hashDescription(description: string): string {
+    // 简单哈希：取前 50 个字符 + 长度，避免大字符串比较
+    const prefix = description.slice(0, 50);
+    return `${prefix}...[${description.length}]`;
+  }
+
+  /**
+   * 计算窗口状态变化
+   */
+  private computeWindowChanges(windows: WindowInfo[], foregroundHwnd: string | null): {
+    newWindows: WindowInfo[];
+    closedWindows: string[];
+    statusChanged: Array<{ hwnd: string; title: string; oldStatus: string; newStatus: string }>;
+    titleChanged: Array<{ hwnd: string; oldTitle: string; newTitle: string }>;
+    recentFocus: string[]; // 最近焦点切换的窗口句柄列表
+  } {
+    const currentHwnds = new Set(windows.map(w => w.hwnd));
+    const previousHwnds = new Set(this.injectionState.lastInjectedWindows.keys());
+
+    // 新窗口（打开或最大化）
+    const newWindows: WindowInfo[] = [];
+    for (const win of windows) {
+      const prev = this.injectionState.lastInjectedWindows.get(win.hwnd);
+      if (!prev) {
+        // 新窗口
+        newWindows.push(win);
+      } else {
+        // 检查状态变化：从最小化变为正常/最大化 = 打开
+        if (prev.status === 'Minimized' && win.status !== 'Minimized') {
+          newWindows.push(win);
+        }
+      }
+    }
+
+    // 关闭的窗口（从上次列表中消失，或变为最小化）
+    const closedWindows: string[] = [];
+    for (const [hwnd, prev] of this.injectionState.lastInjectedWindows) {
+      const current = windows.find(w => w.hwnd === hwnd);
+      if (!current) {
+        // 窗口不存在了 = 关闭
+        closedWindows.push(hwnd);
+      } else if (current.status === 'Minimized' && prev.status !== 'Minimized') {
+        // 从正常变为最小化 = 缩小
+        closedWindows.push(hwnd);
+      }
+    }
+
+    // 状态变化（不包括新打开/关闭的）
+    const statusChanged: Array<{ hwnd: string; title: string; oldStatus: string; newStatus: string }> = [];
+    for (const win of windows) {
+      const prev = this.injectionState.lastInjectedWindows.get(win.hwnd);
+      if (prev && prev.status !== win.status) {
+        // 排除刚从最小化恢复的情况（已算在 newWindows 中）
+        if (!(prev.status === 'Minimized' && win.status !== 'Minimized')) {
+          statusChanged.push({
+            hwnd: win.hwnd,
+            title: win.title,
+            oldStatus: prev.status,
+            newStatus: win.status,
+          });
+        }
+      }
+    }
+
+    // 标题变化
+    const titleChanged: Array<{ hwnd: string; oldTitle: string; newTitle: string }> = [];
+    for (const win of windows) {
+      const prev = this.injectionState.lastInjectedWindows.get(win.hwnd);
+      if (prev && prev.title !== win.title) {
+        titleChanged.push({
+          hwnd: win.hwnd,
+          oldTitle: prev.title,
+          newTitle: win.title,
+        });
+      }
+    }
+
+    return {
+      newWindows,
+      closedWindows,
+      statusChanged,
+      titleChanged,
+      recentFocus: this.injectionState.focusHistory.slice(-3), // 最近 3 个焦点窗口
+    };
+  }
+
+  /**
+   * 计算缓存分析结果变化
+   */
+  private computeAnalysisChanges(windows: WindowInfo[]): Array<{
+    hwnd: string;
+    title: string;
+    description: string;
+    isUpdate: boolean;
+  }> {
+    if (!this.cacheManager) return [];
+
+    const entries = this.cacheManager.getAllEntries();
+    const changes: Array<{ hwnd: string; title: string; description: string; isUpdate: boolean }> = [];
+
+    for (const entry of entries) {
+      const win = windows.find(w => w.hwnd === entry.hwnd);
+      const title = win?.title ?? entry.title;
+      const currentHash = this.hashDescription(entry.analysis.description);
+      const previousHash = this.injectionState.lastInjectedAnalyses.get(entry.hwnd);
+
+      if (!previousHash) {
+        // 新的分析结果
+        changes.push({
+          hwnd: entry.hwnd,
+          title,
+          description: entry.analysis.description,
+          isUpdate: false,
+        });
+      } else if (previousHash !== currentHash) {
+        // 分析结果更新了
+        changes.push({
+          hwnd: entry.hwnd,
+          title,
+          description: entry.analysis.description,
+          isUpdate: true,
+        });
+      }
+    }
+
+    return changes;
+  }
+
+  /**
+   * 格式化窗口变化
+   */
+  private formatWindowChanges(changes: ReturnType<typeof this.computeWindowChanges>): string | null {
+    const lines: string[] = [];
+
+    // 新打开/最大化的窗口
+    if (changes.newWindows.length > 0) {
+      lines.push('## 新打开/最大化的窗口');
+      for (const win of changes.newWindows) {
+        lines.push(`- **${win.title}** (HWND: \`${win.hwnd}\`)`);
+        lines.push(`  - 进程: ${win.process_name}`);
+        lines.push(`  - 状态: ${win.status}`);
+        lines.push(`  - 进程路径: \`${win.process_path}\``);
+        lines.push('');
+      }
+    }
+
+    // 关闭/缩小的窗口
+    if (changes.closedWindows.length > 0) {
+      lines.push('## 关闭/缩小的窗口');
+      for (const hwnd of changes.closedWindows) {
+        const prev = this.injectionState.lastInjectedWindows.get(hwnd);
+        lines.push(`- **${prev?.title ?? 'Unknown'}** (HWND: \`${hwnd}\`)`);
+        lines.push('');
+      }
+    }
+
+    // 状态变化
+    if (changes.statusChanged.length > 0) {
+      lines.push('## 窗口状态变化');
+      for (const change of changes.statusChanged) {
+        lines.push(`- **${change.title}** (HWND: \`${change.hwnd}\`)`);
+        lines.push(`  - ${change.oldStatus} → ${change.newStatus}`);
+        lines.push('');
+      }
+    }
+
+    // 标题变化
+    if (changes.titleChanged.length > 0) {
+      lines.push('## 窗口标题变化');
+      for (const change of changes.titleChanged) {
+        lines.push(`- (HWND: \`${change.hwnd}\`)`);
+        lines.push(`  - "${change.oldTitle}" → "${change.newTitle}"`);
+        lines.push('');
+      }
+    }
+
+    // 最近焦点切换的窗口
+    if (changes.recentFocus.length > 0) {
+      lines.push('## 最近焦点切换');
+      const titles = changes.recentFocus.map(hwnd => {
+        const win = changes.newWindows.find(w => w.hwnd === hwnd);
+        if (win) return win.title;
+        const prev = this.injectionState.lastInjectedWindows.get(hwnd);
+        return prev?.title ?? hwnd;
+      });
+      lines.push(titles.map((t, i) => `${i + 1}. ${t}`).join('\n'));
+      lines.push('');
+    }
+
+    return lines.length > 0 ? lines.join('\n') : null;
+  }
+
+  /**
+   * 格式化分析变化
+   */
+  private formatAnalysisChanges(changes: ReturnType<typeof this.computeAnalysisChanges>): string | null {
+    if (changes.length === 0) return null;
+
+    const lines = ['## 窗口内容更新', ''];
+
+    for (const change of changes) {
+      lines.push(`### ${change.title} (HWND: \`${change.hwnd}\`)`);
+      lines.push(change.isUpdate ? '**更新内容：**' : '**新识别内容：**');
+      lines.push(change.description);
+      lines.push('');
+    }
 
     return lines.join('\n');
+  }
+
+  /**
+   * 格式化增量消息（合并窗口状态变化 + 缓存分析变化 + 首次全量）
+   */
+  private formatIncrementalMessage(windows: WindowInfo[], foregroundHwnd: string | null): string | null {
+    const lines: string[] = [];
+
+    if (this.injectionState.isFirstInjection) {
+      // ========== 首次注入：全量 ==========
+
+      // 1. 窗口状态（全量）
+      lines.push(this.formatWindowMessage(windows));
+
+      // 2. 缓存分析（全量）
+      const cachedAnalyses = this.formatCachedAnalyses(windows);
+      if (cachedAnalyses) {
+        lines.push('');
+        lines.push('## 窗口视觉理解缓存');
+        lines.push('');
+        lines.push(cachedAnalyses);
+      }
+
+      // 更新状态记录
+      for (const win of windows) {
+        this.injectionState.lastInjectedWindows.set(win.hwnd, {
+          title: win.title,
+          status: win.status,
+          processPath: win.process_path,
+          isForeground: win.hwnd === foregroundHwnd,
+        });
+      }
+
+      // 记录已注入的分析
+      if (this.cacheManager) {
+        const entries = this.cacheManager.getAllEntries();
+        for (const entry of entries) {
+          this.injectionState.lastInjectedAnalyses.set(
+            entry.hwnd,
+            this.hashDescription(entry.analysis.description)
+          );
+        }
+      }
+    } else {
+      // ========== 后续注入：增量 ==========
+
+      // 1. 计算窗口状态变化
+      const windowChanges = this.computeWindowChanges(windows, foregroundHwnd);
+      const windowChangesText = this.formatWindowChanges(windowChanges);
+
+      // 2. 计算缓存分析变化
+      const analysisChanges = this.computeAnalysisChanges(windows);
+      const analysisChangesText = this.formatAnalysisChanges(analysisChanges);
+
+      // 3. 合并输出
+      if (windowChangesText || analysisChangesText) {
+        if (windowChangesText) {
+          lines.push(windowChangesText);
+        }
+
+        if (analysisChangesText) {
+          if (lines.length > 0) lines.push('');
+          lines.push(analysisChangesText);
+        }
+
+        lines.push('---');
+        lines.push('*提示：你可以使用 `capture_and_understand_window` 工具来获取特定窗口的详细截图和内容分析。*');
+      }
+
+      // 更新状态记录
+      for (const win of windows) {
+        this.injectionState.lastInjectedWindows.set(win.hwnd, {
+          title: win.title,
+          status: win.status,
+          processPath: win.process_path,
+          isForeground: win.hwnd === foregroundHwnd,
+        });
+      }
+
+      // 记录已注入的分析
+      if (this.cacheManager) {
+        const entries = this.cacheManager.getAllEntries();
+        for (const entry of entries) {
+          this.injectionState.lastInjectedAnalyses.set(
+            entry.hwnd,
+            this.hashDescription(entry.analysis.description)
+          );
+        }
+      }
+    }
+
+    return lines.length > 0 ? lines.join('\n') : null;
   }
 }
 

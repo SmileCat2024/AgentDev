@@ -15,17 +15,48 @@ import { dirname, join } from 'path';
 import type { AgentFeature, FeatureInitContext } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import { createWebFetchTool } from './tools.js';
-import { MCPClient, createMCPToolsFromClient } from '../../mcp/client.js';
-import { loadMCPConfigFromInput } from '../../mcp/config.js';
+import type { MCPClient } from '../../mcp/client.js';
 import { MCPConnectionManager } from '../../mcp/connection-manager.js';
-import type { MCPServerConfig } from '../../mcp/types.js';
+import { loadMCPConfigFromInput } from '../../mcp/config.js';
+import { mountMCPToolsFromConfig, type MCPToolManagementOptions } from '../../mcp/mount.js';
+import type { MCPConfig, MCPSSEConfig } from '../../mcp/types.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const DEFAULT_CRAWL4AI_CONFIG_PATH = join(__dirname, 'mcp', 'crawl4ai.json');
 
 function formatCrawl4aiToolName(toolName: string): string {
   return `websearch_crawl4ai_${toolName}`.replace(/[^a-zA-Z0-9_]/g, '_');
+}
+
+export interface WebSearchFeatureConfig {
+  crawl4ai?: false | (MCPToolManagementOptions & {
+    server?: MCPSSEConfig;
+  });
+}
+
+function createDefaultCrawl4aiConfig(config?: WebSearchFeatureConfig['crawl4ai']): MCPConfig {
+  const baseConfig = loadMCPConfigFromInput(DEFAULT_CRAWL4AI_CONFIG_PATH);
+  if (!baseConfig) {
+    throw new Error(`Missing built-in crawl4ai config: ${DEFAULT_CRAWL4AI_CONFIG_PATH}`);
+  }
+
+  if (!(config && typeof config === 'object' && config.server)) {
+    return baseConfig;
+  }
+
+  const [serverId] = Object.keys(baseConfig.servers);
+  if (!serverId) {
+    throw new Error(`Invalid built-in crawl4ai config: ${DEFAULT_CRAWL4AI_CONFIG_PATH}`);
+  }
+
+  return {
+    servers: {
+      ...baseConfig.servers,
+      [serverId]: config.server,
+    },
+  };
 }
 
 /**
@@ -38,6 +69,8 @@ export class WebSearchFeature implements AgentFeature {
   private readonly manager = new MCPConnectionManager();
   private readonly crawl4aiClients = new Map<string, MCPClient>();
 
+  constructor(private readonly config: WebSearchFeatureConfig = {}) {}
+
   /**
    * 获取工具列表
    */
@@ -46,33 +79,33 @@ export class WebSearchFeature implements AgentFeature {
   }
 
   async getAsyncTools(_ctx: FeatureInitContext): Promise<Tool[]> {
-    const crawl4aiConfig = loadMCPConfigFromInput('.agentdev/mcps/crawl4ai.json');
-    if (!crawl4aiConfig) {
+    if (this.config.crawl4ai === false) {
       return [];
     }
 
-    const tools: Tool[] = [];
-    for (const [serverId, serverConfig] of Object.entries(crawl4aiConfig.servers)) {
-      try {
-        const client = this.crawl4aiClients.get(serverId) ?? new MCPClient(
-          serverId,
-          serverConfig as MCPServerConfig,
-          this.manager
-        );
-        this.crawl4aiClients.set(serverId, client);
+    const crawl4aiConfig = createDefaultCrawl4aiConfig(this.config.crawl4ai);
 
-        const discoveredTools = await createMCPToolsFromClient(client, {
-          mapName: (tool) => formatCrawl4aiToolName(tool.name),
-          render: { call: 'crawl4ai', result: 'crawl4ai' },
-        });
-        tools.push(...discoveredTools);
-      } catch (error) {
+    const result = await mountMCPToolsFromConfig(crawl4aiConfig, {
+      manager: this.manager,
+      clients: this.crawl4aiClients,
+      getServerOptions: () => ({
+        mapName: tool => formatCrawl4aiToolName(tool.name),
+        render: { call: 'crawl4ai', result: 'crawl4ai' },
+        describe: {
+          md: 'Fetch a webpage and return cleaned Markdown content.',
+          html: 'Fetch a webpage and return cleaned HTML content.',
+          crawl: 'Crawl one or more URLs and return crawl results.',
+          ask: 'Query crawl4ai knowledge and documentation context.',
+        },
+        ...(this.config.crawl4ai || {}),
+      }),
+      onError: (serverId, error) => {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.warn(`[WebSearchFeature] Failed to load crawl4ai tools from "${serverId}": ${errorMsg}`);
-      }
-    }
+      },
+    });
 
-    return tools;
+    return result.tools;
   }
 
   async onDestroy(): Promise<void> {

@@ -11,6 +11,7 @@ export interface MCPDiscoveredTool {
 
 export interface MCPToolCreationOptions {
   name?: string;
+  description?: string;
   render?: MCPToolAdapterConfig['render'];
   transformArgs?: (args: Record<string, unknown>, context?: any) => Record<string, unknown>;
 }
@@ -79,7 +80,7 @@ export function createMCPTool(
   return new MCPToolAdapter(
     {
       name: options.name ?? createDefaultMCPToolName(client.serverId, tool.name),
-      description: tool.description || `MCP tool: ${tool.name}`,
+      description: options.description ?? (tool.description || `MCP tool: ${tool.name}`),
       inputSchema: tool.inputSchema,
       enabled: true,
       handler: async (args: Record<string, unknown>, context?: any) => {
@@ -104,6 +105,7 @@ export async function createMCPToolsFromClient(
     .filter(tool => options.filter ? options.filter(tool) : true)
     .map(tool => createMCPTool(client, tool, {
       name: options.mapName?.(tool),
+      description: tool.description,
       render: options.render,
       transformArgs: options.transformArgs,
     }));

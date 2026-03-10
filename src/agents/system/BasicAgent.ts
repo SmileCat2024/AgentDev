@@ -72,6 +72,8 @@ export interface BasicAgentConfig {
   mcpServer?: string | false;
   /** MCP 运行时上下文（可选，如 GitHub Token） */
   mcpContext?: Record<string, unknown>;
+  /** 自动扫描 MCP 时排除的 serverId 列表 */
+  excludeMcpServers?: string[];
   /** 自定义工具集（可选，默认使用系统工具集） */
   tools?: Tool[];
   /** Skills 目录（可选，默认使用 .agentdev/skills） */
@@ -160,7 +162,9 @@ export class BasicAgent extends Agent {
     const hasDefaultMCPConfigs = existsSync(getDefaultMCPConfigDir());
     const shouldEnableMCP = config.mcpServer !== false && (typeof config.mcpServer === 'string' || hasDefaultMCPConfigs);
     if (shouldEnableMCP) {
-      this._mcpFeature = new MCPFeature();
+      this._mcpFeature = typeof config.mcpServer === 'string'
+        ? new MCPFeature(config.mcpServer)
+        : new MCPFeature(undefined, { excludeServers: config.excludeMcpServers });
       if (config.mcpContext) {
         this._mcpFeature.setMCPContext(config.mcpContext);
       }

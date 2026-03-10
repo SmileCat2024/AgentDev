@@ -15,6 +15,7 @@ export type {
 
 // MCP Feature
 export { MCPFeature } from './mcp/index.js';
+export type { MCPFeatureOptions } from './mcp/index.js';
 
 // Skill Feature
 export { SkillFeature } from './skill/index.js';
@@ -47,3 +48,4 @@ export type { WindowInfo, CaptureResult, VisualUnderstandingResult, VisualFeatur
 
 // WebSearch Feature
 export { WebSearchFeature } from './websearch/index.js';
+export type { WebSearchFeatureConfig } from './websearch/index.js';

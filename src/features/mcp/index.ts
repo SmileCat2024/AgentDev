@@ -28,10 +28,11 @@ import type {
   ToolContextValue,
 } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
-import { MCPClient, createMCPToolsFromClient, discoverMCPTools } from '../../mcp/client.js';
 import { loadAllMCPConfigs, loadMCPConfigFromInput } from '../../mcp/config.js';
 import { MCPConnectionManager } from '../../mcp/connection-manager.js';
-import type { MCPConfig, MCPServerConfig } from '../../mcp/types.js';
+import { mountMCPToolsFromConfig } from '../../mcp/mount.js';
+import type { MCPClient } from '../../mcp/client.js';
+import type { MCPConfig } from '../../mcp/types.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -41,6 +42,10 @@ const __dirname = dirname(__filename);
  * MCP Feature 配置类型
  */
 export type MCPFeatureInput = MCPConfig | string;
+
+export interface MCPFeatureOptions {
+  excludeServers?: string[];
+}
 
 /**
  * MCP Feature 实现
@@ -54,13 +59,15 @@ export class MCPFeature implements AgentFeature {
   private config?: MCPConfig;
   private mcpContext?: Record<string, unknown>;
 
-  constructor(input?: MCPFeatureInput) {
+  constructor(input?: MCPFeatureInput, options: MCPFeatureOptions = {}) {
     if (typeof input === 'string') {
       this.config = loadMCPConfigFromInput(input);
     } else if (input) {
       this.config = input;
     } else {
-      this.config = loadAllMCPConfigs();
+      this.config = loadAllMCPConfigs(undefined, {
+        excludeServers: options.excludeServers,
+      });
     }
   }
 
@@ -89,31 +96,16 @@ export class MCPFeature implements AgentFeature {
       return [];
     }
 
-    const tools: Tool[] = [];
-
-    for (const [serverId, serverConfig] of Object.entries(this.config.servers)) {
-      try {
-        const existingClient = this.clients.get(serverId);
-        if (existingClient) {
-          tools.push(...await createMCPToolsFromClient(existingClient));
-          continue;
-        }
-
-        const result = await discoverMCPTools(
-          serverId,
-          serverConfig as MCPServerConfig,
-          {},
-          this.manager
-        );
-        this.clients.set(serverId, result.client);
-        tools.push(...result.tools);
-      } catch (error) {
+    const result = await mountMCPToolsFromConfig(this.config, {
+      manager: this.manager,
+      clients: this.clients,
+      onError: (serverId, error) => {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.warn(`[MCPFeature] Failed to load tools from "${serverId}": ${errorMsg}`);
-      }
-    }
+      },
+    });
 
-    return tools;
+    return result.tools;
   }
 
   /**

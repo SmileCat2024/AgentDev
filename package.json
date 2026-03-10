@@ -9,6 +9,7 @@
     "build": "tsc",
     "test:mcp-context": "tsx examples/mcp-context-test.ts",
     "test:mcp-smoke": "tsx examples/mcp-smoke-test.ts",
+    "test:mcp-managed": "tsx examples/mcp-managed-tools-test.ts",
     "test:websearch-crawl4ai": "tsx examples/websearch-crawl4ai-test.ts",
     "dev": "tsc --watch",
     "agent": "tsx examples/agent.ts",

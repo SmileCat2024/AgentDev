@@ -37,7 +37,18 @@ export {
   getDefaultMCPConfigDir,
   loadAllMCPConfigs,
   loadMCPConfigFromInput,
+  type LoadAllMCPConfigsOptions,
 } from './config.js';
+export {
+  createManagedMCPToolsFromClient,
+  discoverManagedMCPTools,
+  mountMCPToolsFromConfig,
+  type MCPToolPatch,
+  type MCPToolManagementOptions,
+  type MCPConfigMountOptions,
+  type MCPMountedToolSet,
+  type MCPMountedConfigResult,
+} from './mount.js';
 
 // 工具适配
 export {

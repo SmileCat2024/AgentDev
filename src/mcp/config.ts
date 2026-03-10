@@ -4,6 +4,10 @@ import { cwd } from 'process';
 import { isAbsolute, join, resolve } from 'path';
 import type { MCPConfig, MCPServerConfig } from './types.js';
 
+export interface LoadAllMCPConfigsOptions {
+  excludeServers?: string[];
+}
+
 function readConfigFile(configPath: string): unknown {
   try {
     if (!existsSync(configPath)) {
@@ -105,12 +109,16 @@ export function loadMCPConfigFromInput(input: string, rootDir: string = cwd()): 
   return normalizeToMCPConfig(readConfigFile(configPath), fallbackServerId);
 }
 
-export function loadAllMCPConfigs(rootDir: string = cwd()): MCPConfig | undefined {
+export function loadAllMCPConfigs(
+  rootDir: string = cwd(),
+  options: LoadAllMCPConfigsOptions = {}
+): MCPConfig | undefined {
   const configDir = getDefaultMCPConfigDir(rootDir);
   if (!existsSync(configDir)) {
     return undefined;
   }
 
+  const excludedServers = new Set(options.excludeServers ?? []);
   const merged: MCPConfig = { servers: {} };
   const entries = readdirSync(configDir, { withFileTypes: true });
 
@@ -128,14 +136,20 @@ export function loadAllMCPConfigs(rootDir: string = cwd()): MCPConfig | undefine
     if (isMCPConfig(config)) {
       const normalized = normalizeToMCPConfig(config, basename(entry.name, '.json'));
       if (normalized && Object.keys(normalized.servers).length > 0) {
-        Object.assign(merged.servers, normalized.servers);
+        for (const [serverId, serverConfig] of Object.entries(normalized.servers)) {
+          if (!excludedServers.has(serverId)) {
+            merged.servers[serverId] = serverConfig;
+          }
+        }
         continue;
       }
     }
 
     const serverId = basename(entry.name, '.json');
     if (isMCPServerConfig(config)) {
-      merged.servers[serverId] = config;
+      if (!excludedServers.has(serverId)) {
+        merged.servers[serverId] = config;
+      }
       continue;
     }
 

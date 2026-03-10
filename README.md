@@ -5,6 +5,7 @@
 ## 特性
 
 - **Feature 插件系统** - 可外挂的功能模块，支持 MCP、Skills、子代理等
+- **受管 MCP 装配层** - 动态发现 MCP 工具后，可统一做 rename/disable/describe/render 干预
 - **4级生命周期钩子** - Agent/Call/Step/Tool 全方位控制
 - **反向钩子装饰器** - 使用装饰器注册流程控制逻辑
 - **Context 内核化** - 消息包装和查询能力内置
@@ -641,7 +642,29 @@ const targetedAgent = new BasicAgent()
 ```
 
 复杂场景不必依赖 `MCPFeature`。业务 Feature 可以直接在内部挂载 MCP。
-当前仓库中的 `WebSearchFeature` 就会读取 `.agentdev/mcps/crawl4ai.json`，并把 crawl4ai 工具暴露为 `websearch_crawl4ai_*`。
+当前仓库中的 `WebSearchFeature` 在 `src/features/websearch/mcp/crawl4ai.json` 内封装了 crawl4ai 配置，并把 crawl4ai 工具暴露为 `websearch_crawl4ai_*`。
+如果某个业务 Feature 已经在内部接管了某个 MCP server，可以通过 `excludeMcpServers` 避免被全局自动 MCP 再挂一遍。
+如果需要在挂载时做工具级干预，可以使用框架层的受管装配 API：
+
+```typescript
+const result = await mountMCPToolsFromConfig(config, {
+  manager,
+  clients,
+  getServerOptions: () => ({
+    disable: ['ask'],
+    rename: { md: 'websearch_markdown_fetch' },
+    describe: { md: 'Fetch webpage content as markdown via crawl4ai.' },
+  }),
+});
+```
+
+这样最终得到的仍然是标准 `Tool[]`，和现有工具体系兼容。
+
+当前推荐的 MCP 使用模型：
+
+1. 简单快速接入：使用 `MCPFeature` 或 `BasicAgent` 自动扫描 `.agentdev/mcps`
+2. 业务域封装：在 Feature 内部直接使用 `mountMCPToolsFromConfig()` 或 `createManagedMCPToolsFromClient()`
+3. 当业务 Feature 已接管某个 MCP server 时，通过 `excludeMcpServers` 避免全局自动挂载重复注册
 
 #### SkillFeature
 

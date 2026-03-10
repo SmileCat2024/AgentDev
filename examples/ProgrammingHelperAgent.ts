@@ -25,6 +25,8 @@ export interface ProgrammingHelperAgentConfig extends BasicAgentConfig {
   reminderThresholdWithoutTasks?: number;
 }
 
+const DEFAULT_EXCLUDED_MCP_SERVERS = ['crawl4ai-official'];
+
 /**
  * 编程小助手 Agent
  *
@@ -37,7 +39,13 @@ export interface ProgrammingHelperAgentConfig extends BasicAgentConfig {
  */
 export class ProgrammingHelperAgent extends BasicAgent {
   constructor(config?: ProgrammingHelperAgentConfig) {
-    super(config);
+    super({
+      ...config,
+      excludeMcpServers: Array.from(new Set([
+        ...(config?.excludeMcpServers ?? []),
+        ...DEFAULT_EXCLUDED_MCP_SERVERS,
+      ])),
+    });
 
     // 注册 TodoFeature 并配置 reminder
     // TodoFeature 会通过反向钩子自动处理：
@@ -71,7 +79,7 @@ export class ProgrammingHelperAgent extends BasicAgent {
       .add('当用户要求你执行任务时，检查是否有任何可用的技能匹配。技能提供专门的能力和领域知识。你拥有如下技能，可使用 invoke_skill 工具激活，以展开技能的详细介绍。\n')
       .add({ skills: '- **{{name}}**: {{description}}' })
       .add('\n\n## MCP 工具\n\n')
-      .add('除了标准工具外，你还可以使用 MCP (Model Context Protocol) 工具。MCP 工具的名称以 "mcp_" 开头。这些工具提供了与外部服务集成的能力。\n')
+      .add('除了标准工具外，你还可以使用通过 MCP (Model Context Protocol) 接入的外部工具。默认自动挂载的工具通常以 `mcp_` 开头，而业务功能内部封装的工具可能使用业务前缀命名。\n')
       .add('\n\n## 视觉理解能力\n\n')
       .add('你可以使用 `capture_and_understand_window` 工具来截取指定窗口的截图，并使用视觉模型理解其内容。')
       .add('这个功能可以帮助你：')
@@ -80,7 +88,7 @@ export class ProgrammingHelperAgent extends BasicAgent {
       .add('- 获取应用窗口的视觉信息')
       .add('\n\n## WebSearch 能力\n\n')
       .add('你可以使用 `web_fetch` 获取网页原始内容。')
-      .add('如果配置了 crawl4ai MCP 且服务可用，还可以使用以 `websearch_crawl4ai_` 开头的工具执行更强的网页抓取与提取。')
+      .add('如果内置 crawl4ai 服务可用，还可以使用以 `websearch_crawl4ai_` 开头的工具执行更强的网页抓取与提取。')
       .add('\n\n每次对话开始时，你会自动收到当前系统窗口状态的摘要信息。')
     );
   }

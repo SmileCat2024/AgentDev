@@ -44,9 +44,11 @@ async function main(): Promise<void> {
     const toolNames = agent.getTools().getAll().map(tool => tool.name).sort();
     const webFetchTools = toolNames.filter(name => name === 'web_fetch');
     const crawl4aiTools = toolNames.filter(name => name.startsWith('websearch_crawl4ai_'));
+    const duplicatedMCPTools = toolNames.filter(name => name.startsWith('mcp_crawl4ai_official_'));
 
     assert(webFetchTools.length === 1, 'ProgrammingHelperAgent should expose web_fetch');
     assert(crawl4aiTools.length > 0, 'ProgrammingHelperAgent should expose crawl4ai tools via WebSearchFeature');
+    assert(duplicatedMCPTools.length === 0, 'ProgrammingHelperAgent should not expose duplicate global crawl4ai MCP tools');
 
     console.log(`[PASS] web_fetch registered: ${webFetchTools.join(', ')}`);
     console.log(`[PASS] crawl4ai tools registered: ${crawl4aiTools.length}`);

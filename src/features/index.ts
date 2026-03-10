@@ -49,3 +49,15 @@ export type { WindowInfo, CaptureResult, VisualUnderstandingResult, VisualFeatur
 // WebSearch Feature
 export { WebSearchFeature } from './websearch/index.js';
 export type { WebSearchFeatureConfig } from './websearch/index.js';
+
+// QQBot Feature
+export { QQBotFeature } from './qqbot/index.js';
+export type {
+  QQBotFeatureConfig,
+  QQBotSendOptions,
+  QQBotSendResult,
+  KnownUser,
+  QQBotInboundRequest,
+  ResolvedQQBotAccount,
+  OutboundResult
+} from './qqbot/index.js';

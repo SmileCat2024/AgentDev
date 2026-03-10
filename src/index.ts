@@ -90,6 +90,7 @@ export type {
   MCPServerConfig,
   MCPSstdioConfig,
   MCPHTTPConfig,
+  MCPSSEConfig,
   MCPConfig,
   MCPConnectionInfo,
   MCPToolResult,

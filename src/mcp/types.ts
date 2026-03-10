@@ -7,7 +7,7 @@
 /**
  * MCP 传输层类型
  */
-export type MCPTransportType = 'stdio' | 'http';
+export type MCPTransportType = 'stdio' | 'http' | 'sse';
 
 /**
  * MCP stdio 传输配置
@@ -42,11 +42,26 @@ export interface MCPHTTPConfig {
 }
 
 /**
+ * MCP SSE 传输配置
+ */
+export interface MCPSSEConfig {
+  /** 传输类型 */
+  transport: 'sse';
+  /** 服务器 URL */
+  url: string;
+  /** HTTP 请求头 (可选) */
+  headers?: Record<string, string>;
+  /** 重连次数 (默认 3) */
+  retryCount?: number;
+}
+
+/**
  * MCP 服务器配置
  */
 export type MCPServerConfig =
   | MCPSstdioConfig
-  | MCPHTTPConfig;
+  | MCPHTTPConfig
+  | MCPSSEConfig;
 
 /**
  * MCP 工具映射配置
@@ -78,6 +93,8 @@ export interface MCPConfig {
   enabled?: boolean;
   /** MCP 服务器配置 */
   servers: Record<string, MCPServerConfig>;
+  /** 旧格式兼容 */
+  mcpServers?: Record<string, MCPServerConfig>;
   /** 工具级别配置映射 */
   toolMapping?: Record<string, MCPToolMappingConfig>;
   /** 全局超时 (毫秒) */

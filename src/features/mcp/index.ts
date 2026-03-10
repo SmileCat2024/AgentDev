@@ -5,6 +5,9 @@
  *
  * @example
  * ```typescript
+ * // 自动扫描 .agentdev/mcps/*.json
+ * agent.use(new MCPFeature());
+ *
  * // 从配置文件加载（默认路径 .agentdev/mcps）
  * agent.use(new MCPFeature('github'));
  *
@@ -21,18 +24,14 @@ import { dirname, join } from 'path';
 import type {
   AgentFeature,
   FeatureInitContext,
-  FeatureContext,
   ContextInjector,
   ToolContextValue,
 } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
-import type { ToolCall } from '../../core/types.js';
+import { MCPClient, createMCPToolsFromClient, discoverMCPTools } from '../../mcp/client.js';
+import { loadAllMCPConfigs, loadMCPConfigFromInput } from '../../mcp/config.js';
 import { MCPConnectionManager } from '../../mcp/connection-manager.js';
-import { MCPToolAdapter } from '../../mcp/mcp-adapter.js';
 import type { MCPConfig, MCPServerConfig } from '../../mcp/types.js';
-import { existsSync, readFileSync } from 'fs';
-import { join as pathJoin, resolve, isAbsolute } from 'path';
-import { cwd } from 'process';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -44,55 +43,24 @@ const __dirname = dirname(__filename);
 export type MCPFeatureInput = MCPConfig | string;
 
 /**
- * 加载 MCP 配置文件
- */
-function loadMCPConfig(input: string): MCPConfig | undefined {
-  try {
-    let configPath: string;
-
-    if (isAbsolute(input)) {
-      configPath = input;
-    } else if (input.includes('/') || input.includes('\\')) {
-      // 相对路径
-      configPath = resolve(cwd(), input);
-    } else {
-      // 服务器名称，使用默认路径
-      configPath = pathJoin(cwd(), '.agentdev', 'mcps', `${input}.json`);
-    }
-
-    if (!existsSync(configPath)) {
-      console.warn(`[MCPFeature] 配置文件不存在: ${configPath}`);
-      return undefined;
-    }
-
-    const content = readFileSync(configPath, 'utf-8');
-    return JSON.parse(content);
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    console.warn(`[MCPFeature] 加载配置失败 "${input}": ${errorMsg}`);
-    return undefined;
-  }
-}
-
-/**
  * MCP Feature 实现
  */
 export class MCPFeature implements AgentFeature {
   readonly name = 'mcp';
   readonly dependencies: string[] = [];
 
-  private manager?: MCPConnectionManager;
+  private readonly manager = new MCPConnectionManager();
+  private clients = new Map<string, MCPClient>();
   private config?: MCPConfig;
   private mcpContext?: Record<string, unknown>;
-  private configInput?: MCPFeatureInput;
 
   constructor(input?: MCPFeatureInput) {
-    this.configInput = input;
-
     if (typeof input === 'string') {
-      this.config = loadMCPConfig(input);
+      this.config = loadMCPConfigFromInput(input);
     } else if (input) {
       this.config = input;
+    } else {
+      this.config = loadAllMCPConfigs();
     }
   }
 
@@ -121,37 +89,24 @@ export class MCPFeature implements AgentFeature {
       return [];
     }
 
-    this.manager = new MCPConnectionManager();
     const tools: Tool[] = [];
 
     for (const [serverId, serverConfig] of Object.entries(this.config.servers)) {
       try {
-        await this.manager.connectServer(serverId, serverConfig as MCPServerConfig);
-        const serverTools = await this.manager.listTools(serverId);
-
-        for (const tool of serverTools) {
-          if (!tool.name) continue;
-
-          const toolName = `mcp_${serverId}_${tool.name}`.replace(/[^a-zA-Z0-9_]/g, '_');
-          const originalToolName = tool.name;
-
-          tools.push(new MCPToolAdapter(
-            {
-              name: toolName,
-              description: tool.description || `MCP tool: ${originalToolName}`,
-              inputSchema: tool.inputSchema,
-              enabled: true,
-              handler: async (args: any) => {
-                return await this.manager!.callTool(
-                  originalToolName,
-                  serverId,
-                  args
-                );
-              },
-            },
-            { serverName: serverId }
-          ));
+        const existingClient = this.clients.get(serverId);
+        if (existingClient) {
+          tools.push(...await createMCPToolsFromClient(existingClient));
+          continue;
         }
+
+        const result = await discoverMCPTools(
+          serverId,
+          serverConfig as MCPServerConfig,
+          {},
+          this.manager
+        );
+        this.clients.set(serverId, result.client);
+        tools.push(...result.tools);
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.warn(`[MCPFeature] Failed to load tools from "${serverId}": ${errorMsg}`);
@@ -175,9 +130,11 @@ export class MCPFeature implements AgentFeature {
    * 清理钩子
    */
   async onDestroy(): Promise<void> {
-    if (this.manager) {
-      await this.manager.dispose();
+    for (const client of this.clients.values()) {
+      await client.dispose();
     }
+    this.clients.clear();
+    await this.manager.dispose();
   }
 
   /**

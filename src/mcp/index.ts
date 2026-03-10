@@ -9,6 +9,7 @@ export type {
   MCPServerConfig,
   MCPSstdioConfig,
   MCPHTTPConfig,
+  MCPSSEConfig,
   MCPConfig,
   MCPConnectionInfo,
   MCPToolResult,
@@ -21,6 +22,22 @@ export { MCPConnectionState } from './types.js';
 
 // 连接管理
 export { MCPConnectionManager } from './connection-manager.js';
+export {
+  MCPClient,
+  createMCPTool,
+  createMCPToolsFromClient,
+  discoverMCPTools,
+  createDefaultMCPToolName,
+  type MCPDiscoveredTool,
+  type MCPDiscoveredToolSet,
+  type MCPToolCreationOptions,
+  type MCPToolDiscoveryOptions,
+} from './client.js';
+export {
+  getDefaultMCPConfigDir,
+  loadAllMCPConfigs,
+  loadMCPConfigFromInput,
+} from './config.js';
 
 // 工具适配
 export {

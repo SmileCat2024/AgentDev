@@ -16,7 +16,7 @@ interface RegisteredToolLike {
   inputSchema?: any;
   outputSchema?: any;
   annotations?: any;
-  handler?: any;
+  handler?: (args: any, context?: any) => Promise<any> | any;
   enabled?: boolean;
 }
 
@@ -55,11 +55,6 @@ export class MCPToolAdapter implements Tool {
       call: config.render?.call || 'mcp-tool',
       result: config.render?.result || 'mcp-result',
     };
-
-    // 调试：打印前 3 个工具的 parameters（仅用于验证）
-    if (this.name.includes('list_issues') || this.name.includes('search_repositories')) {
-      console.log(`[MCPToolAdapter] Tool "${this.name}" parameters:`, JSON.stringify(this.parameters, null, 2));
-    }
   }
 
   /**
@@ -69,11 +64,8 @@ export class MCPToolAdapter implements Tool {
     const startTime = Date.now();
 
     try {
-      // 调用 MCP 工具处理器
-      // 注意: 这里的 handler 实际上是 MCP 端注册的 callback
-      // 在客户端场景下，需要通过 MCP 协议发送请求到服务器
-      const handler = this.registeredTool.handler as any;
-      const result = await handler?.(args);
+      const handler = this.registeredTool.handler;
+      const result = await handler?.(args, context);
 
       const duration = Date.now() - startTime;
 

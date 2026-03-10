@@ -1,8 +1,19 @@
 import { ProgrammingHelperAgent } from './ProgrammingHelperAgent.js';
 import { UserInputFeature } from '../src/features/index.js';
-import { existsSync } from 'fs';
-import { join } from 'path';
-import { cwd } from 'process';
+
+function resolveExampleMCPMode(): string | false | undefined {
+  const rawMode = process.env.AGENTDEV_EXAMPLE_MCP?.trim();
+  if (!rawMode || rawMode.toLowerCase() === 'auto') {
+    return undefined;
+  }
+
+  const normalized = rawMode.toLowerCase();
+  if (normalized === 'off' || normalized === 'false' || normalized === 'none') {
+    return false;
+  }
+
+  return rawMode;
+}
 
 /**
  * 检查 ViewerWorker 是否运行
@@ -32,15 +43,15 @@ async function main() {
   }
 
   console.log('✓ 已连接到 ViewerWorker\n');
-
-  const hasGitHubMCP = existsSync(join(cwd(), '.agentdev', 'mcps', 'github.json'));
+  const mcpMode = resolveExampleMCPMode();
+  console.log(`[Example] MCP mode: ${mcpMode === undefined ? 'auto' : String(mcpMode)}`);
 
   // 创建用户输入 Feature
   const userInputFeature = new UserInputFeature();
 
   const programmingAgent = new ProgrammingHelperAgent({
     name: '编程小助手',
-    mcpServer: hasGitHubMCP ? 'github' : undefined,
+    mcpServer: mcpMode,
   }).use(userInputFeature);
 
   await programmingAgent.withViewer('编程小助手', 2026, false);

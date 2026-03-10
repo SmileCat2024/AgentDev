@@ -15,6 +15,7 @@ import { loadConfigSync } from '../../core/config.js';
 import { createOpenAILLM } from '../../llm/openai.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
+import { getDefaultMCPConfigDir } from '../../mcp/config.js';
 
 // 导入系统工具（保留必要的非文件操作工具）
 import {
@@ -67,8 +68,8 @@ export interface BasicAgentConfig {
   name?: string;
   /** 系统提示词（可选，后续可通过 setPrompt() 设置） */
   systemMessage?: string;
-  /** MCP 服务器名称（可选，将自动加载 .agentdev/mcps/{name}.json） */
-  mcpServer?: string;
+  /** MCP 配置：传字符串时加载指定配置；传 false 时禁用自动加载；不传时若 .agentdev/mcps 存在则自动加载全部 */
+  mcpServer?: string | false;
   /** MCP 运行时上下文（可选，如 GitHub Token） */
   mcpContext?: Record<string, unknown>;
   /** 自定义工具集（可选，默认使用系统工具集） */
@@ -85,10 +86,11 @@ export interface BasicAgentConfig {
  */
 export class BasicAgent extends Agent {
   protected _systemContext: SystemContext;
-  protected _mcpServer?: string;
+  protected _mcpServer?: string | false;
   protected _mcpContext?: Record<string, unknown>;
   protected _config?: AgentConfigFile;
   protected _skillsDir?: string;
+  protected _mcpFeature?: MCPFeature;
 
   /**
    * 覆盖 onInitiate 钩子：禁用不需要的子代理工具
@@ -155,9 +157,14 @@ export class BasicAgent extends Agent {
     this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
 
-    // 使用新的 Feature API
-    if (config.mcpServer) {
-      this.use(new MCPFeature(config.mcpServer));
+    const hasDefaultMCPConfigs = existsSync(getDefaultMCPConfigDir());
+    const shouldEnableMCP = config.mcpServer !== false && (typeof config.mcpServer === 'string' || hasDefaultMCPConfigs);
+    if (shouldEnableMCP) {
+      this._mcpFeature = new MCPFeature();
+      if (config.mcpContext) {
+        this._mcpFeature.setMCPContext(config.mcpContext);
+      }
+      this.use(this._mcpFeature);
     }
 
     // 注册 OpencodeBasicFeature（文件操作工具集）
@@ -183,7 +190,7 @@ export class BasicAgent extends Agent {
   /**
    * 获取 MCP 服务器配置
    */
-  getMcpServer(): string | undefined {
+  getMcpServer(): string | false | undefined {
     return this._mcpServer;
   }
 

@@ -8,7 +8,7 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature, VisualFeature } from '../src/features/index.js';
+import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature } from '../src/features/index.js';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**
@@ -17,8 +17,8 @@ import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 export interface ProgrammingHelperAgentConfig extends BasicAgentConfig {
   /** Agent 显示名称（默认：'编程小助手'） */
   name?: string;
-  /** MCP 服务器名称（可选） */
-  mcpServer?: string;
+  /** MCP 配置名称（可选）；传 false 时禁用；不传时 BasicAgent 会自动扫描 .agentdev/mcps */
+  mcpServer?: string | false;
   /** 有待执行任务时的提醒间隔（默认：3 轮） */
   reminderThresholdWithTasks?: number;
   /** 无待执行任务时的提醒间隔（默认：6 轮） */
@@ -55,6 +55,7 @@ export class ProgrammingHelperAgent extends BasicAgent {
     // - onCallStart 钩子：每次对话开始时自动注入当前窗口状态
     // - capture_and_understand_window 工具：截图指定窗口并进行视觉理解
     this.use(new VisualFeature());
+    this.use(new WebSearchFeature());
 
   }
 
@@ -77,6 +78,9 @@ export class ProgrammingHelperAgent extends BasicAgent {
       .add('\n- 查看和分析当前打开的窗口内容')
       .add('- 理解用户界面的状态和布局')
       .add('- 获取应用窗口的视觉信息')
+      .add('\n\n## WebSearch 能力\n\n')
+      .add('你可以使用 `web_fetch` 获取网页原始内容。')
+      .add('如果配置了 crawl4ai MCP 且服务可用，还可以使用以 `websearch_crawl4ai_` 开头的工具执行更强的网页抓取与提取。')
       .add('\n\n每次对话开始时，你会自动收到当前系统窗口状态的摘要信息。')
     );
   }

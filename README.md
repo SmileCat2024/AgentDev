@@ -604,7 +604,7 @@ import { BasicAgent } from './src/index.js';
 import { MCPFeature, SkillFeature, SubAgentFeature } from './src/features/index.js';
 
 const agent = new BasicAgent()
-  .use(new MCPFeature('github'))        // MCP 集成
+  .use(new MCPFeature())                // 自动扫描 .agentdev/mcps
   .use(new SkillFeature('./skills'))    // Skills 管理
   .use(new SubAgentFeature());          // 子代理管理
 ```
@@ -616,13 +616,32 @@ const agent = new BasicAgent()
 集成 Model Context Protocol：
 
 ```typescript
-const agent = new BasicAgent({
-  mcpServer: 'github',  // 自动加载 .agentdev/mcps/github.json
+const agent = new BasicAgent(); // 若存在 .agentdev/mcps，则自动挂载
+
+const noMCPAgent = new BasicAgent({
+  mcpServer: false,    // 显式禁用自动 MCP 加载
+});
+
+const targetedAgent = new BasicAgent({
+  mcpServer: 'github',  // 仅加载 .agentdev/mcps/github.json
   mcpContext: {         // 运行时上下文
     githubToken: process.env.GITHUB_TOKEN
   }
 });
 ```
+
+也可以直接使用最小化 convenience feature：
+
+```typescript
+const agent = new BasicAgent()
+  .use(new MCPFeature());        // 自动扫描 .agentdev/mcps
+
+const targetedAgent = new BasicAgent()
+  .use(new MCPFeature('github')); // 仅加载指定配置
+```
+
+复杂场景不必依赖 `MCPFeature`。业务 Feature 可以直接在内部挂载 MCP。
+当前仓库中的 `WebSearchFeature` 就会读取 `.agentdev/mcps/crawl4ai.json`，并把 crawl4ai 工具暴露为 `websearch_crawl4ai_*`。
 
 #### SkillFeature
 
@@ -769,7 +788,7 @@ import { BasicAgent } from './src/agents/system/BasicAgent.js';
 const agent = new BasicAgent({
   configName: 'default',    // 配置文件名
   name: 'MyAgent',          // 显示名称
-  mcpServer: 'github',       // MCP 服务器
+  mcpServer: 'github',      // 可选：只加载指定 MCP 配置
   skillsDir: './skills'      // Skills 目录
 });
 

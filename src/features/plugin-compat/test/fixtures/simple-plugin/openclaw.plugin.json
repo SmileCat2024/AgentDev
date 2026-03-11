@@ -1,0 +1,7 @@
+{
+  "id": "simple-test-plugin",
+  "name": "Simple Test Plugin",
+  "version": "1.0.0",
+  "description": "A simple plugin for testing OpenClaw compatibility",
+  "main": "index.js"
+}

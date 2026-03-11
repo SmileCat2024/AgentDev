@@ -1,5 +1,5 @@
-import { BasicAgent } from '../src/agents/index.js';
-import type { LLMClient, LLMResponse, Message, Tool } from '../src/core/types.js';
+import { BasicAgent } from '../../../agents/index.js';
+import type { LLMClient, LLMResponse, Message, Tool } from '../../../core/types.js';
 
 class MockLLM implements LLMClient {
   async chat(_messages: Message[], _tools: Tool[]): Promise<LLMResponse> {

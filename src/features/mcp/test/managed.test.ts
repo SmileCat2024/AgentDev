@@ -1,6 +1,8 @@
-import { mountMCPToolsFromConfig, MCPConnectionManager } from '../src/mcp/index.js';
-import type { MCPClient } from '../src/mcp/client.js';
-import type { MCPConfig } from '../src/mcp/types.js';
+import { mountMCPToolsFromConfig, MCPConnectionManager } from '../../../mcp/index.js';
+import { loadMCPConfigFromInput } from '../../../mcp/config.js';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
+import type { MCPClient } from '../../../mcp/client.js';
 
 function assert(condition: unknown, message: string): void {
   if (!condition) {
@@ -8,15 +10,50 @@ function assert(condition: unknown, message: string): void {
   }
 }
 
+/**
+ * 检查 crawl4ai SSE 服务是否可用
+ */
+async function isServiceAvailable(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
-  const config: MCPConfig = {
-    servers: {
-      'crawl4ai-official': {
-        transport: 'sse',
-        url: 'http://localhost:11235/mcp/sse',
-      },
-    },
-  };
+  // 加载 WebSearchFeature 内部的 crawl4ai 配置（与实际使用同源）
+  const configDir = join(fileURLToPath(import.meta.url), '../../websearch/mcp/crawl4ai.json');
+  const config = loadMCPConfigFromInput(configDir);
+
+  if (!config) {
+    console.log('[SKIP] failed to load crawl4ai config from websearch feature');
+    return;
+  }
+
+  const serverConfig = Object.values(config.servers)[0];
+  if (!serverConfig || typeof serverConfig.url !== 'string') {
+    console.log('[SKIP] invalid crawl4ai config');
+    return;
+  }
+
+  // 检查服务是否可用
+  const serviceAvailable = await isServiceAvailable(serverConfig.url);
+  if (!serviceAvailable) {
+    console.log(`[SKIP] crawl4ai service not available at ${serverConfig.url}`);
+    console.log('       Start the service with: crawl4ai-mcp --port 11235');
+    console.log('[DONE] MCP managed tool test skipped');
+    return;
+  }
 
   const manager = new MCPConnectionManager();
   const clients = new Map<string, MCPClient>();

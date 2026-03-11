@@ -64,6 +64,17 @@ npm run build
 
 > **注意**：必须先编译，因为工具的渲染模板需要从 `.render.ts` 编译为 `.js` 才能被前端加载。
 
+### 运行测试
+
+```bash
+npm test
+```
+
+测试文件约定：
+- 放置位置：`src/test/` 或 `src/features/*/test/`
+- 文件命名：使用 `.test.ts` 后缀
+- 依赖外部服务的测试应实现服务可用性检测，不可用时跳过
+
 ### 运行 Agent
 
 ```bash
@@ -156,6 +167,7 @@ AgentDev/
 │   ├── features/              # Feature 模块（目录结构）
 │   │   ├── mcp/              # MCP 集成
 │   │   │   ├── index.ts
+│   │   │   ├── test/         # Feature 测试
 │   │   │   └── templates/
 │   │   ├── skill/            # Skills 系统
 │   │   │   ├── index.ts
@@ -176,7 +188,13 @@ AgentDev/
 │   │   │   └── tools.ts
 │   │   ├── user-input/       # 用户输入
 │   │   │   └── index.ts
+│   │   ├── websearch/        # 网页搜索
+│   │   │   ├── index.ts
+│   │   │   ├── mcp/          # 内部 MCP 配置
+│   │   │   ├── test/         # Feature 测试
+│   │   │   └── templates/
 │   │   └── index.ts          # 统一导出
+│   ├── test/                  # 核心测试（如钩子约束验证）
 │   ├── tools/                 # 工具定义
 │   │   ├── opencode/         # 文件操作（read, write, edit...）
 │   │   ├── system/           # 系统工具（shell, web, math...）

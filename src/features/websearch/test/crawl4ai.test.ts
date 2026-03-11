@@ -1,7 +1,10 @@
-import { BasicAgent } from '../src/agents/index.js';
-import { ProgrammingHelperAgent } from './ProgrammingHelperAgent.js';
-import type { LLMClient, LLMResponse, Message, Tool } from '../src/core/types.js';
-import { WebSearchFeature } from '../src/features/index.js';
+import { BasicAgent } from '../../../agents/index.js';
+import { ProgrammingHelperAgent } from '../../../../examples/ProgrammingHelperAgent.js';
+import type { LLMClient, LLMResponse, Message, Tool } from '../../../core/types.js';
+import { WebSearchFeature } from '../../index.js';
+import { loadMCPConfigFromInput } from '../../../mcp/config.js';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
 
 class MockLLM implements LLMClient {
   async chat(_messages: Message[], _tools: Tool[]): Promise<LLMResponse> {
@@ -15,7 +18,52 @@ function assert(condition: unknown, message: string): void {
   }
 }
 
+/**
+ * 检查 crawl4ai SSE 服务是否可用
+ */
+async function isServiceAvailable(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
+  // 加载 WebSearchFeature 内部的 crawl4ai 配置（与实际使用同源）
+  const configDir = join(fileURLToPath(import.meta.url), '../mcp/crawl4ai.json');
+  const config = loadMCPConfigFromInput(configDir);
+
+  if (!config) {
+    console.log('[SKIP] failed to load crawl4ai config from websearch feature');
+    return;
+  }
+
+  const serverConfig = Object.values(config.servers)[0];
+  if (!serverConfig || typeof serverConfig.url !== 'string') {
+    console.log('[SKIP] invalid crawl4ai config');
+    return;
+  }
+
+  // 检查服务是否可用
+  const serviceAvailable = await isServiceAvailable(serverConfig.url);
+  if (!serviceAvailable) {
+    console.log(`[SKIP] crawl4ai service not available at ${serverConfig.url}`);
+    console.log('       Start the service with: crawl4ai-mcp --port 11235');
+    console.log('[DONE] WebSearch crawl4ai test skipped');
+    return;
+  }
+
+  // 第一部分：测试 ProgrammingHelperAgent 的 Feature 挂载
   const programmingAgent = new ProgrammingHelperAgent({
     llm: new MockLLM(),
     name: 'programming-helper-websearch-wiring-test',
@@ -32,6 +80,7 @@ async function main(): Promise<void> {
     await programmingAgent.dispose();
   }
 
+  // 第二部分：测试 WebSearchFeature 的工具暴露
   const agent = new BasicAgent({
     llm: new MockLLM(),
     name: 'websearch-crawl4ai-test',

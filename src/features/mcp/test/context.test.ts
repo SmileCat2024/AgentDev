@@ -1,4 +1,4 @@
-import { createMCPTool } from '../src/mcp/client.js';
+import { createMCPTool } from '../../../mcp/client.js';
 
 function assert(condition: unknown, message: string): void {
   if (!condition) {

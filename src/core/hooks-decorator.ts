@@ -107,7 +107,9 @@ function captureDecoratorSource(): HookSourceLocation | undefined {
       continue;
     }
 
-    const match = line.match(/\(?(.+?):(\d+):(\d+)\)?$/);
+    const trimmedLine = line.trim();
+    const match = trimmedLine.match(/^at .* \((.+):(\d+):(\d+)\)$/) ||
+      trimmedLine.match(/^at (.+):(\d+):(\d+)$/);
     if (!match) continue;
 
     const [, rawFile, rawLine, rawColumn] = match;

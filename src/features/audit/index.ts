@@ -11,6 +11,7 @@
  * ```
  */
 
+import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
 import type {
   AgentFeature,
@@ -96,6 +97,8 @@ export interface AuditFeatureConfig {
 export class AuditFeature implements AgentFeature {
   readonly name = 'audit';
   readonly dependencies: string[] = [];
+  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly description = '在工具执行前审计高风险 shell 命令，必要时阻断执行。';
 
   private config: Required<AuditFeatureConfig>;
   private client: OpenAI;
@@ -127,6 +130,13 @@ export class AuditFeature implements AgentFeature {
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
     // 无需清理
+  }
+
+  getHookDescription(lifecycle: string, methodName: string): string | undefined {
+    if (lifecycle === 'ToolUse' && methodName === 'auditBashCommand') {
+      return '在 bash 工具真正执行前审计命令内容；命中高风险或疑似混淆时直接拒绝。';
+    }
+    return undefined;
   }
 
   // ========== 反向钩子（装饰器）==========

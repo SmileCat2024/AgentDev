@@ -53,6 +53,8 @@ export interface MCPFeatureOptions {
 export class MCPFeature implements AgentFeature {
   readonly name = 'mcp';
   readonly dependencies: string[] = [];
+  readonly source = __filename.replace(/\\/g, '/');
+  readonly description = '连接 MCP 服务器并把发现到的远程能力挂载成标准工具。';
 
   private readonly manager = new MCPConnectionManager();
   private clients = new Map<string, MCPClient>();

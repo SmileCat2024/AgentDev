@@ -7,6 +7,7 @@
  * - 前端显示输入框，用户提交后返回给 Agent
  */
 
+import { fileURLToPath } from 'url';
 import { createTool } from '../../core/tool.js';
 import type { Tool } from '../../core/types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../core/feature.js';
@@ -20,6 +21,8 @@ export interface UserInputFeatureConfig {
 export class UserInputFeature implements AgentFeature {
   readonly name = 'user-input';
   readonly dependencies: string[] = [];
+  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly description = '允许 Agent 通过调试界面向用户发起输入请求并等待回复。';
 
   private defaultTimeout: number;
 

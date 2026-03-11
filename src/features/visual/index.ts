@@ -101,6 +101,8 @@ function getDefaultPythonPath(): string {
 export class VisualFeature implements AgentFeature {
   readonly name = 'visual';
   readonly dependencies: string[] = [];
+  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly description = '提供窗口截图、视觉理解和当前工作区状态注入能力。';
 
   private config: VisualFeatureConfig & {
     pythonPath: string;
@@ -281,6 +283,13 @@ except ImportError as e:
   async onDestroy(_ctx: FeatureContext): Promise<void> {
     // 停止后台监控服务
     await this.stopMonitoring();
+  }
+
+  getHookDescription(lifecycle: string, methodName: string): string | undefined {
+    if (lifecycle === 'CallStart' && methodName === 'injectWindowInfo') {
+      return '在用户输入正式写入上下文前处理 /visual 命令，并按当前视觉模式注入窗口状态与分析结果。';
+    }
+    return undefined;
   }
 
   // ========== 后台监控服务初始化 ==========

@@ -38,6 +38,8 @@ const __dirname = dirname(__filename);
  */
 export class TodoFeature implements AgentFeature {
   readonly name = 'todo';
+  readonly source = __filename.replace(/\\/g, '/');
+  readonly description = '维护任务清单，并在合适的循环时机自动提醒模型更新 todo 状态。';
 
   private tasks = new Map<string, TodoTask>();
   private counter = 0;
@@ -114,6 +116,16 @@ export class TodoFeature implements AgentFeature {
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
     this.clearTasks();
+  }
+
+  getHookDescription(lifecycle: string, methodName: string): string | undefined {
+    if (lifecycle === 'StepStart' && methodName === 'checkAndInjectReminder') {
+      return '在每轮开始时检查提醒阈值；连续多轮未使用 todo 工具时注入系统提醒。';
+    }
+    if (lifecycle === 'StepFinish' && methodName === 'recordToolUsage') {
+      return '在每轮结束后统计是否使用了 todo 工具，用于更新下轮提醒计数。';
+    }
+    return undefined;
   }
 
   // ========== 反向钩子（装饰器）==========

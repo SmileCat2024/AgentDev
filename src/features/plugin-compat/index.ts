@@ -4,6 +4,7 @@
  * 负责加载和管理 OpenClaw 风格的插件
  */
 
+import { fileURLToPath } from 'url';
 import { resolve } from 'path';
 import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
@@ -35,6 +36,8 @@ import type { ToolContext, ToolResult } from '../../core/lifecycle.js';
  */
 export class PluginCompatFeature implements AgentFeature {
   name = 'plugin-compat';
+  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly description = '加载 OpenClaw 风格插件，并把插件工具与兼容钩子桥接到 AgentDev。';
 
   /** 兼容钩子注册表 */
   private compatHookRegistry = new CompatHookRegistry();
@@ -240,6 +243,16 @@ export class PluginCompatFeature implements AgentFeature {
     this.diagnostics.clear();
     this.loadedPlugins.clear();
     this.registeredTools = [];
+  }
+
+  getHookDescription(lifecycle: string, methodName: string): string | undefined {
+    if (lifecycle === 'ToolUse' && methodName === 'handleBeforeToolCall') {
+      return '桥接兼容插件的 before_tool_call；允许插件在工具执行前阻断或重写参数。';
+    }
+    if (lifecycle === 'ToolFinished' && methodName === 'handleAfterToolCall') {
+      return '桥接兼容插件的 after_tool_call；把结果、耗时和错误通知给插件侧。';
+    }
+    return undefined;
   }
 
   // ========== 反向钩子装饰器（桥接兼容层）==========

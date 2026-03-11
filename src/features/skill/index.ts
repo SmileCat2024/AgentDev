@@ -56,6 +56,8 @@ export type SkillFeatureInput = SkillFeatureConfig | string | undefined;
 export class SkillFeature implements AgentFeature {
   readonly name = 'skill';
   readonly dependencies: string[] = [];
+  readonly source = __filename.replace(/\\/g, '/');
+  readonly description = '发现本地 skills，并提供 invoke_skill 工具与技能数据源。';
 
   private skillsDir?: string;
   private skills: SkillMetadata[] = [];

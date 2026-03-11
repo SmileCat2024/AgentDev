@@ -235,6 +235,13 @@ export interface FeatureInspectorSnapshot {
   enabledToolCount: number;
   source?: string;
   description?: string;
+  tools: Array<{
+    name: string;
+    description: string;
+    enabled: boolean;
+    renderCall?: string;
+    renderResult?: string;
+  }>;
 }
 
 export interface HookInspectorSnapshot {

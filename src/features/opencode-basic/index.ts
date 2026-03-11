@@ -24,6 +24,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export class OpencodeBasicFeature implements AgentFeature {
   readonly name = 'opencode-basic';
   readonly dependencies: string[] = [];
+  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly description = '提供读写文件、编辑、列目录、glob 和 grep 等基础工程化工具。';
 
   /**
    * 获取所有工具

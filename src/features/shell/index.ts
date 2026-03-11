@@ -30,6 +30,8 @@ const __dirname = dirname(__filename);
 export class ShellFeature implements AgentFeature {
   readonly name = 'shell';
   readonly dependencies: string[] = [];
+  readonly source = __filename.replace(/\\/g, '/');
+  readonly description = '提供 bash 执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 
   private bashDescription?: string;
 

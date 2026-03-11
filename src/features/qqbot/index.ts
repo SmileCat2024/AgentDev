@@ -123,6 +123,8 @@ function loadConfigFromFile(configPath: string): QQBotConfigFile | null {
 export class QQBotFeature implements AgentFeature {
   readonly name = 'qqbot';
   readonly dependencies: string[] = [];
+  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly description = '把 Agent 接入 QQ Bot 网关，接收消息并把回复回推到 QQ 会话。';
 
   private config: QQBotFeatureConfig;
   private agentRef: any = null; // Agent 实例引用

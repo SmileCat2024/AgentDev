@@ -112,6 +112,17 @@ export class ToolRegistry {
   }
 
   /**
+   * 获取工具条目（调试快照用）
+   */
+  getEntries(): Array<{ tool: Tool; enabled: boolean; source?: string }> {
+    return Array.from(this.tools.entries()).map(([name, tool]) => ({
+      tool,
+      enabled: this.enabled.has(name),
+      source: this.sources.get(name),
+    }));
+  }
+
+  /**
    * 获取工具
    */
   get(name: string): Tool | undefined {

@@ -71,6 +71,8 @@ export interface AgentFeature {
   readonly name: string;
   /** 依赖的其他 Feature */
   readonly dependencies?: string[];
+  /** 可选：用于调试器展示的源码位置 */
+  readonly source?: string;
   /** 可选：用于调试器展示的 Feature 描述 */
   readonly description?: string;
 

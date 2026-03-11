@@ -717,6 +717,23 @@ class AgentBase {
   private buildHookInspectorSnapshot(): HookInspectorSnapshot {
     const hookGroups = this.hooksRegistry.getSnapshot();
     const hookCountByFeature = new Map<string, number>();
+    const toolEntriesByFeature = new Map<string, Array<{
+      name: string;
+      description: string;
+      enabled: boolean;
+      renderCall?: string;
+      renderResult?: string;
+    }>>();
+
+    const summarizeToolDescription = (description: string | undefined): string => {
+      if (!description) return '';
+      const normalized = description
+        .replace(/\r\n/g, '\n')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!normalized) return '';
+      return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+    };
 
     for (const group of hookGroups) {
       for (const entry of group.entries) {
@@ -724,9 +741,35 @@ class AgentBase {
       }
     }
 
+    for (const entry of this.tools.getEntries()) {
+      if (!entry.source) continue;
+      if (!toolEntriesByFeature.has(entry.source)) {
+        toolEntriesByFeature.set(entry.source, []);
+      }
+
+      const renderCall = typeof entry.tool.render?.call === 'string'
+        ? entry.tool.render.call
+        : entry.tool.render?.call
+          ? 'inline'
+          : undefined;
+      const renderResult = typeof entry.tool.render?.result === 'string'
+        ? entry.tool.render.result
+        : entry.tool.render?.result
+          ? 'inline'
+          : undefined;
+
+      toolEntriesByFeature.get(entry.source)!.push({
+        name: entry.tool.name,
+        description: summarizeToolDescription(entry.tool.description),
+        enabled: entry.enabled,
+        renderCall,
+        renderResult,
+      });
+    }
+
     const features = Array.from(this.features.values()).map(feature => {
-      const tools = feature.getTools?.() ?? [];
-      const enabledToolCount = tools.filter(tool => this.tools.isEnabled(tool.name)).length;
+      const tools = toolEntriesByFeature.get(feature.name) || [];
+      const enabledToolCount = tools.filter(tool => tool.enabled).length;
 
       return {
         name: feature.name,
@@ -734,11 +777,14 @@ class AgentBase {
         hookCount: hookCountByFeature.get(feature.name) || 0,
         toolCount: tools.length,
         enabledToolCount,
-        source: hookGroups.flatMap(group => group.entries)
-          .find(entry => entry.featureName === feature.name)?.source?.file,
+        source: typeof (feature as any).source === 'string'
+          ? (feature as any).source
+          : hookGroups.flatMap(group => group.entries)
+              .find(entry => entry.featureName === feature.name)?.source?.file,
         description: typeof (feature as any).description === 'string'
           ? (feature as any).description
           : undefined,
+        tools,
       };
     });
 

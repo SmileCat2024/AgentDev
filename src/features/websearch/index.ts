@@ -65,6 +65,8 @@ function createDefaultCrawl4aiConfig(config?: WebSearchFeatureConfig['crawl4ai']
 export class WebSearchFeature implements AgentFeature {
   readonly name = 'websearch';
   readonly dependencies: string[] = [];
+  readonly source = __filename.replace(/\\/g, '/');
+  readonly description = '提供网页抓取工具，并可托管 crawl4ai MCP 能力用于深度网页读取。';
 
   private readonly manager = new MCPConnectionManager();
   private readonly crawl4aiClients = new Map<string, MCPClient>();

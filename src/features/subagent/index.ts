@@ -51,6 +51,8 @@ const __dirname = dirname(__filename);
 export class SubAgentFeature implements AgentFeature {
   readonly name = 'subagent';
   readonly dependencies: string[] = [];
+  readonly source = __filename.replace(/\\/g, '/');
+  readonly description = '提供子代理创建、等待与消息回传能力，让主循环可以协同多个代理工作。';
 
   private agentPool?: AgentPool;
   private parentAgent?: Agent;
@@ -123,6 +125,16 @@ export class SubAgentFeature implements AgentFeature {
       ['close_agent', () => ({ parentAgent: this.parentAgent })],
       ['wait', () => ({ parentAgent: this.parentAgent })],
     ]);
+  }
+
+  getHookDescription(lifecycle: string, methodName: string): string | undefined {
+    if (lifecycle === 'ToolFinished' && methodName === 'handleWaitTool') {
+      return '在 wait 工具结束后阻塞等待子代理消息，并把结果回填到主代理上下文。';
+    }
+    if (lifecycle === 'StepFinish' && methodName === 'handleNoToolCalls') {
+      return '当本轮没有工具调用但仍有活跃子代理时，等待回信并强制继续下一轮 ReAct。';
+    }
+    return undefined;
   }
 
   // ========== 反向钩子（使用装饰器）==========

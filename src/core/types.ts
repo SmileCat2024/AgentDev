@@ -66,6 +66,13 @@ export interface NotificationStateResponse {
   hasNewEvents: boolean;
 }
 
+/**
+ * Agent 连接状态响应（GET /api/agents/:id/connection）
+ */
+export interface AgentConnectionResponse {
+  connected: boolean;
+}
+
 // ========== 消息类型 ==========
 
 // 消息角色（支持子代理 ID 作为消息来源）

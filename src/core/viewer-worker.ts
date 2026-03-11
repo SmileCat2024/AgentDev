@@ -320,6 +320,20 @@ class ViewerWorker {
       return;
     }
 
+    // GET /api/agents/:id/connection - 指定 Agent 的真实连接状态
+    const connectionMatch = url.match(/^\/api\/agents\/([^/]+)\/connection$/);
+    if (connectionMatch && req.method === 'GET') {
+      this.handleGetAgentConnection(req, res, connectionMatch[1]);
+      return;
+    }
+
+    // DELETE /api/agents/:id - 删除已断开的 Agent 会话
+    const deleteAgentMatch = url.match(/^\/api\/agents\/([^/]+)$/);
+    if (deleteAgentMatch && req.method === 'DELETE') {
+      this.handleDeleteAgent(req, res, deleteAgentMatch[1]);
+      return;
+    }
+
     // GET /api/agents/:id/input-requests - 获取输入请求列表
     const inputReqMatch = url.match(/^\/api\/agents\/([^/]+)\/input-requests$/);
     if (inputReqMatch && req.method === 'GET') {
@@ -371,6 +385,7 @@ class ViewerWorker {
       name: session.name,
       createdAt: session.createdAt,
       messageCount: session.messages.length,
+      connected: this.isSessionConnected(session),
     }));
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -527,6 +542,57 @@ class ViewerWorker {
   }
 
   /**
+   * GET /api/agents/:id/connection - 获取指定 Agent 的真实连接状态
+   */
+  private handleGetAgentConnection(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    const connected = this.isSessionConnected(session);
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ connected }));
+  }
+
+  /**
+   * DELETE /api/agents/:id - 删除已断开的 Agent 会话
+   */
+  private handleDeleteAgent(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    if (this.isSessionConnected(session)) {
+      res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Connected agent cannot be deleted' }));
+      return;
+    }
+
+    this.agentSessions.delete(agentId);
+    console.log(`[Viewer Worker] 已删除断开的 Agent 会话: ${agentId}`);
+
+    if (this.currentAgentId === agentId) {
+      const remaining = Array.from(this.agentSessions.values());
+      const nextActive = remaining.find(candidate => this.isSessionConnected(candidate)) || remaining[0];
+      this.currentAgentId = nextActive?.id || null;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      success: true,
+      agentId,
+      currentAgentId: this.currentAgentId,
+    }));
+  }
+
+  /**
    * 获取输入请求列表
    */
   private handleGetInputRequests(req: IncomingMessage, res: ServerResponse, agentId: string): void {
@@ -648,6 +714,10 @@ class ViewerWorker {
     if (session) {
       session.lastActive = Date.now();
     }
+  }
+
+  private isSessionConnected(session: AgentSession): boolean {
+    return !!session.clientId && this.udsClients.has(session.clientId);
   }
 
   /**
@@ -1042,10 +1112,13 @@ class ViewerWorker {
       --bg-color: #000000;
       --sidebar-bg: #0a0a0a;
       --header-bg: #0a0a0a;
+      --panel-bg: #070707;
       --border-color: #222;
       --text-primary: #ededed;
       --text-secondary: #888;
+      --text-muted: #444;
       --accent-color: #ededed;
+      --code-accent: #58a6ff;
       --user-msg-bg: #1a1a1a;
       --assistant-msg-bg: #000000;
       --tool-msg-bg: #050505;
@@ -1055,14 +1128,45 @@ class ViewerWorker {
       --active-bg: #2a2a2a;
       --warning-color: #ffc107;
       --bg-secondary: var(--hover-bg);
+      --scrollbar-thumb: #333;
+      --scrollbar-thumb-hover: #555;
+      --input-card-bg: #090909;
+      --input-card-border: #222;
+      --shadow-color: rgba(0, 0, 0, 0.18);
+      --shadow-strong: rgba(0, 0, 0, 0.8);
+      --status-text-on-color: #fff;
+    }
+
+    body[data-theme="light"] {
+      --bg-color: #fafafa;
+      --sidebar-bg: #f4f4f4;
+      --header-bg: #f4f4f4;
+      --panel-bg: #f7f7f7;
+      --border-color: #d8d8d8;
+      --text-primary: #121212;
+      --text-secondary: #666;
+      --text-muted: #8a8a8a;
+      --accent-color: #121212;
+      --user-msg-bg: #efefef;
+      --assistant-msg-bg: #fafafa;
+      --tool-msg-bg: #f1f1f1;
+      --hover-bg: #eaeaea;
+      --active-bg: #e2e2e2;
+      --bg-secondary: var(--hover-bg);
+      --scrollbar-thumb: #c0c0c0;
+      --scrollbar-thumb-hover: #a7a7a7;
+      --input-card-bg: #ffffff;
+      --input-card-border: #d8d8d8;
+      --shadow-color: rgba(0, 0, 0, 0.08);
+      --shadow-strong: rgba(0, 0, 0, 0.14);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: #555; }
+    ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
@@ -1121,6 +1225,10 @@ class ViewerWorker {
       transition: background-color 0.2s;
       color: var(--text-secondary);
     }
+
+    .agent-item.disconnected {
+      opacity: 0.8;
+    }
     
     .agent-item:hover {
       background-color: var(--hover-bg);
@@ -1135,6 +1243,58 @@ class ViewerWorker {
 
     .agent-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .agent-meta { font-size: 11px; opacity: 0.6; }
+    .agent-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .agent-status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--success-color);
+    }
+    .agent-item.disconnected .agent-status-dot {
+      background: var(--error-color);
+    }
+
+    .context-menu {
+      position: fixed;
+      min-width: 160px;
+      background: var(--sidebar-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 10px 30px var(--shadow-color);
+      padding: 6px;
+      z-index: 1000;
+      display: none;
+    }
+    .context-menu.open {
+      display: block;
+    }
+    .context-menu-item {
+      width: 100%;
+      border: none;
+      background: transparent;
+      color: var(--text-primary);
+      text-align: left;
+      padding: 9px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .context-menu-item:hover {
+      background: var(--hover-bg);
+    }
+    .context-menu-item.danger {
+      color: var(--error-color);
+    }
+    .context-menu-item:disabled {
+      color: var(--text-secondary);
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
 
     /* Main Content */
     .main-content {
@@ -1144,6 +1304,135 @@ class ViewerWorker {
       min-width: 0;
       background-color: var(--bg-color);
       position: relative; /* For positioning input container */
+    }
+
+    .right-workspace {
+      display: flex;
+      flex-shrink: 0;
+      height: 100vh;
+      min-width: 56px;
+    }
+
+    .feature-panel {
+      width: 0;
+      background: var(--panel-bg);
+      border-left: 1px solid transparent;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: width 0.24s ease, border-color 0.24s ease;
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .feature-panel.open {
+      width: var(--feature-panel-width, 320px);
+      border-left-color: var(--border-color);
+    }
+
+    .feature-panel-resizer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 6px;
+      height: 100%;
+      cursor: col-resize;
+      z-index: 2;
+    }
+
+    .feature-panel-resizer::after {
+      content: '';
+      position: absolute;
+      left: 2px;
+      top: 0;
+      width: 1px;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .feature-panel-header {
+      height: 56px;
+      padding: 0 16px 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      flex-shrink: 0;
+    }
+
+    .feature-panel-title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+
+    .feature-panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 18px 20px 20px;
+    }
+
+    .feature-panel-empty {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .feature-panel-section {
+      padding: 12px 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .feature-panel-section-title {
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .right-rail {
+      width: 56px;
+      border-left: 1px solid var(--border-color);
+      background: var(--sidebar-bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px 0;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .rail-spacer {
+      flex: 1;
+    }
+
+    .rail-button {
+      width: 40px;
+      height: 40px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+    }
+
+    .rail-button:hover {
+      background: var(--hover-bg);
+      color: var(--text-primary);
+    }
+
+    .rail-button.active {
+      background: var(--active-bg);
+      border-color: var(--border-color);
+      color: var(--text-primary);
     }
 
     header {
@@ -1179,10 +1468,25 @@ class ViewerWorker {
       padding: 2px 8px;
       border-radius: 12px;
       background: var(--success-color);
-      color: #fff;
+      color: var(--status-text-on-color);
       font-weight: 500;
     }
     .status-badge.disconnected { background: var(--error-color); }
+
+    .markdown-body code.inline-code-accent {
+      color: var(--code-accent) !important;
+      background: transparent !important;
+      padding: 0 !important;
+      border-radius: 0 !important;
+      font-size: inherit !important;
+      font-family: inherit !important;
+      font-weight: inherit !important;
+      line-height: inherit !important;
+    }
+
+    .markdown-body pre code {
+      color: inherit !important;
+    }
 
     #chat-container {
       flex: 1;
@@ -1561,11 +1865,11 @@ class ViewerWorker {
 
     .user-input-card {
       pointer-events: auto;
-      background: #090909; /* 稍微浅一点点的黑 */
-      border: 1px solid #222;
+      background: var(--input-card-bg);
+      border: 1px solid var(--input-card-border);
       border-radius: 24px;
       padding: 18px 24px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8);
+      box-shadow: 0 8px 32px var(--shadow-strong);
       width: 85%;
       max-width: 800px;
       display: flex;
@@ -1597,7 +1901,7 @@ class ViewerWorker {
     }
     
     .user-input-textarea::placeholder {
-      color: #444;
+      color: var(--text-muted);
     }
 
     .user-input-textarea:focus {
@@ -1652,6 +1956,45 @@ class ViewerWorker {
     <div id="user-input-container"></div>
   </div>
 
+  <div class="right-workspace">
+    <aside id="feature-panel" class="feature-panel">
+      <div id="feature-panel-resizer" class="feature-panel-resizer" title="Resize panel"></div>
+      <div class="feature-panel-header">
+        <div id="feature-panel-title" class="feature-panel-title">Workspace</div>
+      </div>
+      <div id="feature-panel-body" class="feature-panel-body">
+        <div class="feature-panel-empty">
+          <div>选择右侧功能按钮以展开面板。</div>
+        </div>
+      </div>
+    </aside>
+
+    <aside class="right-rail" id="right-rail">
+      <button class="rail-button" id="rail-workspace" title="Workspace" data-panel="workspace">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+          <path d="M9 4v16"></path>
+        </svg>
+      </button>
+      <button class="rail-button" id="rail-inspector" title="Inspector" data-panel="inspector">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="11" cy="11" r="6"></circle>
+          <path d="m20 20-3.5-3.5"></path>
+        </svg>
+      </button>
+      <div class="rail-spacer"></div>
+      <button class="rail-button" id="theme-toggle" title="切换主题" type="button">
+        <svg id="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
+        </svg>
+      </button>
+    </aside>
+  </div>
+
+  <div id="agent-context-menu" class="context-menu">
+    <button id="delete-agent-action" class="context-menu-item danger" type="button">删除 Agent</button>
+  </div>
+
   <script>
     // Feature 模板映射（从 API 动态加载）
     let FEATURE_TEMPLATE_MAP = {};
@@ -1696,19 +2039,83 @@ class ViewerWorker {
     const currentAgentTitle = document.getElementById('current-agent-name');
     const sidebar = document.getElementById('sidebar');
     const sidebarToggle = document.getElementById('sidebar-toggle');
+    const featurePanel = document.getElementById('feature-panel');
+    const featurePanelTitle = document.getElementById('feature-panel-title');
+    const featurePanelBody = document.getElementById('feature-panel-body');
+    const featurePanelResizer = document.getElementById('feature-panel-resizer');
+    const agentContextMenu = document.getElementById('agent-context-menu');
+    const deleteAgentAction = document.getElementById('delete-agent-action');
+    const railButtons = Array.from(document.querySelectorAll('.rail-button'));
+    const themeToggle = document.getElementById('theme-toggle');
 
     let currentAgentId = null;
     let allAgents = [];
     let currentMessages = [];
     let toolRenderConfigs = {};
     let TOOL_NAMES = {};
+    let contextMenuAgentId = null;
+    let activeFeaturePanel = null;
+    let featurePanelWidth = 320;
+    let currentTheme = localStorage.getItem('agentdev-theme') || 'dark';
+
+    const featurePanels = {
+      workspace: {
+        title: 'Workspace',
+        render: () => \`
+          <div class="feature-panel-empty">
+            <div class="feature-panel-section">
+              <div class="feature-panel-section-title">面板占位</div>
+              <div>这里是右侧功能面板的基础容器，后续可以继续挂接更多调试工具、会话视图或辅助操作。</div>
+            </div>
+            <div class="feature-panel-section">
+              <div class="feature-panel-section-title">当前状态</div>
+              <div>左侧 Agent 列表、中央对话区、右侧功能区现在已经形成可扩展的三栏布局。</div>
+            </div>
+          </div>
+        \`,
+      },
+      inspector: {
+        title: 'Inspector',
+        render: () => {
+          const activeAgent = allAgents.find(agent => agent.id === currentAgentId);
+          const connected = activeAgent ? (activeAgent.connected !== false ? 'Connected' : 'Disconnected') : 'No agent';
+          return \`
+            <div class="feature-panel-empty">
+              <div class="feature-panel-section">
+                <div class="feature-panel-section-title">Active Agent</div>
+                <div>\${activeAgent ? escapeHtml(activeAgent.name) : 'None'}</div>
+              </div>
+              <div class="feature-panel-section">
+                <div class="feature-panel-section-title">Connection</div>
+                <div>\${connected}</div>
+              </div>
+              <div class="feature-panel-section">
+                <div class="feature-panel-section-title">Messages</div>
+                <div>\${currentMessages.length}</div>
+              </div>
+            </div>
+          \`;
+        },
+      },
+    };
 
     // Sidebar Toggle
     sidebarToggle.addEventListener('click', () => {
       sidebar.classList.toggle('collapsed');
     });
 
+    const renderer = new marked.Renderer();
+    renderer.codespan = function(code) {
+      const text = typeof code === 'string'
+        ? code
+        : (code && typeof code === 'object' && 'text' in code
+          ? code.text
+          : String(code ?? ''));
+      return '<code class="inline-code-accent">' + escapeHtml(text) + '</code>';
+    };
+
     marked.setOptions({
+      renderer,
       highlight: function(code, lang) {
         if (lang && hljs.getLanguage(lang)) {
           return hljs.highlight(code, { language: lang }).value;
@@ -1738,6 +2145,100 @@ class ViewerWorker {
 
     // 模板缓存
     const templateCache = new Map();
+
+    function setConnectionStatus(connected) {
+      statusBadge.textContent = connected ? 'Connected' : 'Disconnected';
+      statusBadge.classList.toggle('disconnected', !connected);
+    }
+
+    function renderThemeToggle() {
+      const isLight = currentTheme === 'light';
+      themeToggle.title = isLight ? '切换到深色模式' : '切换到浅色模式';
+      themeToggle.innerHTML = isLight
+        ? '<svg id="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2.2M12 19.8V22M4.93 4.93l1.56 1.56M17.51 17.51l1.56 1.56M2 12h2.2M19.8 12H22M4.93 19.07l1.56-1.56M17.51 6.49l1.56-1.56"></path></svg>'
+        : '<svg id="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>';
+    }
+
+    function applyTheme(theme) {
+      currentTheme = theme === 'light' ? 'light' : 'dark';
+      document.body.dataset.theme = currentTheme;
+      localStorage.setItem('agentdev-theme', currentTheme);
+      renderThemeToggle();
+    }
+
+    function renderFeaturePanel() {
+      if (!activeFeaturePanel || !featurePanels[activeFeaturePanel]) {
+        featurePanel.classList.remove('open');
+        featurePanelTitle.textContent = 'Workspace';
+        featurePanelBody.innerHTML = '<div class="feature-panel-empty"><div>选择右侧功能按钮以展开面板。</div></div>';
+        railButtons.forEach(button => button.classList.remove('active'));
+        return;
+      }
+
+      featurePanel.classList.add('open');
+      featurePanel.style.setProperty('--feature-panel-width', featurePanelWidth + 'px');
+      featurePanelTitle.textContent = featurePanels[activeFeaturePanel].title;
+      featurePanelBody.innerHTML = featurePanels[activeFeaturePanel].render();
+      railButtons.forEach(button => {
+        button.classList.toggle('active', button.dataset.panel === activeFeaturePanel);
+      });
+    }
+
+    function toggleFeaturePanel(panelId) {
+      activeFeaturePanel = activeFeaturePanel === panelId ? null : panelId;
+      renderFeaturePanel();
+    }
+
+    function closeAgentContextMenu() {
+      agentContextMenu.classList.remove('open');
+      contextMenuAgentId = null;
+    }
+
+    function openAgentContextMenu(agentId, x, y, canDelete) {
+      contextMenuAgentId = canDelete ? agentId : null;
+      deleteAgentAction.disabled = !canDelete;
+
+      const margin = 8;
+      agentContextMenu.classList.add('open');
+      agentContextMenu.style.left = '0px';
+      agentContextMenu.style.top = '0px';
+
+      const rect = agentContextMenu.getBoundingClientRect();
+      const maxLeft = window.innerWidth - rect.width - margin;
+      const maxTop = window.innerHeight - rect.height - margin;
+      agentContextMenu.style.left = Math.max(margin, Math.min(x, maxLeft)) + 'px';
+      agentContextMenu.style.top = Math.max(margin, Math.min(y, maxTop)) + 'px';
+    }
+
+    railButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        toggleFeaturePanel(button.dataset.panel);
+      });
+    });
+
+    themeToggle.addEventListener('click', () => {
+      applyTheme(currentTheme === 'light' ? 'dark' : 'light');
+    });
+
+    featurePanelResizer.addEventListener('mousedown', (event) => {
+      if (!featurePanel.classList.contains('open')) return;
+
+      event.preventDefault();
+
+      const handleMouseMove = (moveEvent) => {
+        const nextWidth = window.innerWidth - moveEvent.clientX - 56;
+        featurePanelWidth = Math.max(240, Math.min(640, nextWidth));
+        featurePanel.style.setProperty('--feature-panel-width', featurePanelWidth + 'px');
+      };
+
+      const handleMouseUp = () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    });
 
 
     function formatError(data) {
@@ -1928,6 +2429,7 @@ class ViewerWorker {
         allAgents = data.agents || [];
 
         renderAgentList();
+        renderFeaturePanel();
 
         if (data.currentAgentId && data.currentAgentId !== currentAgentId) {
           currentAgentId = data.currentAgentId;
@@ -1941,15 +2443,26 @@ class ViewerWorker {
     function renderAgentList() {
       agentList.innerHTML = allAgents.map(a => {
         const isActive = a.id === currentAgentId;
+        const isConnected = a.connected !== false;
         // Agent ID 格式：agent-{序号}-{进程PID}
         const parts = a.id.split('-');
         const agentNum = parts[1] || '?';
         const pid = parts[2] || '';
         const displayId = pid ? '#'.concat(agentNum, ' (', pid, ')') : '#'.concat(agentNum);
         return \`
-          <div class="agent-item \${isActive ? 'active' : ''}" onclick="switchAgent('\${a.id}')">
+          <div
+            class="agent-item \${isActive ? 'active' : ''} \${isConnected ? '' : 'disconnected'}"
+            onclick="switchAgent('\${a.id}')"
+            oncontextmenu="openAgentActions(event, '\${a.id}')"
+          >
             <div class="agent-name">\${escapeHtml(a.name)}</div>
-            <div class="agent-meta">\${displayId} · \${a.messageCount} msgs</div>
+            <div class="agent-meta">
+              <span class="agent-status">
+                <span class="agent-status-dot"></span>
+                <span>\${isConnected ? 'Connected' : 'Disconnected'}</span>
+              </span>
+              · \${displayId} · \${a.messageCount} msgs
+            </div>
           </div>
         \`;
       }).join('');
@@ -1962,6 +2475,7 @@ class ViewerWorker {
 
     window.switchAgent = async (newAgentId) => {
       if (newAgentId === currentAgentId) return;
+      closeAgentContextMenu();
       try {
         const res = await fetch('/api/agents/current', {
           method: 'PUT',
@@ -1977,6 +2491,68 @@ class ViewerWorker {
         console.error('Failed to switch agent:', e);
       }
     };
+
+    window.openAgentActions = (event, agentId) => {
+      event.preventDefault();
+      const agent = allAgents.find(item => item.id === agentId);
+      if (!agent) return;
+      openAgentContextMenu(agentId, event.clientX, event.clientY, agent.connected === false);
+    };
+
+    deleteAgentAction.addEventListener('click', async () => {
+      if (!contextMenuAgentId) return;
+
+      const agent = allAgents.find(item => item.id === contextMenuAgentId);
+      if (!agent || agent.connected !== false) {
+        closeAgentContextMenu();
+        return;
+      }
+
+      const confirmed = window.confirm('删除这个已断开的 Agent？这只会从当前调试界面移除它的记录。');
+      if (!confirmed) {
+        closeAgentContextMenu();
+        return;
+      }
+
+      try {
+        const res = await fetch(\`/api/agents/\${contextMenuAgentId}\`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Delete failed');
+        }
+
+        closeAgentContextMenu();
+        await loadAgents();
+
+        if (data.currentAgentId && data.currentAgentId !== currentAgentId) {
+          currentAgentId = data.currentAgentId;
+          await loadAgentData(currentAgentId);
+        } else if (!data.currentAgentId) {
+          currentAgentId = null;
+          currentMessages = [];
+          container.innerHTML = '<div class="empty-state">Waiting for messages...</div>';
+          currentAgentTitle.textContent = 'Agent Debugger';
+        }
+      } catch (e) {
+        closeAgentContextMenu();
+        window.alert('删除 Agent 失败: ' + (e && e.message ? e.message : e));
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      if (!agentContextMenu.contains(event.target)) {
+        closeAgentContextMenu();
+      }
+    });
+
+    window.addEventListener('resize', () => {
+      closeAgentContextMenu();
+      featurePanelWidth = Math.max(240, Math.min(640, featurePanelWidth));
+      if (featurePanel.classList.contains('open')) {
+        featurePanel.style.setProperty('--feature-panel-width', featurePanelWidth + 'px');
+      }
+    });
+    window.addEventListener('scroll', closeAgentContextMenu, true);
 
     async function loadAgentData(agentId) {
       try {
@@ -2043,6 +2619,7 @@ class ViewerWorker {
         await Promise.all(loadPromises);
 
         render(currentMessages);
+        renderFeaturePanel();
       } catch (e) {
         console.error('Failed to load agent data:', e);
       }
@@ -2062,11 +2639,15 @@ class ViewerWorker {
         }
 
         // 并行请求消息、通知和输入请求
-        const [msgsRes, notifRes, inputRes] = await Promise.all([
+        const [msgsRes, notifRes, connectionRes, inputRes] = await Promise.all([
           fetch(\`/api/agents/\${currentAgentId}/messages\`),
           fetch(\`/api/agents/\${currentAgentId}/notification\`),
+          fetch(\`/api/agents/\${currentAgentId}/connection\`),
           fetch(\`/api/agents/\${currentAgentId}/input-requests\`),
         ]);
+
+        const connectionData = await connectionRes.json();
+        setConnectionStatus(!!connectionData.connected);
 
         const data = await msgsRes.json();
         const messages = data.messages || [];
@@ -2097,8 +2678,6 @@ class ViewerWorker {
             currentMessages = messages;
             render(messages);
           }
-          statusBadge.textContent = 'Connected';
-          statusBadge.classList.remove('disconnected');
         } else {
           const lastMsgChanged = messages.length > 0 &&
             JSON.stringify(messages[messages.length - 1]) !== JSON.stringify(currentMessages[currentMessages.length - 1]);
@@ -2116,12 +2695,16 @@ class ViewerWorker {
            if (JSON.stringify(agentsData.agents) !== JSON.stringify(allAgents)) {
              allAgents = agentsData.agents || [];
              renderAgentList();
+             renderFeaturePanel();
            }
         }
 
+        if (activeFeaturePanel === 'inspector') {
+          renderFeaturePanel();
+        }
+
       } catch (e) {
-        statusBadge.textContent = 'Disconnected';
-        statusBadge.classList.add('disconnected');
+        setConnectionStatus(false);
       }
       setTimeout(poll, 100);
     }
@@ -2760,6 +3343,8 @@ class ViewerWorker {
 
     // 初始化：先加载 Feature 模板映射，再启动轮询
     // 如果 Feature 模板映射为空（Agent 还未注册），在 loadAgents 后重新加载
+    applyTheme(currentTheme);
+
     loadFeatureTemplateMap().then((success) => {
       loadAgents().then(async () => {
         // 如果第一次加载 Feature 模板失败，重新尝试

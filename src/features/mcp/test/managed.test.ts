@@ -3,6 +3,7 @@ import { loadMCPConfigFromInput } from '../../../mcp/config.js';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import type { MCPClient } from '../../../mcp/client.js';
+import type { Tool } from '../../../core/types.js';
 
 function assert(condition: unknown, message: string): void {
   if (!condition) {
@@ -41,15 +42,21 @@ async function main(): Promise<void> {
   }
 
   const serverConfig = Object.values(config.servers)[0];
-  if (!serverConfig || typeof serverConfig.url !== 'string') {
-    console.log('[SKIP] invalid crawl4ai config');
+  if (!serverConfig || (serverConfig.transport !== 'sse' && serverConfig.transport !== 'http')) {
+    console.log('[SKIP] invalid crawl4ai config (not SSE or HTTP transport)');
+    return;
+  }
+  // 类型守卫：确认是 SSE 或 HTTP 配置后才有 url 属性
+  if (!('url' in serverConfig) || typeof serverConfig.url !== 'string') {
+    console.log('[SKIP] invalid crawl4ai config (no url)');
     return;
   }
 
-  // 检查服务是否可用
-  const serviceAvailable = await isServiceAvailable(serverConfig.url);
+  // 检查服务是否可用（类型守卫后 url 属性已确认存在）
+  const serviceUrl = (serverConfig as { url: string }).url;
+  const serviceAvailable = await isServiceAvailable(serviceUrl);
   if (!serviceAvailable) {
-    console.log(`[SKIP] crawl4ai service not available at ${serverConfig.url}`);
+    console.log(`[SKIP] crawl4ai service not available at ${serviceUrl}`);
     console.log('       Start the service with: crawl4ai-mcp --port 11235');
     console.log('[DONE] MCP managed tool test skipped');
     return;
@@ -78,13 +85,14 @@ async function main(): Promise<void> {
     assert(!toolNames.some(name => name.endsWith('_ask') || name === 'ask'), 'disabled tool should not exist');
 
     const markdownTool = result.tools.find(tool => tool.name === 'websearch_markdown_fetch');
-    assert(markdownTool, 'renamed markdown tool should be available');
+    assert(markdownTool !== undefined, 'renamed markdown tool should be available');
+    // 使用非空断言（前面已确保不是 undefined）
     assert(
-      markdownTool.description === 'Fetch webpage content as markdown via crawl4ai.',
+      markdownTool!.description === 'Fetch webpage content as markdown via crawl4ai.',
       'description override should be applied'
     );
 
-    const markdownResult = await markdownTool.execute({ url: 'https://example.com' });
+    const markdownResult = await markdownTool!.execute({ url: 'https://example.com' });
     const markdownContent = typeof markdownResult?.content === 'string'
       ? markdownResult.content
       : JSON.stringify(markdownResult);

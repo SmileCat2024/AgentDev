@@ -71,6 +71,8 @@ export interface AgentFeature {
   readonly name: string;
   /** 依赖的其他 Feature */
   readonly dependencies?: string[];
+  /** 可选：用于调试器展示的 Feature 描述 */
+  readonly description?: string;
 
   /**
    * 获取同步工具（已知工具列表）
@@ -102,6 +104,11 @@ export interface AgentFeature {
    * 清理钩子
    */
   onDestroy?(ctx: FeatureContext): Promise<void>;
+
+  /**
+   * 可选：为调试器提供 hook 的人类可读说明
+   */
+  getHookDescription?(lifecycle: string, methodName: string): string | undefined;
 
   // ========== 反向钩子通过装饰器注册，无需接口声明 ==========
   // 使用 hooks-decorator.ts 中提供的装饰器来标记反向钩子方法

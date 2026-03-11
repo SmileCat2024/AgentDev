@@ -7,7 +7,7 @@
 import type { AgentFeature } from './feature.js';
 import { CoreLifecycle, Decision, DecisionResult, normalizeDecision } from './lifecycle.js';
 import { getDecoratorMetadata } from './hooks-decorator.js';
-import type { DecisionContext } from './types.js';
+import type { DecisionContext, HookLifecycleSnapshot } from './types.js';
 
 /**
  * 钩子执行结果
@@ -30,7 +30,11 @@ export interface HookExecutionResult {
  */
 export class HooksRegistry {
   /** 生命周期 → Feature 映射 → 方法名 */
-  private hooks = new Map<CoreLifecycle, Array<{ feature: AgentFeature; methodName: string }>>();
+  private hooks = new Map<CoreLifecycle, Array<{
+    feature: AgentFeature;
+    methodName: string;
+    source?: { file?: string; line?: number; column?: number; display: string };
+  }>>();
 
   /**
    * 从 Feature 收集反向钩子
@@ -49,7 +53,12 @@ export class HooksRegistry {
       // 支持多个方法（用逗号分隔）
       const methodNames = methodNameOrList.split(',');
       for (const methodName of methodNames) {
-        hookList.push({ feature, methodName: methodName.trim() });
+        const trimmed = methodName.trim();
+        hookList.push({
+          feature,
+          methodName: trimmed,
+          source: metadata.hookSources.get(`${lifecycle}:${trimmed}`),
+        });
       }
     }
   }
@@ -85,8 +94,38 @@ export class HooksRegistry {
    * @param lifecycle 生命周期类型
    * @returns 钩子列表
    */
-  get(lifecycle: CoreLifecycle): Array<{ feature: AgentFeature; methodName: string }> {
+  get(lifecycle: CoreLifecycle): Array<{
+    feature: AgentFeature;
+    methodName: string;
+    source?: { file?: string; line?: number; column?: number; display: string };
+  }> {
     return this.hooks.get(lifecycle) || [];
+  }
+
+  getSnapshot(): HookLifecycleSnapshot[] {
+    return Object.values(CoreLifecycle).map((lifecycle) => {
+      const entries = (this.hooks.get(lifecycle) || []).map((hook, index) => ({
+        order: index + 1,
+        featureName: hook.feature.name,
+        methodName: hook.methodName,
+        lifecycle,
+        kind: lifecycle === CoreLifecycle.StepFinish || lifecycle === CoreLifecycle.ToolUse
+          ? 'decision' as const
+          : 'notify' as const,
+        source: hook.source,
+        description: typeof (hook.feature as any).getHookDescription === 'function'
+          ? (hook.feature as any).getHookDescription(lifecycle, hook.methodName)
+          : undefined,
+      }));
+
+      return {
+        lifecycle,
+        kind: lifecycle === CoreLifecycle.StepFinish || lifecycle === CoreLifecycle.ToolUse
+          ? 'decision' as const
+          : 'notify' as const,
+        entries,
+      };
+    });
   }
 
   /**

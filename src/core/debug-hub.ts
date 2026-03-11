@@ -21,6 +21,7 @@ import {
   type DebugHubIPCMessage,
   type Notification,
   type RequestInputMsg,
+  type HookInspectorSnapshot,
 } from './types.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
@@ -116,7 +117,12 @@ export class DebugHub {
    * @param featureTemplates Feature 模板路径映射（可选）
    * @returns 分配的 agentId
    */
-  registerAgent(agent: Agent, name?: string, featureTemplates?: Record<string, string>): string {
+  registerAgent(
+    agent: Agent,
+    name?: string,
+    featureTemplates?: Record<string, string>,
+    hookInspector?: HookInspectorSnapshot
+  ): string {
     // 等待注册锁
     while (this.registrationLock) {
       // 简单的忙等待（实际场景中竞争很少）
@@ -146,6 +152,7 @@ export class DebugHub {
         createdAt: info.registeredAt,
         projectRoot: process.cwd(), // 传递项目根目录，用于模板文件加载
         featureTemplates, // 传递 Feature 模板路径映射
+        hookInspector,
       });
 
       console.log(`[DebugHub] Agent 已注册: ${id} (${info.name})`);
@@ -220,6 +227,14 @@ export class DebugHub {
       type: 'register-tools',
       agentId,
       tools,
+    });
+  }
+
+  updateAgentInspector(agentId: string, hookInspector: HookInspectorSnapshot): void {
+    this.sendToWorker({
+      type: 'update-agent-inspector',
+      agentId,
+      hookInspector,
     });
   }
 

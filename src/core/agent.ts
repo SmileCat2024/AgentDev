@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool, Message } from './types.js';
+import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot } from './types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -349,7 +349,12 @@ class AgentBase {
       }
     }
 
-    this.agentId = this.debugHub.registerAgent(this, name || this.constructor.name, featureTemplates);
+    this.agentId = this.debugHub.registerAgent(
+      this,
+      name || this.constructor.name,
+      featureTemplates,
+      this.buildHookInspectorSnapshot()
+    );
     this.debugHub.registerAgentTools(this.agentId, this.tools.getAll());
 
     return this;
@@ -539,6 +544,7 @@ class AgentBase {
 
     if (count > 0) {
       console.log(`[Agent] 已启用 Feature '${featureName}' 的 ${count} 个工具`);
+      this.pushInspectorSnapshot();
     }
 
     return this;
@@ -567,6 +573,7 @@ class AgentBase {
 
     if (count > 0) {
       console.log(`[Agent] 已禁用 Feature '${featureName}' 的 ${count} 个工具`);
+      this.pushInspectorSnapshot();
     }
 
     return this;
@@ -638,6 +645,7 @@ class AgentBase {
     }
 
     this.featureToolsReady = true;
+    this.pushInspectorSnapshot();
   }
 
   // ========== 内部方法 ==========
@@ -698,6 +706,47 @@ class AgentBase {
     if (this.debugEnabled && this.agentId && this.debugHub) {
       this.debugHub.pushMessages(this.agentId, messages);
     }
+  }
+
+  private pushInspectorSnapshot(): void {
+    if (this.debugEnabled && this.agentId && this.debugHub) {
+      this.debugHub.updateAgentInspector(this.agentId, this.buildHookInspectorSnapshot());
+    }
+  }
+
+  private buildHookInspectorSnapshot(): HookInspectorSnapshot {
+    const hookGroups = this.hooksRegistry.getSnapshot();
+    const hookCountByFeature = new Map<string, number>();
+
+    for (const group of hookGroups) {
+      for (const entry of group.entries) {
+        hookCountByFeature.set(entry.featureName, (hookCountByFeature.get(entry.featureName) || 0) + 1);
+      }
+    }
+
+    const features = Array.from(this.features.values()).map(feature => {
+      const tools = feature.getTools?.() ?? [];
+      const enabledToolCount = tools.filter(tool => this.tools.isEnabled(tool.name)).length;
+
+      return {
+        name: feature.name,
+        enabled: tools.length === 0 ? true : enabledToolCount === tools.length,
+        hookCount: hookCountByFeature.get(feature.name) || 0,
+        toolCount: tools.length,
+        enabledToolCount,
+        source: hookGroups.flatMap(group => group.entries)
+          .find(entry => entry.featureName === feature.name)?.source?.file,
+        description: typeof (feature as any).description === 'string'
+          ? (feature as any).description
+          : undefined,
+      };
+    });
+
+    return {
+      lifecycleOrder: hookGroups.map(group => group.lifecycle),
+      features,
+      hooks: hookGroups,
+    };
   }
 
   // ========== 生命周期钩子（扩展返回值）==========

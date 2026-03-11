@@ -204,6 +204,45 @@ export interface ToolMetadata {
   };
 }
 
+export interface HookSourceLocation {
+  file?: string;
+  line?: number;
+  column?: number;
+  display: string;
+}
+
+export interface HookEntryMetadata {
+  order: number;
+  featureName: string;
+  methodName: string;
+  lifecycle: string;
+  kind: 'decision' | 'notify';
+  source?: HookSourceLocation;
+  description?: string;
+}
+
+export interface HookLifecycleSnapshot {
+  lifecycle: string;
+  kind: 'decision' | 'notify';
+  entries: HookEntryMetadata[];
+}
+
+export interface FeatureInspectorSnapshot {
+  name: string;
+  enabled: boolean;
+  hookCount: number;
+  toolCount: number;
+  enabledToolCount: number;
+  source?: string;
+  description?: string;
+}
+
+export interface HookInspectorSnapshot {
+  lifecycleOrder: string[];
+  features: FeatureInspectorSnapshot[];
+  hooks: HookLifecycleSnapshot[];
+}
+
 /**
  * Agent 会话数据（Worker 端）
  */
@@ -224,6 +263,7 @@ export interface AgentSession {
   clientId?: string;
   // 内部：上次最后一条消息的签名（用于推送去重）
   _lastMessageSig?: string;
+  hookInspector?: HookInspectorSnapshot;
 }
 
 /**
@@ -232,6 +272,7 @@ export interface AgentSession {
  */
 export type DebugHubIPCMessage =
   | RegisterAgentMsg
+  | UpdateAgentInspectorMsg
   | PushMessagesMsg
   | RegisterToolsMsg
   | SetCurrentAgentMsg
@@ -250,6 +291,13 @@ export interface RegisterAgentMsg {
   createdAt: number;
   projectRoot?: string; // 项目根目录，用于模板文件加载
   featureTemplates?: Record<string, string>; // Feature 模板路径映射
+  hookInspector?: HookInspectorSnapshot;
+}
+
+export interface UpdateAgentInspectorMsg {
+  type: 'update-agent-inspector';
+  agentId: string;
+  hookInspector: HookInspectorSnapshot;
 }
 
 /**

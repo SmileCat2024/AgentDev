@@ -5,6 +5,7 @@
  */
 
 import { CoreLifecycle, Decision, DecisionResult } from './lifecycle.js';
+import type { HookSourceLocation } from './types.js';
 import type {
   AgentInitiateContext,
   AgentDestroyContext,
@@ -28,6 +29,8 @@ import type {
 interface DecoratorMetadata {
   /** 生命周期 → 方法名 映射 */
   hookDecisions: Map<CoreLifecycle, string>;
+  /** 生命周期:方法名 → 源码位置 */
+  hookSources: Map<string, HookSourceLocation>;
   /** 生命周期 → 方法签名 映射 */
   hookSignatures: Map<CoreLifecycle, {
     contextType: string;
@@ -83,6 +86,46 @@ const DECISION_HOOKS = new Set<CoreLifecycle>([
   CoreLifecycle.ToolUse,      // 工具执行前可阻塞
 ]);
 
+function normalizeSourceFile(filePath: string): string {
+  return filePath
+    .replace(/\\/g, '/')
+    .replace(/\/dist\//, '/src/')
+    .replace(/\.js$/, '.ts');
+}
+
+function captureDecoratorSource(): HookSourceLocation | undefined {
+  const stack = new Error().stack;
+  if (!stack) return undefined;
+
+  const lines = stack.split('\n').slice(1);
+  for (const line of lines) {
+    if (
+      line.includes('hooks-decorator.') ||
+      line.includes('__decorate') ||
+      line.includes('Reflect.decorate')
+    ) {
+      continue;
+    }
+
+    const match = line.match(/\(?(.+?):(\d+):(\d+)\)?$/);
+    if (!match) continue;
+
+    const [, rawFile, rawLine, rawColumn] = match;
+    const file = normalizeSourceFile(rawFile.trim());
+    const lineNumber = Number(rawLine);
+    const columnNumber = Number(rawColumn);
+
+    return {
+      file,
+      line: Number.isNaN(lineNumber) ? undefined : lineNumber,
+      column: Number.isNaN(columnNumber) ? undefined : columnNumber,
+      display: `${file}:${rawLine}`,
+    };
+  }
+
+  return undefined;
+}
+
 // ========== 装饰器工厂 ==========
 
 /**
@@ -108,6 +151,9 @@ function createHookDecorator(lifecycle: CoreLifecycle) {
     if (!constructor._hookDecisions) {
       constructor._hookDecisions = new Map<CoreLifecycle, string>();
     }
+    if (!constructor._hookSources) {
+      constructor._hookSources = new Map<string, HookSourceLocation>();
+    }
 
     // 唯一性检查：流程控制型钩子在类中只能使用一次
     // 非流程控制型钩子（void 返回值）可以使用多次
@@ -124,6 +170,11 @@ function createHookDecorator(lifecycle: CoreLifecycle) {
       constructor._hookDecisions.set(lifecycle, `${existing},${propertyKey}`);
     } else {
       constructor._hookDecisions.set(lifecycle, propertyKey);
+    }
+
+    const source = captureDecoratorSource();
+    if (source) {
+      constructor._hookSources.set(`${lifecycle}:${propertyKey}`, source);
     }
 
     // 保存期望的签名（供运行时验证）
@@ -253,6 +304,7 @@ export function getDecoratorMetadata(target: any): DecoratorMetadata {
   const constructor = typeof target === 'function' ? target : target.constructor;
   return {
     hookDecisions: constructor._hookDecisions || new Map<CoreLifecycle, string>(),
+    hookSources: constructor._hookSources || new Map<string, HookSourceLocation>(),
     hookSignatures: constructor._hookSignatures || new Map(),
   };
 }

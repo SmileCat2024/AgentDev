@@ -199,6 +199,9 @@ class ViewerWorker {
       case 'register-agent':
         this.handleRegisterAgent(msg, clientId);
         break;
+      case 'update-agent-inspector':
+        this.handleUpdateAgentInspector(msg);
+        break;
       case 'push-messages':
         this.handlePushMessages(msg);
         break;
@@ -310,6 +313,13 @@ class ViewerWorker {
     const toolsMatch = url.match(/^\/api\/agents\/([^/]+)\/tools$/);
     if (toolsMatch && req.method === 'GET') {
       this.handleGetAgentTools(req, res, toolsMatch[1]);
+      return;
+    }
+
+    // GET /api/agents/:id/hooks - 指定 Agent 的 hook 监视快照
+    const hooksMatch = url.match(/^\/api\/agents\/([^/]+)\/hooks$/);
+    if (hooksMatch && req.method === 'GET') {
+      this.handleGetAgentHooks(req, res, hooksMatch[1]);
       return;
     }
 
@@ -518,6 +528,22 @@ class ViewerWorker {
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(session.tools));
+  }
+
+  private handleGetAgentHooks(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(session.hookInspector || {
+      lifecycleOrder: [],
+      features: [],
+      hooks: [],
+    }));
   }
 
   /**
@@ -747,7 +773,7 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt, projectRoot, featureTemplates } = msg;
+    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector } = msg;
     const session = this.getOrCreateSession(agentId, name);
 
     // 存储项目根目录（用于模板文件加载）
@@ -767,12 +793,24 @@ class ViewerWorker {
       this.templateRouter.updateFeatureTemplates(featureTemplates);
     }
 
+    if (hookInspector) {
+      session.hookInspector = hookInspector;
+    }
+
     // 首个 Agent 自动成为当前
     if (this.agentSessions.size === 1) {
       this.currentAgentId = agentId;
     }
 
     console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})${clientId ? ` [client: ${clientId}]` : ''}`);
+  }
+
+  public handleUpdateAgentInspector(msg: any): void {
+    const { agentId, hookInspector } = msg;
+    const session = this.agentSessions.get(agentId);
+    if (!session) return;
+    session.hookInspector = hookInspector;
+    this.updateSessionActivity(agentId);
   }
 
   /**
@@ -1369,7 +1407,7 @@ class ViewerWorker {
     .feature-panel-body {
       flex: 1;
       overflow-y: auto;
-      padding: 16px 18px 20px 20px;
+      padding: 18px 20px 24px 22px;
     }
 
     .feature-panel-empty {
@@ -1381,9 +1419,9 @@ class ViewerWorker {
     }
 
     .feature-panel-section {
-      padding: 12px 14px;
+      padding: 13px 15px;
       border: 1px solid var(--border-color);
-      border-radius: 10px;
+      border-radius: 12px;
       background: rgba(255, 255, 255, 0.02);
     }
 
@@ -1392,6 +1430,474 @@ class ViewerWorker {
       font-size: 13px;
       font-weight: 600;
       margin-bottom: 6px;
+    }
+
+    .hooks-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .hooks-hero {
+      position: relative;
+      overflow: hidden;
+      padding: 18px;
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at top right, rgba(255, 120, 70, 0.20), transparent 34%),
+        radial-gradient(circle at bottom left, rgba(87, 180, 255, 0.16), transparent 36%),
+        linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+      box-shadow: 0 20px 50px var(--shadow-color);
+    }
+
+    .hooks-hero::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+      background-size: 22px 22px;
+      pointer-events: none;
+      opacity: 0.18;
+    }
+
+    .hooks-hero > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .hooks-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #ffb88d;
+      margin-bottom: 10px;
+    }
+
+    .hooks-kicker::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #ff9b62, #ffd27f);
+      box-shadow: 0 0 18px rgba(255, 155, 98, 0.45);
+    }
+
+    .hooks-hero-title {
+      font-size: 21px;
+      line-height: 1.1;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+    }
+
+    .hooks-hero-subtitle {
+      color: var(--text-secondary);
+      line-height: 1.65;
+      max-width: 34ch;
+      margin-bottom: 16px;
+    }
+
+    .hooks-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .hooks-stat {
+      padding: 11px 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+    }
+
+    body[data-theme="light"] .hooks-stat {
+      background: rgba(255, 255, 255, 0.8);
+    }
+
+    .hooks-stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .hooks-stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .hooks-summary {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .hooks-summary-top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .hooks-summary-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .hooks-summary-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .hooks-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .hooks-chip {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .hooks-chip.active {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .hooks-chip strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .hooks-section {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .overview-doc {
+      padding: 17px 19px;
+      border-radius: 14px;
+    }
+
+    .overview-doc .markdown-body {
+      font-size: 12.5px !important;
+      line-height: 1.8 !important;
+    }
+
+    .overview-doc .markdown-body p {
+      margin-bottom: 13px !important;
+    }
+
+    .overview-doc .markdown-body pre {
+      margin: 14px 0 !important;
+      font-size: 12px !important;
+    }
+
+    .hooks-section-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .hooks-section-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-primary);
+    }
+
+    .hooks-section-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .hooks-collapsible {
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .hooks-collapsible > summary {
+      list-style: none;
+      cursor: pointer;
+    }
+
+    .hooks-collapsible > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .hooks-collapsible-body {
+      padding: 0 12px 12px 12px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .feature-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .feature-card {
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .feature-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .feature-card-main {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .feature-card-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #7dd3a4;
+      flex-shrink: 0;
+    }
+
+    .feature-card-name {
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .feature-card-file {
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .feature-badge {
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .feature-card-detail {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      margin-top: 7px;
+    }
+
+    .hook-lifecycle-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .hook-lifecycle-card {
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .hook-lifecycle-card[open] {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .hook-lifecycle-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 13px 15px;
+      cursor: pointer;
+      list-style: none;
+    }
+
+    .hook-lifecycle-head::-webkit-details-marker {
+      display: none;
+    }
+
+    .hook-lifecycle-name {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .hook-lifecycle-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      color: #111;
+      background: linear-gradient(135deg, #f0d896, #e59d73);
+    }
+
+    .hook-lifecycle-type {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .hook-call-chain {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 0 12px 12px 12px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .hook-step {
+      display: flex;
+      gap: 10px;
+      padding-top: 8px;
+    }
+
+    .hook-step-order {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-primary);
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .hook-step-card {
+      flex: 1;
+      padding: 10px 11px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.018);
+    }
+
+    .hook-step-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+
+    .hook-step-feature {
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .hook-step-kind {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 3px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      background: rgba(255,255,255,0.05);
+    }
+
+    .hook-step-method {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .hook-step-location {
+      font-size: 12px;
+      color: var(--text-secondary);
+      word-break: break-all;
+    }
+
+    .hook-step-notes {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .hook-lifecycle-toggle {
+      color: var(--text-secondary);
+      font-size: 13px;
+      flex-shrink: 0;
+      transition: transform 0.18s ease;
+    }
+
+    .hook-lifecycle-card[open] .hook-lifecycle-toggle {
+      transform: rotate(90deg);
+    }
+
+    @media (max-width: 1360px) {
+      .feature-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hooks-stats {
+        grid-template-columns: 1fr;
+      }
     }
 
     .right-rail {
@@ -1970,19 +2476,29 @@ class ViewerWorker {
     </aside>
 
     <aside class="right-rail" id="right-rail">
-      <button class="rail-button" id="rail-workspace" title="Workspace" data-panel="workspace">
+      <button class="rail-button" id="rail-workspace" title="Overview" data-panel="workspace">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <rect x="3" y="4" width="18" height="16" rx="2"></rect>
           <path d="M9 4v16"></path>
         </svg>
       </button>
-      <button class="rail-button" id="rail-inspector" title="Inspector" data-panel="inspector">
+      <button class="rail-button" id="rail-hooks" title="Features" data-panel="hooks">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M8 7a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z"></path>
+          <path d="M22 7a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z"></path>
+          <path d="M15 17a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z"></path>
+          <path d="M8 7h8"></path>
+          <path d="M11 10v4"></path>
+        </svg>
+      </button>
+      <button class="rail-button" id="rail-inspector" title="Reverse Hooks" data-panel="inspector">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="6"></circle>
           <path d="m20 20-3.5-3.5"></path>
         </svg>
       </button>
       <div class="rail-spacer"></div>
+      <button class="rail-button" id="language-toggle" title="Switch Language" type="button">EN</button>
       <button class="rail-button" id="theme-toggle" title="切换主题" type="button">
         <svg id="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
@@ -2046,6 +2562,7 @@ class ViewerWorker {
     const agentContextMenu = document.getElementById('agent-context-menu');
     const deleteAgentAction = document.getElementById('delete-agent-action');
     const railButtons = Array.from(document.querySelectorAll('.rail-button'));
+    const languageToggle = document.getElementById('language-toggle');
     const themeToggle = document.getElementById('theme-toggle');
 
     let currentAgentId = null;
@@ -2057,45 +2574,627 @@ class ViewerWorker {
     let activeFeaturePanel = null;
     let featurePanelWidth = 320;
     let currentTheme = localStorage.getItem('agentdev-theme') || 'dark';
+    let currentLanguage = localStorage.getItem('agentdev-language') || 'zh';
+    let currentHookInspector = { lifecycleOrder: [], features: [], hooks: [] };
+    let currentHookInspectorSignature = '';
+    let selectedOverviewLifecycle = 'StepFinish';
+
+    const I18N = {
+      zh: {
+        page_title: 'Agent 调试器',
+        sidebar_toggle: '切换侧栏',
+        resize_panel: '调整面板宽度',
+        chars: '字符',
+        status_connected: '已连接',
+        status_disconnected: '已断开',
+        status_no_agent: '无 Agent',
+        empty_waiting: '等待消息中...',
+        panel_hint: '选择右侧功能按钮以展开面板。',
+        panel_overview: '总览',
+        panel_features: 'Features',
+        panel_reverse_hooks: 'Reverse Hooks',
+        panel_loop_flow: 'Loop Flow',
+        panel_select_lifecycle: '选择一个生命周期阶段',
+        panel_inspector: 'Inspector',
+        panel_connection: '连接状态',
+        panel_messages: '消息数',
+        panel_features_label: 'Features',
+        panel_enabled: '启用中',
+        panel_total: '总数',
+        panel_all_features: '全部 Features',
+        panel_registered: '已注册',
+        panel_no_features: '没有 Feature',
+        panel_no_feature_data: '当前 Agent 尚未上报 feature 信息。',
+        panel_no_hook_data: '没有 Hook 数据',
+        panel_no_hook_data_desc: '当前 Agent 尚未上报 feature / hook 监视信息。',
+        panel_all_lifecycle_slots: '完整 8 个生命周期槽位',
+        panel_attached: '已挂载',
+        panel_no_handlers: '当前没有挂载任何处理函数。',
+        stat_active_agent: '当前 Agent',
+        stat_hook_slots: 'Hook 已占用',
+        stat_decision_points: '决策点',
+        feature_source_missing: '暂无源码信息',
+        feature_enabled: 'enabled',
+        feature_partial: 'partial',
+        feature_hooks: 'hooks',
+        feature_tools: 'tools',
+        feature_messages: '条消息',
+        feature_registered_label: '已注册',
+        active_none: '无',
+        delete_agent: '删除 Agent',
+        delete_confirm: '删除这个已断开的 Agent？这只会从当前调试界面移除它的记录。',
+        delete_failed: '删除 Agent 失败: ',
+        theme_toggle_light: '切换到浅色模式',
+        theme_toggle_dark: '切换到深色模式',
+        language_toggle: '切换到英文',
+        language_toggle_short: 'EN',
+        workspace_tooltip: '总览',
+        features_tooltip: 'Features',
+        reverse_hooks_tooltip: 'Reverse Hooks',
+        phase_thinking: '思考中',
+        phase_content: '生成内容',
+        phase_tool_calling: '工具调用',
+        input_placeholder: '正在与 Agent 对话',
+        expand: '展开',
+        collapse: '收起',
+        thinking_process: '思考过程',
+        hook_kind: 'hook',
+        subagent: '子代理',
+        subagent_done: '已完成',
+        subagent_view_messages: '查看消息 >',
+        delete_failed_generic: '删除失败',
+        overview_subtitle: '查看当前 agent 的 hook 映射、循环阶段说明以及用于阅读会话链路的开发者视角解释。',
+      },
+      en: {
+        page_title: 'Agent Debugger',
+        sidebar_toggle: 'Toggle Sidebar',
+        resize_panel: 'Resize panel',
+        chars: 'chars',
+        status_connected: 'Connected',
+        status_disconnected: 'Disconnected',
+        status_no_agent: 'No agent',
+        empty_waiting: 'Waiting for messages...',
+        panel_hint: 'Select a tool on the right rail to open the panel.',
+        panel_overview: 'Overview',
+        panel_features: 'Features',
+        panel_reverse_hooks: 'Reverse Hooks',
+        panel_loop_flow: 'Loop Flow',
+        panel_select_lifecycle: 'Select a lifecycle stage',
+        panel_inspector: 'Inspector',
+        panel_connection: 'Connection',
+        panel_messages: 'Messages',
+        panel_features_label: 'Features',
+        panel_enabled: 'enabled',
+        panel_total: 'total',
+        panel_all_features: 'All Features',
+        panel_registered: 'registered',
+        panel_no_features: 'No Features',
+        panel_no_feature_data: 'The current agent has not reported feature metadata yet.',
+        panel_no_hook_data: 'No Hook Data',
+        panel_no_hook_data_desc: 'The current agent has not reported any feature / hook inspector data yet.',
+        panel_all_lifecycle_slots: 'All 8 lifecycle slots',
+        panel_attached: 'attached',
+        panel_no_handlers: 'No attached handlers.',
+        stat_active_agent: 'Active Agent',
+        stat_hook_slots: 'Hook Slots Filled',
+        stat_decision_points: 'Decision Points',
+        feature_source_missing: 'No source metadata',
+        feature_enabled: 'enabled',
+        feature_partial: 'partial',
+        feature_hooks: 'hooks',
+        feature_tools: 'tools',
+        feature_messages: 'messages',
+        feature_registered_label: 'registered',
+        active_none: 'None',
+        delete_agent: 'Delete Agent',
+        delete_confirm: 'Delete this disconnected agent? This only removes it from the current debugger view.',
+        delete_failed: 'Failed to delete agent: ',
+        theme_toggle_light: 'Switch to light mode',
+        theme_toggle_dark: 'Switch to dark mode',
+        language_toggle: 'Switch to Chinese',
+        language_toggle_short: '中',
+        workspace_tooltip: 'Overview',
+        features_tooltip: 'Features',
+        reverse_hooks_tooltip: 'Reverse Hooks',
+        phase_thinking: 'Thinking',
+        phase_content: 'Streaming',
+        phase_tool_calling: 'Tool Calling',
+        input_placeholder: 'Chatting with the agent',
+        expand: 'Expand',
+        collapse: 'Collapse',
+        thinking_process: 'Thinking Process',
+        hook_kind: 'hook',
+        subagent: 'SubAgent',
+        subagent_done: 'Completed',
+        subagent_view_messages: 'View messages >',
+        delete_failed_generic: 'Delete failed',
+        overview_subtitle: 'Inspect the current agent hook map, loop timing guide, and developer-facing explanations for reading the session flow.',
+      },
+    };
+
+    function t(key) {
+      const table = I18N[currentLanguage] || I18N.zh;
+      return table[key] || key;
+    }
+
+    function getEmptyStateHtml() {
+      return '<div class="empty-state">' + escapeHtml(t('empty_waiting')) + '</div>';
+    }
+
+    function getFeaturePanelEmptyHtml() {
+      return '<div class="feature-panel-empty"><div>' + escapeHtml(t('panel_hint')) + '</div></div>';
+    }
+
+    function getToggleButtonLabel(collapsed) {
+      return collapsed
+        ? '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> ' + escapeHtml(t('expand'))
+        : '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> ' + escapeHtml(t('collapse'));
+    }
+
+    const FULL_HOOK_LIFECYCLE_ORDER = [
+      'AgentInitiate',
+      'AgentDestroy',
+      'CallStart',
+      'CallFinish',
+      'StepStart',
+      'StepFinish',
+      'ToolUse',
+      'ToolFinished',
+    ];
+
+    function getHookInspectorSignature(snapshot) {
+      return JSON.stringify(snapshot || { lifecycleOrder: [], features: [], hooks: [] });
+    }
+
+    function normalizeHookInspector(snapshot) {
+      const raw = snapshot || { lifecycleOrder: [], features: [], hooks: [] };
+      const hookMap = new Map((raw.hooks || []).map(group => [group.lifecycle, group]));
+      return {
+        lifecycleOrder: FULL_HOOK_LIFECYCLE_ORDER.slice(),
+        features: raw.features || [],
+        hooks: FULL_HOOK_LIFECYCLE_ORDER.map((lifecycle) => {
+          const existing = hookMap.get(lifecycle);
+          if (existing) return existing;
+          return {
+            lifecycle,
+            kind: lifecycle === 'StepFinish' || lifecycle === 'ToolUse' ? 'decision' : 'notify',
+            entries: [],
+          };
+        }),
+      };
+    }
+
+    function setCurrentHookInspector(snapshot) {
+      const normalized = normalizeHookInspector(snapshot);
+      currentHookInspector = normalized;
+      currentHookInspectorSignature = getHookInspectorSignature(normalized);
+    }
+
+    const lifecycleDocs = {
+      AgentInitiate: {
+        title: { zh: 'Agent 初始化阶段', en: 'Agent initialization phase' },
+        body: {
+          zh: [
+          '这个时机只会在 agent 第一次真正进入工作状态时触发一次，适合做长生命周期资源的准备工作，比如启动后台服务、建立连接、预热缓存，或者把框架级能力挂进运行环境。',
+          '',
+          '~~~ts',
+          '@AgentInitiate',
+          'async boot(ctx) {',
+          '  await this.indexWorkspace();',
+          '  await this.startObserver();',
+          '}',
+          '~~~',
+          '',
+          '如果某个 feature 要在整个会话期间维持状态，这里通常是它最稳妥的切入点。相比 CallStart，它不会被每次用户输入重复触发。',
+        ].join('\\n'),
+          en: [
+          'This moment fires only once when the agent truly enters its working state. It is the right place for long-lived setup such as booting background services, opening connections, warming caches, or mounting framework-level helpers.',
+          '',
+          '~~~ts',
+          '@AgentInitiate',
+          'async boot(ctx) {',
+          '  await this.indexWorkspace();',
+          '  await this.startObserver();',
+          '}',
+          '~~~',
+          '',
+          'If a feature needs to hold state across the whole session, this is usually the safest insertion point. Unlike CallStart, it is not repeated on every user request.',
+        ].join('\\n'),
+        },
+      },
+      AgentDestroy: {
+        title: { zh: 'Agent 销毁阶段', en: 'Agent destroy phase' },
+        body: { zh: [
+          '这是 agent 生命周期的收尾点，用来释放外部资源、停止后台线程、断开连接，以及把调试信息或缓存安全落盘。',
+          '',
+          '~~~ts',
+          '@AgentDestroy',
+          'async cleanup() {',
+          '  await this.workerPool.stop();',
+          '  await this.cache.flush();',
+          '}',
+          '~~~',
+          '',
+          '如果一个 feature 在 AgentInitiate 做了重量级初始化，就应该在这里成对地清理掉。',
+        ].join('\\n'),
+          en: [
+          'This is the closing stage of the agent lifecycle. Use it to release external resources, stop workers, close connections, and flush traces or caches safely to disk.',
+          '',
+          '~~~ts',
+          '@AgentDestroy',
+          'async cleanup() {',
+          '  await this.workerPool.stop();',
+          '  await this.cache.flush();',
+          '}',
+          '~~~',
+          '',
+          'If a feature performs heavyweight setup in AgentInitiate, it should usually tear that work down here.',
+        ].join('\\n') },
+      },
+      CallStart: {
+        title: { zh: 'Call 开始前', en: 'Before call start' },
+        body: { zh: [
+          '这个时机发生在系统提示词之后、用户输入正式写入上下文之前。它非常适合做输入重写、前置注入和会话级别的轻量整理。',
+          '',
+          '~~~ts',
+          '@CallStart',
+          'async rewriteInput(ctx) {',
+          '  const raw = ctx.agent?.getUserInput() ?? ctx.input;',
+          '  ctx.agent?.setUserInput(raw.trim());',
+          '}',
+          '~~~',
+          '',
+          '如果你想观察 feature 如何“提前影响”一次调用，这里通常是最有解释力的节点。',
+        ].join('\\n'),
+          en: [
+          'This timing happens after the system prompt is ready but before the user input is committed into context. It is ideal for input rewriting, pre-injection, and lightweight call-level normalization.',
+          '',
+          '~~~ts',
+          '@CallStart',
+          'async rewriteInput(ctx) {',
+          '  const raw = ctx.agent?.getUserInput() ?? ctx.input;',
+          '  ctx.agent?.setUserInput(raw.trim());',
+          '}',
+          '~~~',
+          '',
+          'If you want to explain how a feature affects a call before the model sees it, this is usually the clearest node.',
+        ].join('\\n') },
+      },
+      CallFinish: {
+        title: { zh: 'Call 结束后', en: 'After call finish' },
+        body: { zh: [
+          '这是一次完整调用结束后的结算点。适合做摘要、记录、指标更新、落日志，而不适合决定下一轮 ReAct 要不要继续。',
+          '',
+          '~~~ts',
+          '@CallFinish',
+          'async afterCall(ctx) {',
+          '  this.metrics.track(ctx.completed, ctx.steps);',
+          '}',
+          '~~~',
+          '',
+          '它更像“回合总结”，而不是流程控制点。',
+        ].join('\\n'),
+          en: [
+          'This is the settlement point after a full call completes. It fits summarization, logging, and metrics updates, but it is not the place to decide whether the next ReAct turn should continue.',
+          '',
+          '~~~ts',
+          '@CallFinish',
+          'async afterCall(ctx) {',
+          '  this.metrics.track(ctx.completed, ctx.steps);',
+          '}',
+          '~~~',
+          '',
+          'It behaves more like an end-of-call summary than a flow-control decision point.',
+        ].join('\\n') },
+      },
+      StepStart: {
+        title: { zh: 'Step 开始前', en: 'Before step start' },
+        body: { zh: [
+          '每轮 ReAct 循环刚开始时都会进入这里。适合做上下文补丁、提醒注入、局部状态同步。这类钩子往往会高频出现。',
+          '',
+          '~~~ts',
+          '@StepStart',
+          'async injectReminder(ctx) {',
+          '  if (this.shouldRemind()) {',
+          '    ctx.context.add({ role: "system", content: this.reminder });',
+          '  }',
+          '}',
+          '~~~',
+          '',
+          '因为它会在每一轮执行，所以调试器里把它单独看出来很重要，否则很难解释某些系统消息为什么总会出现。',
+        ].join('\\n'),
+          en: [
+          'Every ReAct iteration enters here right at the beginning. It is useful for context patching, reminder injection, and local state synchronization. These hooks often run at high frequency.',
+          '',
+          '~~~ts',
+          '@StepStart',
+          'async injectReminder(ctx) {',
+          '  if (this.shouldRemind()) {',
+          '    ctx.context.add({ role: "system", content: this.reminder });',
+          '  }',
+          '}',
+          '~~~',
+          '',
+          'Because it runs every round, surfacing it clearly in the debugger is important; otherwise it is hard to explain why some system messages keep appearing.',
+        ].join('\\n') },
+      },
+      StepFinish: {
+        title: { zh: 'Step 结束决策点', en: 'Step finish decision point' },
+        body: { zh: [
+          '这是 ReAct 循环里最关键的控制点之一。模型和工具都跑完后，feature 可以在这里决定“继续下一轮”还是“就地结束”。',
+          '',
+          '~~~ts',
+          '@StepFinish',
+          'async decide(ctx) {',
+          '  if (this.hasPendingDelegates()) {',
+          '    return Decision.Approve;',
+          '  }',
+          '  return Decision.Continue;',
+          '}',
+          '~~~',
+          '',
+          '如果某个 feature 能把 agent 的循环强行维持住，通常就是在这里介入。它解释的是“为什么这轮已经看起来结束了，但系统还在继续跑”。',
+        ].join('\\n'),
+          en: [
+          'This is one of the most important control points in the ReAct loop. After the model and tools finish, a feature can decide whether the loop should continue or end right away.',
+          '',
+          '~~~ts',
+          '@StepFinish',
+          'async decide(ctx) {',
+          '  if (this.hasPendingDelegates()) {',
+          '    return Decision.Approve;',
+          '  }',
+          '  return Decision.Continue;',
+          '}',
+          '~~~',
+          '',
+          'If a feature can keep the agent alive beyond what looks like a natural stopping point, it is usually intervening here.',
+        ].join('\\n') },
+      },
+      ToolUse: {
+        title: { zh: '工具执行前决策点', en: 'Before tool execution decision point' },
+        body: { zh: [
+          '这是另一个高价值观察位点。工具真正执行前，feature 可以在这里批准、拒绝或者放行。所有安全策略、危险操作拦截都很适合在这里实现。',
+          '',
+          '~~~ts',
+          '@ToolUse',
+          'async guard(ctx) {',
+          '  if (ctx.call.name === "run_shell_command") {',
+          '    return Decision.Deny;',
+          '  }',
+          '  return Decision.Continue;',
+          '}',
+          '~~~',
+          '',
+          '调试器里只要看清楚这里挂了谁，很多“为什么工具没执行”或者“为什么执行路径被改写”就能直接定位。',
+        ].join('\\n'),
+          en: [
+          'This is another high-value inspection point. Before a tool actually runs, a feature can approve, deny, or pass it through. Security policy and dangerous-operation guards fit naturally here.',
+          '',
+          '~~~ts',
+          '@ToolUse',
+          'async guard(ctx) {',
+          '  if (ctx.call.name === "run_shell_command") {',
+          '    return Decision.Deny;',
+          '  }',
+          '  return Decision.Continue;',
+          '}',
+          '~~~',
+          '',
+          'As soon as you can see who is attached here, many "why did the tool not run?" questions become much easier to answer.',
+        ].join('\\n') },
+      },
+      ToolFinished: {
+        title: { zh: '工具执行后通知点', en: 'After tool finished notify point' },
+        body: { zh: [
+          '工具已经返回结果以后，这里会收到纯通知。适合做后处理、索引、同步外部状态、记录审计信息，但不会改变刚刚那次工具调用本身的结果。',
+          '',
+          '~~~ts',
+          '@ToolFinished',
+          'async record(ctx) {',
+          '  this.auditTrail.push({',
+          '    tool: ctx.toolName,',
+          '    duration: ctx.duration,',
+          '  });',
+          '}',
+          '~~~',
+          '',
+          '这类钩子更偏“旁路观察”和“后续整理”，所以通常适合完整展开给开发者查链路。',
+        ].join('\\n'),
+          en: [
+          'Once a tool returns its result, this point receives a pure notification. It suits post-processing, indexing, external state sync, and audit recording, but it does not change the result of the tool call that already happened.',
+          '',
+          '~~~ts',
+          '@ToolFinished',
+          'async record(ctx) {',
+          '  this.auditTrail.push({',
+          '    tool: ctx.toolName,',
+          '    duration: ctx.duration,',
+          '  });',
+          '}',
+          '~~~',
+          '',
+          'These hooks are more about side-channel observation and cleanup, so they are usually worth showing in full detail to developers.',
+        ].join('\\n') },
+      },
+    };
+
+    function selectOverviewLifecycle(lifecycle) {
+      selectedOverviewLifecycle = lifecycle;
+      if (activeFeaturePanel === 'workspace') {
+        renderFeaturePanel();
+      }
+    }
+
+    window.selectOverviewLifecycle = selectOverviewLifecycle;
+
+    function renderOverviewPanel() {
+      const hookIcons = {
+        AgentInitiate: 'A',
+        AgentDestroy: 'D',
+        CallStart: 'C',
+        CallFinish: 'C',
+        StepStart: 'S',
+        StepFinish: 'R',
+        ToolUse: 'T',
+        ToolFinished: 'F',
+      };
+      const activeAgent = allAgents.find(agent => agent.id === currentAgentId);
+      const connected = activeAgent ? (activeAgent.connected !== false ? t('status_connected') : t('status_disconnected')) : t('status_no_agent');
+      const totalHooks = currentHookInspector.hooks.reduce((sum, group) => sum + group.entries.length, 0);
+      const decisionHooks = currentHookInspector.hooks.reduce(
+        (sum, group) => sum + group.entries.filter(entry => entry.kind === 'decision').length,
+        0
+      );
+      const selectedDoc = lifecycleDocs[selectedOverviewLifecycle] || lifecycleDocs.StepFinish;
+      const flowChips = currentHookInspector.lifecycleOrder
+        .map(name => '<button class="hooks-chip' + (name === selectedOverviewLifecycle ? ' active' : '') + '" type="button" onclick="window.selectOverviewLifecycle(&quot;' + escapeHtml(name) + '&quot;)"><strong>' + escapeHtml(name) + '</strong></button>')
+        .join('');
+      return [
+        '<div class="hooks-panel">',
+        '<section class="hooks-hero">',
+        '<div class="hooks-kicker">React Loop Topology</div>',
+        '<div class="hooks-hero-title">Feature Hooks Map</div>',
+        '<div class="hooks-hero-subtitle">' + escapeHtml(t('overview_subtitle')) + '</div>',
+        '<div class="hooks-stats">',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_active_agent')) + '</div><div class="hooks-stat-value">' + escapeHtml(activeAgent ? activeAgent.name : t('active_none')) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_hook_slots')) + '</div><div class="hooks-stat-value">' + String(totalHooks) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_decision_points')) + '</div><div class="hooks-stat-value">' + String(decisionHooks) + '</div></div>',
+        '</div>',
+        '</section>',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_inspector')) + '</div><div class="hooks-section-meta">' + escapeHtml(connected) + '</div></div>',
+        '<div class="feature-grid">',
+        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_connection')) + '</div><div class="feature-card-detail"><span>' + escapeHtml(connected) + '</span><span>' + String(currentMessages.length) + ' ' + escapeHtml(t('feature_messages')) + '</span></div></div>',
+        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_features_label')) + '</div><div class="feature-card-detail"><span>' + String(currentHookInspector.features.filter(feature => feature.enabled).length) + ' ' + escapeHtml(t('panel_enabled')) + '</span><span>' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_total')) + '</span></div></div>',
+        '</div>',
+        '</section>',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_loop_flow')) + '</div><div class="hooks-section-meta">' + escapeHtml(t('panel_select_lifecycle')) + '</div></div>',
+        '<div class="hooks-strip">' + flowChips + '</div>',
+        '</section>',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(selectedOverviewLifecycle) + '</div><div class="hooks-section-meta">' + escapeHtml(selectedDoc.title[currentLanguage] || selectedDoc.title.zh) + '</div></div>',
+        '<div class="feature-panel-section overview-doc"><div class="markdown-body">' + marked.parse(selectedDoc.body[currentLanguage] || selectedDoc.body.zh) + '</div></div>',
+        '</section>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderFeaturesPanel() {
+      if (currentHookInspector.features.length === 0) {
+        return '<div class="feature-panel-empty"><div class="feature-panel-section"><div class="feature-panel-section-title">' + escapeHtml(t('panel_no_features')) + '</div><div>' + escapeHtml(t('panel_no_feature_data')) + '</div></div></div>';
+      }
+
+      const featureCards = currentHookInspector.features
+        .map(feature => [
+          '<div class="feature-card">',
+          '<div class="feature-card-top">',
+          '<div class="feature-card-main">',
+          '<span class="feature-card-dot"></span>',
+          '<div style="min-width:0;">',
+          '<div class="feature-card-name">' + escapeHtml(feature.name) + '</div>',
+          '<div class="feature-card-file">' + escapeHtml(feature.source || t('feature_source_missing')) + '</div>',
+          '</div>',
+          '</div>',
+          '<div class="feature-badge">' + escapeHtml(feature.enabled ? t('feature_enabled') : t('feature_partial')) + '</div>',
+          '</div>',
+          '<div class="feature-card-detail">',
+          '<span>' + String(feature.hookCount) + ' ' + escapeHtml(t('feature_hooks')) + '</span>',
+          '<span>' + String(feature.enabledToolCount) + '/' + String(feature.toolCount) + ' ' + escapeHtml(t('feature_tools')) + '</span>',
+          feature.description ? '<span>' + escapeHtml(feature.description) + '</span>' : '',
+          '</div>',
+          '</div>',
+        ].join(''))
+        .join('');
+
+      return [
+        '<div class="hooks-panel">',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_all_features')) + '</div><div class="hooks-section-meta">' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_registered')) + '</div></div>',
+        '<div class="feature-grid">' + featureCards + '</div>',
+        '</section>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderReverseHooksPanel() {
+      const hookIcons = {
+        AgentInitiate: 'A',
+        AgentDestroy: 'D',
+        CallStart: 'C',
+        CallFinish: 'C',
+        StepStart: 'S',
+        StepFinish: 'R',
+        ToolUse: 'T',
+        ToolFinished: 'F',
+      };
+
+      const lifecycleCards = currentHookInspector.hooks
+        .map(group => {
+          const entriesHtml = group.entries.map((entry, index) => [
+            '<div class="hook-step">',
+            '<div class="hook-step-order">' + String(index + 1) + '</div>',
+            '<div class="hook-step-card">',
+            '<div class="hook-step-row">',
+            '<div class="hook-step-feature">' + escapeHtml(entry.featureName) + '</div>',
+            '<div class="hook-step-kind">' + escapeHtml(entry.kind) + '</div>',
+            '</div>',
+            '<div class="hook-step-method">' + escapeHtml(entry.methodName) + '()</div>',
+            entry.source && entry.source.display ? '<div class="hook-step-location">' + escapeHtml(entry.source.display) + '</div>' : '',
+            entry.description ? '<div class="hook-step-notes">' + escapeHtml(entry.description) + '</div>' : '',
+            '</div>',
+            '</div>',
+          ].join('')).join('');
+
+          return [
+            '<section class="hook-lifecycle-card">',
+            '<div class="hook-lifecycle-head">',
+          '<div class="hook-lifecycle-name">',
+          '<span class="hook-lifecycle-icon">' + escapeHtml(hookIcons[group.lifecycle] || 'H') + '</span>',
+          '<div>',
+          '<div>' + escapeHtml(group.lifecycle) + '</div>',
+          '<div class="hook-lifecycle-type">' + escapeHtml(group.kind) + ' ' + escapeHtml(t('hook_kind')) + '</div>',
+          '</div>',
+          '</div>',
+            '<div style="display:flex;align-items:center;gap:12px;">',
+            '<div class="hooks-section-meta">' + String(group.entries.length) + ' ' + escapeHtml(t('panel_attached')) + '</div>',
+            '</div>',
+            '</div>',
+            '<div class="hook-call-chain">',
+            entriesHtml || '<div class="hooks-section-meta">' + escapeHtml(t('panel_no_handlers')) + '</div>',
+            '</div>',
+            '</section>',
+          ].join('');
+        })
+        .join('');
+
+      if (currentHookInspector.hooks.length === 0) {
+        return '<div class="feature-panel-empty"><div class="feature-panel-section"><div class="feature-panel-section-title">' + escapeHtml(t('panel_no_hook_data')) + '</div><div>' + escapeHtml(t('panel_no_hook_data_desc')) + '</div></div></div>';
+      }
+
+      return [
+        '<div class="hooks-panel">',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_reverse_hooks')) + '</div><div class="hooks-section-meta">' + escapeHtml(t('panel_all_lifecycle_slots')) + '</div></div>',
+        '<div class="hook-lifecycle-list">' + lifecycleCards + '</div>',
+        '</section>',
+        '</div>',
+      ].join('');
+    }
 
     const featurePanels = {
       workspace: {
-        title: 'Workspace',
-        render: () => \`
-          <div class="feature-panel-empty">
-            <div class="feature-panel-section">
-              <div class="feature-panel-section-title">面板占位</div>
-              <div>这里是右侧功能面板的基础容器，后续可以继续挂接更多调试工具、会话视图或辅助操作。</div>
-            </div>
-            <div class="feature-panel-section">
-              <div class="feature-panel-section-title">当前状态</div>
-              <div>左侧 Agent 列表、中央对话区、右侧功能区现在已经形成可扩展的三栏布局。</div>
-            </div>
-          </div>
-        \`,
+        title: () => t('panel_overview'),
+        render: () => renderOverviewPanel(),
+      },
+      hooks: {
+        title: () => t('panel_features'),
+        render: () => renderFeaturesPanel(),
       },
       inspector: {
-        title: 'Inspector',
-        render: () => {
-          const activeAgent = allAgents.find(agent => agent.id === currentAgentId);
-          const connected = activeAgent ? (activeAgent.connected !== false ? 'Connected' : 'Disconnected') : 'No agent';
-          return \`
-            <div class="feature-panel-empty">
-              <div class="feature-panel-section">
-                <div class="feature-panel-section-title">Active Agent</div>
-                <div>\${activeAgent ? escapeHtml(activeAgent.name) : 'None'}</div>
-              </div>
-              <div class="feature-panel-section">
-                <div class="feature-panel-section-title">Connection</div>
-                <div>\${connected}</div>
-              </div>
-              <div class="feature-panel-section">
-                <div class="feature-panel-section-title">Messages</div>
-                <div>\${currentMessages.length}</div>
-              </div>
-            </div>
-          \`;
-        },
+        title: () => t('panel_reverse_hooks'),
+        render: () => renderReverseHooksPanel(),
       },
     };
 
@@ -2147,16 +3246,54 @@ class ViewerWorker {
     const templateCache = new Map();
 
     function setConnectionStatus(connected) {
-      statusBadge.textContent = connected ? 'Connected' : 'Disconnected';
+      statusBadge.textContent = connected ? t('status_connected') : t('status_disconnected');
       statusBadge.classList.toggle('disconnected', !connected);
     }
 
     function renderThemeToggle() {
       const isLight = currentTheme === 'light';
-      themeToggle.title = isLight ? '切换到深色模式' : '切换到浅色模式';
+      themeToggle.title = isLight ? t('theme_toggle_dark') : t('theme_toggle_light');
       themeToggle.innerHTML = isLight
         ? '<svg id="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2.2M12 19.8V22M4.93 4.93l1.56 1.56M17.51 17.51l1.56 1.56M2 12h2.2M19.8 12H22M4.93 19.07l1.56-1.56M17.51 6.49l1.56-1.56"></path></svg>'
         : '<svg id="theme-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>';
+    }
+
+    function applyLanguage() {
+      localStorage.setItem('agentdev-language', currentLanguage);
+      document.title = t('page_title');
+
+      const sidebarToggleEl = document.getElementById('sidebar-toggle');
+      const panelResizerEl = document.getElementById('feature-panel-resizer');
+      const notificationCharLabel = document.querySelector('.notification-char-count')?.nextElementSibling;
+      const workspaceButton = document.getElementById('rail-workspace');
+      const hooksButton = document.getElementById('rail-hooks');
+      const inspectorButton = document.getElementById('rail-inspector');
+
+      if (sidebarToggleEl) sidebarToggleEl.title = t('sidebar_toggle');
+      if (panelResizerEl) panelResizerEl.title = t('resize_panel');
+      if (notificationCharLabel) notificationCharLabel.textContent = t('chars');
+      if (workspaceButton) workspaceButton.title = t('workspace_tooltip');
+      if (hooksButton) hooksButton.title = t('features_tooltip');
+      if (inspectorButton) inspectorButton.title = t('reverse_hooks_tooltip');
+
+      languageToggle.title = t('language_toggle');
+      languageToggle.textContent = t('language_toggle_short');
+      deleteAgentAction.textContent = t('delete_agent');
+
+      renderThemeToggle();
+      renderAgentList();
+      renderFeaturePanel();
+
+      if (!currentAgentId) {
+        currentAgentTitle.textContent = t('page_title');
+        statusBadge.textContent = t('status_no_agent');
+      }
+
+      if (currentMessages.length === 0) {
+        container.innerHTML = getEmptyStateHtml();
+      } else {
+        render(currentMessages);
+      }
     }
 
     function applyTheme(theme) {
@@ -2169,16 +3306,17 @@ class ViewerWorker {
     function renderFeaturePanel() {
       if (!activeFeaturePanel || !featurePanels[activeFeaturePanel]) {
         featurePanel.classList.remove('open');
-        featurePanelTitle.textContent = 'Workspace';
-        featurePanelBody.innerHTML = '<div class="feature-panel-empty"><div>选择右侧功能按钮以展开面板。</div></div>';
+        featurePanelTitle.textContent = t('panel_overview');
+        featurePanelBody.innerHTML = getFeaturePanelEmptyHtml();
         railButtons.forEach(button => button.classList.remove('active'));
         return;
       }
 
+      const panel = featurePanels[activeFeaturePanel];
       featurePanel.classList.add('open');
       featurePanel.style.setProperty('--feature-panel-width', featurePanelWidth + 'px');
-      featurePanelTitle.textContent = featurePanels[activeFeaturePanel].title;
-      featurePanelBody.innerHTML = featurePanels[activeFeaturePanel].render();
+      featurePanelTitle.textContent = typeof panel.title === 'function' ? panel.title() : panel.title;
+      featurePanelBody.innerHTML = panel.render();
       railButtons.forEach(button => {
         button.classList.toggle('active', button.dataset.panel === activeFeaturePanel);
       });
@@ -2218,6 +3356,11 @@ class ViewerWorker {
 
     themeToggle.addEventListener('click', () => {
       applyTheme(currentTheme === 'light' ? 'dark' : 'light');
+    });
+
+    languageToggle.addEventListener('click', () => {
+      currentLanguage = currentLanguage === 'zh' ? 'en' : 'zh';
+      applyLanguage();
     });
 
     featurePanelResizer.addEventListener('mousedown', (event) => {
@@ -2459,9 +3602,9 @@ class ViewerWorker {
             <div class="agent-meta">
               <span class="agent-status">
                 <span class="agent-status-dot"></span>
-                <span>\${isConnected ? 'Connected' : 'Disconnected'}</span>
+                <span>\${isConnected ? escapeHtml(t('status_connected')) : escapeHtml(t('status_disconnected'))}</span>
               </span>
-              · \${displayId} · \${a.messageCount} msgs
+              · \${displayId} · \${a.messageCount} \${escapeHtml(t('feature_messages'))}
             </div>
           </div>
         \`;
@@ -2470,6 +3613,8 @@ class ViewerWorker {
       const activeAgent = allAgents.find(a => a.id === currentAgentId);
       if (activeAgent) {
         currentAgentTitle.textContent = activeAgent.name;
+      } else {
+        currentAgentTitle.textContent = t('page_title');
       }
     }
 
@@ -2508,7 +3653,7 @@ class ViewerWorker {
         return;
       }
 
-      const confirmed = window.confirm('删除这个已断开的 Agent？这只会从当前调试界面移除它的记录。');
+      const confirmed = window.confirm(t('delete_confirm'));
       if (!confirmed) {
         closeAgentContextMenu();
         return;
@@ -2518,7 +3663,7 @@ class ViewerWorker {
         const res = await fetch(\`/api/agents/\${contextMenuAgentId}\`, { method: 'DELETE' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          throw new Error(data.error || 'Delete failed');
+          throw new Error(data.error || t('delete_failed_generic'));
         }
 
         closeAgentContextMenu();
@@ -2530,12 +3675,13 @@ class ViewerWorker {
         } else if (!data.currentAgentId) {
           currentAgentId = null;
           currentMessages = [];
-          container.innerHTML = '<div class="empty-state">Waiting for messages...</div>';
-          currentAgentTitle.textContent = 'Agent Debugger';
+          setCurrentHookInspector({ lifecycleOrder: [], features: [], hooks: [] });
+          container.innerHTML = getEmptyStateHtml();
+          currentAgentTitle.textContent = t('page_title');
         }
       } catch (e) {
         closeAgentContextMenu();
-        window.alert('删除 Agent 失败: ' + (e && e.message ? e.message : e));
+        window.alert(t('delete_failed') + (e && e.message ? e.message : e));
       }
     });
 
@@ -2556,13 +3702,15 @@ class ViewerWorker {
 
     async function loadAgentData(agentId) {
       try {
-        const [msgsRes, toolsRes] = await Promise.all([
+        const [msgsRes, toolsRes, hooksRes] = await Promise.all([
           fetch(\`/api/agents/\${agentId}/messages\`),
-          fetch(\`/api/agents/\${agentId}/tools\`)
+          fetch(\`/api/agents/\${agentId}/tools\`),
+          fetch(\`/api/agents/\${agentId}/hooks\`)
         ]);
 
         const msgsData = await msgsRes.json();
         const tools = await toolsRes.json();
+        setCurrentHookInspector(await hooksRes.json());
 
         currentMessages = msgsData.messages || [];
         toolRenderConfigs = {};
@@ -2699,8 +3847,17 @@ class ViewerWorker {
            }
         }
 
-        if (activeFeaturePanel === 'inspector') {
-          renderFeaturePanel();
+        if (activeFeaturePanel) {
+          const hooksRes = await fetch(\`/api/agents/\${currentAgentId}/hooks\`);
+          const nextHookInspector = normalizeHookInspector(await hooksRes.json());
+          const nextSignature = getHookInspectorSignature(nextHookInspector);
+          if (nextSignature !== currentHookInspectorSignature) {
+            currentHookInspector = nextHookInspector;
+            currentHookInspectorSignature = nextSignature;
+            renderFeaturePanel();
+          } else if (activeFeaturePanel === 'inspector') {
+            renderFeaturePanel();
+          }
         }
 
       } catch (e) {
@@ -2727,9 +3884,9 @@ class ViewerWorker {
         statusEl.classList.add('active');
 
         const phaseNames = {
-          'thinking': '思考中',
-          'content': '生成内容',
-          'tool_calling': '工具调用'
+          'thinking': t('phase_thinking'),
+          'content': t('phase_content'),
+          'tool_calling': t('phase_tool_calling')
         };
         phaseEl.textContent = phaseNames[data.phase] || data.phase;
         charCountEl.textContent = data.charCount.toLocaleString();
@@ -2757,7 +3914,7 @@ class ViewerWorker {
           <textarea class="user-input-textarea" rows="1" id="input-\${req.requestId}"
             onkeydown="handleInputKey(event, '\${req.requestId}')"
             oninput="autoResize(this)"
-            placeholder="正在与Agent对话"></textarea>
+            placeholder="\${escapeHtml(t('input_placeholder'))}"></textarea>
         \`;
         container.appendChild(card);
         
@@ -2856,9 +4013,9 @@ class ViewerWorker {
         if (msg.reasoning) {
           innerContent += \`
             <div class="reasoning-block" id="reasoning-\${msgId}">
-              <div class="reasoning-header" onclick="toggleReasoning('reasoning-\${msgId}')">
-                <svg class="reasoning-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path></svg>
-                <span>Thinking Process</span>
+                <div class="reasoning-header" onclick="toggleReasoning('reasoning-\${msgId}')">
+                  <svg class="reasoning-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path></svg>
+                <span>\${escapeHtml(t('thinking_process'))}</span>
               </div>
               <div class="reasoning-content markdown-body">
                 \${marked.parse(msg.reasoning)}
@@ -2877,19 +4034,19 @@ class ViewerWorker {
           const subAgentId = subAgent ? subAgent.id : null;
           const clickAttr = subAgentId ? \`onclick="switchAgent('\${subAgentId}')"\` : '';
           const linkHtml = subAgentId
-            ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>查看消息 ></div>\`
+            ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>\${escapeHtml(t('subagent_view_messages'))}</div>\`
             : '';
 
           innerContent += \`
-            <div class="tool-call-container">
-              <div class="tool-header">
-                <span class="tool-header-name">已完成</span>
+              <div class="tool-call-container">
+                <div class="tool-header">
+                  <span class="tool-header-name">\${escapeHtml(t('subagent_done'))}</span>
+                </div>
+                <div class="tool-content">
+                  <div class="bash-command">【\${escapeHtml(agentName)}】\${escapeHtml(t('subagent_done'))}</div>
+                  \${linkHtml}
+                </div>
               </div>
-              <div class="tool-content">
-                <div class="bash-command">【\${escapeHtml(agentName)}】已完成</div>
-                \${linkHtml}
-              </div>
-            </div>
           \`;
         } else {
           innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
@@ -3091,13 +4248,7 @@ class ViewerWorker {
            }
 
            const isCollapsed = el.classList.contains('collapsed');
-           btnBar.innerHTML = \`
-             <button class="expand-toggle-btn" onclick="toggleMessage('\${el.id}')">
-               \${isCollapsed ?
-                 '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> Expand' :
-                 '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> Collapse'}
-             </button>
-           \`;
+           btnBar.innerHTML = '<button class="expand-toggle-btn" onclick="toggleMessage(&quot;' + el.id + '&quot;)">' + getToggleButtonLabel(isCollapsed) + '</button>';
 
         } else {
            const toggle = row.querySelector('.collapse-toggle');
@@ -3108,7 +4259,7 @@ class ViewerWorker {
 
     function render(messages) {
       if (messages.length === 0) {
-        container.innerHTML = '<div class="empty-state">Waiting for messages...</div>';
+        container.innerHTML = getEmptyStateHtml();
         return;
       }
 
@@ -3150,7 +4301,7 @@ class ViewerWorker {
               <div class="reasoning-block" id="reasoning-\${msgId}">
                 <div class="reasoning-header" onclick="toggleReasoning('reasoning-\${msgId}')">
                   <svg class="reasoning-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path></svg>
-                  <span>Thinking Process</span>
+                  <span>\${escapeHtml(t('thinking_process'))}</span>
                 </div>
                 <div class="reasoning-content markdown-body">
                   \${marked.parse(msg.reasoning)}
@@ -3169,16 +4320,16 @@ class ViewerWorker {
             const subAgentId = subAgent ? subAgent.id : null;
             const clickAttr = subAgentId ? \`onclick="switchAgent('\${subAgentId}')"\` : '';
             const linkHtml = subAgentId
-              ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>查看消息 ></div>\`
+              ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>\${escapeHtml(t('subagent_view_messages'))}</div>\`
               : '';
 
             innerContent += \`
               <div class="tool-call-container">
                 <div class="tool-header">
-                  <span class="tool-header-name">SubAgent</span>
+                  <span class="tool-header-name">\${escapeHtml(t('subagent'))}</span>
                 </div>
                 <div class="tool-content">
-                  <div class="bash-command">\${escapeHtml(agentName)}已完成</div>
+                  <div class="bash-command">\${escapeHtml(agentName)} \${escapeHtml(t('subagent_done'))}</div>
                   \${linkHtml}
                 </div>
               </div>
@@ -3295,13 +4446,7 @@ class ViewerWorker {
            }
            
            const isCollapsed = el.classList.contains('collapsed');
-           btnBar.innerHTML = \`
-             <button class="expand-toggle-btn" onclick="toggleMessage('\${el.id}')">
-               \${isCollapsed ? 
-                 '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> Expand' : 
-                 '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> Collapse'}
-             </button>
-           \`;
+           btnBar.innerHTML = '<button class="expand-toggle-btn" onclick="toggleMessage(&quot;' + el.id + '&quot;)">' + getToggleButtonLabel(isCollapsed) + '</button>';
            
         } else {
            const toggle = row.querySelector('.collapse-toggle');
@@ -3327,9 +4472,7 @@ class ViewerWorker {
         // Update bottom button
         const btn = row.querySelector('.expand-toggle-btn');
         if (btn) {
-          btn.innerHTML = isCollapsed ? 
-             '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> Expand' : 
-             '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> Collapse';
+          btn.innerHTML = getToggleButtonLabel(isCollapsed);
         }
       }
     };
@@ -3344,6 +4487,7 @@ class ViewerWorker {
     // 初始化：先加载 Feature 模板映射，再启动轮询
     // 如果 Feature 模板映射为空（Agent 还未注册），在 loadAgents 后重新加载
     applyTheme(currentTheme);
+    applyLanguage();
 
     loadFeatureTemplateMap().then((success) => {
       loadAgents().then(async () => {

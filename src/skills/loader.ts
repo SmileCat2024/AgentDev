@@ -56,6 +56,58 @@ function parseSkillFrontmatter(content: string, path: string): SkillMetadata | n
 }
 
 /**
+ * 递归扫描目录并收集 SKILL.md 文件
+ * 支持跟随符号链接目录
+ */
+async function collectSkillFiles(dir: string, skillsDir: string): Promise<string[]> {
+  const skillFiles: string[] = [];
+
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+
+      // 如果是 SKILL.md 文件，直接收集
+      if (entry.isFile() && entry.name === 'SKILL.md') {
+        skillFiles.push(normalize(fullPath));
+      }
+      // 如果是目录，递归扫描（包括符号链接目录）
+      else if (entry.isDirectory() || entry.isSymbolicLink()) {
+        // 对于符号链接，需要检查它是否指向一个目录
+        let isLinkToDir = false;
+        if (entry.isSymbolicLink()) {
+          try {
+            const stats = await readFileStats(fullPath);
+            isLinkToDir = stats.isDirectory();
+          } catch {
+            // 符号链接目标不存在或无法访问，跳过
+            continue;
+          }
+        }
+
+        if (isLinkToDir || entry.isDirectory()) {
+          const subFiles = await collectSkillFiles(fullPath, skillsDir);
+          skillFiles.push(...subFiles);
+        }
+      }
+    }
+  } catch {
+    // 容错：跳过无法访问的目录
+  }
+
+  return skillFiles;
+}
+
+/**
+ * 安全地读取文件状态（支持符号链接）
+ */
+async function readFileStats(path: string): Promise<{ isDirectory(): boolean }> {
+  const { stat } = await import('fs/promises');
+  return stat(path);
+}
+
+/**
  * 发现并加载指定目录下的所有 skills
  * @param options Skills 配置选项
  * @returns Skill 元数据列表
@@ -74,32 +126,19 @@ export async function discover(options: SkillsOptions = {}): Promise<SkillMetada
   const skills: SkillMetadata[] = [];
 
   try {
-    // 递归扫描目录
-    const entries = await readdir(skillsDir, { withFileTypes: true, recursive: true });
+    // 手动递归扫描目录，支持符号链接
+    const skillFiles = await collectSkillFiles(skillsDir, skillsDir);
 
-    for (const entry of entries) {
-      // 只处理名为 SKILL.md 的文件
-      if (entry.isFile() && entry.name === 'SKILL.md') {
-        // entry.path 在 recursive 模式下是文件的父目录，需要拼接文件名
-        // 例如: entry.path = "xlsx", entry.name = "SKILL.md" -> "xlsx/SKILL.md"
-        const relativePath = entry.path ? join(entry.path, entry.name) : entry.name;
+    for (const fullPath of skillFiles) {
+      try {
+        const content = await readFile(fullPath, 'utf-8');
+        const metadata = parseSkillFrontmatter(content, fullPath);
 
-        // 如果 relativePath 是绝对路径，直接使用；否则拼接 skillsDir
-        const isAbs = pathIsAbsolute(relativePath);
-        let fullPath = isAbs ? relativePath : join(skillsDir, relativePath);
-        // 规范化路径格式，确保 Windows 路径正确
-        fullPath = normalize(fullPath);
-
-        try {
-          const content = await readFile(fullPath, 'utf-8');
-          const metadata = parseSkillFrontmatter(content, fullPath);
-
-          if (metadata) {
-            skills.push(metadata);
-          }
-        } catch {
-          // 容错：跳过读取失败的文件
+        if (metadata) {
+          skills.push(metadata);
         }
+      } catch {
+        // 容错：跳过读取失败的文件
       }
     }
   } catch {

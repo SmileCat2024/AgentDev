@@ -16,6 +16,7 @@ import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
+import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import type {
   ToolContext,
   ToolResult,
@@ -53,6 +54,7 @@ export { HookErrorHandling };
 
 // 基础类（不含生命周期钩子）
 class AgentBase {
+  protected readonly logger = createLogger('agent.runtime');
   // ========== 属性 ==========
 
   protected llm: AgentConfig['llm'];
@@ -97,6 +99,7 @@ class AgentBase {
   private reactRunner?: ReActLoopRunner;
 
   constructor(config: AgentConfig) {
+    installConsoleBridge();
     this.config = config;
     this.llm = config.llm;
     this.maxTurns = config.maxTurns ?? 10;
@@ -197,14 +200,28 @@ class AgentBase {
     this._currentCallInput = input;
     this._callStartTimes.set(callId, callStartTime);
 
-    // 触发 onCallStart（正向钩子）
-    await executeHook(
-      this,
-      () => (this as any).onCallStart({ input, context, isFirstCall }),
-      { hookName: 'onCallStart', input }
-    );
+    const agentName = this.config.name || this.constructor.name;
 
-    try {
+    return await runWithLogScope({
+      agentId: this.agentId,
+      agentName,
+      callIndex: this._callIndex,
+      tags: ['agent-call'],
+      namespace: 'agent.call',
+    }, async () => {
+      this.logger.info('Call started', {
+        isFirstCall,
+        inputPreview: input.slice(0, 160),
+      });
+
+      // 触发 onCallStart（正向钩子）
+      await executeHook(
+        this,
+        () => (this as any).onCallStart({ input, context, isFirstCall }),
+        { hookName: 'onCallStart', input }
+      );
+
+      try {
       // ========== Agent Initiate（仅首次）==========
       if (!this._initialized) {
         // 先触发 onInitiate
@@ -270,9 +287,14 @@ class AgentBase {
         completed: result.completed,
       });
 
-      return result.finalResponse;
+        this.logger.info('Call completed', {
+          completed: result.completed,
+          turns: result.turns,
+          durationMs: Date.now() - callStartTime,
+        });
+        return result.finalResponse;
 
-    } catch (error) {
+      } catch (error) {
       // ========== Call Finish（异常）==========
       const errorMsg = error instanceof Error ? error.message : String(error);
 
@@ -307,24 +329,29 @@ class AgentBase {
         completed: false,
       });
 
-      throw error;
+        this.logger.error('Call failed', {
+          error: errorMsg,
+          durationMs: Date.now() - callStartTime,
+        });
+        throw error;
 
-    } finally {
-      this._callStartTimes.delete(callId);
-      this._currentCallInput = undefined;
-      this._currentStep = 0;
+      } finally {
+        this._callStartTimes.delete(callId);
+        this._currentCallInput = undefined;
+        this._currentStep = 0;
 
-      // 清理输入缓存
-      this._pendingInput = null;
+        // 清理输入缓存
+        this._pendingInput = null;
 
-      // 清除通知上下文
-      try {
-        const { _clearNotificationAgent } = await import('./notification.js');
-        _clearNotificationAgent();
-      } catch {
-        // 通知模块不可用，忽略
+        // 清除通知上下文
+        try {
+          const { _clearNotificationAgent } = await import('./notification.js');
+          _clearNotificationAgent();
+        } catch {
+          // 通知模块不可用，忽略
+        }
       }
-    }
+    });
   }
 
   /**
@@ -602,10 +629,18 @@ class AgentBase {
     if (this.featureToolsReady) return;
 
     for (const [name, feature] of this.features) {
+      const featureLogger = createLogger(`feature.${name}`, {
+        agentId: this.agentId,
+        agentName: this.config.name || this.constructor.name,
+        feature: name,
+        tags: [`feature:${name}`],
+      });
+
       // 为每个 Feature 创建独立的 initContext
       const initContext: FeatureInitContext = {
         agentId: this.agentId || '',
         config: this.config,
+        logger: featureLogger,
         featureConfig: this.config.features?.[name],
         getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
           return this.features.get(featureName) as T | undefined;
@@ -614,14 +649,18 @@ class AgentBase {
       };
 
       if (feature.getTools) {
-        for (const tool of feature.getTools()) {
+        for (const tool of runWithLogScope({ feature: name, namespace: `feature.${name}`, tags: [`feature:${name}`] }, () => feature.getTools!()) || []) {
           this.tools.register(tool, name);  // 传递来源
         }
       }
 
       if (feature.getAsyncTools) {
         try {
-          const tools = await feature.getAsyncTools(initContext);
+          const tools = await runWithLogScope({
+            feature: name,
+            namespace: `feature.${name}`,
+            tags: [`feature:${name}`],
+          }, () => feature.getAsyncTools!(initContext));
           for (const tool of tools) {
             this.tools.register(tool, name);  // 传递来源
           }
@@ -633,7 +672,11 @@ class AgentBase {
 
       if (feature.onInitiate) {
         try {
-          await feature.onInitiate(initContext);
+          await runWithLogScope({
+            feature: name,
+            namespace: `feature.${name}`,
+            tags: [`feature:${name}`],
+          }, () => feature.onInitiate!(initContext));
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
           console.warn(`[Agent] Feature ${name} onInitiate failed: ${errorMsg}`);

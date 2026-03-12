@@ -9,7 +9,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { createServer as createNetServer, Server, Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   RENDER_TEMPLATES,
   SYSTEM_RENDER_MAP,
@@ -43,6 +43,7 @@ class ViewerWorker {
   // 内存限制配置
   private readonly MAX_MESSAGES = 10000;
   private readonly MAX_BYTES = 50 * 1024 * 1024; // 50MB
+  private readonly MAX_LOGS = 5000;
 
   constructor(port: number, openBrowser: boolean = true, udsPath?: string) {
     this.port = port;
@@ -234,7 +235,8 @@ class ViewerWorker {
     res.setHeader('Access-Control-Allow-Origin', '*');
 
     // 路由分发
-    const url = req.url || '/';
+    const urlObj = new URL(req.url || '/', 'http://localhost');
+    const url = urlObj.pathname;
 
     // 主页
     if (url === '/' || url === '/index.html') {
@@ -276,7 +278,8 @@ class ViewerWorker {
    * API 端点路由
    */
   private handleAPI(req: IncomingMessage, res: ServerResponse): void {
-    const url = req.url || '';
+    const urlObj = new URL(req.url || '/', 'http://localhost');
+    const url = urlObj.pathname;
 
     // GET /api/agents - Agent 列表
     if (url === '/api/agents' && req.method === 'GET') {
@@ -299,6 +302,11 @@ class ViewerWorker {
     // GET /api/templates/feature - 获取 Feature 模板映射
     if (url === '/api/templates/feature' && req.method === 'GET') {
       this.handleGetFeatureTemplates(req, res);
+      return;
+    }
+
+    if (url === '/api/logs' && req.method === 'GET') {
+      this.handleGetLogs(req, res, urlObj.searchParams);
       return;
     }
 
@@ -567,6 +575,35 @@ class ViewerWorker {
     }));
   }
 
+  private handleGetLogs(req: IncomingMessage, res: ServerResponse, searchParams: URLSearchParams): void {
+    const scope = searchParams.get('scope') === 'all' ? 'all' : 'current';
+    const selectedAgentId = searchParams.get('agentId');
+
+    let logs: DebugLogEntry[] = [];
+    if (scope === 'all') {
+      for (const session of this.agentSessions.values()) {
+        for (const entry of session.logs) {
+          logs.push(this.withSessionLogContext(entry, session));
+        }
+      }
+    } else {
+      const effectiveAgentId = selectedAgentId || this.currentAgentId;
+      const session = effectiveAgentId ? this.agentSessions.get(effectiveAgentId) : undefined;
+      logs = session ? session.logs.map((entry) => this.withSessionLogContext(entry, session)) : [];
+    }
+
+    logs.sort((a, b) => a.timestamp - b.timestamp);
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      scope,
+      currentAgentId: this.currentAgentId,
+      selectedAgentId: selectedAgentId || this.currentAgentId,
+      total: logs.length,
+      logs,
+    }));
+  }
+
   /**
    * GET /api/agents/:id/connection - 获取指定 Agent 的真实连接状态
    */
@@ -726,6 +763,7 @@ class ViewerWorker {
         currentState: null,
         events: [],
         lastEventCount: 0,
+        logs: [],
       };
       this.agentSessions.set(agentId, session);
     }
@@ -965,6 +1003,14 @@ class ViewerWorker {
 
     this.updateSessionActivity(agentId);
 
+    if (notification?.type === 'log.entry' && notification?.data) {
+      session.logs.push(this.normalizeLogEntry(notification.data, session));
+      if (session.logs.length > this.MAX_LOGS) {
+        session.logs.splice(0, session.logs.length - this.MAX_LOGS);
+      }
+      return;
+    }
+
     if (notification.category === 'state') {
       // 状态类通知：覆盖当前状态
       session.currentState = notification;
@@ -973,6 +1019,33 @@ class ViewerWorker {
       session.events.push(notification);
       session.lastEventCount++;
     }
+  }
+
+  private normalizeLogEntry(raw: any, session: AgentSession): DebugLogEntry {
+    return {
+      id: typeof raw?.id === 'string' ? raw.id : `log-${session.id}-${Date.now()}`,
+      timestamp: typeof raw?.timestamp === 'number' ? raw.timestamp : Date.now(),
+      level: raw?.level || 'info',
+      message: typeof raw?.message === 'string' ? raw.message : String(raw?.message ?? ''),
+      namespace: typeof raw?.namespace === 'string' ? raw.namespace : 'agent',
+      context: {
+        ...(raw?.context && typeof raw.context === 'object' ? raw.context : {}),
+        agentId: raw?.context?.agentId || session.id,
+        agentName: raw?.context?.agentName || session.name,
+      },
+      data: raw?.data,
+    };
+  }
+
+  private withSessionLogContext(entry: DebugLogEntry, session: AgentSession): DebugLogEntry {
+    return {
+      ...entry,
+      context: {
+        ...entry.context,
+        agentId: entry.context.agentId || session.id,
+        agentName: entry.context.agentName || session.name,
+      },
+    };
   }
 
   /**
@@ -2042,6 +2115,253 @@ class ViewerWorker {
       transform: rotate(90deg);
     }
 
+    .log-toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .log-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .log-filter-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .log-filter-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      min-width: 54px;
+    }
+
+    .log-chip-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .log-chip {
+      appearance: none;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+    }
+
+    .log-chip:hover,
+    .log-chip.active {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    .log-input,
+    .log-select {
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-primary);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 12px;
+      min-height: 34px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .log-input:focus,
+    .log-select:focus {
+      border-color: rgba(88, 166, 255, 0.45);
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.12);
+    }
+
+    .log-input {
+      flex: 1;
+      min-width: 140px;
+    }
+
+    .log-select {
+      min-width: 130px;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      padding-right: 34px;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+        linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+      background-position:
+        calc(100% - 18px) calc(50% - 1px),
+        calc(100% - 12px) calc(50% - 1px);
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+    }
+
+    .log-select option {
+      background: var(--panel-bg);
+      color: var(--text-primary);
+    }
+
+    .log-select option:checked,
+    .log-select option:hover {
+      background: var(--hover-bg);
+      color: var(--text-primary);
+    }
+
+    .log-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+
+    .log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .log-card {
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
+      overflow: hidden;
+    }
+
+    .log-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 13px 8px 13px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .log-card-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .log-level {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      background: rgba(255,255,255,0.04);
+    }
+
+    .log-level.debug, .log-level.trace {
+      color: #7cc5ff;
+    }
+
+    .log-level.info {
+      color: #7dd3a4;
+    }
+
+    .log-level.warn {
+      color: #f6c96c;
+    }
+
+    .log-level.error {
+      color: #ff8f8f;
+    }
+
+    .log-namespace {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-family: "Fira Code", "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    }
+
+    .log-timestamp {
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .log-card-body {
+      padding: 12px 13px 13px 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .log-message {
+      font-size: 15px;
+      line-height: 1.75;
+      color: var(--text-primary);
+      word-break: break-word;
+    }
+
+    .log-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .log-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .log-details {
+      border-top: 1px solid rgba(255,255,255,0.05);
+      padding-top: 10px;
+    }
+
+    .log-details summary {
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: 12px;
+      list-style: none;
+    }
+
+    .log-details summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .log-details pre {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(0, 0, 0, 0.22);
+      color: var(--text-primary);
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
     @media (max-width: 1360px) {
       .feature-grid {
         grid-template-columns: 1fr;
@@ -2649,6 +2969,14 @@ class ViewerWorker {
           <path d="m20 20-3.5-3.5"></path>
         </svg>
       </button>
+      <button class="rail-button" id="rail-logs" title="Logs" data-panel="logs">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M4 19h16"></path>
+          <path d="M7 15h3"></path>
+          <path d="M7 11h10"></path>
+          <path d="M7 7h7"></path>
+        </svg>
+      </button>
       <div class="rail-spacer"></div>
       <button class="rail-button" id="language-toggle" title="Switch Language" type="button">EN</button>
       <button class="rail-button" id="theme-toggle" title="切换主题" type="button">
@@ -2729,6 +3057,15 @@ class ViewerWorker {
     let currentLanguage = localStorage.getItem('agentdev-language') || 'zh';
     let currentHookInspector = { lifecycleOrder: [], features: [], hooks: [] };
     let currentHookInspectorSignature = '';
+    let currentLogs = [];
+    let currentLogsSignature = '';
+    let logPanelScope = 'current';
+    let logFilters = {
+      search: '',
+      level: 'all',
+      feature: 'all',
+      lifecycle: 'all',
+    };
     let selectedOverviewLifecycle = 'StepFinish';
     let selectedFeatureName = null;
 
@@ -2746,6 +3083,7 @@ class ViewerWorker {
         panel_overview: '总览',
         panel_features: 'Features',
         panel_reverse_hooks: 'Reverse Hooks',
+        panel_logs: '日志',
         panel_loop_flow: 'Loop Flow',
         panel_select_lifecycle: '选择一个生命周期阶段',
         panel_inspector: 'Inspector',
@@ -2793,6 +3131,25 @@ class ViewerWorker {
         workspace_tooltip: '总览',
         features_tooltip: 'Features',
         reverse_hooks_tooltip: 'Reverse Hooks',
+        logs_tooltip: '日志',
+        logs_scope: '范围',
+        logs_scope_current: '只看当前 Agent',
+        logs_scope_all: '全部',
+        logs_search: '搜索',
+        logs_search_placeholder: '按消息、namespace、feature、hook 检索',
+        logs_level: '级别',
+        logs_level_all: '全部级别',
+        logs_level_debug: 'Debug 及以上',
+        logs_level_info: 'Info 及以上',
+        logs_level_warn: 'Warn 及以上',
+        logs_level_error: '仅 Error',
+        logs_feature: 'Feature',
+        logs_feature_all: '全部 Feature',
+        logs_lifecycle: 'Lifecycle',
+        logs_lifecycle_all: '全部生命周期',
+        logs_empty: '当前筛选条件下没有日志。',
+        logs_total: '日志',
+        logs_details: '查看结构化数据',
         phase_thinking: '思考中',
         phase_content: '生成内容',
         phase_tool_calling: '工具调用',
@@ -2820,6 +3177,7 @@ class ViewerWorker {
         panel_overview: 'Overview',
         panel_features: 'Features',
         panel_reverse_hooks: 'Reverse Hooks',
+        panel_logs: 'Logs',
         panel_loop_flow: 'Loop Flow',
         panel_select_lifecycle: 'Select a lifecycle stage',
         panel_inspector: 'Inspector',
@@ -2867,6 +3225,25 @@ class ViewerWorker {
         workspace_tooltip: 'Overview',
         features_tooltip: 'Features',
         reverse_hooks_tooltip: 'Reverse Hooks',
+        logs_tooltip: 'Logs',
+        logs_scope: 'Scope',
+        logs_scope_current: 'Current agent',
+        logs_scope_all: 'All agents',
+        logs_search: 'Search',
+        logs_search_placeholder: 'Search message, namespace, feature, hook',
+        logs_level: 'Level',
+        logs_level_all: 'All levels',
+        logs_level_debug: 'Debug and up',
+        logs_level_info: 'Info and up',
+        logs_level_warn: 'Warn and up',
+        logs_level_error: 'Error only',
+        logs_feature: 'Feature',
+        logs_feature_all: 'All features',
+        logs_lifecycle: 'Lifecycle',
+        logs_lifecycle_all: 'All lifecycles',
+        logs_empty: 'No logs match the current filters.',
+        logs_total: 'logs',
+        logs_details: 'Structured payload',
         phase_thinking: 'Thinking',
         phase_content: 'Streaming',
         phase_tool_calling: 'Tool Calling',
@@ -2955,6 +3332,152 @@ class ViewerWorker {
       if (selectedFeatureName && !normalized.features.some(feature => feature.name === selectedFeatureName)) {
         selectedFeatureName = null;
       }
+    }
+
+    function setCurrentLogs(logs) {
+      currentLogs = Array.isArray(logs) ? logs : [];
+      currentLogsSignature = JSON.stringify({
+        count: currentLogs.length,
+        last: currentLogs.length > 0 ? currentLogs[currentLogs.length - 1].id : null,
+      });
+    }
+
+    function getLevelWeight(level) {
+      const weights = { trace: 10, debug: 20, info: 30, warn: 40, error: 50 };
+      return weights[level] || 0;
+    }
+
+    function formatLogTimestamp(timestamp) {
+      const date = new Date(timestamp);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        fractionalSecondDigits: 3,
+      });
+    }
+
+    function safePrettyJson(value) {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return String(value);
+      }
+    }
+
+    function getFilteredLogs() {
+      const search = logFilters.search.trim().toLowerCase();
+      const minLevel = logFilters.level;
+      return currentLogs.filter((entry) => {
+        if (minLevel !== 'all' && getLevelWeight(entry.level) < getLevelWeight(minLevel)) {
+          return false;
+        }
+        if (logFilters.feature !== 'all' && (entry.context?.feature || 'none') !== logFilters.feature) {
+          return false;
+        }
+        if (logFilters.lifecycle !== 'all' && (entry.context?.lifecycle || 'none') !== logFilters.lifecycle) {
+          return false;
+        }
+        if (search) {
+          const haystack = [
+            entry.message,
+            entry.namespace,
+            entry.context?.feature,
+            entry.context?.lifecycle,
+            entry.context?.hookMethod,
+            entry.context?.toolName,
+            entry.context?.agentName,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!haystack.includes(search)) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    function renderLogsPanel() {
+      const filteredLogs = getFilteredLogs().slice().reverse();
+      const featureOptions = Array.from(new Set(currentLogs.map((entry) => entry.context?.feature).filter(Boolean))).sort();
+      const lifecycleOptions = Array.from(new Set(currentLogs.map((entry) => entry.context?.lifecycle).filter(Boolean))).sort();
+
+      const toolbar = [
+        '<section class="log-toolbar">',
+        '<div class="log-filter-row">',
+        '<div class="log-filter-label">' + escapeHtml(t('logs_scope')) + '</div>',
+        '<div class="log-chip-group">',
+        '<button type="button" class="log-chip' + (logPanelScope === 'current' ? ' active' : '') + '" onclick="window.setLogPanelScope(&quot;current&quot;)">' + escapeHtml(t('logs_scope_current')) + '</button>',
+        '<button type="button" class="log-chip' + (logPanelScope === 'all' ? ' active' : '') + '" onclick="window.setLogPanelScope(&quot;all&quot;)">' + escapeHtml(t('logs_scope_all')) + '</button>',
+        '</div>',
+        '</div>',
+        '<div class="log-filter-row">',
+        '<div class="log-filter-label">' + escapeHtml(t('logs_search')) + '</div>',
+        '<input class="log-input" type="text" value="' + escapeHtml(logFilters.search) + '" placeholder="' + escapeHtml(t('logs_search_placeholder')) + '" oninput="window.updateLogFilter(&quot;search&quot;, this.value)">',
+        '</div>',
+        '<div class="log-filter-row">',
+        '<div class="log-filter-label">' + escapeHtml(t('logs_level')) + '</div>',
+        '<select class="log-select" onchange="window.updateLogFilter(&quot;level&quot;, this.value)">',
+        '<option value="all"' + (logFilters.level === 'all' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_all')) + '</option>',
+        '<option value="debug"' + (logFilters.level === 'debug' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_debug')) + '</option>',
+        '<option value="info"' + (logFilters.level === 'info' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_info')) + '</option>',
+        '<option value="warn"' + (logFilters.level === 'warn' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_warn')) + '</option>',
+        '<option value="error"' + (logFilters.level === 'error' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_error')) + '</option>',
+        '</select>',
+        '<select class="log-select" onchange="window.updateLogFilter(&quot;feature&quot;, this.value)">',
+        '<option value="all"' + (logFilters.feature === 'all' ? ' selected' : '') + '>' + escapeHtml(t('logs_feature_all')) + '</option>',
+        featureOptions.map((feature) => '<option value="' + escapeHtml(feature) + '"' + (logFilters.feature === feature ? ' selected' : '') + '>' + escapeHtml(feature) + '</option>').join(''),
+        '</select>',
+        '<select class="log-select" onchange="window.updateLogFilter(&quot;lifecycle&quot;, this.value)">',
+        '<option value="all"' + (logFilters.lifecycle === 'all' ? ' selected' : '') + '>' + escapeHtml(t('logs_lifecycle_all')) + '</option>',
+        lifecycleOptions.map((lifecycle) => '<option value="' + escapeHtml(lifecycle) + '"' + (logFilters.lifecycle === lifecycle ? ' selected' : '') + '>' + escapeHtml(lifecycle) + '</option>').join(''),
+        '</select>',
+        '</div>',
+        '<div class="log-summary"><span>' + String(filteredLogs.length) + ' ' + escapeHtml(t('logs_total')) + '</span><span>' + escapeHtml(logPanelScope === 'current' ? (allAgents.find((agent) => agent.id === currentAgentId)?.name || t('active_none')) : t('logs_scope_all')) + '</span></div>',
+        '</section>',
+      ].join('');
+
+      if (filteredLogs.length === 0) {
+        return '<div class="log-panel">' + toolbar + '<div class="feature-panel-empty"><div>' + escapeHtml(t('logs_empty')) + '</div></div></div>';
+      }
+
+      const rows = filteredLogs.map((entry) => {
+        const metaPills = [
+          entry.context?.agentName ? '<span class="log-pill">' + escapeHtml(entry.context.agentName) + '</span>' : '',
+          entry.context?.feature ? '<span class="log-pill">feature:' + escapeHtml(entry.context.feature) + '</span>' : '',
+          entry.context?.lifecycle ? '<span class="log-pill">hook:' + escapeHtml(entry.context.lifecycle) + '</span>' : '',
+          entry.context?.hookMethod ? '<span class="log-pill">' + escapeHtml(entry.context.hookMethod) + '()</span>' : '',
+          entry.context?.toolName ? '<span class="log-pill">tool:' + escapeHtml(entry.context.toolName) + '</span>' : '',
+          typeof entry.context?.step === 'number' ? '<span class="log-pill">step ' + String(entry.context.step) + '</span>' : '',
+          typeof entry.context?.callIndex === 'number' ? '<span class="log-pill">call ' + String(entry.context.callIndex) + '</span>' : '',
+        ].filter(Boolean).join('');
+
+        const detailBlock = entry.data !== undefined
+          ? '<details class="log-details"><summary>' + escapeHtml(t('logs_details')) + '</summary><pre>' + escapeHtml(safePrettyJson(entry.data)) + '</pre></details>'
+          : '';
+
+        return [
+          '<article class="log-card">',
+          '<div class="log-card-head">',
+          '<div class="log-card-main">',
+          '<span class="log-level ' + escapeHtml(entry.level) + '">' + escapeHtml(entry.level) + '</span>',
+          '<span class="log-namespace">' + escapeHtml(entry.namespace) + '</span>',
+          '</div>',
+          '<div class="log-timestamp">' + escapeHtml(formatLogTimestamp(entry.timestamp)) + '</div>',
+          '</div>',
+          '<div class="log-card-body">',
+          '<div class="log-message">' + escapeHtml(entry.message) + '</div>',
+          metaPills ? '<div class="log-meta">' + metaPills + '</div>' : '',
+          detailBlock,
+          '</div>',
+          '</article>',
+        ].join('');
+      }).join('');
+
+      return '<div class="log-panel">' + toolbar + '<section class="log-list">' + rows + '</section></div>';
     }
 
     const lifecycleDocs = {
@@ -3443,6 +3966,10 @@ class ViewerWorker {
         title: () => t('panel_reverse_hooks'),
         render: () => renderReverseHooksPanel(),
       },
+      logs: {
+        title: () => t('panel_logs'),
+        render: () => renderLogsPanel(),
+      },
     };
 
     // Sidebar Toggle
@@ -3515,6 +4042,7 @@ class ViewerWorker {
       const workspaceButton = document.getElementById('rail-workspace');
       const hooksButton = document.getElementById('rail-hooks');
       const inspectorButton = document.getElementById('rail-inspector');
+      const logsButton = document.getElementById('rail-logs');
 
       if (sidebarToggleEl) sidebarToggleEl.title = t('sidebar_toggle');
       if (panelResizerEl) panelResizerEl.title = t('resize_panel');
@@ -3522,6 +4050,7 @@ class ViewerWorker {
       if (workspaceButton) workspaceButton.title = t('workspace_tooltip');
       if (hooksButton) hooksButton.title = t('features_tooltip');
       if (inspectorButton) inspectorButton.title = t('reverse_hooks_tooltip');
+      if (logsButton) logsButton.title = t('logs_tooltip');
 
       languageToggle.title = t('language_toggle');
       languageToggle.textContent = t('language_toggle_short');
@@ -3551,6 +4080,15 @@ class ViewerWorker {
     }
 
     function renderFeaturePanel() {
+      const activeElement = document.activeElement;
+      const preserveLogSearchFocus = activeFeaturePanel === 'logs' && activeElement && activeElement.classList && activeElement.classList.contains('log-input');
+      const preservedSelectionStart = preserveLogSearchFocus && typeof activeElement.selectionStart === 'number'
+        ? activeElement.selectionStart
+        : null;
+      const preservedSelectionEnd = preserveLogSearchFocus && typeof activeElement.selectionEnd === 'number'
+        ? activeElement.selectionEnd
+        : null;
+
       if (!activeFeaturePanel || !featurePanels[activeFeaturePanel]) {
         featurePanel.classList.remove('open');
         featurePanelTitle.textContent = t('panel_overview');
@@ -3567,12 +4105,33 @@ class ViewerWorker {
       railButtons.forEach(button => {
         button.classList.toggle('active', button.dataset.panel === activeFeaturePanel);
       });
+
+      if (preserveLogSearchFocus) {
+        const nextSearchInput = featurePanelBody.querySelector('.log-input');
+        if (nextSearchInput) {
+          nextSearchInput.focus();
+          if (preservedSelectionStart !== null && preservedSelectionEnd !== null && typeof nextSearchInput.setSelectionRange === 'function') {
+            nextSearchInput.setSelectionRange(preservedSelectionStart, preservedSelectionEnd);
+          }
+        }
+      }
     }
 
     function toggleFeaturePanel(panelId) {
       activeFeaturePanel = activeFeaturePanel === panelId ? null : panelId;
       renderFeaturePanel();
     }
+
+    window.setLogPanelScope = async (scope) => {
+      logPanelScope = scope === 'all' ? 'all' : 'current';
+      await loadLogs(true);
+      renderFeaturePanel();
+    };
+
+    window.updateLogFilter = (key, value) => {
+      logFilters[key] = value;
+      renderFeaturePanel();
+    };
 
     function closeAgentContextMenu() {
       agentContextMenu.classList.remove('open');
@@ -3598,6 +4157,9 @@ class ViewerWorker {
     railButtons.forEach(button => {
       button.addEventListener('click', () => {
         toggleFeaturePanel(button.dataset.panel);
+        if (button.dataset.panel === 'logs' && activeFeaturePanel === 'logs') {
+          loadLogs(true).catch((error) => console.error('Failed to load logs:', error));
+        }
       });
     });
 
@@ -3922,6 +4484,7 @@ class ViewerWorker {
         } else if (!data.currentAgentId) {
           currentAgentId = null;
           currentMessages = [];
+          setCurrentLogs([]);
           setCurrentHookInspector({ lifecycleOrder: [], features: [], hooks: [] });
           container.innerHTML = getEmptyStateHtml();
           currentAgentTitle.textContent = t('page_title');
@@ -3946,6 +4509,42 @@ class ViewerWorker {
       }
     });
     window.addEventListener('scroll', closeAgentContextMenu, true);
+
+    async function loadLogs(forceRender = false) {
+      try {
+        const params = new URLSearchParams({
+          scope: logPanelScope,
+        });
+        if (currentAgentId) {
+          params.set('agentId', currentAgentId);
+        }
+
+        const res = await fetch('/api/logs?' + params.toString());
+        if (!res.ok) {
+          throw new Error('Failed to fetch logs');
+        }
+        const data = await res.json();
+        const nextLogs = data.logs || [];
+        const nextSignature = JSON.stringify({
+          count: nextLogs.length,
+          last: nextLogs.length > 0 ? nextLogs[nextLogs.length - 1].id : null,
+        });
+
+        if (nextSignature !== currentLogsSignature) {
+          setCurrentLogs(nextLogs);
+          if (activeFeaturePanel === 'logs') {
+            renderFeaturePanel();
+          }
+        } else if (forceRender && activeFeaturePanel === 'logs') {
+          renderFeaturePanel();
+        }
+      } catch (e) {
+        if (forceRender && activeFeaturePanel === 'logs') {
+          setCurrentLogs([]);
+          renderFeaturePanel();
+        }
+      }
+    }
 
     async function loadAgentData(agentId) {
       try {
@@ -4014,6 +4613,9 @@ class ViewerWorker {
         await Promise.all(loadPromises);
 
         render(currentMessages);
+        if (activeFeaturePanel === 'logs') {
+          await loadLogs(true);
+        }
         renderFeaturePanel();
       } catch (e) {
         console.error('Failed to load agent data:', e);
@@ -4029,6 +4631,9 @@ class ViewerWorker {
 
         if (!currentAgentId) {
           await loadAgents();
+          if (activeFeaturePanel === 'logs' && logPanelScope === 'all') {
+            await loadLogs();
+          }
           setTimeout(poll, 1000);
           return;
         }
@@ -4095,15 +4700,19 @@ class ViewerWorker {
         }
 
         if (activeFeaturePanel) {
-          const hooksRes = await fetch(\`/api/agents/\${currentAgentId}/hooks\`);
-          const nextHookInspector = normalizeHookInspector(await hooksRes.json());
-          const nextSignature = getHookInspectorSignature(nextHookInspector);
-          if (nextSignature !== currentHookInspectorSignature) {
-            currentHookInspector = nextHookInspector;
-            currentHookInspectorSignature = nextSignature;
-            renderFeaturePanel();
-          } else if (activeFeaturePanel === 'inspector') {
-            renderFeaturePanel();
+          if (activeFeaturePanel === 'logs') {
+            await loadLogs();
+          } else {
+            const hooksRes = await fetch(\`/api/agents/\${currentAgentId}/hooks\`);
+            const nextHookInspector = normalizeHookInspector(await hooksRes.json());
+            const nextSignature = getHookInspectorSignature(nextHookInspector);
+            if (nextSignature !== currentHookInspectorSignature) {
+              currentHookInspector = nextHookInspector;
+              currentHookInspectorSignature = nextSignature;
+              renderFeaturePanel();
+            } else if (activeFeaturePanel === 'inspector') {
+              renderFeaturePanel();
+            }
           }
         }
 

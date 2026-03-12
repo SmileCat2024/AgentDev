@@ -4,6 +4,10 @@
  * 统一的钩子执行包装器，处理错误策略
  */
 
+import { createLogger, runWithLogScope } from '../logging.js';
+
+const hookLogger = createLogger('agent.forward-hook');
+
 // 定义 Agent 接口，包含必要的钩子错误处理方法
 export interface AgentLike {
   getHookErrorHandling?(hookName: string): HookErrorHandling | undefined;
@@ -57,19 +61,30 @@ export async function executeHook<T>(
   const strategy = agent.getHookErrorHandling?.(hookName) ?? HookErrorHandling.Propagate;
 
   try {
-    return await hookFn();
+    return await runWithLogScope(
+      {
+        lifecycle: hookName,
+        hookKind: 'forward',
+        namespace: 'agent.forward-hook',
+        tags: [`forward-hook:${hookName}`],
+      },
+      async () => await hookFn()
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
     switch (strategy) {
       case HookErrorHandling.Silent:
+        hookLogger.warn(`${hookName} hook error (silenced)`, { message });
         console.warn(`[Agent] ${hookName} hook error (silenced): ${message}`);
         return undefined;
       case HookErrorHandling.Logged:
+        hookLogger.error(`${hookName} hook error`, { message });
         console.error(`[Agent] ${hookName} hook error:`, error);
         throw error;
       case HookErrorHandling.Propagate:
       default:
+        hookLogger.error(`${hookName} hook error`, { message });
         throw error;
     }
   }

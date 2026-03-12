@@ -27,6 +27,8 @@ export interface FeatureInitContext {
   agentId: string;
   /** Agent 配置 */
   config: import('./types.js').AgentConfig;
+  /** Feature 级结构化日志 */
+  logger: import('./logging.js').Logger;
   /** Feature 特定配置 */
   featureConfig?: unknown;
   /** 获取其他 Feature */
@@ -53,6 +55,8 @@ export interface FeatureInitContext {
   agentId: string;
   /** Agent 配置 */
   config: import('./types.js').AgentConfig;
+  /** Feature 级结构化日志 */
+  logger: import('./logging.js').Logger;
   /** Feature 特定配置 */
   featureConfig?: unknown;
   /** 获取其他 Feature */

@@ -16,22 +16,22 @@ import type {
 } from './types.js';
 import type { Tool } from '../../core/types.js';
 import type { Context } from '../../core/context.js';
+import { createLogger } from '../../core/logging.js';
 
 /**
  * 创建插件日志记录器
  */
 export function createPluginLogger(pluginId: string): PluginLogger {
-  const prefix = `[Plugin:${pluginId}]`;
+  const logger = createLogger(`plugin.${pluginId}`, {
+    feature: 'plugin-compat',
+    tags: ['plugin', `plugin:${pluginId}`],
+  });
 
   return {
-    info: (message, ...args) => console.log(prefix, message, ...args),
-    warn: (message, ...args) => console.warn(prefix, message, ...args),
-    error: (message, ...args) => console.error(prefix, message, ...args),
-    debug: (message, ...args) => {
-      if (process.env.DEBUG) {
-        console.debug(prefix, message, ...args);
-      }
-    },
+    info: (message, ...args) => logger.info(message, args.length <= 1 ? args[0] : args),
+    warn: (message, ...args) => logger.warn(message, args.length <= 1 ? args[0] : args),
+    error: (message, ...args) => logger.error(message, args.length <= 1 ? args[0] : args),
+    debug: (message, ...args) => logger.debug(message, args.length <= 1 ? args[0] : args),
   };
 }
 

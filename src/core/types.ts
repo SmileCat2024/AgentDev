@@ -27,6 +27,36 @@ export interface Notification {
   data: unknown;
 }
 
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+
+export interface LogContextRef {
+  agentId?: string;
+  agentName?: string;
+  parentAgentId?: string;
+  callIndex?: number;
+  step?: number;
+  toolName?: string;
+  toolCallId?: string;
+  feature?: string;
+  lifecycle?: string;
+  hookMethod?: string;
+  hookKind?: 'forward' | 'reverse';
+  sourceFile?: string;
+  sourceLine?: number;
+  tags?: string[];
+  [key: string]: unknown;
+}
+
+export interface DebugLogEntry {
+  id: string;
+  timestamp: number;
+  level: LogLevel;
+  message: string;
+  namespace: string;
+  context: LogContextRef;
+  data?: unknown;
+}
+
 /**
  * LLM 字符计数通知数据
  */
@@ -64,6 +94,14 @@ export interface ToolCompleteData {
 export interface NotificationStateResponse {
   state: Notification | null;
   hasNewEvents: boolean;
+}
+
+export interface AgentLogsResponse {
+  scope: 'current' | 'all';
+  currentAgentId: string | null;
+  selectedAgentId: string | null;
+  total: number;
+  logs: DebugLogEntry[];
 }
 
 /**
@@ -266,6 +304,7 @@ export interface AgentSession {
   currentState: Notification | null;
   events: Notification[];
   lastEventCount: number;
+  logs: DebugLogEntry[];
   // 所属 UDS 客户端连接 ID（用于多进程输入响应路由）
   clientId?: string;
   // 内部：上次最后一条消息的签名（用于推送去重）

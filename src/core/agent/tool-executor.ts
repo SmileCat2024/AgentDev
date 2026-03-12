@@ -12,6 +12,9 @@ import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext }
 import type { ToolExecResult } from '../context.js';
 import type { HooksRegistry } from '../hooks-registry.js';
 import { CoreLifecycle, normalizeDecision, Decision } from '../lifecycle.js';
+import { createLogger, runWithLogScope } from '../logging.js';
+
+const logger = createLogger('agent.tool');
 
 /**
  * 工具执行器类
@@ -44,66 +47,143 @@ export class ToolExecutor {
     step: number,
     callIndex: number  // 用户交互序号
   ): Promise<void> {
-    const tool = this.tools.get(call.name);
-    const startTime = Date.now();
-
-    const toolCtx: ToolContext = {
-      call,
-      tool: tool!,
+    return await runWithLogScope({
       step,
-      input,
-      context,
-    };
+      toolName: call.name,
+      toolCallId: call.id,
+      feature: this.tools.getSource(call.name),
+      namespace: 'agent.tool',
+      tags: [
+        'tool',
+        `tool:${call.name}`,
+        ...(this.tools.getSource(call.name) ? [`feature:${this.tools.getSource(call.name)}`] : []),
+      ],
+    }, async () => {
+      const tool = this.tools.get(call.name);
+      const startTime = Date.now();
 
-    // ========== ToolUse 正向钩子 ==========
-    let blocked = false;
-    let blockReason: string | undefined;
-
-    const hookResult = await this.executeHookFn(
-      'onToolUse',
-      () => this.onToolUseFn(toolCtx),
-      { input, step }
-    );
-
-    if (hookResult) {
-      if (hookResult.action === 'block') {
-        blocked = true;
-        blockReason = hookResult.reason;
-      }
-      // action: 'allow' 或 undefined 都放行
-    }
-
-    // ========== ToolUse 反向钩子（流程控制）==========
-    const useDecisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.ToolUse, toolCtx);
-    const useDecision = normalizeDecision(useDecisionResult);
-
-    // 处理反向钩子的决策
-    if (useDecision === Decision.Deny) {
-      blocked = true;
-      blockReason = typeof useDecisionResult === 'object' && useDecisionResult.reason
-        ? useDecisionResult.reason
-        : 'Tool blocked by reverse hook';
-    }
-
-    const result: ToolResult = {
-      success: false,
-      data: null,
-      error: blockReason || (tool ? undefined : `Tool "${call.name}" not found`),
-      duration: Date.now() - startTime,
-      call,
-      tool: tool!,
-      step,
-      input,
-      context,
-    };
-
-    if (blocked || !tool) {
-      // 添加阻止结果到上下文
-      const errorResult: ToolExecResult = {
-        success: false,
-        result: { error: result.error || 'Tool not found' },
+      const toolCtx: ToolContext = {
+        call,
+        tool: tool!,
+        step,
+        input,
+        context,
       };
-      context.addToolMessage(call, errorResult, callIndex);
+
+      logger.info('Tool execution scheduled', {
+        toolName: call.name,
+        arguments: call.arguments,
+        step,
+      });
+
+      // ========== ToolUse 正向钩子 ==========
+      let blocked = false;
+      let blockReason: string | undefined;
+
+      const hookResult = await this.executeHookFn(
+        'onToolUse',
+        () => this.onToolUseFn(toolCtx),
+        { input, step }
+      );
+
+      if (hookResult) {
+        if (hookResult.action === 'block') {
+          blocked = true;
+          blockReason = hookResult.reason;
+        }
+        // action: 'allow' 或 undefined 都放行
+      }
+
+      // ========== ToolUse 反向钩子（流程控制）==========
+      const useDecisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.ToolUse, toolCtx);
+      const useDecision = normalizeDecision(useDecisionResult);
+
+      // 处理反向钩子的决策
+      if (useDecision === Decision.Deny) {
+        blocked = true;
+        blockReason = typeof useDecisionResult === 'object' && useDecisionResult.reason
+          ? useDecisionResult.reason
+          : 'Tool blocked by reverse hook';
+      }
+
+      const result: ToolResult = {
+        success: false,
+        data: null,
+        error: blockReason || (tool ? undefined : `Tool "${call.name}" not found`),
+        duration: Date.now() - startTime,
+        call,
+        tool: tool!,
+        step,
+        input,
+        context,
+      };
+
+      if (blocked || !tool) {
+        logger.warn('Tool execution blocked', {
+          toolName: call.name,
+          reason: result.error,
+        });
+
+        // 添加阻止结果到上下文
+        const errorResult: ToolExecResult = {
+          success: false,
+          result: { error: result.error || 'Tool not found' },
+        };
+        context.addToolMessage(call, errorResult, callIndex);
+
+        // ========== ToolFinished 正向钩子 ==========
+        await this.executeHookFn(
+          'onToolFinished',
+          () => this.onToolFinishedFn(result),
+          { input, step }
+        );
+
+        // ========== ToolFinished 反向钩子（纯通知）==========
+        const decisionCtx: ToolFinishedDecisionContext = {
+          ...result,
+          toolName: call.name,
+        };
+        await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
+
+        return;
+      }
+
+      try {
+        // 执行工具
+        // 使用声明的上下文注入器
+        let toolContext: any = undefined;
+
+        for (const { pattern, injector } of this.contextInjectors) {
+          if (typeof pattern === 'string' && pattern === call.name) {
+            toolContext = { ...toolContext, ...injector(call) };
+          } else if (pattern instanceof RegExp && pattern.test(call.name)) {
+            toolContext = { ...toolContext, ...injector(call) };
+          }
+        }
+
+        const data = await tool.execute(call.arguments, toolContext);
+        result.success = true;
+        result.data = data;
+
+        // 添加工具结果到上下文
+        const successResult: ToolExecResult = {
+          success: true,
+          result: typeof data === 'string' ? data : JSON.stringify(data),
+        };
+        context.addToolMessage(call, successResult, callIndex);
+
+      } catch (error) {
+        result.error = error instanceof Error ? error.message : String(error);
+
+        // 添加错误结果到上下文
+        const failResult: ToolExecResult = {
+          success: false,
+          result: { error: result.error },
+        };
+        context.addToolMessage(call, failResult, callIndex);
+      }
+
+      result.duration = Date.now() - startTime;
 
       // ========== ToolFinished 正向钩子 ==========
       await this.executeHookFn(
@@ -119,58 +199,18 @@ export class ToolExecutor {
       };
       await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
 
-      return;
-    }
-
-    try {
-      // 执行工具
-      // 使用声明的上下文注入器
-      let toolContext: any = undefined;
-
-      for (const { pattern, injector } of this.contextInjectors) {
-        if (typeof pattern === 'string' && pattern === call.name) {
-          toolContext = { ...toolContext, ...injector(call) };
-        } else if (pattern instanceof RegExp && pattern.test(call.name)) {
-          toolContext = { ...toolContext, ...injector(call) };
-        }
+      if (result.success) {
+        logger.info('Tool execution completed', {
+          toolName: call.name,
+          duration: result.duration,
+        });
+      } else {
+        logger.error('Tool execution failed', {
+          toolName: call.name,
+          duration: result.duration,
+          error: result.error,
+        });
       }
-
-      const data = await tool.execute(call.arguments, toolContext);
-      result.success = true;
-      result.data = data;
-
-      // 添加工具结果到上下文
-      const successResult: ToolExecResult = {
-        success: true,
-        result: typeof data === 'string' ? data : JSON.stringify(data),
-      };
-      context.addToolMessage(call, successResult, callIndex);
-
-    } catch (error) {
-      result.error = error instanceof Error ? error.message : String(error);
-
-      // 添加错误结果到上下文
-      const failResult: ToolExecResult = {
-        success: false,
-        result: { error: result.error },
-      };
-      context.addToolMessage(call, failResult, callIndex);
-    }
-
-    result.duration = Date.now() - startTime;
-
-    // ========== ToolFinished 正向钩子 ==========
-    await this.executeHookFn(
-      'onToolFinished',
-      () => this.onToolFinishedFn(result),
-      { input, step }
-    );
-
-    // ========== ToolFinished 反向钩子（纯通知）==========
-    const decisionCtx: ToolFinishedDecisionContext = {
-      ...result,
-      toolName: call.name,
-    };
-    await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
+    });
   }
 }

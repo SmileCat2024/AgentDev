@@ -8,6 +8,9 @@ import type { AgentFeature } from './feature.js';
 import { CoreLifecycle, Decision, DecisionResult, normalizeDecision } from './lifecycle.js';
 import { getDecoratorMetadata } from './hooks-decorator.js';
 import type { DecisionContext, HookLifecycleSnapshot } from './types.js';
+import { createLogger, runWithLogScope } from './logging.js';
+
+const logger = createLogger('agent.reverse-hook');
 
 /**
  * 钩子执行结果
@@ -143,7 +146,7 @@ export class HooksRegistry {
     }
 
     // 按顺序执行所有钩子
-    for (const { feature, methodName } of hooks) {
+    for (const { feature, methodName, source } of hooks) {
       try {
         const method = (feature as any)[methodName];
         if (typeof method !== 'function') {
@@ -153,7 +156,21 @@ export class HooksRegistry {
           continue;
         }
 
-        const result = await method.call(feature, context);
+        const result = await runWithLogScope({
+          feature: feature.name,
+          lifecycle,
+          hookMethod: methodName,
+          hookKind: 'reverse',
+          sourceFile: source?.file,
+          sourceLine: source?.line,
+          namespace: 'agent.reverse-hook',
+          tags: [
+            'reverse-hook',
+            `feature:${feature.name}`,
+            `hook:${lifecycle}`,
+            `hook-method:${methodName}`,
+          ],
+        }, async () => await method.call(feature, context));
 
         // 处理返回值
         if (result !== undefined) {
@@ -161,6 +178,12 @@ export class HooksRegistry {
 
           // 如果返回 Approve 或 Deny，立即停止并返回
           if (decision === Decision.Approve || decision === Decision.Deny) {
+            logger.info('Reverse hook decided flow', {
+              feature: feature.name,
+              lifecycle,
+              methodName,
+              decision,
+            });
             return {
               handled: true,
               decision,
@@ -173,6 +196,12 @@ export class HooksRegistry {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        logger.error('Reverse hook execution failed', {
+          feature: feature.name,
+          lifecycle,
+          methodName,
+          message,
+        });
         console.error(
           `[HooksRegistry] 执行钩子 ${CoreLifecycle[lifecycle]}#${methodName} 时出错: ${message}`
         );

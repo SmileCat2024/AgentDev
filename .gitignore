@@ -116,3 +116,6 @@ pyproject.toml
 uv.lock
 requirements.txt
 src/features/visual/python/__pycache__/enum.cpython-312.pyc
+.mcp.json
+.mcp.json
+.mcp.json

@@ -230,6 +230,8 @@ class AgentBase {
           () => (this as any).onInitiate({ context }),
           { hookName: 'onInitiate', input }
         );
+        this.syncRegisteredToolsToDebug();
+        this.pushInspectorSnapshot();
 
         // 加载系统提示词（必须在反向钩子之前，确保 context 为空）
         if (this.templateResolver && context.getAll().length === 0) {
@@ -250,6 +252,8 @@ class AgentBase {
 
       // 执行反向钩子，Feature 可以在此期间修改 _pendingInput
       await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall, agent: this });
+      this.syncRegisteredToolsToDebug();
+      this.pushInspectorSnapshot();
 
       // 添加用户输入（使用可能被 Feature 修改过的缓存）
       const finalInput = this._pendingInput ?? input;
@@ -382,7 +386,7 @@ class AgentBase {
       featureTemplates,
       this.buildHookInspectorSnapshot()
     );
-    this.debugHub.registerAgentTools(this.agentId, this.tools.getAll());
+    this.syncRegisteredToolsToDebug();
 
     return this;
   }
@@ -571,6 +575,7 @@ class AgentBase {
 
     if (count > 0) {
       console.log(`[Agent] 已启用 Feature '${featureName}' 的 ${count} 个工具`);
+      this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
     }
 
@@ -600,6 +605,7 @@ class AgentBase {
 
     if (count > 0) {
       console.log(`[Agent] 已禁用 Feature '${featureName}' 的 ${count} 个工具`);
+      this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
     }
 
@@ -748,6 +754,12 @@ class AgentBase {
   private pushToDebug(messages: Message[]): void {
     if (this.debugEnabled && this.agentId && this.debugHub) {
       this.debugHub.pushMessages(this.agentId, messages);
+    }
+  }
+
+  private syncRegisteredToolsToDebug(): void {
+    if (this.debugEnabled && this.agentId && this.debugHub) {
+      this.debugHub.registerAgentTools(this.agentId, this.tools.getAll());
     }
   }
 

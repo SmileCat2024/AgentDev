@@ -6,11 +6,13 @@
 
 - **Feature 插件系统** - 可外挂的功能模块，支持 MCP、Skills、子代理等
 - **受管 MCP 装配层** - 动态发现 MCP 工具后，可统一做 rename/disable/describe/render 干预
+- **内置 Debugger MCP Server** - `ViewerWorker` 同时暴露只读 MCP 接口，供外部客户端和 Agent 自观察使用
 - **4级生命周期钩子** - Agent/Call/Step/Tool 全方位控制
 - **反向钩子装饰器** - 使用装饰器注册流程控制逻辑
 - **Context 内核化** - 消息包装和查询能力内置
+- **结构化日志系统** - 日志独立于对话消息，支持 agent / feature / hook / tool 精确归因
 - **灵活的工具系统** - 双文件模式（定义+渲染），支持前端动态模板
-- **内置可视化调试** - DebugHub 多 Agent 调试中心
+- **内置可视化调试** - DebugHub 多 Agent 调试中心，右侧边栏包含 Overview / Features / Reverse Hooks / Logs / MCP
 - **开箱即用** - BasicAgent 提供默认工具集和配置
 - **跨平台兼容** - 完整的 Windows/Linux/macOS 支持
 
@@ -22,6 +24,7 @@
 - [生命周期钩子](#生命周期钩子)
 - [工具系统](#工具系统)
 - [Feature 系统](#feature-系统)
+- [调试器与 MCP](#调试器与-mcp)
 - [模板系统](#模板系统)
   - [数据源注册系统](#数据源注册系统)
 - [配置管理](#配置管理)
@@ -85,6 +88,24 @@ npm run server
 npm run agt
 ```
 
+启动后可以同时访问：
+
+- 调试页面：`http://localhost:2026/`
+- MCP 端点：`http://localhost:2026/mcp`
+
+右侧边栏的 `MCP` 面板会显示：
+
+- 服务状态
+- 对接配置示例
+- MCP tools / resources / prompts 一览
+
+右侧边栏还提供：
+
+- `Overview`：当前 Agent 总览
+- `Features`：Feature 与工具快照
+- `Reverse Hooks`：反向钩子链路
+- `Logs`：独立结构化日志流，可切换 “当前 Agent / 全部”
+
 ---
 
 ## 核心概念
@@ -121,6 +142,8 @@ context.getByTurn(callIndex);
 **概念说明**：
 - **Call** = 用户一次完整的输入-输出交互
 - **Step** = ReAct 循环中的单次迭代（LLM 调用 + 工具执行）
+
+> 说明：运行时日志不进入 Context；日志由独立的结构化日志系统上报到 DebugHub / ViewerWorker。
 
 ### Tool（工具）
 
@@ -562,6 +585,12 @@ interface AgentFeature {
 }
 ```
 
+`FeatureInitContext` 当前除 `agentId / config / featureConfig / getFeature / registerTool` 外，还会提供：
+
+- `logger`：Feature 级结构化 logger，适合在 `onInitiate()`、`getAsyncTools()` 等阶段使用
+
+同时，旧代码里的 `console.*` 在 Agent 运行作用域内也会被桥接为结构化日志，不必为了迁移一次性重写所有 Feature。
+
 ### 输入缓存机制
 
 Feature 可通过 `@CallStart` 钩子修改待注入的输入内容：
@@ -720,6 +749,73 @@ const input = await userInputFeature.getUserInput('请输入：');
 ```
 
 ---
+
+## 调试器与 MCP
+
+### 当前架构
+
+当前调试链路分成两层：
+
+- `DebugHub`：Agent 进程内的轻量路由层，负责把消息、日志、hook inspector 快照通过 IPC 送给 viewer
+- `ViewerWorker`：独立进程中的承载层，维护多 Agent session，并同时提供 Web UI 和只读 MCP facade
+
+这意味着：
+
+- Web UI 和 MCP 读取的是同一份内存态 session 数据
+- 不存在第二套“专门给 MCP”的调试状态
+- 当前 MCP 面向调试与自观察，不提供写能力
+- 日志与消息是两套独立存储：消息用于对话链路，日志用于调试与检索
+
+### 结构化日志
+
+当前日志系统的关键特征：
+
+- 日志通过 `notification.type = 'log.entry'` 进入 `DebugHub`
+- `ViewerWorker` 为每个 Agent 独立维护日志列表，并提供 `/api/logs`
+- logger 基于 `AsyncLocalStorage` 传播作用域，可自动附带 `agentId / callIndex / step / toolName / feature / lifecycle / hookMethod`
+- 右侧 `Logs` 面板提供 `当前 Agent / 全部` 切换、搜索、级别、Feature、Lifecycle 筛选
+- 反向钩子执行期间，日志会自动标记到具体 `feature + lifecycle + hookMethod`
+
+### Debugger MCP 能力
+
+内置 MCP server 默认挂在 `ViewerWorker` 同端口的 `/mcp` 路径。
+
+已提供的能力：
+
+- Tools：`list_agents`、`get_current_agent`、`get_agent`、`get_hooks`、`query_logs`
+- Resources：`debug://agents`、`debug://agents/current`、`debug://agents/{agentId}`、`debug://agents/{agentId}/hooks`
+- Prompts：`analyze_errors`、`review_hooks`、`diagnose_agent`
+
+`query_logs` 支持：
+
+- `agentId`
+- `scope`
+- `level`
+- `namespace`
+- `feature`
+- `lifecycle`
+- `from` / `to`
+- `limit` / `offset`
+- `search`
+
+### MCP 客户端配置示例
+
+```json
+{
+  "mcpServers": {
+    "agentdevDebugger": {
+      "type": "http",
+      "url": "http://localhost:2026/mcp"
+    }
+  }
+}
+```
+
+`self` 解析顺序：
+
+- 工具参数中的 `callerAgentId`
+- 请求头 `x-agentdev-agent-id`
+- 当前调试器选中的 Agent
 
 ## 模板系统
 

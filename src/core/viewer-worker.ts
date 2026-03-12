@@ -11,6 +11,16 @@ import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { type Message, type Tool, type DebugLogEntry, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
+  DebuggerMCPServer,
+  DEBUGGER_MCP_PROMPT_DEFINITIONS,
+  DEBUGGER_MCP_RESOURCE_DEFINITIONS,
+  DEBUGGER_MCP_TOOL_DEFINITIONS,
+  createDebuggerAgentDetails,
+  createDebuggerAgentSummary,
+  filterDebuggerLogs,
+  type DebuggerLogQuery,
+} from './debugger-mcp.js';
+import {
   RENDER_TEMPLATES,
   SYSTEM_RENDER_MAP,
   TOOL_DISPLAY_NAMES,
@@ -39,6 +49,13 @@ class ViewerWorker {
 
   // 模板路由器
   private templateRouter: TemplateRouter = new TemplateRouter();
+  private readonly debuggerMcp = new DebuggerMCPServer({
+    listAgents: () => this.listAgentSummaries(),
+    getAgent: (agentId: string) => this.getAgentDetails(agentId),
+    getCurrentAgentId: () => this.currentAgentId,
+    getHooks: (agentId: string) => this.agentSessions.get(agentId)?.hookInspector,
+    queryLogs: (query: DebuggerLogQuery) => this.queryLogs(query),
+  });
 
   // 内存限制配置
   private readonly MAX_MESSAGES = 10000;
@@ -71,6 +88,7 @@ class ViewerWorker {
       this.server.listen(this.port, async () => {
         const url = `http://localhost:${this.port}`;
         console.log(`[Viewer Worker] ${url}`);
+        console.log(`[Viewer Worker] MCP endpoint: ${url}/mcp`);
 
         // 打开浏览器（仅在 openBrowser 为 true 时）
         if (this.openBrowser) {
@@ -250,6 +268,11 @@ class ViewerWorker {
       return;
     }
 
+    if (url === '/mcp' || url === '/mcp/') {
+      void this.handleMCP(req, res);
+      return;
+    }
+
     // 静态文件：工具渲染模板
     if (url.startsWith('/tools/')) {
       this.handleStaticToolFile(req, res, url);
@@ -307,6 +330,11 @@ class ViewerWorker {
 
     if (url === '/api/logs' && req.method === 'GET') {
       this.handleGetLogs(req, res, urlObj.searchParams);
+      return;
+    }
+
+    if (url === '/api/mcp-info' && req.method === 'GET') {
+      this.handleGetMCPInfo(req, res);
       return;
     }
 
@@ -576,31 +604,61 @@ class ViewerWorker {
   }
 
   private handleGetLogs(req: IncomingMessage, res: ServerResponse, searchParams: URLSearchParams): void {
-    const scope = searchParams.get('scope') === 'all' ? 'all' : 'current';
-    const selectedAgentId = searchParams.get('agentId');
+    const result = this.queryLogs({
+      scope: searchParams.get('scope') === 'all' ? 'all' : 'current',
+      agentId: searchParams.get('agentId'),
+      level: searchParams.get('level') || undefined,
+      namespace: searchParams.get('namespace') || undefined,
+      feature: searchParams.get('feature') || undefined,
+      lifecycle: searchParams.get('lifecycle') || undefined,
+      from: this.parseNumberParam(searchParams.get('from')),
+      to: this.parseNumberParam(searchParams.get('to')),
+      limit: this.parseNumberParam(searchParams.get('limit')),
+      offset: this.parseNumberParam(searchParams.get('offset')),
+      search: searchParams.get('search') || undefined,
+    });
 
-    let logs: DebugLogEntry[] = [];
-    if (scope === 'all') {
-      for (const session of this.agentSessions.values()) {
-        for (const entry of session.logs) {
-          logs.push(this.withSessionLogContext(entry, session));
-        }
-      }
-    } else {
-      const effectiveAgentId = selectedAgentId || this.currentAgentId;
-      const session = effectiveAgentId ? this.agentSessions.get(effectiveAgentId) : undefined;
-      logs = session ? session.logs.map((entry) => this.withSessionLogContext(entry, session)) : [];
-    }
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(result));
+  }
 
-    logs.sort((a, b) => a.timestamp - b.timestamp);
+  private handleGetMCPInfo(req: IncomingMessage, res: ServerResponse): void {
+    const host = req.headers.host || `localhost:${this.port}`;
+    const origin = `http://${host}`;
+    const endpoint = `${origin}/mcp`;
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
-      scope,
-      currentAgentId: this.currentAgentId,
-      selectedAgentId: selectedAgentId || this.currentAgentId,
-      total: logs.length,
-      logs,
+      enabled: true,
+      endpoint,
+      transport: 'Streamable HTTP',
+      version: 'read-only debugger facade',
+      commands: {
+        claudeDesktop: {
+          json: {
+            mcpServers: {
+              agentdevDebugger: {
+                type: 'http',
+                url: endpoint,
+              },
+            },
+          },
+        },
+        codex: {
+          json: {
+            servers: {
+              agentdevDebugger: {
+                type: 'http',
+                url: endpoint,
+              },
+            },
+          },
+        },
+        curlInitialize: `curl -X POST ${endpoint} -H "Content-Type: application/json" -d "{\\"jsonrpc\\":\\"2.0\\",\\"id\\":1,\\"method\\":\\"initialize\\",\\"params\\":{\\"protocolVersion\\":\\"2025-03-26\\",\\"capabilities\\":{},\\"clientInfo\\":{\\"name\\":\\"manual-client\\",\\"version\\":\\"1.0.0\\"}}}"`,
+      },
+      tools: DEBUGGER_MCP_TOOL_DEFINITIONS,
+      resources: DEBUGGER_MCP_RESOURCE_DEFINITIONS,
+      prompts: DEBUGGER_MCP_PROMPT_DEFINITIONS,
     }));
   }
 
@@ -1046,6 +1104,116 @@ class ViewerWorker {
         agentName: entry.context.agentName || session.name,
       },
     };
+  }
+
+  private parseNumberParam(value: string | null): number | undefined {
+    if (!value) return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  private listAgentSummaries() {
+    return Array.from(this.agentSessions.values())
+      .map(session => createDebuggerAgentSummary(session, this.isSessionConnected(session)))
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  private getAgentDetails(agentId: string) {
+    const session = this.agentSessions.get(agentId);
+    if (!session) return undefined;
+    return createDebuggerAgentDetails(session, this.isSessionConnected(session));
+  }
+
+  private queryLogs(query: DebuggerLogQuery) {
+    const scope: 'current' | 'all' = query.scope === 'all' ? 'all' : 'current';
+    const selectedAgentId = query.agentId || this.currentAgentId;
+
+    let logs: DebugLogEntry[] = [];
+    if (scope === 'all') {
+      for (const session of this.agentSessions.values()) {
+        for (const entry of session.logs) {
+          logs.push(this.withSessionLogContext(entry, session));
+        }
+      }
+    } else {
+      const effectiveAgentId = selectedAgentId || this.currentAgentId;
+      const session = effectiveAgentId ? this.agentSessions.get(effectiveAgentId) : undefined;
+      logs = session ? session.logs.map((entry) => this.withSessionLogContext(entry, session)) : [];
+    }
+
+    logs.sort((a, b) => a.timestamp - b.timestamp);
+    const total = filterDebuggerLogs(logs, {
+      agentId: query.agentId,
+      level: query.level,
+      namespace: query.namespace,
+      feature: query.feature,
+      lifecycle: query.lifecycle,
+      from: query.from,
+      to: query.to,
+      search: query.search,
+    }).length;
+    const paged = filterDebuggerLogs(logs, {
+      agentId: query.agentId,
+      level: query.level,
+      namespace: query.namespace,
+      feature: query.feature,
+      lifecycle: query.lifecycle,
+      from: query.from,
+      to: query.to,
+      limit: query.limit,
+      offset: query.offset,
+      search: query.search,
+    });
+
+    return {
+      scope,
+      currentAgentId: this.currentAgentId,
+      selectedAgentId,
+      total,
+      logs: paged,
+    };
+  }
+
+  private async handleMCP(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'content-type, mcp-session-id, last-event-id, x-agentdev-agent-id');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Method not allowed.',
+        },
+        id: null,
+      }));
+      return;
+    }
+
+    try {
+      await this.debuggerMcp.handleRequest(req, res);
+    } catch (error) {
+      console.error('[Viewer Worker] MCP request failed:', error);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: {
+            code: -32603,
+            message: 'Internal server error',
+          },
+          id: null,
+        }));
+      }
+    }
   }
 
   /**
@@ -2131,6 +2299,128 @@ class ViewerWorker {
       gap: 16px;
     }
 
+    .mcp-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .mcp-hero {
+      position: relative;
+      overflow: hidden;
+      padding: 18px;
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at top right, rgba(71, 195, 160, 0.22), transparent 34%),
+        radial-gradient(circle at bottom left, rgba(80, 133, 255, 0.16), transparent 36%),
+        linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+      box-shadow: 0 20px 50px var(--shadow-color);
+    }
+
+    .mcp-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .mcp-stat {
+      padding: 12px 13px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .mcp-stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .mcp-stat-value {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.4;
+      word-break: break-all;
+    }
+
+    .mcp-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      font-size: 12px;
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.04);
+      margin-top: 12px;
+    }
+
+    .mcp-status-pill::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #4ade80;
+      box-shadow: 0 0 16px rgba(74, 222, 128, 0.4);
+    }
+
+    .mcp-code {
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(0, 0, 0, 0.22);
+      font-size: 12px;
+      line-height: 1.65;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .mcp-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .mcp-item {
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .mcp-item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+
+    .mcp-item-name {
+      font-weight: 700;
+      color: var(--text-primary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .mcp-item-type {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .mcp-item-desc {
+      font-size: 12px;
+      line-height: 1.7;
+      color: var(--text-secondary);
+    }
+
     .log-filter-row {
       display: flex;
       align-items: center;
@@ -2977,6 +3267,14 @@ class ViewerWorker {
           <path d="M7 7h7"></path>
         </svg>
       </button>
+      <button class="rail-button" id="rail-mcp" title="MCP" data-panel="mcp">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <rect x="3" y="5" width="18" height="14" rx="3"></rect>
+          <path d="M7 12h4"></path>
+          <path d="M13 12h4"></path>
+          <path d="M12 9v6"></path>
+        </svg>
+      </button>
       <div class="rail-spacer"></div>
       <button class="rail-button" id="language-toggle" title="Switch Language" type="button">EN</button>
       <button class="rail-button" id="theme-toggle" title="切换主题" type="button">
@@ -3059,6 +3357,7 @@ class ViewerWorker {
     let currentHookInspectorSignature = '';
     let currentLogs = [];
     let currentLogsSignature = '';
+    let currentMcpInfo = null;
     let logPanelScope = 'current';
     let logFilters = {
       search: '',
@@ -3084,6 +3383,7 @@ class ViewerWorker {
         panel_features: 'Features',
         panel_reverse_hooks: 'Reverse Hooks',
         panel_logs: '日志',
+        panel_mcp: 'MCP',
         panel_loop_flow: 'Loop Flow',
         panel_select_lifecycle: '选择一个生命周期阶段',
         panel_inspector: 'Inspector',
@@ -3132,6 +3432,23 @@ class ViewerWorker {
         features_tooltip: 'Features',
         reverse_hooks_tooltip: 'Reverse Hooks',
         logs_tooltip: '日志',
+        mcp_tooltip: 'MCP',
+        mcp_subtitle: '调试器内置的只读 MCP 服务器，可供外部客户端和 agent 自观察使用。',
+        mcp_enabled: '已启用',
+        mcp_disabled: '已禁用',
+        mcp_endpoint: '端点',
+        mcp_transport: '传输',
+        mcp_tools: '工具',
+        mcp_resources: '资源',
+        mcp_prompts: '提示模板',
+        mcp_client_config: '客户端配置',
+        mcp_claude_desktop: 'Claude Desktop 配置',
+        mcp_codex: 'Codex 配置',
+        mcp_manual: '手动初始化示例',
+        mcp_tool_list: '工具一览',
+        mcp_resource_list: '资源一览',
+        mcp_prompt_list: '提示模板一览',
+        mcp_loading: '正在加载 MCP 信息...',
         logs_scope: '范围',
         logs_scope_current: '只看当前 Agent',
         logs_scope_all: '全部',
@@ -3178,6 +3495,7 @@ class ViewerWorker {
         panel_features: 'Features',
         panel_reverse_hooks: 'Reverse Hooks',
         panel_logs: 'Logs',
+        panel_mcp: 'MCP',
         panel_loop_flow: 'Loop Flow',
         panel_select_lifecycle: 'Select a lifecycle stage',
         panel_inspector: 'Inspector',
@@ -3226,6 +3544,23 @@ class ViewerWorker {
         features_tooltip: 'Features',
         reverse_hooks_tooltip: 'Reverse Hooks',
         logs_tooltip: 'Logs',
+        mcp_tooltip: 'MCP',
+        mcp_subtitle: 'Built-in read-only MCP server for external clients and agent self-observation.',
+        mcp_enabled: 'Enabled',
+        mcp_disabled: 'Disabled',
+        mcp_endpoint: 'Endpoint',
+        mcp_transport: 'Transport',
+        mcp_tools: 'Tools',
+        mcp_resources: 'Resources',
+        mcp_prompts: 'Prompts',
+        mcp_client_config: 'Client Config',
+        mcp_claude_desktop: 'Claude Desktop config',
+        mcp_codex: 'Codex config',
+        mcp_manual: 'Manual initialize example',
+        mcp_tool_list: 'Tool Catalog',
+        mcp_resource_list: 'Resource Catalog',
+        mcp_prompt_list: 'Prompt Catalog',
+        mcp_loading: 'Loading MCP info...',
         logs_scope: 'Scope',
         logs_scope_current: 'Current agent',
         logs_scope_all: 'All agents',
@@ -3340,6 +3675,10 @@ class ViewerWorker {
         count: currentLogs.length,
         last: currentLogs.length > 0 ? currentLogs[currentLogs.length - 1].id : null,
       });
+    }
+
+    function setCurrentMcpInfo(info) {
+      currentMcpInfo = info || null;
     }
 
     function getLevelWeight(level) {
@@ -3478,6 +3817,73 @@ class ViewerWorker {
       }).join('');
 
       return '<div class="log-panel">' + toolbar + '<section class="log-list">' + rows + '</section></div>';
+    }
+
+    function renderMcpItems(items, typeLabel) {
+      if (!Array.isArray(items) || items.length === 0) {
+        return '<div class="feature-panel-empty"><div>' + escapeHtml(t('active_none')) + '</div></div>';
+      }
+
+      return '<div class="mcp-list">' + items.map((item) => {
+        const name = item.name || item.uri || '';
+        return [
+          '<article class="mcp-item">',
+          '<div class="mcp-item-head">',
+          '<div class="mcp-item-name">' + escapeHtml(name) + '</div>',
+          '<div class="mcp-item-type">' + escapeHtml(typeLabel) + '</div>',
+          '</div>',
+          '<div class="mcp-item-desc">' + escapeHtml(item.description || '') + '</div>',
+          '</article>',
+        ].join('');
+      }).join('') + '</div>';
+    }
+
+    function renderMcpPanel() {
+      if (!currentMcpInfo) {
+        return '<div class="feature-panel-empty"><div>' + escapeHtml(t('mcp_loading')) + '</div></div>';
+      }
+
+      const info = currentMcpInfo;
+      return [
+        '<div class="mcp-panel">',
+        '<section class="mcp-hero">',
+        '<div class="hooks-kicker">Model Context Protocol</div>',
+        '<div class="hooks-hero-title">Debugger MCP Server</div>',
+        '<div class="hooks-hero-subtitle">' + escapeHtml(t('mcp_subtitle')) + '</div>',
+        '<div class="mcp-status-pill">' + escapeHtml(info.enabled ? t('mcp_enabled') : t('mcp_disabled')) + '</div>',
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('panel_inspector')) + '</div>',
+        '<div class="mcp-grid">',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_endpoint')) + '</div><div class="mcp-stat-value">' + escapeHtml(info.endpoint || '') + '</div></div>',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_transport')) + '</div><div class="mcp-stat-value">' + escapeHtml(info.transport || '') + '</div></div>',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_tools')) + '</div><div class="mcp-stat-value">' + String((info.tools || []).length) + '</div></div>',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_resources')) + '</div><div class="mcp-stat-value">' + String((info.resources || []).length) + '</div></div>',
+        '</div>',
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_client_config')) + '</div>',
+        '<div class="mcp-item-desc" style="margin-bottom:8px;">' + escapeHtml(t('mcp_claude_desktop')) + '</div>',
+        '<pre class="mcp-code">' + escapeHtml(safePrettyJson(info.commands?.claudeDesktop?.json || {})) + '</pre>',
+        '<div class="mcp-item-desc" style="margin:12px 0 8px 0;">' + escapeHtml(t('mcp_codex')) + '</div>',
+        '<pre class="mcp-code">' + escapeHtml(safePrettyJson(info.commands?.codex?.json || {})) + '</pre>',
+        '<div class="mcp-item-desc" style="margin:12px 0 8px 0;">' + escapeHtml(t('mcp_manual')) + '</div>',
+        '<pre class="mcp-code">' + escapeHtml(info.commands?.curlInitialize || '') + '</pre>',
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_tool_list')) + '</div>',
+        renderMcpItems(info.tools || [], 'tool'),
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_resource_list')) + '</div>',
+        renderMcpItems(info.resources || [], 'resource'),
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_prompt_list')) + '</div>',
+        renderMcpItems(info.prompts || [], 'prompt'),
+        '</section>',
+        '</div>',
+      ].join('');
     }
 
     const lifecycleDocs = {
@@ -3970,6 +4376,10 @@ class ViewerWorker {
         title: () => t('panel_logs'),
         render: () => renderLogsPanel(),
       },
+      mcp: {
+        title: () => t('panel_mcp'),
+        render: () => renderMcpPanel(),
+      },
     };
 
     // Sidebar Toggle
@@ -4043,6 +4453,7 @@ class ViewerWorker {
       const hooksButton = document.getElementById('rail-hooks');
       const inspectorButton = document.getElementById('rail-inspector');
       const logsButton = document.getElementById('rail-logs');
+      const mcpButton = document.getElementById('rail-mcp');
 
       if (sidebarToggleEl) sidebarToggleEl.title = t('sidebar_toggle');
       if (panelResizerEl) panelResizerEl.title = t('resize_panel');
@@ -4051,6 +4462,7 @@ class ViewerWorker {
       if (hooksButton) hooksButton.title = t('features_tooltip');
       if (inspectorButton) inspectorButton.title = t('reverse_hooks_tooltip');
       if (logsButton) logsButton.title = t('logs_tooltip');
+      if (mcpButton) mcpButton.title = t('mcp_tooltip');
 
       languageToggle.title = t('language_toggle');
       languageToggle.textContent = t('language_toggle_short');
@@ -4159,6 +4571,8 @@ class ViewerWorker {
         toggleFeaturePanel(button.dataset.panel);
         if (button.dataset.panel === 'logs' && activeFeaturePanel === 'logs') {
           loadLogs(true).catch((error) => console.error('Failed to load logs:', error));
+        } else if (button.dataset.panel === 'mcp' && activeFeaturePanel === 'mcp') {
+          loadMcpInfo(true).catch((error) => console.error('Failed to load MCP info:', error));
         }
       });
     });
@@ -4541,6 +4955,25 @@ class ViewerWorker {
       } catch (e) {
         if (forceRender && activeFeaturePanel === 'logs') {
           setCurrentLogs([]);
+          renderFeaturePanel();
+        }
+      }
+    }
+
+    async function loadMcpInfo(forceRender = false) {
+      try {
+        const res = await fetch('/api/mcp-info');
+        if (!res.ok) {
+          throw new Error('Failed to fetch MCP info');
+        }
+        const data = await res.json();
+        setCurrentMcpInfo(data);
+        if (forceRender && activeFeaturePanel === 'mcp') {
+          renderFeaturePanel();
+        }
+      } catch (e) {
+        console.error('Failed to load MCP info:', e);
+        if (forceRender && activeFeaturePanel === 'mcp') {
           renderFeaturePanel();
         }
       }
@@ -5352,6 +5785,7 @@ class ViewerWorker {
           console.log('[Viewer] Retrying to load feature templates after agent loaded...');
           await reloadFeatureTemplateMap();
         }
+        await loadMcpInfo(false);
         poll();
       });
     });
@@ -5367,8 +5801,10 @@ export { ViewerWorker };
 // ========== Worker 进程入口（仅当直接运行时执行）==========
 
 // 检查是否为主模块（不是被其他模块导入）
-const isMainModule = (url: string): boolean => {
-  const mainPath = process.argv[1].replace(/\\/g, '/');
+    const isMainModule = (url: string): boolean => {
+  const mainArg = process.argv[1];
+  if (!mainArg) return false;
+  const mainPath = mainArg.replace(/\\/g, '/');
   const modulePath = url.startsWith('file://') ? url.substring(7) : url;
   return modulePath.endsWith(mainPath) || mainPath.endsWith(modulePath);
 };

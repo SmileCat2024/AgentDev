@@ -111,14 +111,5 @@ desktop/*.js.bak
 desktop/*.tmp
 desktop/nul
 
-CLAUDE.md
-pyproject.toml
-.gitignore
-uv.lock
-requirements.txt
-src/features/visual/python/__pycache__/enum.cpython-312.pyc
-.mcp.json
-.mcp.json
-.mcp.json
-config/default.json
-config/default.json
+# 注意：之前末尾错误地列出了一些应该被跟踪的文件
+# 如果需要跟踪 CLAUDE.md, pyproject.toml 等文件，不应该在这里列出

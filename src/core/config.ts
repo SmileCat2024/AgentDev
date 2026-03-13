@@ -21,6 +21,9 @@ export interface ModelConfig {
   apiKey: string;
   model: string;
   baseUrl?: string;
+  maxTokens?: number;
+  thinkingBudgetTokens?: number;
+  providerOptions?: Record<string, unknown>;
   // 未来可扩展
   region?: string;
   projectId?: string;

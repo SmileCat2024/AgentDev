@@ -100,6 +100,7 @@ ehthumbs_vista.db
 .trash/
 docs/
 .agentdev/
+config/
 
 # Desktop App - 忽略打包产物和依赖，但保留源代码
 desktop/dist/
@@ -119,3 +120,5 @@ src/features/visual/python/__pycache__/enum.cpython-312.pyc
 .mcp.json
 .mcp.json
 .mcp.json
+config/default.json
+config/default.json

@@ -12,7 +12,7 @@ import { MCPFeature, SkillFeature, SubAgentFeature, ShellFeature, OpencodeBasicF
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
-import { createOpenAILLM } from '../../llm/openai.js';
+import { createLLM } from '../../llm/index.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
 import { getDefaultMCPConfigDir } from '../../mcp/config.js';
@@ -115,7 +115,7 @@ export class BasicAgent extends Agent {
     if (!llm) {
       const configName = config.configName ?? 'default';
       fileConfig = loadConfigSync(configName);
-      llm = createOpenAILLM(fileConfig);
+      llm = createLLM(fileConfig);
       systemContext.SYSTEM_CURRENT_MODEL = fileConfig.defaultModel.model;
       console.log(`[BasicAgent] 已加载配置: ${configName}, 模型: ${fileConfig.defaultModel.model}`);
     }

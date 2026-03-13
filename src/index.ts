@@ -33,7 +33,14 @@ export * as mathTools from './tools/system/math.js';
 export { system, user, assistant, toolResult, createMessage } from './core/message.js';
 
 // LLM
-export { OpenAILLM, createOpenAILLM } from './llm/openai.js';
+export {
+  AnthropicLLM,
+  OpenAILLM,
+  compileContextForAnthropic,
+  createAnthropicLLM,
+  createLLM,
+  createOpenAILLM,
+} from './llm/index.js';
 
 // 配置
 export { loadConfig, listConfigs } from './core/config.js';

@@ -15,13 +15,23 @@ interface ExtendedChatCompletionMessage extends OpenAI.Chat.ChatCompletionMessag
 export class OpenAILLM implements LLMClient {
   private client: OpenAI;
   private modelName: string;
+  private maxTokens?: number;
+  private providerOptions?: Record<string, unknown>;
 
-  constructor(apiKey: string, modelName: string = 'gpt-4o', baseUrl?: string) {
+  constructor(
+    apiKey: string,
+    modelName: string = 'gpt-4o',
+    baseUrl?: string,
+    maxTokens?: number,
+    providerOptions?: Record<string, unknown>,
+  ) {
     this.client = new OpenAI({
       apiKey,
       baseURL: baseUrl,
     });
     this.modelName = modelName;
+    this.maxTokens = maxTokens;
+    this.providerOptions = providerOptions;
   }
 
   /**
@@ -48,12 +58,16 @@ export class OpenAILLM implements LLMClient {
     }));
 
     // ========== 流式处理（内部） ==========
-    const stream = await this.client.chat.completions.create({
+    const requestBody = {
       model: this.modelName,
       messages: chatMessages,
       tools: chatTools.length > 0 ? chatTools : undefined,
       stream: true,
-    });
+      ...(this.maxTokens ? { max_tokens: this.maxTokens } : {}),
+      ...(this.providerOptions ?? {}),
+    } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
+
+    const stream = await this.client.chat.completions.create(requestBody);
 
     // 累积内容
     let content = '';
@@ -180,11 +194,23 @@ export function createOpenAILLM(
 ): OpenAILLM {
   // 处理 AgentConfigFile
   if (typeof configOrApiKey === 'object' && 'defaultModel' in configOrApiKey) {
-    return new OpenAILLM(configOrApiKey.defaultModel.apiKey, configOrApiKey.defaultModel.model, configOrApiKey.defaultModel.baseUrl);
+    return new OpenAILLM(
+      configOrApiKey.defaultModel.apiKey,
+      configOrApiKey.defaultModel.model,
+      configOrApiKey.defaultModel.baseUrl,
+      configOrApiKey.defaultModel.maxTokens,
+      configOrApiKey.defaultModel.providerOptions,
+    );
   }
   // 处理 ModelConfig
   if (typeof configOrApiKey === 'object') {
-    return new OpenAILLM(configOrApiKey.apiKey, configOrApiKey.model, configOrApiKey.baseUrl);
+    return new OpenAILLM(
+      configOrApiKey.apiKey,
+      configOrApiKey.model,
+      configOrApiKey.baseUrl,
+      configOrApiKey.maxTokens,
+      configOrApiKey.providerOptions,
+    );
   }
   // 处理单独传参
   return new OpenAILLM(configOrApiKey, modelName!, baseUrl);

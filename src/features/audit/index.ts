@@ -12,7 +12,10 @@
  */
 
 import { fileURLToPath } from 'url';
+import { mkdir, existsSync } from 'fs';
+import { resolve, dirname } from 'path';
 import OpenAI from 'openai';
+import Database from 'better-sqlite3';
 import type {
   AgentFeature,
   FeatureInitContext,
@@ -23,6 +26,8 @@ import { ToolUse } from '../../core/hooks-decorator.js';
 import type { ToolContext } from '../../core/lifecycle.js';
 import { Decision } from '../../core/lifecycle.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
+import { promisify } from 'util';
+import { mkdir as mkdirAsync } from 'fs/promises';
 
 // ========== 类型定义 ==========
 
@@ -78,6 +83,21 @@ const AUDIT_SYSTEM_PROMPT = `# Role
 }`;
 
 /**
+ * 审计记录（数据库存储）
+ */
+interface AuditRecord {
+  id?: number;
+  command: string;
+  is_malicious: number;
+  risk_level: string;
+  threat_types: string;
+  analysis: string;
+  obfuscation_detected: number;
+  created_at: number;
+  last_triggered_at: number;
+}
+
+/**
  * AuditFeature 配置
  */
 export interface AuditFeatureConfig {
@@ -87,6 +107,12 @@ export interface AuditFeatureConfig {
   model?: string;
   /** 是否启用审计（默认 true） */
   enabled?: boolean;
+  /** 是否启用数据库缓存（默认 true） */
+  enableCache?: boolean;
+  /** 数据库文件路径（默认 .agentdev/audit/audit.db） */
+  dbPath?: string;
+  /** 缓存有效期（天数，0 表示永久，默认 0） */
+  cacheTtlDays?: number;
 }
 
 /**
@@ -97,18 +123,30 @@ export interface AuditFeatureConfig {
 export class AuditFeature implements AgentFeature {
   readonly name = 'audit';
   readonly dependencies: string[] = [];
-  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly source = fileURLToPath(import.meta.url).replace(/\\\\/g, '/');
   readonly description = '在工具执行前审计高风险 shell 命令，必要时阻断执行。';
 
-  private config: Required<AuditFeatureConfig>;
+  private config: Required<AuditFeatureConfig> & {
+    enableCache: boolean;
+    dbPath: string;
+    cacheTtlDays: number;
+  };
   private client: OpenAI;
+  private db?: Database.Database | null;
+  private dbPath: string;
+  private logger: any;
 
   constructor(config: AuditFeatureConfig = {}) {
     this.config = {
       baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
       model: config.model ?? DEFAULT_MODEL,
       enabled: config.enabled ?? true,
+      enableCache: config.enableCache ?? true,
+      dbPath: config.dbPath ?? '.agentdev/audit/audit.db',
+      cacheTtlDays: config.cacheTtlDays ?? 0,
     };
+
+    this.dbPath = resolve(process.cwd(), this.config.dbPath);
 
     // 初始化 OpenAI 客户端（连接本地服务）
     this.client = new OpenAI({
@@ -124,12 +162,36 @@ export class AuditFeature implements AgentFeature {
     return [];
   }
 
-  async onInitiate(_ctx: FeatureInitContext): Promise<void> {
-    console.log(`[AuditFeature] Initialized with baseUrl=${this.config.baseUrl}, model=${this.config.model}, enabled=${this.config.enabled}`);
+  async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    this.logger = ctx.logger;
+
+    if (this.config.enableCache) {
+      await this.initDatabase();
+      this.logger?.info('AuditFeature initialized with database cache', {
+        dbPath: this.dbPath,
+        cacheEnabled: this.config.enableCache,
+        cacheTtlDays: this.config.cacheTtlDays,
+        baseUrl: this.config.baseUrl,
+        model: this.config.model,
+        enabled: this.config.enabled
+      });
+    } else {
+      this.logger?.info('AuditFeature initialized without database cache', {
+        cacheEnabled: false,
+        baseUrl: this.config.baseUrl,
+        model: this.config.model,
+        enabled: this.config.enabled
+      });
+    }
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
-    // 无需清理
+    // 关闭数据库连接
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+      this.logger?.info('AuditFeature database connection closed');
+    }
   }
 
   getHookDescription(lifecycle: string, methodName: string): string | undefined {
@@ -170,7 +232,27 @@ export class AuditFeature implements AgentFeature {
     console.log(`[AuditFeature] Auditing command: ${command}`);
 
     try {
-      const result = await this.auditCommand(command);
+      let result: AuditResult;
+
+      // 1. 尝试从缓存获取审计结果
+      if (this.config.enableCache) {
+        const cached = this.getCachedAuditResult(command);
+        if (cached) {
+          result = cached;
+        } else {
+          // 缓存未命中，调用 LLM 审计
+          this.logger?.info('[AuditFeature] Cache MISS, calling LLM', {
+            command: command.substring(0, 50) + (command.length > 50 ? '...' : '')
+          });
+          result = await this.auditCommand(command);
+          // 保存到缓存
+          this.saveAuditResult(command, result);
+        }
+      } else {
+        // 缓存未启用，直接调用 LLM
+        result = await this.auditCommand(command);
+      }
+
       console.log(`[AuditFeature] Audit result:`, result);
 
       if (result.is_malicious) {
@@ -248,6 +330,194 @@ export class AuditFeature implements AgentFeature {
 - 风险等级：**${result.risk_level}**
 - 威胁类型：**${threatList}**
 **提示**：请核查该指令的安全性，如确认无误，请移除所有混淆或隐蔽逻辑，改用语义直白的明文指令重试。`;
+  }
+
+  // ========== 数据库相关方法 ==========
+
+  /**
+   * 初始化数据库
+   *
+   * - 创建数据库目录（如果不存在）
+   * - 打开数据库连接
+   * - 创建表结构（如果不存在）
+   * - 创建索引（如果不存在）
+   */
+  private async initDatabase(): Promise<void> {
+    try {
+      // 1. 创建数据库目录
+      const dbDir = dirname(this.dbPath);
+      if (!existsSync(dbDir)) {
+        await mkdirAsync(dbDir, { recursive: true });
+        this.logger?.info('[AuditFeature] Created database directory', { dbDir });
+      }
+
+      // 2. 打开数据库连接
+      this.db = new Database(this.dbPath);
+
+      // 启用 WAL 模式以提高并发性能
+      this.db.pragma('journal_mode = WAL');
+
+      // 3. 创建表结构
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS audit_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          command TEXT NOT NULL UNIQUE,
+          is_malicious INTEGER NOT NULL,
+          risk_level TEXT NOT NULL,
+          threat_types TEXT,
+          analysis TEXT,
+          obfuscation_detected INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          last_triggered_at INTEGER NOT NULL
+        )
+      `);
+
+      // 4. 创建索引
+      // last_triggered_at 索引用于清理旧记录
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_last_triggered
+        ON audit_records(last_triggered_at)
+      `);
+
+      this.logger?.info('[AuditFeature] Database initialized', {
+        dbPath: this.dbPath,
+        table: 'audit_records'
+      });
+
+      // 5. 清理过期缓存（如果配置了 TTL）
+      if (this.config.cacheTtlDays > 0) {
+        await this.cleanExpiredCache();
+      }
+
+    } catch (error) {
+      this.logger?.error('[AuditFeature] Database initialization failed', { error });
+      // 不抛出异常，允许回退到无缓存模式
+      this.db = null;
+    }
+  }
+
+  /**
+   * 查询缓存的审计结果
+   *
+   * @param command - 要审计的命令
+   * @returns 缓存的审计结果，如果不存在则返回 null
+   */
+  private getCachedAuditResult(command: string): AuditResult | null {
+    if (!this.db) {
+      return null;
+    }
+
+    try {
+      const row = this.db.prepare(
+        'SELECT * FROM audit_records WHERE command = ?'
+      ).get(command) as AuditRecord | undefined;
+
+      if (!row) {
+        return null;
+      }
+
+      // 更新 last_triggered_at
+      const now = Math.floor(Date.now() / 1000);
+      this.db.prepare(
+        'UPDATE audit_records SET last_triggered_at = ? WHERE command = ?'
+      ).run(now, command);
+
+      this.logger?.info('[AuditFeature] Cache HIT', {
+        command: command.substring(0, 50) + (command.length > 50 ? '...' : ''),
+        is_malicious: row.is_malicious === 1,
+        risk_level: row.risk_level
+      });
+
+      // 转换为 AuditResult
+      return {
+        is_malicious: row.is_malicious === 1,
+        risk_level: row.risk_level as 'Critical' | 'High' | 'Medium' | 'Low',
+        threat_types: JSON.parse(row.threat_types || '[]'),
+        analysis: row.analysis,
+        obfuscation_detected: row.obfuscation_detected === 1
+      };
+    } catch (error) {
+      this.logger?.warn('[AuditFeature] Cache query failed', { error });
+      return null;
+    }
+  }
+
+  /**
+   * 保存审计结果到数据库
+   *
+   * @param command - 被审计的命令
+   * @param result - 审计结果
+   */
+  private saveAuditResult(command: string, result: AuditResult): void {
+    if (!this.db) {
+      return;
+    }
+
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const record: AuditRecord = {
+        command,
+        is_malicious: result.is_malicious ? 1 : 0,
+        risk_level: result.risk_level,
+        threat_types: JSON.stringify(result.threat_types),
+        analysis: result.analysis,
+        obfuscation_detected: result.obfuscation_detected ? 1 : 0,
+        created_at: now,
+        last_triggered_at: now
+      };
+
+      this.db.prepare(`
+        INSERT INTO audit_records (
+          command, is_malicious, risk_level, threat_types,
+          analysis, obfuscation_detected, created_at, last_triggered_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.command,
+        record.is_malicious,
+        record.risk_level,
+        record.threat_types,
+        record.analysis,
+        record.obfuscation_detected,
+        record.created_at,
+        record.last_triggered_at
+      );
+
+      this.logger?.info('[AuditFeature] Saved audit result to cache', {
+        command: command.substring(0, 50) + (command.length > 50 ? '...' : ''),
+        is_malicious: result.is_malicious,
+        risk_level: result.risk_level
+      });
+    } catch (error) {
+      this.logger?.warn('[AuditFeature] Failed to save audit result', { error });
+      // 不抛出异常，缓存失败不影响审计功能
+    }
+  }
+
+  /**
+   * 清理过期的缓存记录
+   *
+   * 根据 cacheTtlDays 配置，删除超过有效期的记录
+   */
+  private cleanExpiredCache(): void {
+    if (!this.db || this.config.cacheTtlDays <= 0) {
+      return;
+    }
+
+    try {
+      const cutoffTime = Math.floor(Date.now() / 1000) - (this.config.cacheTtlDays * 86400);
+      const result = this.db.prepare(
+        'DELETE FROM audit_records WHERE last_triggered_at < ?'
+      ).run(cutoffTime);
+
+      if (result.changes > 0) {
+        this.logger?.info('[AuditFeature] Cleaned expired cache', {
+          deletedRecords: result.changes,
+          ttlDays: this.config.cacheTtlDays
+        });
+      }
+    } catch (error) {
+      this.logger?.warn('[AuditFeature] Failed to clean expired cache', { error });
+    }
   }
 }
 

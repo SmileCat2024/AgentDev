@@ -22,6 +22,7 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
     "@sliverp/qqbot": "file:../qqbot/sliverp-qqbot-1.5.4.tgz",
+    "better-sqlite3": "^12.6.2",
     "diff": "^8.0.3",
     "express": "^5.2.1",
     "glob": "^13.0.6",
@@ -29,10 +30,12 @@
     "open": "^11.0.0",
     "openai": "^4.73.0",
     "sharp": "^0.34.5",
+    "sqlite": "^5.1.1",
     "ws": "^8.19.0",
     "zod": "^4.1.5"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"

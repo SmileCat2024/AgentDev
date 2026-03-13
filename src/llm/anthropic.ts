@@ -1,11 +1,17 @@
 import type { AgentConfigFile, ModelConfig } from '../core/config.js';
-import type { LLMClient, LLMResponse, Message, Tool, ToolCall } from '../core/types.js';
+import type { LLMClient, LLMResponse, Message, ThinkingBlock, Tool, ToolCall } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 
 type AnthropicTextBlock = {
   type: 'text';
   text: string;
   cache_control?: { type: 'ephemeral' };
+};
+
+type AnthropicThinkingBlock = {
+  type: 'thinking';
+  thinking: string;
+  signature: string;
 };
 
 type AnthropicToolResultBlock = {
@@ -22,7 +28,7 @@ type AnthropicToolUseBlock = {
   input?: unknown;
 };
 
-type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolResultBlock | AnthropicToolUseBlock;
+type AnthropicContentBlock = AnthropicTextBlock | AnthropicThinkingBlock | AnthropicToolResultBlock | AnthropicToolUseBlock;
 
 interface AnthropicRequestMessage {
   role: 'user' | 'assistant';
@@ -73,8 +79,25 @@ interface PendingToolUse {
   inputJson: string;
 }
 
+interface PendingThinkingBlock {
+  thinking: string;
+  signature: string;
+}
+
+interface AnthropicContextManagementConfig {
+  edits: Array<{
+    type: 'clear_thinking_20251015';
+    keep: {
+      type: 'thinking_turns';
+      value: number;
+    } | 'all';
+  }>;
+}
+
 const DEFAULT_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_MAX_TOKENS = 4096;
+const DEFAULT_THINKING_KEEP_TURNS = 5;
+const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
 
 export class AnthropicLLM implements LLMClient {
   constructor(
@@ -83,6 +106,7 @@ export class AnthropicLLM implements LLMClient {
     private readonly baseUrl: string = DEFAULT_BASE_URL,
     private readonly maxTokens: number = DEFAULT_MAX_TOKENS,
     private readonly thinkingBudgetTokens?: number,
+    private readonly thinkingKeepTurns: number = DEFAULT_THINKING_KEEP_TURNS,
   ) {}
 
   async chat(messages: Message[], tools: Tool[]): Promise<LLMResponse> {
@@ -93,6 +117,9 @@ export class AnthropicLLM implements LLMClient {
         'content-type': 'application/json',
         'x-api-key': this.apiKey,
         'anthropic-version': '2023-06-01',
+        ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
+          ? { 'anthropic-beta': CONTEXT_MANAGEMENT_BETA }
+          : {}),
       },
       body: JSON.stringify({
         model: this.modelName,
@@ -100,6 +127,9 @@ export class AnthropicLLM implements LLMClient {
         stream: true,
         ...(this.thinkingBudgetTokens && this.thinkingBudgetTokens >= 1024
           ? { thinking: { type: 'enabled', budget_tokens: this.thinkingBudgetTokens } }
+          : {}),
+        ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
+          ? { context_management: createContextManagementConfig(this.thinkingKeepTurns) }
           : {}),
         ...(compiled.system ? { system: compiled.system } : {}),
         messages: compiled.messages,
@@ -141,6 +171,24 @@ function isCompatErrorPayload(payload: AnthropicCompatErrorPayload): boolean {
   if (payload.success === false) return true;
   if (typeof payload.code === 'number' && payload.code !== 0) return true;
   return false;
+}
+
+function shouldUseContextManagement(thinkingBudgetTokens?: number, thinkingKeepTurns?: number): boolean {
+  return !!thinkingBudgetTokens && thinkingBudgetTokens >= 1024 && (thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS) > 0;
+}
+
+function createContextManagementConfig(keepTurns: number): AnthropicContextManagementConfig {
+  return {
+    edits: [
+      {
+        type: 'clear_thinking_20251015',
+        keep: {
+          type: 'thinking_turns',
+          value: keepTurns,
+        },
+      },
+    ],
+  };
 }
 
 export function compileContextForAnthropic(messages: Message[], tools: Tool[]): CompiledAnthropicRequest {
@@ -225,6 +273,16 @@ function toolToAnthropicDefinition(tool: Tool): AnthropicToolDef {
 
 function assistantMessageToAnthropicContent(message: Message): string | AnthropicContentBlock[] {
   const blocks: AnthropicContentBlock[] = [];
+  if (message.thinkingBlocks) {
+    for (const thinkingBlock of message.thinkingBlocks) {
+      blocks.push({
+        type: 'thinking',
+        thinking: thinkingBlock.thinking,
+        signature: thinkingBlock.signature,
+      });
+    }
+  }
+
   if (message.content) {
     blocks.push({ type: 'text', text: message.content });
   }
@@ -296,6 +354,7 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
   let buffer = '';
   let content = '';
   let reasoning = '';
+  const pendingThinkingBlocks = new Map<number, PendingThinkingBlock>();
   let charCount = 0;
   let currentPhase: LLMPhase = 'content';
   const pendingToolUses = new Map<number, PendingToolUse>();
@@ -311,7 +370,7 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
       buffer = buffer.slice(separatorIndex + 2);
       const event = parseSSEEvent(rawEvent);
       if (event) {
-        applyAnthropicStreamEvent(event, pendingToolUses, (delta) => {
+        applyAnthropicStreamEvent(event, pendingThinkingBlocks, pendingToolUses, (delta) => {
           content += delta.content;
           reasoning += delta.reasoning;
           charCount += delta.charCount;
@@ -326,7 +385,7 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
   if (buffer.trim()) {
     const event = parseSSEEvent(buffer);
     if (event) {
-      applyAnthropicStreamEvent(event, pendingToolUses, (delta) => {
+      applyAnthropicStreamEvent(event, pendingThinkingBlocks, pendingToolUses, (delta) => {
         content += delta.content;
         reasoning += delta.reasoning;
         charCount += delta.charCount;
@@ -337,11 +396,13 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
   }
 
   const toolCalls = finalizeToolCalls(pendingToolUses);
+  const thinkingBlocks = finalizeThinkingBlocks(pendingThinkingBlocks);
   await emitAnthropicComplete(charCount);
   return {
     content,
     ...(toolCalls.length > 0 ? { toolCalls } : {}),
     ...(reasoning ? { reasoning } : {}),
+    ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
   };
 }
 
@@ -360,11 +421,18 @@ function parseSSEEvent(rawEvent: string): AnthropicStreamEvent | null {
 
 function applyAnthropicStreamEvent(
   event: AnthropicStreamEvent,
+  pendingThinkingBlocks: Map<number, PendingThinkingBlock>,
   pendingToolUses: Map<number, PendingToolUse>,
   append: (delta: { content: string; reasoning: string; charCount: number; phase: LLMPhase }) => void,
 ): void {
   switch (event.type) {
     case 'content_block_start': {
+      if (event.content_block?.type === 'thinking' && typeof event.index === 'number') {
+        pendingThinkingBlocks.set(event.index, {
+          thinking: event.content_block.thinking || '',
+          signature: event.content_block.signature || '',
+        });
+      }
       if (event.content_block?.type === 'tool_use' && typeof event.index === 'number') {
         pendingToolUses.set(event.index, {
           id: event.content_block.id,
@@ -381,7 +449,16 @@ function applyAnthropicStreamEvent(
         append({ content: text, reasoning: '', charCount: text.length, phase: 'content' });
       } else if (deltaType === 'thinking_delta') {
         const thinking = event.delta?.thinking ?? '';
+        if (typeof event.index === 'number') {
+          const block = pendingThinkingBlocks.get(event.index) ?? { thinking: '', signature: '' };
+          block.thinking += thinking;
+          pendingThinkingBlocks.set(event.index, block);
+        }
         append({ content: '', reasoning: thinking, charCount: thinking.length, phase: 'thinking' });
+      } else if (deltaType === 'signature_delta' && typeof event.index === 'number') {
+        const block = pendingThinkingBlocks.get(event.index) ?? { thinking: '', signature: '' };
+        block.signature += ((event.delta as { signature?: string }).signature ?? '');
+        pendingThinkingBlocks.set(event.index, block);
       } else if (deltaType === 'input_json_delta' && typeof event.index === 'number') {
         const toolUse = pendingToolUses.get(event.index);
         if (toolUse) {
@@ -440,6 +517,16 @@ function mergeToolInputJson(current: string, partial: string): string {
   return current + partial;
 }
 
+function finalizeThinkingBlocks(pendingThinkingBlocks: Map<number, PendingThinkingBlock>): ThinkingBlock[] {
+  return Array.from(pendingThinkingBlocks.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, block]) => ({
+      signature: block.signature,
+      thinking: block.thinking,
+    }))
+    .filter(block => block.signature.length > 0 && block.thinking.length > 0);
+}
+
 function finalizeToolCalls(pendingToolUses: Map<number, PendingToolUse>): ToolCall[] {
   return Array.from(pendingToolUses.entries())
     .sort((a, b) => a[0] - b[0])
@@ -475,6 +562,7 @@ export function createAnthropicLLM(
       configOrApiKey.defaultModel.baseUrl,
       configOrApiKey.defaultModel.maxTokens ?? DEFAULT_MAX_TOKENS,
       configOrApiKey.defaultModel.thinkingBudgetTokens,
+      configOrApiKey.defaultModel.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
     );
   }
 
@@ -485,6 +573,7 @@ export function createAnthropicLLM(
       configOrApiKey.baseUrl,
       configOrApiKey.maxTokens ?? DEFAULT_MAX_TOKENS,
       configOrApiKey.thinkingBudgetTokens,
+      configOrApiKey.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
     );
   }
 

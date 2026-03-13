@@ -128,4 +128,35 @@ function testToolUseWithEmptyStartInputStillCompiles(): void {
 
 testToolUseWithEmptyStartInputStillCompiles();
 
+function testThinkingBlocksAreReplayedIntoAssistantHistory(): void {
+  const messages: Message[] = [
+    { role: 'system', content: '固定 system' },
+    { role: 'user', content: '请继续分析' },
+    {
+      role: 'assistant',
+      content: '先看最近结果。',
+      thinkingBlocks: [
+        {
+          signature: 'sig_1',
+          thinking: '需要延续上一轮的思路。',
+        },
+      ],
+    },
+  ];
+
+  const compiled = compileContextForAnthropic(messages, []);
+  const assistantTurn = compiled.messages[1];
+
+  assert(assistantTurn?.role === 'assistant', 'assistant history turn should be preserved');
+  assert(Array.isArray(assistantTurn?.content), 'assistant history with thinking should compile to content blocks');
+
+  const contentBlocks = assistantTurn?.content as Array<Record<string, unknown>>;
+  assert(contentBlocks[0]?.type === 'thinking', 'thinking block should be replayed first');
+  assert(contentBlocks[0]?.signature === 'sig_1', 'thinking block signature should be preserved');
+  assert(contentBlocks[0]?.thinking === '需要延续上一轮的思路。', 'thinking block text should be preserved');
+  assert(contentBlocks[1]?.type === 'text', 'assistant text should remain after thinking blocks');
+}
+
+testThinkingBlocksAreReplayedIntoAssistantHistory();
+
 console.log('Anthropic compatibility tests passed');

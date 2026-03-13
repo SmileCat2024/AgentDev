@@ -149,6 +149,12 @@ export interface Message {
   toolCallId?: string;
   toolCalls?: ToolCall[];
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
+  thinkingBlocks?: ThinkingBlock[];
+}
+
+export interface ThinkingBlock {
+  signature: string;
+  thinking: string;
 }
 
 // 工具调用
@@ -163,6 +169,7 @@ export interface LLMResponse {
   content: string;
   toolCalls?: ToolCall[];
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
+  thinkingBlocks?: ThinkingBlock[];
 }
 
 // ============= 渲染模板类型 =============

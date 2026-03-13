@@ -181,6 +181,7 @@ export class Context {
         content: response.content,
         toolCalls: response.toolCalls,
         reasoning: response.reasoning,
+        thinkingBlocks: response.thinkingBlocks,
       },
       { turn }
     );
@@ -190,6 +191,7 @@ export class Context {
       content: response.content,
       toolCalls: response.toolCalls,
       reasoning: response.reasoning,
+      thinkingBlocks: response.thinkingBlocks,
     });
   }
 
@@ -276,6 +278,7 @@ export class Context {
       toolCallId: message.toolCallId,
       toolCalls: message.toolCalls,
       reasoning: message.reasoning,
+      thinkingBlocks: message.thinkingBlocks,
 
       // 元数据字段
       id,

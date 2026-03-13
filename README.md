@@ -35,6 +35,54 @@ npm install
 }
 ```
 
+`provider` 现在支持：
+
+- `openai`
+- `anthropic`
+
+框架会根据 `defaultModel.provider` 自动选择对应适配器，不需要切换 Agent 类。
+
+OpenAI 兼容模型示例：
+
+```json
+{
+  "defaultModel": {
+    "provider": "openai",
+    "model": "glm-4.7",
+    "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "apiKey": "${OPENAI_API_KEY}",
+    "maxTokens": 4096,
+    "providerOptions": {
+      "reasoning": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+Anthropic 兼容模型示例：
+
+```json
+{
+  "defaultModel": {
+    "provider": "anthropic",
+    "model": "glm-4.7",
+    "baseUrl": "https://open.bigmodel.cn/api/anthropic",
+    "apiKey": "${ANTHROPIC_API_KEY}",
+    "maxTokens": 4096,
+    "thinkingBudgetTokens": 4096,
+    "thinkingKeepTurns": 5
+  }
+}
+```
+
+含义：
+
+- `providerOptions`: OpenAI 路径的 provider 私有透传参数，用来控制 reasoning 等兼容字段
+- `thinkingBudgetTokens`: Anthropic 路径开启 thinking 的预算；未配置时不主动开启
+- `thinkingKeepTurns`: Anthropic 路径保留最近几轮 thinking block 的轮数，默认 `5`
+
 ### 3. 编译
 
 ```bash
@@ -111,6 +159,23 @@ Feature 是 AgentDev 的主要扩展单元。一个 Feature 通常会打包：
 - 如果日志产生时 debugger 未连接，日志会回退到本地 console，不会神奇地出现在 MCP 返回里
 
 也就是说，当前系统已经尽量保证“要么进 Hub，要么明确本地回退”，而不是静默东一块西一块。
+
+## LLM 兼容语义
+
+当前内核以 OpenAI 风格消息语义为准，再把 Anthropic 当成定向编译目标，而不是再抽一层模糊的统一协议。
+
+Anthropic 适配的关键规则：
+
+- 首个 `user` 之前的所有 `system` 消息会编译到顶层 `system[]`
+- 首个 `user` 之后再出现的 `system` 消息会编译成 `<reminder>...</reminder>` 注入后续 `user.content[]`
+- `tool` 消息会编译成同一轮 `user.content[]` 里的 `tool_result`
+- 开启 thinking 时，最近若干轮 assistant 的 thinking block 会按 Anthropic 原生 block 形式回放，支持连续思维
+
+这意味着：
+
+- 固定 agent 宪法适合放在前缀 `system`
+- 运行时 reminder、step 提示、回退后补充约束等，应继续作为消息流的一部分存在
+- Anthropic 的 caching / context management 能被充分利用，而不用把所有 system 文本粗暴拼接成一个大字符串
 
 ## 一个最小例子
 

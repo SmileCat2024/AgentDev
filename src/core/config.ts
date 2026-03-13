@@ -23,6 +23,7 @@ export interface ModelConfig {
   baseUrl?: string;
   maxTokens?: number;
   thinkingBudgetTokens?: number;
+  thinkingKeepTurns?: number;
   providerOptions?: Record<string, unknown>;
   // 未来可扩展
   region?: string;

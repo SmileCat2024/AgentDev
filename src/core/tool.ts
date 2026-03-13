@@ -65,6 +65,7 @@ export function createTool(
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private enabled = new Set<string>();      // 启用的工具名
+  private pendingDisabled = new Set<string>(); // 工具注册前的预禁用状态
   private sources = new Map<string, string>(); // 工具来源追踪
 
   /**
@@ -72,7 +73,11 @@ export class ToolRegistry {
    */
   register(tool: Tool, source?: string): this {
     this.tools.set(tool.name, tool);
-    this.enabled.add(tool.name);  // 默认启用
+    if (this.pendingDisabled.has(tool.name)) {
+      this.enabled.delete(tool.name);
+    } else {
+      this.enabled.add(tool.name);  // 默认启用
+    }
     if (source) {
       this.sources.set(tool.name, source);
     }
@@ -83,6 +88,10 @@ export class ToolRegistry {
    * 禁用工具
    */
   disable(name: string): boolean {
+    this.pendingDisabled.add(name);
+    if (!this.tools.has(name)) {
+      return true;
+    }
     return this.enabled.delete(name);
   }
 
@@ -90,6 +99,7 @@ export class ToolRegistry {
    * 启用工具
    */
   enable(name: string): boolean {
+    this.pendingDisabled.delete(name);
     if (this.tools.has(name)) {
       this.enabled.add(name);
       return true;

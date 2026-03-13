@@ -181,11 +181,27 @@ export function emitLog(
   message: string,
   data?: unknown,
   options?: { namespace?: string; context?: LogContextRef }
-): void {
+): DebugLogEntry {
   const current = scopeStorage.getStore();
   const mergedContext = mergeScope(current, options?.context);
   if (shouldDrop(level, mergedContext)) {
-    return;
+    return {
+      id: generateLogId(),
+      timestamp: Date.now(),
+      level,
+      message,
+      namespace: options?.namespace || mergedContext.namespace || 'agent',
+      context: {
+        ...mergedContext,
+        tags: mergedContext.tags ? [...mergedContext.tags] : undefined,
+      },
+      data,
+      delivery: {
+        hub: false,
+        console: false,
+        reason: 'hub-unavailable',
+      },
+    };
   }
 
   const entry: DebugLogEntry = {
@@ -199,15 +215,48 @@ export function emitLog(
       tags: mergedContext.tags ? [...mergedContext.tags] : undefined,
     },
     data,
+    delivery: {
+      hub: false,
+      console: false,
+      reason: 'hub-unavailable',
+    },
   };
 
   const agentId = entry.context.agentId;
   if (!agentId) {
+    entry.delivery = {
+      hub: false,
+      console: true,
+      reason: 'no-agent-context',
+    };
     writeRawConsole(level, [message, ...(data === undefined ? [] : [data])]);
-    return;
+    return entry;
   }
 
-  DebugHub.getInstance().pushNotification(agentId, createNotification(entry));
+  const debugHub = DebugHub.getInstance();
+  if (debugHub.isConnected()) {
+    entry.delivery = {
+      hub: true,
+      console: false,
+      reason: 'hub',
+    };
+    debugHub.pushNotification(agentId, createNotification(entry));
+    return entry;
+  }
+
+  entry.delivery = {
+    hub: false,
+    console: true,
+    reason: 'hub-unavailable',
+  };
+  writeLocalFallback(entry);
+  return entry;
+}
+
+function writeLocalFallback(entry: DebugLogEntry): void {
+  const prefix = `[${entry.namespace}] [local-only:${entry.delivery.reason}] ${entry.message}`;
+  const args = entry.data === undefined ? [prefix] : [prefix, entry.data];
+  writeRawConsole(entry.level, args);
 }
 
 class BoundLogger implements Logger {

@@ -87,14 +87,38 @@ async function main(): Promise<void> {
       const session = (worker as any).agentSessions.get(agentId);
       return !!session
         && !session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool')
-        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number }) =>
-          feature.name === 'toggle' && feature.enabledToolCount === 0
+        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number; status?: string }) =>
+          feature.name === 'toggle' && feature.enabledToolCount === 0 && feature.status === 'disabled'
         );
     });
 
     console.log('[PASS] debugger hub tool registry stays in sync after feature disable');
 
     await agent.dispose();
+
+    const preDisabledAgent = new TestAgent({
+      llm: new NoopLLM(),
+      name: 'PreDisabledAgent',
+    }).use(new ToggleFeature());
+
+    preDisabledAgent.getTools().disable('toggle_tool');
+
+    await preDisabledAgent.withViewer('PreDisabledAgent', 0, false);
+
+    const preDisabledAgentId = (preDisabledAgent as any).agentId as string | undefined;
+    assert(preDisabledAgentId, 'pre-disabled agent should be registered in debugger');
+
+    await waitFor(() => {
+      const session = (worker as any).agentSessions.get(preDisabledAgentId);
+      return !!session
+        && !session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool')
+        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number; status?: string }) =>
+          feature.name === 'toggle' && feature.enabledToolCount === 0 && feature.status === 'disabled'
+        );
+    });
+
+    console.log('[PASS] debugger snapshot reflects pre-disabled tools before the first call');
+    await preDisabledAgent.dispose();
 
     const initiateAgent = new InitiateDisableAgent({
       llm: new NoopLLM(),

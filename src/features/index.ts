@@ -61,3 +61,7 @@ export type {
   ResolvedQQBotAccount,
   OutboundResult
 } from './qqbot/index.js';
+
+// Memory Feature
+export { MemoryFeature } from './memory/index.js';
+export type { MemoryFeatureConfig } from './memory/index.js';

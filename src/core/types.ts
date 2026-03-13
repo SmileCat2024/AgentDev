@@ -29,6 +29,17 @@ export interface Notification {
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
+export type DebugLogDeliveryReason =
+  | 'hub'
+  | 'hub-unavailable'
+  | 'no-agent-context';
+
+export interface DebugLogDelivery {
+  hub: boolean;
+  console: boolean;
+  reason: DebugLogDeliveryReason;
+}
+
 export interface LogContextRef {
   agentId?: string;
   agentName?: string;
@@ -55,6 +66,7 @@ export interface DebugLogEntry {
   namespace: string;
   context: LogContextRef;
   data?: unknown;
+  delivery: DebugLogDelivery;
 }
 
 /**
@@ -102,6 +114,20 @@ export interface AgentLogsResponse {
   selectedAgentId: string | null;
   total: number;
   logs: DebugLogEntry[];
+  truncation?: {
+    truncated: boolean;
+    appliedLimit?: number;
+    returnedCount: number;
+    availableCount: number;
+    nextOffset?: number;
+    reason?: string;
+    guidance?: string;
+  };
+  collectionPolicy: {
+    hubConnected: boolean;
+    includesOnlyHubDeliveredLogs: boolean;
+    fallbackBehavior: string;
+  };
 }
 
 /**
@@ -268,6 +294,7 @@ export interface HookLifecycleSnapshot {
 export interface FeatureInspectorSnapshot {
   name: string;
   enabled: boolean;
+  status: 'enabled' | 'disabled' | 'partial';
   hookCount: number;
   toolCount: number;
   enabledToolCount: number;

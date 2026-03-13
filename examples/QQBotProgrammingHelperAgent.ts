@@ -85,7 +85,7 @@ export class QQBotProgrammingHelperAgent extends BasicAgent {
     // 注册 VisualFeature - 提供窗口截图和视觉理解能力
     // - onCallStart 钩子：每次对话开始时自动注入当前窗口状态
     // - capture_and_understand_window 工具：截图指定窗口并进行视觉理解
-    this.use(new VisualFeature());
+    //this.use(new VisualFeature());
     this.use(new WebSearchFeature());
   }
 

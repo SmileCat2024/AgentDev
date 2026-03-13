@@ -28,6 +28,8 @@ import {
 } from './render.js';
 import { TemplateRouter } from './template-router.js';
 
+const QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT = 200;
+
 // ============= Worker 类 =============
 
 class ViewerWorker {
@@ -1092,6 +1094,17 @@ class ViewerWorker {
         agentName: raw?.context?.agentName || session.name,
       },
       data: raw?.data,
+      delivery: raw?.delivery && typeof raw.delivery === 'object'
+        ? {
+            hub: !!raw.delivery.hub,
+            console: !!raw.delivery.console,
+            reason: raw.delivery.reason || 'hub',
+          }
+        : {
+            hub: true,
+            console: false,
+            reason: 'hub',
+          },
     };
   }
 
@@ -1127,6 +1140,18 @@ class ViewerWorker {
   private queryLogs(query: DebuggerLogQuery) {
     const scope: 'current' | 'all' = query.scope === 'all' ? 'all' : 'current';
     const selectedAgentId = query.agentId || this.currentAgentId;
+    const requestedOffset = typeof query.offset === 'number' ? query.offset : 0;
+    const hasExplicitLimit = typeof query.limit === 'number';
+    const isUnboundedQuery = !hasExplicitLimit
+      && requestedOffset === 0
+      && !query.agentId
+      && !query.level
+      && !query.namespace
+      && !query.feature
+      && !query.lifecycle
+      && typeof query.from !== 'number'
+      && typeof query.to !== 'number'
+      && !query.search;
 
     let logs: DebugLogEntry[] = [];
     if (scope === 'all') {
@@ -1142,7 +1167,7 @@ class ViewerWorker {
     }
 
     logs.sort((a, b) => a.timestamp - b.timestamp);
-    const total = filterDebuggerLogs(logs, {
+    const filtered = filterDebuggerLogs(logs, {
       agentId: query.agentId,
       level: query.level,
       namespace: query.namespace,
@@ -1151,7 +1176,13 @@ class ViewerWorker {
       from: query.from,
       to: query.to,
       search: query.search,
-    }).length;
+    });
+    const total = filtered.length;
+    const effectiveLimit = hasExplicitLimit
+      ? query.limit
+      : isUnboundedQuery
+        ? QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT
+        : undefined;
     const paged = filterDebuggerLogs(logs, {
       agentId: query.agentId,
       level: query.level,
@@ -1160,10 +1191,12 @@ class ViewerWorker {
       lifecycle: query.lifecycle,
       from: query.from,
       to: query.to,
-      limit: query.limit,
+      limit: effectiveLimit,
       offset: query.offset,
       search: query.search,
     });
+    const visibleAfterOffset = Math.max(0, total - requestedOffset);
+    const truncated = typeof effectiveLimit === 'number' && paged.length < visibleAfterOffset;
 
     return {
       scope,
@@ -1171,6 +1204,28 @@ class ViewerWorker {
       selectedAgentId,
       total,
       logs: paged,
+      truncation: truncated
+        ? {
+            truncated: true,
+            appliedLimit: effectiveLimit,
+            returnedCount: paged.length,
+            availableCount: visibleAfterOffset,
+            nextOffset: requestedOffset + paged.length,
+            reason: isUnboundedQuery
+              ? 'query_logs was called without narrowing parameters, so the server applied a safety cap.'
+              : 'The requested result window was smaller than the available matching logs.',
+            guidance: `Add narrowing parameters such as level, namespace, feature, lifecycle, from/to, search, or pass limit/offset explicitly. For example: {"limit": ${QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT}, "offset": ${requestedOffset + paged.length}}`,
+          }
+        : {
+            truncated: false,
+            returnedCount: paged.length,
+            availableCount: visibleAfterOffset,
+          },
+      collectionPolicy: {
+        hubConnected: this.udsClients.size > 0,
+        includesOnlyHubDeliveredLogs: true,
+        fallbackBehavior: 'Logs emitted without an active debugger connection fall back to local console output and do not appear here.',
+      },
     };
   }
 
@@ -1973,6 +2028,42 @@ class ViewerWorker {
       border: 1px solid var(--border-color);
       color: var(--text-primary);
       background: rgba(255, 255, 255, 0.05);
+    }
+
+    .feature-badge.status-enabled {
+      color: #14532d;
+      background: rgba(134, 239, 172, 0.92);
+      border-color: rgba(74, 222, 128, 0.9);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+    }
+
+    .feature-badge.status-partial {
+      color: #7c2d12;
+      background: rgba(253, 186, 116, 0.92);
+      border-color: rgba(251, 146, 60, 0.9);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+    }
+
+    .feature-badge.status-disabled {
+      color: #7f1d1d;
+      background: rgba(252, 165, 165, 0.9);
+      border-color: rgba(248, 113, 113, 0.88);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
+
+    body[data-theme="light"] .feature-badge.status-enabled {
+      color: #166534;
+      background: rgba(220, 252, 231, 1);
+    }
+
+    body[data-theme="light"] .feature-badge.status-partial {
+      color: #9a3412;
+      background: rgba(255, 237, 213, 1);
+    }
+
+    body[data-theme="light"] .feature-badge.status-disabled {
+      color: #991b1b;
+      background: rgba(254, 226, 226, 1);
     }
 
     .feature-card-detail {
@@ -3380,19 +3471,22 @@ class ViewerWorker {
         empty_waiting: '等待消息中...',
         panel_hint: '选择右侧功能按钮以展开面板。',
         panel_overview: '总览',
-        panel_features: 'Features',
-        panel_reverse_hooks: 'Reverse Hooks',
+        panel_features: '功能特性',
+        panel_reverse_hooks: '反向钩子',
         panel_logs: '日志',
         panel_mcp: 'MCP',
         panel_loop_flow: 'Loop Flow',
         panel_select_lifecycle: '选择一个生命周期阶段',
-        panel_inspector: 'Inspector',
+        panel_inspector: '检查器',
         panel_connection: '连接状态',
         panel_messages: '消息数',
-        panel_features_label: 'Features',
-        panel_enabled: '启用中',
+        panel_features_label: '功能特性',
+        panel_status_summary: '状态分布',
+        panel_enabled: '已启用',
+        panel_partial: '部分启用',
+        panel_disabled: '已关闭',
         panel_total: '总数',
-        panel_all_features: '全部 Features',
+        panel_all_features: '全部功能特性',
         panel_registered: '已注册',
         panel_no_features: '没有 Feature',
         panel_no_feature_data: '当前 Agent 尚未上报 feature 信息。',
@@ -3411,6 +3505,7 @@ class ViewerWorker {
         feature_source_missing: '暂无源码信息',
         feature_enabled: 'enabled',
         feature_partial: 'partial',
+        feature_disabled: 'disabled',
         feature_hooks: 'hooks',
         feature_tools: 'tools',
         feature_messages: '条消息',
@@ -3420,6 +3515,14 @@ class ViewerWorker {
         feature_tool_disabled: 'disabled',
         feature_tool_render: 'render',
         feature_open_details: '查看详情',
+        feature_status_label: '状态',
+        mcp_section_kicker: '模型上下文协议',
+        mcp_hero_title: '调试器 MCP 服务',
+        overview_kicker: 'ReAct 循环拓扑',
+        overview_hero_title: 'Feature Hooks 映射',
+        mcp_item_tool: '工具',
+        mcp_item_resource: '资源',
+        mcp_item_prompt: '提示模板',
         active_none: '无',
         delete_agent: '删除 Agent',
         delete_confirm: '删除这个已断开的 Agent？这只会从当前调试界面移除它的记录。',
@@ -3429,8 +3532,8 @@ class ViewerWorker {
         language_toggle: '切换到英文',
         language_toggle_short: 'EN',
         workspace_tooltip: '总览',
-        features_tooltip: 'Features',
-        reverse_hooks_tooltip: 'Reverse Hooks',
+        features_tooltip: '功能特性',
+        reverse_hooks_tooltip: '反向钩子',
         logs_tooltip: '日志',
         mcp_tooltip: 'MCP',
         mcp_subtitle: '调试器内置的只读 MCP 服务器，可供外部客户端和 agent 自观察使用。',
@@ -3502,7 +3605,10 @@ class ViewerWorker {
         panel_connection: 'Connection',
         panel_messages: 'Messages',
         panel_features_label: 'Features',
+        panel_status_summary: 'Status Mix',
         panel_enabled: 'enabled',
+        panel_partial: 'partial',
+        panel_disabled: 'disabled',
         panel_total: 'total',
         panel_all_features: 'All Features',
         panel_registered: 'registered',
@@ -3523,6 +3629,7 @@ class ViewerWorker {
         feature_source_missing: 'No source metadata',
         feature_enabled: 'enabled',
         feature_partial: 'partial',
+        feature_disabled: 'disabled',
         feature_hooks: 'hooks',
         feature_tools: 'tools',
         feature_messages: 'messages',
@@ -3532,6 +3639,14 @@ class ViewerWorker {
         feature_tool_disabled: 'disabled',
         feature_tool_render: 'render',
         feature_open_details: 'Open details',
+        feature_status_label: 'Status',
+        mcp_section_kicker: 'Model Context Protocol',
+        mcp_hero_title: 'Debugger MCP Server',
+        overview_kicker: 'ReAct Loop Topology',
+        overview_hero_title: 'Feature Hooks Map',
+        mcp_item_tool: 'tool',
+        mcp_item_resource: 'resource',
+        mcp_item_prompt: 'prompt',
         active_none: 'None',
         delete_agent: 'Delete Agent',
         delete_confirm: 'Delete this disconnected agent? This only removes it from the current debugger view.',
@@ -3598,6 +3713,20 @@ class ViewerWorker {
     function t(key) {
       const table = I18N[currentLanguage] || I18N.zh;
       return table[key] || key;
+    }
+
+    function getFeatureStatus(feature) {
+      return feature && feature.status ? feature.status : (feature && feature.enabled ? 'enabled' : 'partial');
+    }
+
+    function getFeatureStatusLabel(status) {
+      if (status === 'disabled') return t('feature_disabled');
+      if (status === 'partial') return t('feature_partial');
+      return t('feature_enabled');
+    }
+
+    function getStatusBadgeClass(status) {
+      return 'feature-badge status-' + escapeHtml(status || 'enabled');
     }
 
     function getEmptyStateHtml() {
@@ -3827,11 +3956,11 @@ class ViewerWorker {
       return '<div class="mcp-list">' + items.map((item) => {
         const name = item.name || item.uri || '';
         return [
-          '<article class="mcp-item">',
-          '<div class="mcp-item-head">',
-          '<div class="mcp-item-name">' + escapeHtml(name) + '</div>',
-          '<div class="mcp-item-type">' + escapeHtml(typeLabel) + '</div>',
-          '</div>',
+        '<article class="mcp-item">',
+        '<div class="mcp-item-head">',
+        '<div class="mcp-item-name">' + escapeHtml(name) + '</div>',
+        '<div class="mcp-item-type">' + escapeHtml(typeLabel) + '</div>',
+        '</div>',
           '<div class="mcp-item-desc">' + escapeHtml(item.description || '') + '</div>',
           '</article>',
         ].join('');
@@ -3847,8 +3976,8 @@ class ViewerWorker {
       return [
         '<div class="mcp-panel">',
         '<section class="mcp-hero">',
-        '<div class="hooks-kicker">Model Context Protocol</div>',
-        '<div class="hooks-hero-title">Debugger MCP Server</div>',
+        '<div class="hooks-kicker">' + escapeHtml(t('mcp_section_kicker')) + '</div>',
+        '<div class="hooks-hero-title">' + escapeHtml(t('mcp_hero_title')) + '</div>',
         '<div class="hooks-hero-subtitle">' + escapeHtml(t('mcp_subtitle')) + '</div>',
         '<div class="mcp-status-pill">' + escapeHtml(info.enabled ? t('mcp_enabled') : t('mcp_disabled')) + '</div>',
         '</section>',
@@ -3872,15 +4001,15 @@ class ViewerWorker {
         '</section>',
         '<section class="feature-panel-section">',
         '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_tool_list')) + '</div>',
-        renderMcpItems(info.tools || [], 'tool'),
+        renderMcpItems(info.tools || [], t('mcp_item_tool')),
         '</section>',
         '<section class="feature-panel-section">',
         '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_resource_list')) + '</div>',
-        renderMcpItems(info.resources || [], 'resource'),
+        renderMcpItems(info.resources || [], t('mcp_item_resource')),
         '</section>',
         '<section class="feature-panel-section">',
         '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_prompt_list')) + '</div>',
-        renderMcpItems(info.prompts || [], 'prompt'),
+        renderMcpItems(info.prompts || [], t('mcp_item_prompt')),
         '</section>',
         '</div>',
       ].join('');
@@ -4179,6 +4308,11 @@ class ViewerWorker {
         (sum, group) => sum + group.entries.filter(entry => entry.kind === 'decision').length,
         0
       );
+      const featureStatusCounts = currentHookInspector.features.reduce((acc, feature) => {
+        const status = getFeatureStatus(feature);
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, { enabled: 0, partial: 0, disabled: 0 });
       const selectedDoc = lifecycleDocs[selectedOverviewLifecycle] || lifecycleDocs.StepFinish;
       const flowChips = currentHookInspector.lifecycleOrder
         .map(name => '<button class="hooks-chip' + (name === selectedOverviewLifecycle ? ' active' : '') + '" type="button" onclick="window.selectOverviewLifecycle(&quot;' + escapeHtml(name) + '&quot;)"><strong>' + escapeHtml(name) + '</strong></button>')
@@ -4186,8 +4320,8 @@ class ViewerWorker {
       return [
         '<div class="hooks-panel">',
         '<section class="hooks-hero">',
-        '<div class="hooks-kicker">React Loop Topology</div>',
-        '<div class="hooks-hero-title">Feature Hooks Map</div>',
+        '<div class="hooks-kicker">' + escapeHtml(t('overview_kicker')) + '</div>',
+        '<div class="hooks-hero-title">' + escapeHtml(t('overview_hero_title')) + '</div>',
         '<div class="hooks-hero-subtitle">' + escapeHtml(t('overview_subtitle')) + '</div>',
         '<div class="hooks-stats">',
         '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_active_agent')) + '</div><div class="hooks-stat-value">' + escapeHtml(activeAgent ? activeAgent.name : t('active_none')) + '</div></div>',
@@ -4199,7 +4333,7 @@ class ViewerWorker {
         '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_inspector')) + '</div><div class="hooks-section-meta">' + escapeHtml(connected) + '</div></div>',
         '<div class="feature-grid">',
         '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_connection')) + '</div><div class="feature-card-detail"><span>' + escapeHtml(connected) + '</span><span>' + String(currentMessages.length) + ' ' + escapeHtml(t('feature_messages')) + '</span></div></div>',
-        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_features_label')) + '</div><div class="feature-card-detail"><span>' + String(currentHookInspector.features.filter(feature => feature.enabled).length) + ' ' + escapeHtml(t('panel_enabled')) + '</span><span>' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_total')) + '</span></div></div>',
+        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_features_label')) + '</div><div class="feature-card-detail"><span>' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_total')) + '</span><span>' + String(featureStatusCounts.enabled) + ' ' + escapeHtml(t('panel_enabled')) + '</span><span>' + String(featureStatusCounts.partial) + ' ' + escapeHtml(t('panel_partial')) + '</span><span>' + String(featureStatusCounts.disabled) + ' ' + escapeHtml(t('panel_disabled')) + '</span></div></div>',
         '</div>',
         '</section>',
         '<section class="hooks-section">',
@@ -4221,7 +4355,9 @@ class ViewerWorker {
 
       const selectedFeature = currentHookInspector.features.find(feature => feature.name === selectedFeatureName) || null;
       const featureCards = currentHookInspector.features
-        .map(feature => [
+        .map(feature => {
+          const status = getFeatureStatus(feature);
+          return [
           '<div class="feature-card" role="button" tabindex="0" onclick="window.openFeatureDetails(&quot;' + escapeHtml(feature.name) + '&quot;)" title="' + escapeHtml(t('feature_open_details')) + '">',
           '<div class="feature-card-top">',
           '<div class="feature-card-main">',
@@ -4231,7 +4367,7 @@ class ViewerWorker {
           '<div class="feature-card-file">' + escapeHtml(shortenSourcePath(feature.source) || t('feature_source_missing')) + '</div>',
           '</div>',
           '</div>',
-          '<div class="feature-badge">' + escapeHtml(feature.enabled ? t('feature_enabled') : t('feature_partial')) + '</div>',
+          '<div class="' + getStatusBadgeClass(status) + '">' + escapeHtml(getFeatureStatusLabel(status)) + '</div>',
           '</div>',
           '<div class="feature-card-detail">',
           '<span>' + String(feature.hookCount) + ' ' + escapeHtml(t('feature_hooks')) + '</span>',
@@ -4239,7 +4375,8 @@ class ViewerWorker {
           feature.description ? '<span>' + escapeHtml(feature.description) + '</span>' : '',
           '</div>',
           '</div>',
-        ].join(''))
+        ].join('');
+        })
         .join('');
 
       const detailOverlay = selectedFeature ? [
@@ -4255,7 +4392,7 @@ class ViewerWorker {
         '<div class="feature-detail-stats">',
         '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('feature_hooks')) + '</div><div class="feature-detail-stat-value">' + String(selectedFeature.hookCount) + '</div></div>',
         '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('feature_active_tools')) + '</div><div class="feature-detail-stat-value">' + String(selectedFeature.enabledToolCount) + '/' + String(selectedFeature.toolCount) + '</div></div>',
-        '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('panel_connection')) + '</div><div class="feature-detail-stat-value">' + escapeHtml(selectedFeature.enabled ? t('feature_enabled') : t('feature_partial')) + '</div></div>',
+        '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('feature_status_label')) + '</div><div class="feature-detail-stat-value">' + escapeHtml(getFeatureStatusLabel(getFeatureStatus(selectedFeature))) + '</div></div>',
         '</div>',
         '<div class="feature-panel-section">',
         '<div class="feature-panel-section-title">' + escapeHtml(t('panel_feature_details')) + '</div>',
@@ -4268,7 +4405,7 @@ class ViewerWorker {
               '<div class="feature-tool-card">',
               '<div class="feature-tool-top">',
               '<div class="feature-tool-name">' + escapeHtml(tool.name) + '</div>',
-              '<div class="feature-badge">' + escapeHtml(tool.enabled ? t('feature_tool_enabled') : t('feature_tool_disabled')) + '</div>',
+              '<div class="' + getStatusBadgeClass(tool.enabled ? 'enabled' : 'disabled') + '">' + escapeHtml(tool.enabled ? t('feature_tool_enabled') : t('feature_tool_disabled')) + '</div>',
               '</div>',
               '<div class="feature-tool-desc">' + escapeHtml(tool.description || '') + '</div>',
               '<div class="feature-tool-meta">',

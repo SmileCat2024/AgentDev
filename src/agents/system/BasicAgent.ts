@@ -95,26 +95,6 @@ export class BasicAgent extends Agent {
   protected _mcpFeature?: MCPFeature;
 
   /**
-   * 覆盖 onInitiate 钩子：禁用不需要的子代理工具
-   *
-   * BasicAgent 只保留三个子代理工具：
-   * - spawn_agent: 创建子代理
-   * - send_to_agent: 向子代理发送消息
-   * - wait: 等待子代理完成
-   *
-   * 禁用的工具：
-   * - list_agents: 查看子代理列表
-   * - close_agent: 关闭子代理
-   */
-  protected override async onInitiate(ctx: import('../../core/lifecycle.js').AgentInitiateContext): Promise<void> {
-    await super.onInitiate(ctx);
-
-    // 禁用不需要的子代理工具
-    this.getTools().disable('list_agents');
-    this.getTools().disable('close_agent');
-  }
-
-  /**
    * 构造函数
    *
    * @param config 基础配置（全部可选，不传则使用默认配置）
@@ -182,6 +162,10 @@ export class BasicAgent extends Agent {
 
     // 注册 SubAgentFeature（子代理工具和消息处理）
     this.use(new SubAgentFeature());
+
+    // 预禁用不需要的子代理工具，确保首次快照与运行时一致
+    this.getTools().disable('list_agents');
+    this.getTools().disable('close_agent');
   }
 
   /**

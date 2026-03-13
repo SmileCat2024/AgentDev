@@ -14,6 +14,7 @@ import type {
   MCPConnectionInfo,
 } from './types.js';
 import { MCPConnectionState } from './types.js';
+import { createLogger } from '../core/logging.js';
 
 /**
  * MCP 连接详情
@@ -42,6 +43,7 @@ interface MCPConnection {
 export class MCPConnectionManager {
   private connections = new Map<string, MCPConnection>();
   private reconnectTimers = new Map<string, NodeJS.Timeout>();
+  private readonly logger = createLogger('mcp.connection');
 
   /**
    * 连接到 MCP 服务器
@@ -471,8 +473,9 @@ export class MCPConnectionManager {
    * 日志输出
    */
   private log(level: 'error' | 'warn' | 'info' | 'debug', message: string): void {
-    const timestamp = new Date().toISOString();
-    console[level](`[MCPConnectionManager ${timestamp}] ${message}`);
+    this.logger.child({
+      tags: ['mcp-connection'],
+    })[level](message);
   }
 
   private handleProcessOutput(connection: MCPConnection, chunk: string): void {

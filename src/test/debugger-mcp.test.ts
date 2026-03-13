@@ -44,6 +44,7 @@ async function main(): Promise<void> {
     features: [{
       name: 'shell',
       enabled: true,
+      status: 'enabled' as const,
       hookCount: 1,
       toolCount: 2,
       enabledToolCount: 2,
@@ -105,6 +106,29 @@ async function main(): Promise<void> {
     },
   });
 
+  for (let index = 0; index < 240; index += 1) {
+    worker.handlePushNotification({
+      type: 'push-notification',
+      agentId: 'agent-test-1',
+      notification: {
+        type: 'log.entry',
+        category: 'event',
+        timestamp: Date.now() + index + 1,
+        data: {
+          id: `log-seeded-${index}`,
+          timestamp: Date.now() + index + 1,
+          level: 'info',
+          message: `Seeded log ${index}`,
+          namespace: 'agent.seed',
+          context: {
+            agentId: 'agent-test-1',
+            agentName: 'DebuggerTestAgent',
+          },
+        },
+      },
+    });
+  }
+
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
   const client = new Client({
     name: 'debugger-mcp-test-client',
@@ -150,6 +174,34 @@ async function main(): Promise<void> {
       Array.isArray(logsPayload?.logs) &&
       logsPayload.logs.length === 1,
       'query_logs should return the seeded error log'
+    );
+    assert(
+      logsPayload?.collectionPolicy?.includesOnlyHubDeliveredLogs === true,
+      'query_logs should explain that only hub-delivered logs are included'
+    );
+    assert(
+      logsPayload?.truncation?.truncated === false,
+      'filtered query_logs result should not report truncation'
+    );
+
+    const unboundedLogsResult = await client.callTool({
+      name: 'query_logs',
+      arguments: {},
+    });
+    const unboundedLogsPayload = getStructuredToolPayload(unboundedLogsResult);
+    assert(
+      Array.isArray(unboundedLogsPayload?.logs) &&
+      unboundedLogsPayload.logs.length === 200,
+      'unbounded query_logs should be capped to the default safety limit'
+    );
+    assert(
+      unboundedLogsPayload?.truncation?.truncated === true,
+      'unbounded query_logs should report truncation'
+    );
+    assert(
+      typeof unboundedLogsPayload?.truncation?.guidance === 'string' &&
+      unboundedLogsPayload.truncation.guidance.includes('"offset": 200'),
+      'unbounded query_logs should explain how to continue with explicit parameters'
     );
 
     const hooksResult = await client.callTool({

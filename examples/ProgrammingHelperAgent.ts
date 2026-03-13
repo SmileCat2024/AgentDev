@@ -8,7 +8,7 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature } from '../src/features/index.js';
+import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature ,MemoryFeature } from '../src/features/index.js';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**
@@ -64,6 +64,8 @@ export class ProgrammingHelperAgent extends BasicAgent {
     // - capture_and_understand_window 工具：截图指定窗口并进行视觉理解
     //this.use(new VisualFeature());
     this.use(new WebSearchFeature());
+
+    this.use(new MemoryFeature());
 
   }
 

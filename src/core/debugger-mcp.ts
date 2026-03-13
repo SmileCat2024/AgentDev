@@ -4,6 +4,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import * as z from 'zod/v4';
 import type { AgentLogsResponse, AgentSession, DebugLogEntry, HookInspectorSnapshot } from './types.js';
 
+const QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT = 200;
+
 export interface DebuggerAgentSummary {
   id: string;
   name: string;
@@ -66,7 +68,7 @@ export const DEBUGGER_MCP_TOOL_DEFINITIONS = [
   },
   {
     name: 'query_logs',
-    description: 'Query structured debugger logs with agent, level, namespace, lifecycle, feature, and time filters.',
+    description: 'Query structured debugger-hub logs. Always prefer adding filters such as level, namespace, feature, lifecycle, time range, search, limit, and offset. If you call this without narrowing parameters, the server truncates the response to a large safety cap and returns truncation guidance so you can continue with refined parameters.',
   },
 ] as const;
 
@@ -246,27 +248,30 @@ export class DebuggerMCPServer {
 
     server.registerTool('query_logs', {
       title: 'Query Logs',
-      description: 'Query structured debugger logs with agent, level, namespace, lifecycle, feature, and time filters.',
+      description: 'Query structured logs that were successfully delivered to the debugger hub. Use filters such as level, namespace, feature, lifecycle, from/to, search, limit, and offset to keep the result focused. If you omit narrowing parameters, the server automatically truncates the response to a large cap and returns explicit truncation guidance so you can continue with refined parameters. Logs emitted while the debugger was disconnected fall back to local console output and do not appear here.',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID, "current", "self", or omitted.'),
+        agentId: z.string().optional().describe('Agent ID, "current", "self", or omitted. Use this to narrow the result to one agent.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
-        scope: z.enum(['current', 'all']).optional().describe('Query current agent or all agents.'),
-        level: z.string().optional(),
-        namespace: z.string().optional(),
-        feature: z.string().optional(),
-        lifecycle: z.string().optional(),
+        scope: z.enum(['current', 'all']).optional().describe('Query the current agent or all visible agents. "all" can be large, so pair it with filters or limit.'),
+        level: z.string().optional().describe('Exact log level filter, for example "error" or "warn".'),
+        namespace: z.string().optional().describe('Substring match on the log namespace.'),
+        feature: z.string().optional().describe('Exact feature name filter.'),
+        lifecycle: z.string().optional().describe('Exact lifecycle / hook stage filter.'),
         from: z.number().int().optional().describe('Inclusive start timestamp in ms.'),
         to: z.number().int().optional().describe('Inclusive end timestamp in ms.'),
-        limit: z.number().int().positive().max(500).optional().describe('Maximum number of logs to return.'),
-        offset: z.number().int().min(0).optional().describe('Pagination offset.'),
-        search: z.string().optional().describe('Substring search over log message and JSON data.'),
+        limit: z.number().int().positive().max(500).optional().describe(`Maximum number of logs to return. When omitted on an otherwise unbounded query, the server applies a default cap of ${QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT} and marks the response as truncated.`),
+        offset: z.number().int().min(0).optional().describe('Pagination offset. Use together with limit to continue from a truncated or paged result.'),
+        search: z.string().optional().describe('Substring search over the log message and serialized JSON payload/context.'),
       }),
     }, async (args, extra) => {
       const resolvedAgentId = this.resolveAgentRef(args.agentId, args.callerAgentId, extra);
       const scope = args.scope === 'all' ? 'all' : 'current';
+      const queryAgentId = args.agentId && args.agentId !== 'current'
+        ? resolvedAgentId || undefined
+        : undefined;
       const result = this.dataSource.queryLogs({
         scope,
-        agentId: resolvedAgentId,
+        agentId: queryAgentId,
         level: normalizeOptionalString(args.level),
         namespace: normalizeOptionalString(args.namespace),
         feature: normalizeOptionalString(args.feature),
@@ -277,16 +282,21 @@ export class DebuggerMCPServer {
         offset: normalizeOptionalNumber(args.offset),
         search: normalizeOptionalString(args.search),
       });
+      const payload = {
+        ...result,
+        requestedAgentId: args.agentId || 'current',
+        resolvedAgentId,
+      };
+      const text = result.truncation?.truncated
+        ? [
+            `query_logs response truncated after ${result.truncation.returnedCount} entries (available after offset: ${result.truncation.availableCount}).`,
+            result.truncation.guidance || `Retry with explicit filters or pass limit/offset, for example {"limit": ${QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT}, "offset": ${result.truncation.nextOffset || result.truncation.returnedCount}}.`,
+            '',
+            jsonText(payload),
+          ].join('\n')
+        : jsonText(payload);
 
-      return createTextResult(jsonText({
-        ...result,
-        requestedAgentId: args.agentId || 'current',
-        resolvedAgentId,
-      }), {
-        ...result,
-        requestedAgentId: args.agentId || 'current',
-        resolvedAgentId,
-      });
+      return createTextResult(text, payload);
     });
   }
 

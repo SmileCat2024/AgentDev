@@ -387,6 +387,7 @@ class AgentBase {
       this.buildHookInspectorSnapshot()
     );
     this.syncRegisteredToolsToDebug();
+    this.pushInspectorSnapshot();
 
     return this;
   }
@@ -825,10 +826,18 @@ class AgentBase {
     const features = Array.from(this.features.values()).map(feature => {
       const tools = toolEntriesByFeature.get(feature.name) || [];
       const enabledToolCount = tools.filter(tool => tool.enabled).length;
+      const status: 'enabled' | 'disabled' | 'partial' = tools.length === 0
+        ? 'enabled'
+        : enabledToolCount === 0
+          ? 'disabled'
+          : enabledToolCount === tools.length
+            ? 'enabled'
+            : 'partial';
 
       return {
         name: feature.name,
-        enabled: tools.length === 0 ? true : enabledToolCount === tools.length,
+        enabled: status === 'enabled',
+        status,
         hookCount: hookCountByFeature.get(feature.name) || 0,
         toolCount: tools.length,
         enabledToolCount,

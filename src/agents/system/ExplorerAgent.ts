@@ -122,6 +122,13 @@ export class ExplorerAgent extends Agent {
 
     // 注册 SubAgentFeature（子代理工具和消息处理）
     this.use(new SubAgentFeature());
+
+    // 预禁用只读模式下不应暴露的工具，确保首次快照与运行时一致
+    this.getTools().disable('write');
+    this.getTools().disable('edit');
+    this.getTools().disable('safe_trash_delete');
+    this.getTools().disable('safe_trash_list');
+    this.getTools().disable('safe_trash_restore');
   }
 
   /**
@@ -129,14 +136,6 @@ export class ExplorerAgent extends Agent {
    * 配置系统提示词，禁用写入和编辑工具（只读模式）
    */
   protected override async onInitiate(): Promise<void> {
-    // 禁用文件修改工具（ExplorerAgent 只用于只读探索）
-    this.getTools().disable('write');
-    this.getTools().disable('edit');
-
-    // 禁用 ShellFeature 的安全删除工具
-    this.getTools().disable('safe_trash_delete');
-    this.getTools().disable('safe_trash_list');
-    this.getTools().disable('safe_trash_restore');
     // 配置系统提示词
     if (!this.systemMessage) {
       this.setSystemPrompt(new TemplateComposer()

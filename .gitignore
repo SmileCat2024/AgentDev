@@ -101,6 +101,11 @@ ehthumbs_vista.db
 docs/
 .agentdev/
 config/
+CLAUDE.md
+pyproject.toml
+requirements.txt
+uv.lock
+src/features/visual/python/__pycache__/
 
 # Desktop App - 忽略打包产物和依赖，但保留源代码
 desktop/dist/

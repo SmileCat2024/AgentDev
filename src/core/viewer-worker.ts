@@ -4028,7 +4028,7 @@ class ViewerWorker {
         structure_hero_title: 'Feature Hooks 映射',
         structure_subtitle: '查看当前 agent 的 hook 映射、循环阶段说明，以及用于阅读会话链路的开发者视角解释。',
         overview_kicker: '运行监视',
-        overview_hero_title: '一眼看清本轮、累计和缓存',
+        overview_hero_title: 'LLM 调用监视',
         mcp_item_tool: '工具',
         mcp_item_resource: '资源',
         mcp_item_prompt: '提示模板',

@@ -77,3 +77,7 @@ export type {
 // Memory Feature
 export { MemoryFeature } from './memory/index.js';
 export type { MemoryFeatureConfig } from './memory/index.js';
+
+// TTS Feature
+export { TTSFeature } from './tts/index.js';
+export type { TTSFeatureConfig, TTSResult, TTSState } from './tts/index.js';

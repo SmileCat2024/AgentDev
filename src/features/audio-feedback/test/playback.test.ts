@@ -4,8 +4,8 @@
  */
 
 import { AudioFeedbackFeature } from '../index.js';
-import { FeatureInitContext } from '../../../../core/feature.js';
-import type { CallFinishContext } from '../../../../core/lifecycle.js';
+import { FeatureInitContext } from '../../../core/feature.js';
+import type { CallFinishContext } from '../../../core/lifecycle.js';
 
 function assert(condition: unknown, message: string): void {
   if (!condition) {
@@ -17,12 +17,14 @@ function assert(condition: unknown, message: string): void {
 function createMockInitContext(): FeatureInitContext {
   return {
     agentId: 'test-agent',
-    config: {},
+    config: { llm: null as any }, // AgentConfig 需要 llm
     logger: {
-      info: (_msg: string, _meta?: Record<string, unknown>) => {},
-      error: (_msg: string, _meta?: Record<string, unknown>) => {},
-      warn: (_msg: string, _meta?: Record<string, unknown>) => {},
-      debug: (_msg: string, _meta?: Record<string, unknown>) => {},
+      trace: () => {},
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      child: () => null as any,
     },
     featureConfig: undefined,
     getFeature: () => undefined,
@@ -33,16 +35,14 @@ function createMockInitContext(): FeatureInitContext {
 // Mock CallFinishContext
 function createMockCallFinishContext(): CallFinishContext {
   return {
+    input: 'test input',
     context: {
       add: () => {},
       getAll: () => [],
     } as any,
-    agent: null as any,
-    input: 'test input',
-    llmResponse: {
-      content: 'test response',
-      toolCalls: [],
-    },
+    response: 'test response',
+    steps: 1,
+    completed: true,
   };
 }
 

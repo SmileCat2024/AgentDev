@@ -8,7 +8,7 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature, MemoryFeature, AudioFeedbackFeature } from '../src/features/index.js';
+import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature, MemoryFeature, AudioFeedbackFeature, TTSFeature } from '../src/features/index.js';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**
@@ -72,6 +72,11 @@ export class ProgrammingHelperAgent extends BasicAgent {
     this.use(new WebSearchFeature());
 
     this.use(new MemoryFeature());
+
+    // 注册 TTSFeature - 文本朗读功能
+    // - @StepFinish 钩子：在每个 step 结束时自动朗读模型输出
+    // - 包括工具调用轮和非工具调用轮
+    // - 使用中文男声 (zm_yunjian) + 快速朗读 (speed=1.5)
 
   }
 

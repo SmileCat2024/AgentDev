@@ -196,12 +196,13 @@ class AgentBase {
 
     // ========== Call Start ==========
     const context = this.persistentContext ?? new Context();
-    const isFirstCall = !this._initialized;
+    const nextCallIndex = this._callIndex + 1;
+    const isFirstCall = nextCallIndex === 0;
     const callStartTime = Date.now();
     const callId = Date.now();
 
     // 递增 callIndex（用户交互序号）
-    this._callIndex++;
+    this._callIndex = nextCallIndex;
 
     this._currentCallInput = input;
     this._callStartTimes.set(callId, callStartTime);

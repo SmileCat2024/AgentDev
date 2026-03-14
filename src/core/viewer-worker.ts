@@ -2871,6 +2871,66 @@ class ViewerWorker {
       scroll-behavior: smooth;
     }
 
+    .follow-latest-btn {
+      position: absolute;
+      right: 20px;
+      bottom: 132px;
+      z-index: 20;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border-color);
+      background: color-mix(in srgb, var(--panel-bg) 88%, transparent);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 8px 24px var(--shadow-color);
+      backdrop-filter: blur(10px);
+      transition: all 0.2s ease;
+    }
+
+    .follow-latest-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      transform: translateY(-1px);
+    }
+
+    .follow-latest-btn.active {
+      color: var(--text-primary);
+      border-color: color-mix(in srgb, var(--success-color) 55%, var(--border-color));
+      background: color-mix(in srgb, var(--success-color) 16%, var(--panel-bg));
+    }
+
+    .follow-latest-btn.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+    }
+
+    .follow-latest-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--text-muted);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .follow-latest-btn.active .follow-latest-dot {
+      background: var(--success-color);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--success-color) 18%, transparent);
+    }
+
+    @media (max-width: 768px) {
+      .follow-latest-btn {
+        right: 16px;
+        bottom: 116px;
+        padding: 9px 12px;
+      }
+    }
+
     /* Message Styles */
     .message-row {
       display: flex;
@@ -3377,6 +3437,7 @@ class ViewerWorker {
     <div id="chat-container">
       <div class="empty-state">Waiting for messages...</div>
     </div>
+    <button id="follow-latest-btn" class="follow-latest-btn hidden" type="button"></button>
     
     <div id="user-input-container"></div>
   </div>
@@ -3496,6 +3557,7 @@ class ViewerWorker {
     const featurePanelResizer = document.getElementById('feature-panel-resizer');
     const agentContextMenu = document.getElementById('agent-context-menu');
     const deleteAgentAction = document.getElementById('delete-agent-action');
+    const followLatestButton = document.getElementById('follow-latest-btn');
     const railButtons = Array.from(document.querySelectorAll('.rail-button'));
     const languageToggle = document.getElementById('language-toggle');
     const themeToggle = document.getElementById('theme-toggle');
@@ -3525,6 +3587,11 @@ class ViewerWorker {
     };
     let selectedOverviewLifecycle = 'StepFinish';
     let selectedFeatureName = null;
+    let followLatestEnabled = true;
+    let suppressFollowScrollEvent = false;
+    let pendingFollowToBottom = false;
+    let lastManualScrollIntentAt = 0;
+    let followScrollSettleToken = 0;
 
     const I18N = {
       zh: {
@@ -3641,6 +3708,8 @@ class ViewerWorker {
         phase_content: '生成内容',
         phase_tool_calling: '工具调用',
         input_placeholder: '正在与 Agent 对话',
+        follow_latest_on: '跟随最新',
+        follow_latest_off: '回到底部',
         expand: '展开',
         collapse: '收起',
         thinking_process: '思考过程',
@@ -3765,6 +3834,8 @@ class ViewerWorker {
         phase_content: 'Streaming',
         phase_tool_calling: 'Tool Calling',
         input_placeholder: 'Chatting with the agent',
+        follow_latest_on: 'Following Latest',
+        follow_latest_off: 'Jump to Latest',
         expand: 'Expand',
         collapse: 'Collapse',
         thinking_process: 'Thinking Process',
@@ -3808,6 +3879,101 @@ class ViewerWorker {
       return collapsed
         ? '<svg viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg> ' + escapeHtml(t('expand'))
         : '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> ' + escapeHtml(t('collapse'));
+    }
+
+    function isNearBottom() {
+      const threshold = 48;
+      return container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+    }
+
+    function updateFollowLatestButton() {
+      if (!followLatestButton) return;
+      const hasMessages = currentMessages.length > 0;
+      followLatestButton.classList.toggle('hidden', !hasMessages);
+      followLatestButton.classList.toggle('active', followLatestEnabled);
+      followLatestButton.innerHTML =
+        '<span class="follow-latest-dot"></span><span>' +
+        escapeHtml(t(followLatestEnabled ? 'follow_latest_on' : 'follow_latest_off')) +
+        '</span>';
+    }
+
+    function markManualScrollIntent() {
+      lastManualScrollIntentAt = Date.now();
+    }
+
+    function hasRecentManualScrollIntent() {
+      return Date.now() - lastManualScrollIntentAt < 500;
+    }
+
+    function animateScrollTo(targetTop, duration = 150) {
+      const settleToken = ++followScrollSettleToken;
+      lastManualScrollIntentAt = 0;
+      suppressFollowScrollEvent = true;
+
+      const startTop = container.scrollTop;
+      const delta = targetTop - startTop;
+      if (Math.abs(delta) < 1 || duration <= 0) {
+        container.scrollTop = targetTop;
+        suppressFollowScrollEvent = false;
+        return;
+      }
+
+      const startAt = performance.now();
+      const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+      const step = (now) => {
+        if (settleToken !== followScrollSettleToken) {
+          return;
+        }
+
+        const progress = Math.min(1, (now - startAt) / duration);
+        container.scrollTop = startTop + delta * easeOutCubic(progress);
+
+        if (progress < 1) {
+          requestAnimationFrame(step);
+          return;
+        }
+
+        container.scrollTop = targetTop;
+        suppressFollowScrollEvent = false;
+      };
+
+      requestAnimationFrame(step);
+    }
+
+    function scrollToLatest(behavior = 'smooth') {
+      const targetTop = container.scrollHeight;
+      if (behavior === 'auto') {
+        followScrollSettleToken += 1;
+        lastManualScrollIntentAt = 0;
+        suppressFollowScrollEvent = true;
+        container.scrollTop = targetTop;
+        suppressFollowScrollEvent = false;
+        return;
+      }
+
+      animateScrollTo(targetTop, 140);
+    }
+
+    function setFollowLatest(enabled, options = {}) {
+      const { scroll = false, behavior = 'smooth' } = options;
+      followLatestEnabled = enabled;
+      if (enabled) {
+        lastManualScrollIntentAt = 0;
+      }
+      updateFollowLatestButton();
+      if (enabled && scroll) {
+        scrollToLatest(behavior);
+      }
+    }
+
+    function scheduleScrollToLatest(behavior = 'smooth') {
+      pendingFollowToBottom = true;
+      requestAnimationFrame(() => {
+        if (!pendingFollowToBottom) return;
+        pendingFollowToBottom = false;
+        scrollToLatest(behavior);
+      });
     }
 
     function shortenSourcePath(value) {
@@ -4683,6 +4849,7 @@ class ViewerWorker {
 
       if (currentMessages.length === 0) {
         container.innerHTML = getEmptyStateHtml();
+        updateFollowLatestButton();
       } else {
         render(currentMessages);
       }
@@ -5003,6 +5170,7 @@ class ViewerWorker {
 
         if (data.currentAgentId && data.currentAgentId !== currentAgentId) {
           currentAgentId = data.currentAgentId;
+          setFollowLatest(true);
           await loadAgentData(currentAgentId);
         }
       } catch (e) {
@@ -5056,6 +5224,7 @@ class ViewerWorker {
         });
         if (res.ok) {
           currentAgentId = newAgentId;
+          setFollowLatest(true);
           await loadAgentData(newAgentId);
           renderAgentList(); // Update active state
         }
@@ -5105,6 +5274,7 @@ class ViewerWorker {
           setCurrentLogs([]);
           setCurrentHookInspector({ lifecycleOrder: [], features: [], hooks: [] });
           container.innerHTML = getEmptyStateHtml();
+          setFollowLatest(true);
           currentAgentTitle.textContent = t('page_title');
         }
       } catch (e) {
@@ -5127,6 +5297,24 @@ class ViewerWorker {
       }
     });
     window.addEventListener('scroll', closeAgentContextMenu, true);
+    container.addEventListener('wheel', markManualScrollIntent, { passive: true });
+    container.addEventListener('touchstart', markManualScrollIntent, { passive: true });
+    container.addEventListener('keydown', (event) => {
+      if (['ArrowUp', 'PageUp', 'Home', ' '].includes(event.key)) {
+        markManualScrollIntent();
+      }
+    });
+    container.addEventListener('scroll', () => {
+      if (suppressFollowScrollEvent || !followLatestEnabled) {
+        return;
+      }
+      if (!isNearBottom() && hasRecentManualScrollIntent()) {
+        setFollowLatest(false);
+      }
+    });
+    followLatestButton.addEventListener('click', () => {
+      setFollowLatest(true, { scroll: true, behavior: 'smooth' });
+    });
 
     async function loadLogs(forceRender = false) {
       try {
@@ -5250,6 +5438,7 @@ class ViewerWorker {
         await Promise.all(loadPromises);
 
         render(currentMessages);
+        setFollowLatest(true, { scroll: true, behavior: 'auto' });
         if (activeFeaturePanel === 'logs') {
           await loadLogs(true);
         }
@@ -5298,9 +5487,7 @@ class ViewerWorker {
         if (JSON.stringify(inputRequests) !== JSON.stringify(window.lastInputRequests || [])) {
           window.lastInputRequests = inputRequests;
           renderInputRequests(inputRequests);
-          if (currentMessages.length > 0) {
-            render(currentMessages);
-          }
+          updateRollbackActionVisibility();
         }
 
         if (messages.length !== currentMessages.length || messages.length === 0) {
@@ -5440,6 +5627,13 @@ class ViewerWorker {
       }
     }
 
+    function updateRollbackActionVisibility() {
+      const allowRollback = !!getPrimaryInputRequest();
+      document.querySelectorAll('.message-row.user .message-action').forEach((button) => {
+        button.style.display = allowRollback ? '' : 'none';
+      });
+    }
+
     function autoResize(textarea) {
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
@@ -5478,6 +5672,7 @@ class ViewerWorker {
           })
         });
         if (res.ok) {
+          setFollowLatest(true, { scroll: true, behavior: 'smooth' });
           // 刷新输入请求列表
           poll();
         }
@@ -5743,6 +5938,10 @@ class ViewerWorker {
 
       // 对新消息应用折叠逻辑
       applyCollapseLogic(container, startIndex);
+      updateFollowLatestButton();
+      if (followLatestEnabled) {
+        scheduleScrollToLatest('smooth');
+      }
     }
 
     // 更新最后一条消息
@@ -5789,6 +5988,11 @@ class ViewerWorker {
         if (toolResultBody) {
           toolResultBody.innerHTML = bodyHtml;
         }
+      }
+
+      updateFollowLatestButton();
+      if (followLatestEnabled) {
+        scheduleScrollToLatest('smooth');
       }
     }
 
@@ -5838,6 +6042,7 @@ class ViewerWorker {
     function render(messages) {
       if (messages.length === 0) {
         container.innerHTML = getEmptyStateHtml();
+        updateFollowLatestButton();
         return;
       }
 
@@ -6034,6 +6239,12 @@ class ViewerWorker {
            if (toggle) toggle.style.display = 'none';
         }
       });
+
+      updateRollbackActionVisibility();
+      updateFollowLatestButton();
+      if (followLatestEnabled) {
+        scheduleScrollToLatest('auto');
+      }
     }
 
     window.toggleMessage = function(id) {

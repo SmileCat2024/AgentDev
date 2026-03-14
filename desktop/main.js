@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
 const { writeFileSync, appendFileSync, existsSync } = require('fs');
 const { ViewerLauncher } = require('./lib/viewer-launcher');
@@ -52,6 +52,8 @@ logger.write('[Main] main.js 开始执行');
 function createWindow() {
   logger.write('[Main] createWindow() 开始');
 
+  Menu.setApplicationMenu(null);
+
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, 'agentdev.ico')
     : path.join(__dirname, 'agentdev.ico');
@@ -61,6 +63,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

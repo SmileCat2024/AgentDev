@@ -46,6 +46,22 @@ src/features/my-feature/
 - 没有持久状态：删 `captureState/restoreState/beforeRollback/afterRollback`
 - 没有回退需求：不要为了形式统一保留 rollback 接口
 
+## 测试规范
+
+Feature 测试必须写在 `test/` 目录内。测试文件必须使用标准错误处理模式：
+
+```typescript
+async function main(): Promise<void> {
+  // 测试逻辑
+}
+
+main().catch(error => {
+  const message = error instanceof Error ? error.stack || error.message : String(error);
+  console.error(`[FAIL] ${message}`);
+  process.exitCode = 1;
+});
+```
+
 ## 一个实用判断顺序
 
 1. 这个能力是否应该是 Feature，而不是单个工具？

@@ -8,7 +8,7 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature ,MemoryFeature } from '../src/features/index.js';
+import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature, MemoryFeature, AudioFeedbackFeature } from '../src/features/index.js';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**
@@ -58,6 +58,12 @@ export class ProgrammingHelperAgent extends BasicAgent {
     }));
 
     this.use(new AuditFeature());
+
+    // 注册 AudioFeedbackFeature - 在 call 完成时播放音频反馈
+    this.use(new AudioFeedbackFeature({
+      enabled: true,
+      volume: 0.5,
+    }));
 
     // 注册 VisualFeature - 提供窗口截图和视觉理解能力
     // - onCallStart 钩子：每次对话开始时自动注入当前窗口状态

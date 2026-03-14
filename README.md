@@ -280,6 +280,26 @@ npm run agt
 npm run dev
 ```
 
+## 测试约定
+
+测试运行器会执行：
+- `src/test/**/*.test.ts` — 核心框架测试
+- `src/features/*/test/**/*.test.ts` — Feature 级测试
+
+所有测试必须使用标准错误处理模式：
+
+```typescript
+async function main(): Promise<void> {
+  // 测试逻辑
+}
+
+main().catch(error => {
+  const message = error instanceof Error ? error.stack || error.message : String(error);
+  console.error(`[FAIL] ${message}`);
+  process.exitCode = 1;
+});
+```
+
 ## 文档分工
 
 - `README.md`: 快速上手和整体认知

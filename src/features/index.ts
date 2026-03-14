@@ -43,6 +43,10 @@ export type {
 // Shell Feature
 export { ShellFeature } from './shell/index.js';
 
+// Audio Feedback Feature
+export { AudioFeedbackFeature } from './audio-feedback/index.js';
+export type { AudioFeedbackConfig, AudioFeedbackRuntimeState, AudioFeedbackSnapshot } from './audio-feedback/types.js';
+
 // Audit Feature
 export { AuditFeature } from './audit/index.js';
 export type { AuditResult, AuditFeatureConfig } from './audit/index.js';

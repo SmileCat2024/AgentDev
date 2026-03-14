@@ -3952,7 +3952,7 @@ class ViewerWorker {
         return;
       }
 
-      animateScrollTo(targetTop, 140);
+      animateScrollTo(targetTop, 70);
     }
 
     function setFollowLatest(enabled, options = {}) {

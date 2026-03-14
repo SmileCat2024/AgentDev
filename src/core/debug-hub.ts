@@ -61,6 +61,15 @@ export class DebugHub {
   // 待发送的消息队列（连接建立前）
   private messageQueue: DebugHubIPCMessage[] = [];
 
+  // 重连机制
+  private reconnectTimer?: NodeJS.Timeout;
+  private reconnectAttempts: number = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 10;
+  private readonly RECONNECT_DELAY = 2000;
+
+  // 缓存每个 Agent 的 featureTemplates（用于重连后重新注册）
+  private agentFeatureTemplates: Map<string, Record<string, string>> = new Map();
+
   // ========== 单例 ==========
   private constructor() {
     this.udsPath = process.env.AGENTDEV_UDS_PATH || getDefaultUDSPath();
@@ -104,11 +113,43 @@ export class DebugHub {
    * 停止调试服务器
    */
   stop(): void {
+    // 停止重连定时器
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
     if (this.udsClient) {
       this.sendToWorker({ type: 'stop' });
       this.udsClient.end();
       this.udsClient = undefined;
       this.clientReady = false;
+    }
+  }
+
+  /**
+   * 手动重连（可选）
+   * 如果已经连接，则不执行任何操作
+   */
+  async reconnect(): Promise<void> {
+    if (this.clientReady && this.udsClient) {
+      console.log('[DebugHub] 已经连接，无需重连');
+      return;
+    }
+
+    // 重置重连状态
+    this.reconnectAttempts = 0;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
+    try {
+      await this.connectToWorker();
+      console.log('[DebugHub] ✅ 手动重连成功');
+    } catch (error) {
+      console.error(`[DebugHub] 手动重连失败: ${(error as Error).message}`);
+      throw error;
     }
   }
 
@@ -140,6 +181,11 @@ export class DebugHub {
       };
 
       this.agents.set(id, { info, agent });
+
+      // 缓存 featureTemplates（用于重连后重新注册）
+      if (featureTemplates) {
+        this.agentFeatureTemplates.set(id, featureTemplates);
+      }
 
       // 首个注册的 Agent 自动成为当前 Agent
       if (this.agents.size === 1) {
@@ -357,6 +403,7 @@ export class DebugHub {
 
       this.udsClient.on('connect', () => {
         this.clientReady = true;
+        this.reconnectAttempts = 0; // 重置重连计数
         console.log(`[DebugHub] 已连接到 ViewerWorker: ${this.udsPath}`);
 
         // 发送队列中的消息
@@ -364,6 +411,9 @@ export class DebugHub {
           this.sendViaUDS(msg);
         }
         this.messageQueue = [];
+
+        // 关键：重新注册所有 Agent（用于重连后恢复状态）
+        this.reregisterAllAgents();
 
         // 设置当前 Agent
         if (this.currentAgentId) {
@@ -396,6 +446,9 @@ export class DebugHub {
       this.udsClient.on('close', () => {
         this.clientReady = false;
         console.warn('[DebugHub] 与 ViewerWorker 的连接已断开');
+
+        // 自动重连
+        this.scheduleReconnect();
       });
     });
   }
@@ -423,6 +476,104 @@ export class DebugHub {
         }
         break;
     }
+  }
+
+  /**
+   * 重新注册所有 Agent（重连后调用）
+   * 确保 ViewerWorker 能够恢复所有 Agent 的注册信息
+   */
+  private reregisterAllAgents(): void {
+    if (this.agents.size === 0) {
+      return;
+    }
+
+    console.log(`[DebugHub] 重新注册 ${this.agents.size} 个 Agent...`);
+
+    for (const [id, data] of this.agents) {
+      // 获取最新的 hookInspector
+      const hookInspector = (data.agent as any).buildHookInspectorSnapshot?.()
+        || (data.agent as any).hookInspector;
+
+      // 获取缓存的 featureTemplates
+      const featureTemplates = this.agentFeatureTemplates.get(id) || {};
+
+      this.sendToWorker({
+        type: 'register-agent',
+        agentId: id,
+        name: data.info.name,
+        createdAt: data.info.registeredAt,
+        projectRoot: process.cwd(),
+        featureTemplates,
+        hookInspector,
+      });
+
+      // 重新注册工具（如果有）
+      const tools = (data.agent as any).tools;
+      if (tools && typeof tools.getEntries === 'function') {
+        const entries = tools.getEntries();
+        const toolList = entries.map((e: any) => e.tool);
+        if (toolList.length > 0) {
+          this.sendToWorker({
+            type: 'register-tools',
+            agentId: id,
+            tools: toolList,
+          });
+        }
+      }
+
+      // 重新发送对话记录（用于重连后恢复消息历史）
+      const context = (data.agent as any).getContext?.();
+      if (context && typeof context.getAll === 'function') {
+        const messages = context.getAll();
+        if (messages.length > 0) {
+          this.sendToWorker({
+            type: 'push-messages',
+            agentId: id,
+            messages,
+          });
+          console.log(`[DebugHub] 恢复 Agent ${id} 的 ${messages.length} 条消息`);
+        }
+      }
+    }
+
+    console.log(`[DebugHub] ✅ 重新注册完成`);
+  }
+
+  /**
+   * 安排重连（指数退避）
+   */
+  private scheduleReconnect(): void {
+    // 清除现有的定时器
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    // 检查是否达到最大重连次数
+    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+      console.error(`[DebugHub] 达到最大重连次数 (${this.MAX_RECONNECT_ATTEMPTS})，停止重连`);
+      return;
+    }
+
+    this.reconnectAttempts++;
+
+    // 计算延迟时间（指数退避，最大 30 秒）
+    const delay = Math.min(
+      this.RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1),
+      30000
+    );
+
+    console.log(`[DebugHub] ${delay}ms 后尝试第 ${this.reconnectAttempts} 次重连...`);
+
+    this.reconnectTimer = setTimeout(async () => {
+      try {
+        await this.connectToWorker();
+        console.log('[DebugHub] ✅ 重连成功，调试功能已恢复');
+      } catch (error) {
+        console.error(`[DebugHub] 重连失败: ${(error as Error).message}`);
+        // 继续尝试重连
+        this.scheduleReconnect();
+      }
+    }, delay);
   }
 
   /**

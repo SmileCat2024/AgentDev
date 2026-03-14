@@ -32,6 +32,14 @@ export type { TodoTask, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from '.
 export { UserInputFeature } from './user-input/index.js';
 export type { UserInputFeatureConfig } from './user-input/index.js';
 
+// Example Feature Skeleton
+export { ExampleFeature } from './example-feature/index.js';
+export type {
+  ExampleFeatureConfig,
+  ExampleFeatureRuntimeState,
+  ExampleFeatureSnapshot,
+} from './example-feature/types.js';
+
 // Shell Feature
 export { ShellFeature } from './shell/index.js';
 

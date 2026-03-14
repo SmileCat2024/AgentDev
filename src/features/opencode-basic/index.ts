@@ -17,7 +17,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { promises as fs } from 'fs';
-import type { AgentFeature } from '../../core/feature.js';
+import type { AgentFeature, FeatureStateSnapshot } from '../../core/feature.js';
 import type { ToolContext } from '../../core/lifecycle.js';
 import { ToolUse, Decision } from '../../core/hooks-decorator.js';
 import type { FeatureInitContext } from '../../core/feature.js';
@@ -56,6 +56,17 @@ export class OpencodeBasicFeature implements AgentFeature {
       feature: 'opencode-basic',
       lifecycle: 'AgentInitiate'
     });
+  }
+
+  captureState(): FeatureStateSnapshot {
+    return {
+      readFiles: Array.from(this.readFiles),
+    };
+  }
+
+  restoreState(snapshot: FeatureStateSnapshot): void {
+    const state = snapshot as { readFiles?: string[] };
+    this.readFiles = new Set(state.readFiles ?? []);
   }
 
   /**

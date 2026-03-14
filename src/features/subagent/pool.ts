@@ -334,6 +334,34 @@ export class AgentPool {
     await Promise.all(promises);
   }
 
+  getRuntimeSnapshot(): {
+    counters: Array<[string, number]>;
+    instances: Array<{ id: string; type: string; status: SubAgentStatus }>;
+    pendingMessages: Array<[string, string[]]>;
+  } {
+    return {
+      counters: Array.from(this._counters.entries()),
+      instances: Array.from(this._instances.values()).map(instance => ({
+        id: instance.id,
+        type: instance.type,
+        status: instance.status,
+      })),
+      pendingMessages: Array.from(this._pendingMessages.entries()).map(([agentId, messages]) => [
+        agentId,
+        [...messages],
+      ]),
+    };
+  }
+
+  async restoreRuntimeSnapshot(snapshot: {
+    counters?: Array<[string, number]>;
+  }): Promise<void> {
+    await this.shutdown();
+    this._pendingMessages.clear();
+    this._messageResolvers.clear();
+    this._counters = new Map(snapshot.counters ?? []);
+  }
+
   // 内部方法
   private async _onComplete(id: string, result: string): Promise<void> {
     const timestamp = new Date().toISOString();

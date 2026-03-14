@@ -48,6 +48,7 @@ import type {
   AgentFeature,
   FeatureInitContext,
   FeatureContext,
+  FeatureStateSnapshot,
 } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import { CallStart } from '../../core/hooks-decorator.js';
@@ -283,6 +284,48 @@ except ImportError as e:
   async onDestroy(_ctx: FeatureContext): Promise<void> {
     // 停止后台监控服务
     await this.stopMonitoring();
+  }
+
+  captureState(): FeatureStateSnapshot {
+    return {
+      visualEnabled: this._visualEnabled,
+      injectionState: {
+        isFirstInjection: this.injectionState.isFirstInjection,
+        lastInjectedWindows: Array.from(this.injectionState.lastInjectedWindows.entries()),
+        lastInjectedAnalyses: Array.from(this.injectionState.lastInjectedAnalyses.entries()),
+        focusHistory: [...this.injectionState.focusHistory],
+        lastForegroundHwnd: this.injectionState.lastForegroundHwnd,
+      },
+    };
+  }
+
+  restoreState(snapshot: FeatureStateSnapshot): void {
+    const state = snapshot as {
+      visualEnabled?: boolean;
+      injectionState?: {
+        isFirstInjection?: boolean;
+        lastInjectedWindows?: Array<[string, {
+          title: string;
+          status: string;
+          processPath: string;
+          isForeground: boolean;
+        }]>;
+        lastInjectedAnalyses?: Array<[string, string]>;
+        focusHistory?: string[];
+        lastForegroundHwnd?: string | null;
+      };
+    };
+
+    this._visualEnabled = Boolean(state.visualEnabled);
+
+    const injectionState = state.injectionState;
+    this.injectionState = {
+      isFirstInjection: injectionState?.isFirstInjection ?? true,
+      lastInjectedWindows: new Map(injectionState?.lastInjectedWindows ?? []),
+      lastInjectedAnalyses: new Map(injectionState?.lastInjectedAnalyses ?? []),
+      focusHistory: [...(injectionState?.focusHistory ?? [])],
+      lastForegroundHwnd: injectionState?.lastForegroundHwnd ?? null,
+    };
   }
 
   getHookDescription(lifecycle: string, methodName: string): string | undefined {

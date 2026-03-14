@@ -11,6 +11,13 @@ export interface StepCheckpoint {
   features: FeatureCheckpoint[];
 }
 
+function cloneFeatureSnapshot(snapshot: FeatureStateSnapshot): FeatureStateSnapshot {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(snapshot);
+  }
+  return JSON.parse(JSON.stringify(snapshot)) as FeatureStateSnapshot;
+}
+
 export function createStepCheckpoint(
   context: Context,
   features?: Map<string, AgentFeature>,
@@ -50,9 +57,10 @@ export async function restoreFeatureSnapshots(
   for (const entry of checkpoints) {
     const feature = featureMap.get(entry.featureName);
     if (!feature || !feature.restoreState) continue;
-    await hooks?.beforeEach?.(feature, entry.snapshot);
-    await feature.restoreState(entry.snapshot);
-    await hooks?.afterEach?.(feature, entry.snapshot);
+    const snapshot = cloneFeatureSnapshot(entry.snapshot);
+    await hooks?.beforeEach?.(feature, snapshot);
+    await feature.restoreState(snapshot);
+    await hooks?.afterEach?.(feature, snapshot);
   }
 }
 
@@ -66,7 +74,7 @@ export function captureFeatureSnapshots(features?: Map<string, AgentFeature>): F
     }
     checkpoints.push({
       featureName,
-      snapshot: feature.captureState(),
+      snapshot: cloneFeatureSnapshot(feature.captureState()),
     });
   }
   return checkpoints;

@@ -130,6 +130,44 @@ Feature 是 AgentDev 的主要扩展单元。一个 Feature 通常会打包：
 - 上下文注入
 - 初始化逻辑
 - 反向钩子
+- 可选的 rollback / restore 状态协议
+
+### Step Checkpoint / Rollback / Session Restore
+
+当前框架已经把“回退”和“恢复会话”统一成同一套快照语义：
+
+- 每个 step 开始前，Agent 会创建 step checkpoint
+- 如果该 step 内执行失败，会回滚 `Context` 和已声明的 Feature 状态
+- 每次成功完成一轮 `onCall()`，Agent 会记录一个 pre-call checkpoint
+- 会话恢复时，不是复活旧进程，而是启动一个新 Agent，再把它恢复到历史 checkpoint
+
+这意味着：
+
+- step rollback = 进程内回退
+- session restore = 新实例恢复到旧 checkpoint
+- 两者共享同一套 `Context + FeatureStateSnapshot` 思想
+
+Feature 自己需要明确两类东西：
+
+- 哪些内存状态要跟着 checkpoint 回退
+- 哪些外部资源只能重建，不能序列化恢复
+
+当前推荐的最小策略是：
+
+- 可恢复内存状态：实现 `captureState()` / `restoreState()`
+- rollback 生命周期：可选实现 `beforeRollback()` / `afterRollback()`
+- 外部连接、worker、子进程：不要伪序列化，优先在恢复时重建，或显式降级
+
+注意：
+
+- rollback / session restore 不是所有 Feature 的必选项
+- 只有当这个 Feature 的使用场景真的要求“回退后状态一致”或“恢复会话后继续成立”时，才需要实现状态快照
+- 如果 Feature 本身几乎无状态，或者丢失运行态不会造成语义错误，就不要为了形式统一硬加快照接口
+
+例如：
+
+- `todo`、`opencode-basic`、`visual` 属于显式状态快照型 Feature
+- `subagent` 属于运行态资源型 Feature，当前恢复策略是清空活跃运行态，而不是伪造继续执行
 
 ### Debugger
 
@@ -215,6 +253,22 @@ while (true) {
 - `.agentdev/skills/agentdev-feature-guide`
 
 它更适合让 agent 在当前代码库里直接写或改 Feature。
+
+另外，仓库里现在提供了一个可编译的标准骨架：
+
+- `src/features/example-feature`
+
+它不是业务功能，而是“照猫画虎用”的最小完整示范，展示了：
+
+- `getTools()`
+- `getTemplatePaths()`
+- `getContextInjectors()`
+- `onInitiate()` / `onDestroy()`
+- `captureState()` / `restoreState()`
+- `beforeRollback()` / `afterRollback()`
+- `@CallStart` / `@ToolUse` / `@StepFinish`
+
+如果你要新建 Feature，建议先从这里复制，再删掉不需要的部分。
 
 ## 常用命令
 

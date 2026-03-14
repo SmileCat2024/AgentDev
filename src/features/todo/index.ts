@@ -16,6 +16,7 @@ import type {
   AgentFeature,
   FeatureInitContext,
   FeatureContext,
+  FeatureStateSnapshot,
 } from '../../core/feature.js';
 import type { Context } from '../../core/context.js';
 import { StepStart, StepFinish } from '../../core/hooks-decorator.js';
@@ -116,6 +117,36 @@ export class TodoFeature implements AgentFeature {
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
     this.clearTasks();
+  }
+
+  captureState(): FeatureStateSnapshot {
+    return {
+      tasks: Array.from(this.tasks.values()),
+      counter: this.counter,
+      reminderContent: this.reminderContent,
+      consecutiveNoTodoTurns: this.consecutiveNoTodoTurns,
+      reminderInjected: this.reminderInjected,
+    };
+  }
+
+  restoreState(snapshot: FeatureStateSnapshot): void {
+    const state = snapshot as {
+      tasks?: TodoTask[];
+      counter?: number;
+      reminderContent?: string;
+      consecutiveNoTodoTurns?: number;
+      reminderInjected?: boolean;
+    };
+
+    this.tasks = new Map((state.tasks ?? []).map(task => [task.id, task]));
+    this.counter = typeof state.counter === 'number' ? state.counter : 0;
+    this.reminderContent = typeof state.reminderContent === 'string'
+      ? state.reminderContent
+      : this.getDefaultReminder();
+    this.consecutiveNoTodoTurns = typeof state.consecutiveNoTodoTurns === 'number'
+      ? state.consecutiveNoTodoTurns
+      : 0;
+    this.reminderInjected = Boolean(state.reminderInjected);
   }
 
   getHookDescription(lifecycle: string, methodName: string): string | undefined {

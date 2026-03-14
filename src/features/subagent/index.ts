@@ -18,6 +18,7 @@ import type {
   FeatureInitContext,
   FeatureContext,
   ContextInjector,
+  FeatureStateSnapshot,
 } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import type { ToolCall } from '../../core/types.js';
@@ -212,6 +213,40 @@ export class SubAgentFeature implements AgentFeature {
 
   async onDestroy(): Promise<void> {
     return this.agentPool?.shutdown() ?? Promise.resolve();
+  }
+
+  captureState(): FeatureStateSnapshot {
+    const runtime = this.agentPool?.getRuntimeSnapshot();
+    return {
+      counters: runtime?.counters ?? [],
+      hadInstances: (runtime?.instances.length ?? 0) > 0,
+      hadActiveAgents: runtime?.instances.some(instance => instance.status === 'busy') ?? false,
+      hadPendingMessages: runtime?.pendingMessages.some(([, messages]) => messages.length > 0) ?? false,
+    };
+  }
+
+  async restoreState(snapshot: FeatureStateSnapshot): Promise<void> {
+    if (!this.agentPool) {
+      return;
+    }
+
+    const state = snapshot as {
+      counters?: Array<[string, number]>;
+      hadInstances?: boolean;
+      hadActiveAgents?: boolean;
+      hadPendingMessages?: boolean;
+    };
+
+    await this.agentPool.restoreRuntimeSnapshot({
+      counters: state.counters,
+    });
+
+    if (state.hadInstances || state.hadActiveAgents || state.hadPendingMessages) {
+      console.warn(
+        '[SubAgentFeature] Restored session/rollback snapshot dropped live subagent runtime. ' +
+        'Subagents are not resumable and have been reset to an empty pool.'
+      );
+    }
   }
 }
 

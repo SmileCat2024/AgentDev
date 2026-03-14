@@ -24,6 +24,7 @@ import {
   type HookInspectorSnapshot,
   type UserInputRequest,
   type UserInputResponse,
+  type UserInputAction,
 } from './types.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
@@ -48,6 +49,16 @@ export class DebugHub {
 
   // 输入请求回调映射：requestId → resolver
   private pendingInputRequests = new Map<string, (response: UserInputResponse) => void>();
+
+  // 活跃的输入请求元数据（用于重连恢复）：agentId → requestInfo
+  private activeInputRequests = new Map<string, {
+    requestId: string;
+    prompt: string;
+    placeholder?: string;
+    initialValue?: string;
+    actions?: UserInputAction[];
+    timestamp: number;
+  }>();
 
   // UDS 客户端连接
   private udsClient?: Socket;
@@ -368,6 +379,7 @@ export class DebugHub {
       if (timeout !== Infinity) {
         timer = setTimeout(() => {
           this.pendingInputRequests.delete(requestId);
+          this.activeInputRequests.delete(agentId); // 清除活跃请求记录
           reject(new Error(`User input timeout after ${timeout}ms`));
         }, timeout);
       }
@@ -375,7 +387,18 @@ export class DebugHub {
       // 存储 resolve 函数
       this.pendingInputRequests.set(requestId, (response: UserInputResponse) => {
         if (timer) clearTimeout(timer);
+        this.activeInputRequests.delete(agentId); // 清除活跃请求记录
         resolve(response);
+      });
+
+      // 记录活跃请求（用于重连恢复）
+      this.activeInputRequests.set(agentId, {
+        requestId,
+        prompt: request.prompt,
+        placeholder: request.placeholder,
+        initialValue: request.initialValue,
+        actions: request.actions,
+        timestamp: Date.now(),
       });
 
       // 发送请求到 ViewerWorker
@@ -497,14 +520,21 @@ export class DebugHub {
       // 获取缓存的 featureTemplates
       const featureTemplates = this.agentFeatureTemplates.get(id) || {};
 
+      // 获取活跃的输入请求（用于恢复输入框）
+      const activeInputRequest = this.activeInputRequests.get(id);
+      if (activeInputRequest) {
+        console.log(`[DebugHub] 发现活跃输入请求: ${activeInputRequest.requestId}`);
+      }
+
       this.sendToWorker({
-        type: 'register-agent',
+        type: 'register-agent' as const,
         agentId: id,
         name: data.info.name,
         createdAt: data.info.registeredAt,
         projectRoot: process.cwd(),
         featureTemplates,
         hookInspector,
+        activeInputRequest, // 携带活跃输入请求
       });
 
       // 重新注册工具（如果有）

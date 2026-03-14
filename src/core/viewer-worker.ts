@@ -881,7 +881,7 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector } = msg;
+    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector, activeInputRequest } = msg;
     const session = this.getOrCreateSession(agentId, name);
 
     // 存储项目根目录（用于模板文件加载）
@@ -905,8 +905,31 @@ class ViewerWorker {
       session.hookInspector = hookInspector;
     }
 
-    // 首个 Agent 自动成为当前
-    if (this.agentSessions.size === 1) {
+    // 恢复活跃的输入请求（用于重连后恢复输入框）
+    if (activeInputRequest) {
+      let pendingRequests = (session as any).pendingInputRequests as Map<string, any>;
+      if (!pendingRequests) {
+        pendingRequests = new Map();
+        (session as any).pendingInputRequests = pendingRequests;
+      }
+
+      // 重新存储请求
+      pendingRequests.set(activeInputRequest.requestId, {
+        prompt: activeInputRequest.prompt,
+        placeholder: activeInputRequest.placeholder,
+        initialValue: activeInputRequest.initialValue,
+        actions: activeInputRequest.actions,
+        timestamp: activeInputRequest.timestamp,
+      });
+
+      // 如果有活跃输入请求，自动切换到该 Agent（确保前端能看到输入框）
+      this.currentAgentId = agentId;
+
+      console.log(`[Viewer Worker] 恢复活跃输入请求: ${activeInputRequest.requestId}，切换到 Agent: ${agentId}`);
+    }
+
+    // 首个 Agent 自动成为当前（如果没有活跃输入请求的情况）
+    if (this.agentSessions.size === 1 && !activeInputRequest) {
       this.currentAgentId = agentId;
     }
 

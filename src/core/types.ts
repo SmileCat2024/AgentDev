@@ -373,6 +373,7 @@ export interface RegisterAgentMsg {
   projectRoot?: string; // 项目根目录，用于模板文件加载
   featureTemplates?: Record<string, string>; // Feature 模板路径映射
   hookInspector?: HookInspectorSnapshot;
+  activeInputRequest?: ActiveInputRequest; // 活跃的输入请求（用于重连后恢复）
 }
 
 export interface UpdateAgentInspectorMsg {
@@ -405,6 +406,18 @@ export interface RegisterToolsMsg {
 export interface SetCurrentAgentMsg {
   type: 'set-current-agent';
   agentId: string;
+}
+
+/**
+ * 活跃的输入请求（用于重连后恢复）
+ */
+export interface ActiveInputRequest {
+  requestId: string;
+  prompt: string;
+  placeholder?: string;
+  initialValue?: string;
+  actions?: UserInputAction[];
+  timestamp: number;
 }
 
 /**

@@ -16,6 +16,7 @@ import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
 import type { HooksRegistry } from '../hooks-registry.js';
 import { CoreLifecycle, Decision, normalizeDecision } from '../lifecycle.js';
+import { createStepCheckpoint, rollbackToStepCheckpoint } from '../checkpoint.js';
 import { createLogger, runWithLogScope } from '../logging.js';
 
 const logger = createLogger('agent.react');
@@ -84,51 +85,121 @@ export class ReActLoopRunner {
         namespace: 'agent.step',
         tags: ['react-step', `step:${step}`],
       }, async () => {
+        const checkpoint = createStepCheckpoint(context, this.agent.features);
         this.agent._currentStep = step;
         logger.debug('Step started', { step, callIndex });
 
-        // 推送消息到 DebugHub
-        this.pushToDebug(context.getAll());
+        try {
+          // 推送消息到 DebugHub
+          this.pushToDebug(context.getAll());
 
-        // ========== Step Start ==========
-        await this.executeHookFn(
-          'onStepStart',
-          () => this.onStepStartFn({ step, callIndex, context, input }),
-          { input, step }
-        );
+          // ========== Step Start ==========
+          await this.executeHookFn(
+            'onStepStart',
+            () => this.onStepStartFn({ step, callIndex, context, input }),
+            { input, step }
+          );
 
-        // 执行反向钩子 @StepStart（void 返回，仅做处理）
-        await this.hooksRegistry.executeVoid(CoreLifecycle.StepStart, { step, callIndex, context, input });
+          // 执行反向钩子 @StepStart（void 返回，仅做处理）
+          await this.hooksRegistry.executeVoid(CoreLifecycle.StepStart, { step, callIndex, context, input });
 
-        // 执行 LLM 调用
-        const llmStartTime = Date.now();
-        const response = await runWithLogScope({
-          lifecycle: 'LLM',
-          namespace: 'agent.llm',
-          tags: ['llm'],
-        }, async () => await this.agent.llm.chat(
-          context.getAll(),
-          this.agent.tools.getAll()
-        ));
-        const llmDuration = Date.now() - llmStartTime;
+          // 执行 LLM 调用
+          const llmStartTime = Date.now();
+          const response = await runWithLogScope({
+            lifecycle: 'LLM',
+            namespace: 'agent.llm',
+            tags: ['llm'],
+          }, async () => await this.agent.llm.chat(
+            context.getAll(),
+            this.agent.tools.getAll()
+          ));
+          const llmDuration = Date.now() - llmStartTime;
 
-        logger.debug('LLM response received', {
-          step,
-          durationMs: llmDuration,
-          toolCallsCount: response.toolCalls?.length ?? 0,
-          hasContent: !!response.content,
-        });
+          logger.debug('LLM response received', {
+            step,
+            durationMs: llmDuration,
+            toolCallsCount: response.toolCalls?.length ?? 0,
+            hasContent: !!response.content,
+          });
 
-        // 添加助手响应
-        context.addAssistantMessage(response, callIndex);
+          // 添加助手响应
+          context.addAssistantMessage(response, callIndex);
 
-        // 推送消息到 DebugHub
-        this.pushToDebug(context.getAll());
+          // 推送消息到 DebugHub
+          this.pushToDebug(context.getAll());
 
-        // 检查是否需要调用工具
-        const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
-        if (!hasToolCalls) {
-        // 无工具调用：执行 StepFinish 钩子
+          // 检查是否需要调用工具
+          const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
+          if (!hasToolCalls) {
+          // 无工具调用：执行 StepFinish 钩子
+            const stepFinishResult = await this.executeHookFn(
+              'onStepFinished',
+              () => this.onStepFinishedFn({
+                step,
+                callIndex,
+                context,
+                input,
+                llmResponse: response,
+                toolCallsCount: 0,
+              }),
+              { input, step }
+            );
+
+          // 执行反向钩子 @StepFinish（有流程控制）
+            const stepFinishDecisionCtx: StepFinishDecisionContext = {
+              step,
+              callIndex,
+              context,
+              input,
+              llmResponse: response,
+              toolCallsCount: 0,
+              hasActiveSubAgents: this.checkActiveSubAgents(),
+              hasPendingMessages: this.checkPendingMessages(),
+              waitCalled: false,
+            };
+            const decisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
+            const stepFinishDecision = normalizeDecision(decisionResult);
+
+          // 处理钩子返回的控制流指令
+            if (stepFinishResult?.action === 'end') {
+              completed = true;
+              finalResponse = response.content;
+              logger.info('Step ended call via forward hook', { step });
+              return 'break';
+            }
+
+          // 处理反向钩子的决策
+            if (stepFinishDecision === Decision.Deny) {
+              completed = true;
+              finalResponse = response.content;
+              logger.info('Step ended call via reverse hook deny', { step });
+              return 'break';
+            }
+
+          // 如果反向钩子要求继续（Approve），不结束循环
+            if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
+              logger.debug('Step requested continuation without tools', { step });
+              return 'continue';
+            }
+
+          // 真正结束
+            logger.info('Step completed call naturally', { step });
+            return { completed: true, finalResponse: response.content, turns: step + 1 };
+          }
+
+        // 执行工具
+          let waitCalled = false;
+          for (const call of response.toolCalls) {
+            if (call.name === 'wait') {
+              waitCalled = true;
+            }
+            await this.executeToolFn(call, input, context, step, callIndex);
+          }
+
+          // 推送消息到 DebugHub
+          this.pushToDebug(context.getAll());
+
+        // ========== Step Finished（有工具调用）==========
           const stepFinishResult = await this.executeHookFn(
             'onStepFinished',
             () => this.onStepFinishedFn({
@@ -137,7 +208,7 @@ export class ReActLoopRunner {
               context,
               input,
               llmResponse: response,
-              toolCallsCount: 0,
+              toolCallsCount: response.toolCalls?.length ?? 0,
             }),
             { input, step }
           );
@@ -149,19 +220,19 @@ export class ReActLoopRunner {
             context,
             input,
             llmResponse: response,
-            toolCallsCount: 0,
+            toolCallsCount: response.toolCalls?.length ?? 0,
             hasActiveSubAgents: this.checkActiveSubAgents(),
             hasPendingMessages: this.checkPendingMessages(),
-            waitCalled: false,
+            waitCalled,
           };
-          const decisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
-          const stepFinishDecision = normalizeDecision(decisionResult);
+          const stepFinishDecisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
+          const stepFinishDecision = normalizeDecision(stepFinishDecisionResult);
 
         // 处理钩子返回的控制流指令
           if (stepFinishResult?.action === 'end') {
             completed = true;
             finalResponse = response.content;
-            logger.info('Step ended call via forward hook', { step });
+            logger.info('Step ended call after tools via forward hook', { step });
             return 'break';
           }
 
@@ -169,85 +240,26 @@ export class ReActLoopRunner {
           if (stepFinishDecision === Decision.Deny) {
             completed = true;
             finalResponse = response.content;
-            logger.info('Step ended call via reverse hook deny', { step });
+            logger.info('Step ended call after tools via reverse hook deny', { step });
             return 'break';
           }
 
-        // 如果反向钩子要求继续（Approve），不结束循环
           if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
-            logger.debug('Step requested continuation without tools', { step });
+            logger.debug('Step requested continuation after tools', { step });
             return 'continue';
           }
 
-        // 真正结束
-          logger.info('Step completed call naturally', { step });
-          return { completed: true, finalResponse: response.content, turns: step + 1 };
-        }
-
-      // 执行工具
-        let waitCalled = false;
-        for (const call of response.toolCalls) {
-          if (call.name === 'wait') {
-            waitCalled = true;
-          }
-          await this.executeToolFn(call, input, context, step, callIndex);
-        }
-
-        // 推送消息到 DebugHub
-        this.pushToDebug(context.getAll());
-
-      // ========== Step Finished（有工具调用）==========
-        const stepFinishResult = await this.executeHookFn(
-          'onStepFinished',
-          () => this.onStepFinishedFn({
+          logger.debug('Step finished with tool calls, continuing loop by default', { step });
+          return 'next';
+        } catch (error) {
+          await rollbackToStepCheckpoint(checkpoint, context, this.agent.features);
+          this.pushToDebug(context.getAll());
+          logger.warn('Step rolled back after failure', {
             step,
-            callIndex,
-            context,
-            input,
-            llmResponse: response,
-            toolCallsCount: response.toolCalls?.length ?? 0,
-          }),
-          { input, step }
-        );
-
-      // 执行反向钩子 @StepFinish（有流程控制）
-        const stepFinishDecisionCtx: StepFinishDecisionContext = {
-          step,
-          callIndex,
-          context,
-          input,
-          llmResponse: response,
-          toolCallsCount: response.toolCalls?.length ?? 0,
-          hasActiveSubAgents: this.checkActiveSubAgents(),
-          hasPendingMessages: this.checkPendingMessages(),
-          waitCalled,
-        };
-        const stepFinishDecisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
-        const stepFinishDecision = normalizeDecision(stepFinishDecisionResult);
-
-      // 处理钩子返回的控制流指令
-        if (stepFinishResult?.action === 'end') {
-          completed = true;
-          finalResponse = response.content;
-          logger.info('Step ended call after tools via forward hook', { step });
-          return 'break';
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
         }
-
-      // 处理反向钩子的决策
-        if (stepFinishDecision === Decision.Deny) {
-          completed = true;
-          finalResponse = response.content;
-          logger.info('Step ended call after tools via reverse hook deny', { step });
-          return 'break';
-        }
-
-        if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
-          logger.debug('Step requested continuation after tools', { step });
-          return 'continue';
-        }
-
-        logger.debug('Step finished with tool calls, continuing loop by default', { step });
-        return 'next';
       });
 
       if (stepResult === 'break') {

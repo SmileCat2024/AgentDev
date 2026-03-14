@@ -9,7 +9,7 @@
 
 import { fileURLToPath } from 'url';
 import { createTool } from '../../core/tool.js';
-import type { Tool } from '../../core/types.js';
+import type { Tool, UserInputAction, UserInputRequest, UserInputResponse } from '../../core/types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../core/feature.js';
 import { DebugHub } from '../../core/debug-hub.js';
 
@@ -25,15 +25,31 @@ export class UserInputFeature implements AgentFeature {
   readonly description = '允许 Agent 通过调试界面向用户发起输入请求并等待回复。';
 
   private defaultTimeout: number;
+  private nextDraftInput = '';
 
   constructor(config: UserInputFeatureConfig = {}) {
     this.defaultTimeout = config.timeout ?? Infinity; // 无限等待
+  }
+
+  setNextDraftInput(input: string): void {
+    this.nextDraftInput = input;
   }
 
   /**
    * 请求用户输入（核心方法）
    */
   async requestUserInput(prompt: string, timeout?: number): Promise<string> {
+    const response = await this.requestUserInputEvent({ prompt }, timeout);
+    if (response.kind !== 'text') {
+      throw new Error(`Expected text input but received action '${response.actionId ?? 'unknown'}'`);
+    }
+    return response.text ?? '';
+  }
+
+  async requestUserInputEvent(
+    request: UserInputRequest,
+    timeout?: number,
+  ): Promise<UserInputResponse> {
     // 直接获取 DebugHub 实例
     const debugHub = DebugHub.getInstance();
 
@@ -44,11 +60,16 @@ export class UserInputFeature implements AgentFeature {
       throw new Error('Agent ID not available. UserInputFeature requires withViewer() to be called first.');
     }
 
-    return debugHub.requestUserInput(
+    const response = await debugHub.requestUserInputEvent(
       agentId,
-      prompt,
+      {
+        ...request,
+        initialValue: request.initialValue ?? this.nextDraftInput,
+      },
       timeout ?? this.defaultTimeout
     );
+    this.nextDraftInput = '';
+    return response;
   }
 
   /**
@@ -59,6 +80,18 @@ export class UserInputFeature implements AgentFeature {
    */
   async getUserInput(prompt: string = '请输入：', timeout?: number): Promise<string> {
     return this.requestUserInput(prompt, timeout);
+  }
+
+  async getUserInputEvent(
+    prompt: string = '请输入：',
+    timeout?: number,
+    actions?: UserInputAction[],
+  ): Promise<UserInputResponse> {
+    return this.requestUserInputEvent({
+      prompt,
+      placeholder: prompt,
+      actions,
+    }, timeout);
   }
 
   getTools(): Tool[] {

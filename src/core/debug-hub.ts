@@ -22,6 +22,8 @@ import {
   type Notification,
   type RequestInputMsg,
   type HookInspectorSnapshot,
+  type UserInputRequest,
+  type UserInputResponse,
 } from './types.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
@@ -45,7 +47,7 @@ export class DebugHub {
   private readonly processId: string;  // 进程唯一标识
 
   // 输入请求回调映射：requestId → resolver
-  private pendingInputRequests = new Map<string, (input: string) => void>();
+  private pendingInputRequests = new Map<string, (response: UserInputResponse) => void>();
 
   // UDS 客户端连接
   private udsClient?: Socket;
@@ -299,6 +301,19 @@ export class DebugHub {
    * @returns Promise<string> 用户输入内容
    */
   requestUserInput(agentId: string, prompt: string, timeout: number = Infinity): Promise<string> {
+    return this.requestUserInputEvent(agentId, { prompt }, timeout).then((response) => {
+      if (response.kind !== 'text') {
+        throw new Error(`Expected text user input but received action '${response.actionId ?? 'unknown'}'`);
+      }
+      return response.text ?? '';
+    });
+  }
+
+  requestUserInputEvent(
+    agentId: string,
+    request: UserInputRequest,
+    timeout: number = Infinity,
+  ): Promise<UserInputResponse> {
     const requestId = `input-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     return new Promise((resolve, reject) => {
@@ -312,9 +327,9 @@ export class DebugHub {
       }
 
       // 存储 resolve 函数
-      this.pendingInputRequests.set(requestId, (input: string) => {
+      this.pendingInputRequests.set(requestId, (response: UserInputResponse) => {
         if (timer) clearTimeout(timer);
-        resolve(input);
+        resolve(response);
       });
 
       // 发送请求到 ViewerWorker
@@ -322,7 +337,10 @@ export class DebugHub {
         type: 'request-input',
         agentId,
         requestId,
-        prompt,
+        prompt: request.prompt,
+        placeholder: request.placeholder,
+        initialValue: request.initialValue,
+        actions: request.actions,
         timeout,
       } as RequestInputMsg);
     });
@@ -395,7 +413,10 @@ export class DebugHub {
       case 'input-response':
         const resolver = this.pendingInputRequests.get(msg.requestId);
         if (resolver) {
-          resolver(msg.input);
+          resolver(msg.response ?? {
+            kind: 'text',
+            text: msg.input,
+          });
           this.pendingInputRequests.delete(msg.requestId);
         } else {
           console.warn(`[DebugHub] 未知输入响应: ${msg.requestId}`);

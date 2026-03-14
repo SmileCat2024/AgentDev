@@ -9,6 +9,7 @@ export { Agent } from './core/agent.js';
 export { Context } from './core/context.js';
 export { createTool, ToolRegistry } from './core/tool.js';
 export { DebugHub } from './core/debug-hub.js';
+export { FileSessionStore, getDefaultSessionStore } from './core/session-store.js';
 
 // Feature 系统
 export * from './features/index.js';
@@ -71,6 +72,7 @@ export type {
   AgentSession,
   DebugHubIPCMessage,
 } from './core/types.js';
+export type { AgentSessionSnapshot, SessionStore } from './core/session-store.js';
 
 // Feature 类型
 export type {

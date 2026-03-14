@@ -35,6 +35,8 @@ export interface ToolExecResult {
 export interface ContextSnapshot {
   version: number;
   messages: Message[];
+  enrichedMessages?: EnrichedMessage[];
+  sequence?: number;
 }
 
 export class Context {
@@ -120,8 +122,14 @@ export class Context {
    */
   toJSON(): ContextSnapshot {
     return {
-      version: 1,
+      version: 2,
       messages: cloneMessages(this.messages),
+      enrichedMessages: this.enrichedMessages.map(message => ({
+        ...message,
+        tags: [...message.tags],
+        parsed: { ...message.parsed },
+      })),
+      sequence: this.sequence,
     };
   }
 
@@ -130,8 +138,25 @@ export class Context {
    */
   static fromJSON(snapshot: ContextSnapshot): Context {
     const ctx = new Context();
-    ctx.messages = cloneMessages(snapshot.messages);
+    ctx.restore(snapshot);
     return ctx;
+  }
+
+  /**
+   * 用快照原地恢复当前 Context
+   */
+  restore(snapshot: ContextSnapshot): this {
+    this.messages = cloneMessages(snapshot.messages);
+    this.enrichedMessages = snapshot.enrichedMessages
+      ? snapshot.enrichedMessages.map(message => ({
+          ...message,
+          tags: [...message.tags],
+          parsed: { ...message.parsed },
+        }))
+      : [];
+    this.sequence = snapshot.sequence ?? this.enrichedMessages.length;
+    this.rebuildIndexes();
+    return this;
   }
 
   /**
@@ -164,11 +189,11 @@ export class Context {
    */
   addUserMessage(content: string, turn: number): void {
     this.addMessage(
-      { role: 'user', content },
+      { role: 'user', content, turn },
       { turn }
     );
     // 同步到 messages 数组（保持向后兼容）
-    this.messages.push({ role: 'user', content });
+    this.messages.push({ role: 'user', content, turn });
   }
 
   /**
@@ -179,6 +204,7 @@ export class Context {
       {
         role: 'assistant',
         content: response.content,
+        turn,
         toolCalls: response.toolCalls,
         reasoning: response.reasoning,
         thinkingBlocks: response.thinkingBlocks,
@@ -189,6 +215,7 @@ export class Context {
     this.messages.push({
       role: 'assistant',
       content: response.content,
+      turn,
       toolCalls: response.toolCalls,
       reasoning: response.reasoning,
       thinkingBlocks: response.thinkingBlocks,
@@ -207,6 +234,7 @@ export class Context {
     this.addMessage(
       {
         role: 'tool',
+        turn,
         toolCallId: call.id,
         content,
       },
@@ -215,6 +243,7 @@ export class Context {
     // 同步到 messages 数组
     this.messages.push({
       role: 'tool',
+      turn,
       toolCallId: call.id,
       content,
     });
@@ -225,11 +254,11 @@ export class Context {
    */
   addSystemMessage(content: string, turn: number, source?: string): void {
     this.addMessage(
-      { role: 'system', content },
+      { role: 'system', content, turn },
       { turn, source }
     );
     // 同步到 messages 数组
-    this.messages.push({ role: 'system', content });
+    this.messages.push({ role: 'system', content, turn });
   }
 
   // ========== 内核化能力：查询接口 ==========
@@ -367,6 +396,16 @@ export class Context {
       set.add(message.id);
       this.indexes.set(key, set);
     });
+  }
+
+  /**
+   * 从 enrichedMessages 重建索引
+   */
+  private rebuildIndexes(): void {
+    this.indexes = new Map<string, Set<string>>();
+    for (const message of this.enrichedMessages) {
+      this.updateIndexes(message);
+    }
   }
 
   /**

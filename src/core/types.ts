@@ -146,6 +146,7 @@ export type MessageRole = 'system' | 'user' | 'assistant' | 'tool' | string;
 export interface Message {
   role: MessageRole;
   content: string;
+  turn?: number;
   toolCallId?: string;
   toolCalls?: ToolCall[];
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
@@ -439,6 +440,9 @@ export interface RequestInputMsg {
   requestId: string;
   prompt: string;
   timeout?: number;
+  placeholder?: string;
+  initialValue?: string;
+  actions?: UserInputAction[];
 }
 
 /**
@@ -449,6 +453,29 @@ export interface InputResponseMsg {
   agentId: string;
   requestId: string;
   input: string;
+  response?: UserInputResponse;
+}
+
+export interface UserInputAction {
+  id: string;
+  label: string;
+  kind?: 'rollback' | 'custom';
+  variant?: 'primary' | 'secondary' | 'danger';
+  payload?: Record<string, unknown>;
+}
+
+export interface UserInputRequest {
+  prompt: string;
+  placeholder?: string;
+  initialValue?: string;
+  actions?: UserInputAction[];
+}
+
+export interface UserInputResponse {
+  kind: 'text' | 'action';
+  text?: string;
+  actionId?: string;
+  payload?: Record<string, unknown>;
 }
 
 /**

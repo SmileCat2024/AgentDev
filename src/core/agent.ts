@@ -17,6 +17,8 @@ import { ToolRegistry } from './tool.js';
 import { Context, ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
+import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
+import { getDefaultSessionStore, type AgentRuntimeSnapshot, type AgentSessionSnapshot, type SessionStore, type CallRollbackSnapshot } from './session-store.js';
 import type {
   ToolContext,
   ToolResult,
@@ -51,6 +53,9 @@ import { CoreLifecycle, Decision } from './lifecycle.js';
 // Re-export ContextSnapshot and HookErrorHandling for convenience
 export type { ContextSnapshot };
 export { HookErrorHandling };
+export type { AgentSessionSnapshot, SessionStore };
+
+type CallRollbackCheckpoint = CallRollbackSnapshot;
 
 // 基础类（不含生命周期钩子）
 class AgentBase {
@@ -89,6 +94,7 @@ class AgentBase {
   protected _currentStep: number = 0;   // ReAct 循环步骤序号
   protected _callIndex: number = -1;     // 用户交互序号（onCall 次数）
   protected _callStartTimes: Map<number, number> = new Map();
+  protected _callCheckpoints: CallRollbackCheckpoint[] = [];
 
   // 用户输入缓存（用于 Feature 修改待注入的输入内容）
   private _pendingInput: string | null = null;
@@ -244,6 +250,8 @@ class AgentBase {
         this._initialized = true;
       }
 
+      const preCallRuntime = await this.captureRuntimeSnapshot(context, this._callIndex - 1);
+
       // ========== CallStart 反向钩子 ==========
       // 在系统提示词之后、用户输入之前调用，确保 Feature 可以正确注入消息
 
@@ -268,6 +276,11 @@ class AgentBase {
 
       // 保存上下文
       this.persistentContext = context;
+      this.commitCallCheckpoint({
+        callIndex: this._callIndex,
+        draftInput: finalInput,
+        runtime: preCallRuntime,
+      });
 
       // ========== Call Finish（成功）==========
       await executeHook(
@@ -301,6 +314,10 @@ class AgentBase {
       } catch (error) {
       // ========== Call Finish（异常）==========
       const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // 保留异常发生后最新的上下文状态。
+      // 如果 step-level rollback 已触发，这里保存的就是回滚后的上下文。
+      this.persistentContext = context;
 
       // 如果是子代理，报告错误中断给父代理
       if (this._agentId && this._parentPool) {
@@ -388,6 +405,9 @@ class AgentBase {
     );
     this.syncRegisteredToolsToDebug();
     this.pushInspectorSnapshot();
+    if (this.persistentContext) {
+      this.pushToDebug(this.persistentContext.getAll());
+    }
 
     return this;
   }
@@ -416,10 +436,82 @@ class AgentBase {
   }
 
   /**
+   * 生成当前会话快照
+   */
+  async createSessionSnapshot(sessionId: string): Promise<AgentSessionSnapshot> {
+    await this.ensureFeatureTools();
+    const runtime = await this.captureRuntimeSnapshot(this.persistentContext, this._callIndex);
+
+    return {
+      version: 1,
+      sessionId,
+      savedAt: Date.now(),
+      agentType: this.constructor.name,
+      runtime,
+      rollbackHistory: this._callCheckpoints.map(entry => ({
+        callIndex: entry.callIndex,
+        draftInput: entry.draftInput,
+        runtime: { ...entry.runtime },
+      })),
+    };
+  }
+
+  /**
+   * 从会话快照恢复
+   */
+  async restoreSessionSnapshot(snapshot: AgentSessionSnapshot): Promise<this> {
+    await this.ensureFeatureTools();
+    const normalized = this.normalizeSessionSnapshot(snapshot as AgentSessionSnapshot & Record<string, unknown>);
+    await this.restoreRuntimeSnapshot(normalized.runtime);
+    this._callCheckpoints = normalized.rollbackHistory.map(entry => ({
+      callIndex: entry.callIndex,
+      draftInput: entry.draftInput,
+      runtime: entry.runtime,
+    }));
+
+    return this;
+  }
+
+  async rollbackToCall(callIndex: number): Promise<{ draftInput: string }> {
+    await this.ensureFeatureTools();
+    const checkpoint = this._callCheckpoints.find(entry => entry.callIndex === callIndex);
+    if (!checkpoint) {
+      throw new Error(`Rollback checkpoint for call ${callIndex} not found`);
+    }
+
+    await this.restoreRuntimeSnapshot(checkpoint.runtime);
+    this._callCheckpoints = this._callCheckpoints.filter(entry => entry.callIndex < callIndex);
+    this.pushToDebug(this.getContext().getAll());
+    this.pushInspectorSnapshot();
+
+    return { draftInput: checkpoint.draftInput };
+  }
+
+  /**
+   * 保存会话到持久化存储
+   */
+  async saveSession(sessionId: string, store: SessionStore = getDefaultSessionStore()): Promise<string> {
+    const snapshot = await this.createSessionSnapshot(sessionId);
+    return store.save(sessionId, snapshot);
+  }
+
+  /**
+   * 从持久化存储加载会话
+   */
+  async loadSession(sessionId: string, store: SessionStore = getDefaultSessionStore()): Promise<this> {
+    const snapshot = await store.load(sessionId);
+    return this.restoreSessionSnapshot(snapshot);
+  }
+
+  /**
    * 重置上下文
    */
   reset(): this {
     this.persistentContext = undefined;
+    this._callCheckpoints = [];
+    this._callIndex = -1;
+    this._currentStep = 0;
+    this._initialized = false;
     return this;
   }
 
@@ -529,6 +621,7 @@ class AgentBase {
     // 重置状态
     this._initialized = false;
     this.persistentContext = undefined;
+    this._callCheckpoints = [];
   }
 
   // ========== Feature 系统 ==========
@@ -756,6 +849,58 @@ class AgentBase {
     if (this.debugEnabled && this.agentId && this.debugHub) {
       this.debugHub.pushMessages(this.agentId, messages);
     }
+  }
+
+  private async captureRuntimeSnapshot(context?: Context, callIndexOverride?: number): Promise<AgentRuntimeSnapshot> {
+    await this.ensureFeatureTools();
+    return {
+      initialized: this._initialized,
+      callIndex: callIndexOverride ?? this._callIndex,
+      context: context?.toJSON(),
+      featureStates: captureFeatureSnapshots(this.features),
+    };
+  }
+
+  private async restoreRuntimeSnapshot(snapshot: AgentRuntimeSnapshot): Promise<void> {
+    if (snapshot.context) {
+      this.persistentContext = Context.fromJSON(snapshot.context);
+    } else {
+      this.persistentContext = undefined;
+    }
+    await restoreFeatureSnapshots(snapshot.featureStates, this.features);
+    this._initialized = snapshot.initialized;
+    this._callIndex = snapshot.callIndex;
+    this._currentStep = 0;
+  }
+
+  private commitCallCheckpoint(checkpoint: CallRollbackCheckpoint): void {
+    this._callCheckpoints = this._callCheckpoints
+      .filter(entry => entry.callIndex < checkpoint.callIndex)
+      .concat(checkpoint);
+  }
+
+  private normalizeSessionSnapshot(snapshot: AgentSessionSnapshot & Record<string, unknown>): AgentSessionSnapshot {
+    if ('runtime' in snapshot && snapshot.runtime) {
+      return snapshot;
+    }
+
+    const legacyContext = snapshot.context as ContextSnapshot | undefined;
+    const legacyFeatureStates = Array.isArray(snapshot.featureStates) ? snapshot.featureStates : [];
+    const legacyCallIndex = typeof snapshot.callIndex === 'number' ? snapshot.callIndex : -1;
+
+    return {
+      version: typeof snapshot.version === 'number' ? snapshot.version : 1,
+      sessionId: typeof snapshot.sessionId === 'string' ? snapshot.sessionId : 'legacy-session',
+      savedAt: typeof snapshot.savedAt === 'number' ? snapshot.savedAt : Date.now(),
+      agentType: typeof snapshot.agentType === 'string' ? snapshot.agentType : this.constructor.name,
+      runtime: {
+        initialized: Boolean(snapshot.initialized),
+        callIndex: legacyCallIndex,
+        context: legacyContext,
+        featureStates: legacyFeatureStates,
+      },
+      rollbackHistory: [],
+    };
   }
 
   private syncRegisteredToolsToDebug(): void {

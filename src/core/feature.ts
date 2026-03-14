@@ -45,6 +45,15 @@ export interface FeatureContext {
   config: import('./types.js').AgentConfig;
 }
 
+/**
+ * Feature 快照状态
+ *
+ * 第一阶段只支持显式白名单状态：
+ * - Feature 自己决定要保存什么
+ * - 未声明的状态一律不保证恢复
+ */
+export type FeatureStateSnapshot = unknown;
+
 // ========== 正向钩子（纯通知，void 返回）==========
 
 /**
@@ -110,6 +119,29 @@ export interface AgentFeature {
    * 清理钩子
    */
   onDestroy?(ctx: FeatureContext): Promise<void>;
+
+  /**
+   * 捕获可回滚的 Feature 状态
+   *
+   * 仅返回显式声明、可序列化的状态。
+   * 未返回的字段不会参与 rollback。
+   */
+  captureState?(): FeatureStateSnapshot;
+
+  /**
+   * 从快照恢复 Feature 状态
+   */
+  restoreState?(snapshot: FeatureStateSnapshot): void | Promise<void>;
+
+  /**
+   * rollback 前钩子
+   */
+  beforeRollback?(snapshot: FeatureStateSnapshot): void | Promise<void>;
+
+  /**
+   * rollback 后钩子
+   */
+  afterRollback?(snapshot: FeatureStateSnapshot): void | Promise<void>;
 
   /**
    * 可选：为调试器提供 hook 的人类可读说明

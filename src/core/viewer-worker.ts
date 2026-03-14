@@ -730,6 +730,9 @@ class ViewerWorker {
     const requests = Array.from(pendingRequests.entries()).map(([requestId, data]) => ({
       requestId,
       prompt: data.prompt,
+      placeholder: data.placeholder,
+      initialValue: data.initialValue,
+      actions: data.actions,
       timestamp: data.timestamp,
     }));
 
@@ -745,7 +748,7 @@ class ViewerWorker {
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const { requestId, input } = JSON.parse(body);
+        const { requestId, input, response } = JSON.parse(body);
 
         const session = this.agentSessions.get(agentId);
         const pendingRequests = (session as any).pendingInputRequests as Map<string, any> | undefined;
@@ -754,6 +757,11 @@ class ViewerWorker {
           res.end(JSON.stringify({ error: 'Request not found or expired' }));
           return;
         }
+
+        const normalizedResponse = response ?? {
+          kind: 'text',
+          text: input,
+        };
 
         // 移除请求
         pendingRequests.delete(requestId);
@@ -768,7 +776,8 @@ class ViewerWorker {
                 type: 'input-response',
                 agentId,
                 requestId,
-                input,
+                input: normalizedResponse.text ?? input ?? '',
+                response: normalizedResponse,
               }) + '\n');
               console.log(`[Viewer Worker] 输入响应已发送到 ${targetClientId}: ${requestId}`);
             } catch (writeError) {
@@ -786,7 +795,8 @@ class ViewerWorker {
                 type: 'input-response',
                 agentId,
                 requestId,
-                input,
+                input: normalizedResponse.text ?? input ?? '',
+                response: normalizedResponse,
               }) + '\n');
               console.log(`[Viewer Worker] 输入响应广播到 ${cid}`);
             } catch (writeError) {
@@ -1296,6 +1306,9 @@ class ViewerWorker {
     // 存储请求
     pendingRequests.set(requestId, {
       prompt,
+      placeholder: msg.placeholder,
+      initialValue: (msg as any).initialValue,
+      actions: msg.actions,
       timestamp: Date.now(),
     });
 
@@ -2879,6 +2892,24 @@ class ViewerWorker {
 
     .role-badge { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
 
+    .message-action {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+
+    .message-action:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--hover-bg);
+    }
+
     .message-content {
       padding: 12px 16px;
       border-radius: 8px;
@@ -3268,11 +3299,46 @@ class ViewerWorker {
     }
 
     .user-input-footer {
-      display: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 12px;
+      gap: 12px;
     }
 
-    .user-input-submit {
-      display: none;
+    .user-input-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .user-input-action {
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    .user-input-action:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--hover-bg);
+    }
+
+    .user-input-action.danger {
+      color: #d9534f;
+      border-color: rgba(217, 83, 79, 0.35);
+    }
+
+    .user-input-action.primary {
+      color: var(--text-primary);
+      border-color: var(--text-primary);
     }
 
   </style>
@@ -3437,6 +3503,7 @@ class ViewerWorker {
     let currentAgentId = null;
     let allAgents = [];
     let currentMessages = [];
+    let currentInputRequests = [];
     let toolRenderConfigs = {};
     let TOOL_NAMES = {};
     let contextMenuAgentId = null;
@@ -5231,6 +5298,9 @@ class ViewerWorker {
         if (JSON.stringify(inputRequests) !== JSON.stringify(window.lastInputRequests || [])) {
           window.lastInputRequests = inputRequests;
           renderInputRequests(inputRequests);
+          if (currentMessages.length > 0) {
+            render(currentMessages);
+          }
         }
 
         if (messages.length !== currentMessages.length || messages.length === 0) {
@@ -5328,6 +5398,7 @@ class ViewerWorker {
     function renderInputRequests(requests) {
       const container = document.getElementById('user-input-container');
       if (!container) return;
+      currentInputRequests = requests;
 
       // 清空现有内容
       container.innerHTML = '';
@@ -5335,12 +5406,19 @@ class ViewerWorker {
       for (const req of requests) {
         const card = document.createElement('div');
         card.className = 'user-input-card';
-        // 极简设计：只有 Textarea
+        const actionsHtml = Array.isArray(req.actions) && req.actions.length > 0
+          ? '<div class="user-input-actions">' + req.actions.map(action =>
+              '<button class="user-input-action ' + escapeHtml(action.variant || 'secondary') + '" onclick="submitInputAction(\\'' + req.requestId + '\\', \\'' + escapeHtml(action.id) + '\\')">' + escapeHtml(action.label) + '</button>'
+            ).join('') + '</div>'
+          : '';
         card.innerHTML = \`
           <textarea class="user-input-textarea" rows="1" id="input-\${req.requestId}"
             onkeydown="handleInputKey(event, '\${req.requestId}')"
             oninput="autoResize(this)"
-            placeholder="\${escapeHtml(t('input_placeholder'))}"></textarea>
+            placeholder="\${escapeHtml(req.placeholder || t('input_placeholder'))}"></textarea>
+          <div class="user-input-footer">
+            \${actionsHtml}
+          </div>
         \`;
         container.appendChild(card);
         
@@ -5348,7 +5426,14 @@ class ViewerWorker {
         setTimeout(() => {
           const el = document.getElementById(\`input-\${req.requestId}\`);
           if(el) {
+             if (typeof req.initialValue === 'string' && req.initialValue.length > 0) {
+               el.value = req.initialValue;
+             }
              el.focus();
+             const end = el.value.length;
+             if (typeof el.setSelectionRange === 'function') {
+               el.setSelectionRange(end, end);
+             }
              autoResize(el);
           }
         }, 50);
@@ -5383,7 +5468,14 @@ class ViewerWorker {
         const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requestId, input })
+          body: JSON.stringify({
+            requestId,
+            input,
+            response: {
+              kind: 'text',
+              text: input,
+            },
+          })
         });
         if (res.ok) {
           // 刷新输入请求列表
@@ -5394,12 +5486,72 @@ class ViewerWorker {
       }
     }
 
+    function getPrimaryInputRequest() {
+      return Array.isArray(currentInputRequests) && currentInputRequests.length > 0
+        ? currentInputRequests[0]
+        : null;
+    }
+
+    function canRollbackMessage(msg) {
+      return !!getPrimaryInputRequest() && !!msg && msg.role === 'user';
+    }
+
+    async function submitInputAction(requestId, actionId, payload = {}) {
+      try {
+        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            input: '',
+            response: {
+              kind: 'action',
+              actionId,
+              payload,
+            },
+          }),
+        });
+        if (res.ok) {
+          poll();
+        }
+      } catch (e) {
+        console.error('提交动作失败:', e);
+      }
+    }
+
+    window.requestRollbackEdit = async function(messageIndex) {
+      const request = getPrimaryInputRequest();
+      if (!request) {
+        console.warn('No pending input request available for rollback action');
+        return;
+      }
+
+      const msg = currentMessages[messageIndex];
+      if (!msg || msg.role !== 'user') {
+        return;
+      }
+
+      const fallbackCallIndex = currentMessages
+        .slice(0, messageIndex + 1)
+        .filter(entry => entry.role === 'user')
+        .length - 1;
+      const callIndex = typeof msg.turn === 'number' ? msg.turn : fallbackCallIndex;
+
+      await submitInputAction(request.requestId, 'rollback_to_call', {
+        callIndex,
+        draftInput: msg.content,
+      });
+    };
+
     // 生成单条消息的 HTML
     function renderMessage(msg, index) {
       const role = msg.role;
       const msgId = \`msg-\${index}\`;
       let contentHtml = '';
       let metaHtml = \`<div class="role-badge">\${role}</div>\`;
+      if (canRollbackMessage(msg)) {
+        metaHtml += \`<button class="message-action" onclick="requestRollbackEdit(\${index})">编辑此轮</button>\`;
+      }
 
       if (role === 'user' || role === 'system') {
         let style = '';
@@ -5694,6 +5846,9 @@ class ViewerWorker {
         const msgId = \`msg-\${index}\`;
         let contentHtml = '';
         let metaHtml = \`<div class="role-badge">\${role}</div>\`;
+        if (canRollbackMessage(msg)) {
+          metaHtml += \`<button class="message-action" onclick="requestRollbackEdit(\${index})">编辑此轮</button>\`;
+        }
 
         if (role === 'user' || role === 'system') {
           let style = '';

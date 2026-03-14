@@ -3,7 +3,7 @@
  * 实现 LLMClient 接口
  */
 
-import type { LLMClient, Message, Tool, LLMResponse, ToolCall } from '../core/types.js';
+import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 import OpenAI from 'openai';
 
@@ -63,6 +63,7 @@ export class OpenAILLM implements LLMClient {
       messages: chatMessages,
       tools: chatTools.length > 0 ? chatTools : undefined,
       stream: true,
+      stream_options: { include_usage: true },
       ...(this.maxTokens ? { max_tokens: this.maxTokens } : {}),
       ...(this.providerOptions ?? {}),
     } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
@@ -84,11 +85,35 @@ export class OpenAILLM implements LLMClient {
     }
     const accumulatedToolCalls: Map<number, AccumulatedToolCall> = new Map();
 
+    // 收集 usage 数据
+    let usageInfo: UsageInfo | null = null;
+
     // 迭代流式响应
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
+      // 收集 usage 数据（OpenAI 需要 stream_options.include_usage，且 usage-only 最后一块可能没有 choices）
+      if (chunk.usage) {
+        const u = chunk.usage;
+        const extendedDetails = u as any;
+        let reasoningTokens = 0;
+        if (extendedDetails.prompt_tokens_details?.reasoning_tokens) {
+          reasoningTokens += extendedDetails.prompt_tokens_details.reasoning_tokens;
+        }
+        if (extendedDetails.completion_tokens_details?.reasoning_tokens) {
+          reasoningTokens += extendedDetails.completion_tokens_details.reasoning_tokens;
+        }
 
-      if (!delta) continue;
+        usageInfo = {
+          inputTokens: u.prompt_tokens || 0,
+          outputTokens: u.completion_tokens || 0,
+          totalTokens: (u.prompt_tokens || 0) + (u.completion_tokens || 0),
+          ...(reasoningTokens > 0 ? { reasoningTokens } : {}),
+        };
+      }
+
+      const delta = chunk.choices[0]?.delta;
+      if (!delta) {
+        continue;
+      }
 
       // 判断当前阶段并累积内容
       // 使用类型断言处理扩展字段 reasoning_content（GLM-4.7 等模型支持）
@@ -155,6 +180,7 @@ export class OpenAILLM implements LLMClient {
       content,
       toolCalls,
       reasoning,
+      ...(usageInfo ? { usage: usageInfo } : {}),
     };
   }
 }

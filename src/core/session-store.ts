@@ -3,12 +3,14 @@ import { resolve } from 'path';
 import { cwd } from 'process';
 import type { ContextSnapshot } from './context.js';
 import type { FeatureCheckpoint } from './checkpoint.js';
+import type { UsageStatsSnapshot } from './usage.js';
 
 export interface AgentRuntimeSnapshot {
   initialized: boolean;
   callIndex: number;
   context?: ContextSnapshot;
   featureStates: FeatureCheckpoint[];
+  usageStats?: UsageStatsSnapshot;
 }
 
 export interface CallRollbackSnapshot {

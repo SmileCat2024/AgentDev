@@ -165,12 +165,38 @@ export interface ToolCall {
   arguments: Record<string, any>;
 }
 
+/**
+ * 统一用量格式（兼容 Anthropic 和 OpenAI）
+ */
+export interface UsageInfo {
+  /** 输入 token 数 */
+  inputTokens: number;
+  /** 输出 token 数 */
+  outputTokens: number;
+  /** 总 token 数 */
+  totalTokens: number;
+
+  // ========== Anthropic 特有（可选）==========
+  /** 创建缓存消耗的 token 数 */
+  cacheCreationTokens?: number;
+  /** 从缓存读取的 token 数 */
+  cacheReadTokens?: number;
+
+  // ========== OpenAI 特有（可选）==========
+  /** 推理 token 数 */
+  reasoningTokens?: number;
+  /** 音频 token 数 */
+  audioTokens?: number;
+}
+
 // LLM 响应
 export interface LLMResponse {
   content: string;
   toolCalls?: ToolCall[];
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
   thinkingBlocks?: ThinkingBlock[];
+  /** 用量统计（可选） */
+  usage?: UsageInfo;
 }
 
 // ============= 渲染模板类型 =============
@@ -224,6 +250,7 @@ import type { PlaceholderContext, TemplateSource } from '../template/types.js';
 
 // MCP 类型导入
 import type { MCPConfig } from '../mcp/types.js';
+import type { UsageStatsSnapshot } from './usage.js';
 
 // Agent 配置
 export interface AgentConfig {
@@ -323,6 +350,19 @@ export interface HookInspectorSnapshot {
   hooks: HookLifecycleSnapshot[];
 }
 
+export interface AgentContextMetrics {
+  messageCount: number;
+  charCount: number;
+  toolCallCount: number;
+  turnCount: number;
+}
+
+export interface AgentOverviewSnapshot {
+  updatedAt: number;
+  context: AgentContextMetrics;
+  usageStats: UsageStatsSnapshot;
+}
+
 /**
  * Agent 会话数据（Worker 端）
  */
@@ -345,6 +385,7 @@ export interface AgentSession {
   // 内部：上次最后一条消息的签名（用于推送去重）
   _lastMessageSig?: string;
   hookInspector?: HookInspectorSnapshot;
+  overview?: AgentOverviewSnapshot;
 }
 
 /**
@@ -354,6 +395,7 @@ export interface AgentSession {
 export type DebugHubIPCMessage =
   | RegisterAgentMsg
   | UpdateAgentInspectorMsg
+  | UpdateAgentOverviewMsg
   | PushMessagesMsg
   | RegisterToolsMsg
   | SetCurrentAgentMsg
@@ -373,6 +415,7 @@ export interface RegisterAgentMsg {
   projectRoot?: string; // 项目根目录，用于模板文件加载
   featureTemplates?: Record<string, string>; // Feature 模板路径映射
   hookInspector?: HookInspectorSnapshot;
+  overview?: AgentOverviewSnapshot;
   activeInputRequest?: ActiveInputRequest; // 活跃的输入请求（用于重连后恢复）
 }
 
@@ -380,6 +423,12 @@ export interface UpdateAgentInspectorMsg {
   type: 'update-agent-inspector';
   agentId: string;
   hookInspector: HookInspectorSnapshot;
+}
+
+export interface UpdateAgentOverviewMsg {
+  type: 'update-agent-overview';
+  agentId: string;
+  overview: AgentOverviewSnapshot;
 }
 
 /**

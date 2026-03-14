@@ -10,7 +10,7 @@
 
 import type { Context } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
-import type { ToolCall, LLMResponse, Message } from '../types.js';
+import type { ToolCall, LLMResponse, Message, UsageInfo } from '../types.js';
 import type { ToolResult, HookResult, StepFinishDecisionContext } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
@@ -40,6 +40,8 @@ export class ReActLoopRunner {
       debugPusher?: DebugPusher;
       features?: Map<string, AgentFeature>;
       hooksRegistry: HooksRegistry;
+      recordUsage(callIndex: number, step: number, usage: UsageInfo): void;
+      endCallUsage(callIndex: number): void;
     },
     private executeHookFn: (
       hookName: string,
@@ -121,6 +123,11 @@ export class ReActLoopRunner {
             toolCallsCount: response.toolCalls?.length ?? 0,
             hasContent: !!response.content,
           });
+
+          // 收集用量数据
+          if (response.usage) {
+            this.agent.recordUsage(callIndex, step, response.usage);
+          }
 
           // 添加助手响应
           context.addAssistantMessage(response, callIndex);
@@ -290,6 +297,9 @@ export class ReActLoopRunner {
 
       finalResponse = interruptResult as string ?? partialResult;
     }
+
+    // 标记 Call 结束
+    this.agent.endCallUsage(callIndex);
 
     return {
       finalResponse,

@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot } from './types.js';
+import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot } from './types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -19,6 +19,7 @@ import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
 import { getDefaultSessionStore, type AgentRuntimeSnapshot, type AgentSessionSnapshot, type SessionStore, type CallRollbackSnapshot } from './session-store.js';
+import { UsageStats, type UsageStatsSnapshot } from './usage.js';
 import type {
   ToolContext,
   ToolResult,
@@ -95,6 +96,9 @@ class AgentBase {
   protected _callIndex: number = -1;     // 用户交互序号（onCall 次数）
   protected _callStartTimes: Map<number, number> = new Map();
   protected _callCheckpoints: CallRollbackCheckpoint[] = [];
+
+  // 用量统计
+  protected usageStats: UsageStats = new UsageStats();
 
   // 用户输入缓存（用于 Feature 修改待注入的输入内容）
   private _pendingInput: string | null = null;
@@ -402,7 +406,8 @@ class AgentBase {
       this,
       name || this.constructor.name,
       featureTemplates,
-      this.buildHookInspectorSnapshot()
+      this.buildHookInspectorSnapshot(),
+      this.buildOverviewSnapshot()
     );
     this.syncRegisteredToolsToDebug();
     this.pushInspectorSnapshot();
@@ -548,6 +553,35 @@ class AgentBase {
    */
   getTools(): ToolRegistry {
     return this.tools;
+  }
+
+  // ========== 用量统计 ==========
+
+  /**
+   * 获取用量统计
+   */
+  getUsage(): UsageStats {
+    return this.usageStats;
+  }
+
+  /**
+   * 记录一次 LLM 调用的用量
+   * @param callIndex Call 序号
+   * @param step Step 序号
+   * @param usage 用量数据
+   */
+  recordUsage(callIndex: number, step: number, usage: UsageInfo): void {
+    this.usageStats.record(callIndex, step, usage);
+    this.pushOverviewSnapshot();
+  }
+
+  /**
+   * 标记 Call 结束
+   * @param callIndex Call 序号
+   */
+  endCallUsage(callIndex: number): void {
+    this.usageStats.endCall(callIndex);
+    this.pushOverviewSnapshot();
   }
 
   // ========== 子代理管理 ==========
@@ -834,6 +868,8 @@ class AgentBase {
         debugPusher,
         features: this.features,
         hooksRegistry: this.hooksRegistry,
+        recordUsage: (callIndex: number, step: number, usage: UsageInfo) => this.recordUsage(callIndex, step, usage),
+        endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (call, input, context, step, callIndex) => this.toolExecutor!.execute(call, input, context, step, callIndex),
@@ -849,6 +885,13 @@ class AgentBase {
   private pushToDebug(messages: Message[]): void {
     if (this.debugEnabled && this.agentId && this.debugHub) {
       this.debugHub.pushMessages(this.agentId, messages);
+      this.debugHub.updateAgentOverview(this.agentId, this.buildOverviewSnapshot());
+    }
+  }
+
+  private pushOverviewSnapshot(): void {
+    if (this.debugEnabled && this.agentId && this.debugHub) {
+      this.debugHub.updateAgentOverview(this.agentId, this.buildOverviewSnapshot());
     }
   }
 
@@ -859,6 +902,7 @@ class AgentBase {
       callIndex: callIndexOverride ?? this._callIndex,
       context: context?.toJSON(),
       featureStates: captureFeatureSnapshots(this.features),
+      usageStats: this.usageStats.toSnapshot(),
     };
   }
 
@@ -872,6 +916,11 @@ class AgentBase {
     this._initialized = snapshot.initialized;
     this._callIndex = snapshot.callIndex;
     this._currentStep = 0;
+
+    // 恢复用量统计
+    if (snapshot.usageStats) {
+      this.usageStats.fromSnapshot(snapshot.usageStats);
+    }
   }
 
   private commitCallCheckpoint(checkpoint: CallRollbackCheckpoint): void {
@@ -914,6 +963,35 @@ class AgentBase {
     if (this.debugEnabled && this.agentId && this.debugHub) {
       this.debugHub.updateAgentInspector(this.agentId, this.buildHookInspectorSnapshot());
     }
+  }
+
+  private buildOverviewSnapshot(): AgentOverviewSnapshot {
+    const messages = this.getContext().getAll();
+    const contextChars = messages.reduce((sum, message) => {
+      const contentLength = typeof message.content === 'string' ? message.content.length : 0;
+      const reasoningLength = typeof message.reasoning === 'string' ? message.reasoning.length : 0;
+      const thinkingLength = Array.isArray(message.thinkingBlocks)
+        ? message.thinkingBlocks.reduce((blockSum, block) => blockSum + (block.thinking?.length || 0), 0)
+        : 0;
+      const toolCallLength = Array.isArray(message.toolCalls)
+        ? JSON.stringify(message.toolCalls).length
+        : 0;
+      return sum + contentLength + reasoningLength + thinkingLength + toolCallLength;
+    }, 0);
+
+    const toolCallCount = messages.reduce((sum, message) => sum + (message.toolCalls?.length || 0), 0);
+    const turnCount = messages.reduce((maxTurn, message) => Math.max(maxTurn, typeof message.turn === 'number' ? message.turn + 1 : maxTurn), 0);
+
+    return {
+      updatedAt: Date.now(),
+      context: {
+        messageCount: messages.length,
+        charCount: contextChars,
+        toolCallCount,
+        turnCount,
+      },
+      usageStats: this.usageStats.toSnapshot(),
+    };
   }
 
   private buildHookInspectorSnapshot(): HookInspectorSnapshot {

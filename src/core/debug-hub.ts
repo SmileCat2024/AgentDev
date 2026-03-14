@@ -22,6 +22,7 @@ import {
   type Notification,
   type RequestInputMsg,
   type HookInspectorSnapshot,
+  type AgentOverviewSnapshot,
   type UserInputRequest,
   type UserInputResponse,
   type UserInputAction,
@@ -175,7 +176,8 @@ export class DebugHub {
     agent: Agent,
     name?: string,
     featureTemplates?: Record<string, string>,
-    hookInspector?: HookInspectorSnapshot
+    hookInspector?: HookInspectorSnapshot,
+    overview?: AgentOverviewSnapshot
   ): string {
     // 等待注册锁
     while (this.registrationLock) {
@@ -212,6 +214,7 @@ export class DebugHub {
         projectRoot: process.cwd(), // 传递项目根目录，用于模板文件加载
         featureTemplates, // 传递 Feature 模板路径映射
         hookInspector,
+        overview,
       });
 
       console.log(`[DebugHub] Agent 已注册: ${id} (${info.name})`);
@@ -294,6 +297,14 @@ export class DebugHub {
       type: 'update-agent-inspector',
       agentId,
       hookInspector,
+    });
+  }
+
+  updateAgentOverview(agentId: string, overview: AgentOverviewSnapshot): void {
+    this.sendToWorker({
+      type: 'update-agent-overview',
+      agentId,
+      overview,
     });
   }
 
@@ -516,6 +527,7 @@ export class DebugHub {
       // 获取最新的 hookInspector
       const hookInspector = (data.agent as any).buildHookInspectorSnapshot?.()
         || (data.agent as any).hookInspector;
+      const overview = (data.agent as any).buildOverviewSnapshot?.();
 
       // 获取缓存的 featureTemplates
       const featureTemplates = this.agentFeatureTemplates.get(id) || {};
@@ -534,6 +546,7 @@ export class DebugHub {
         projectRoot: process.cwd(),
         featureTemplates,
         hookInspector,
+        overview,
         activeInputRequest, // 携带活跃输入请求
       });
 

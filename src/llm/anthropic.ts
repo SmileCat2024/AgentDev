@@ -1,5 +1,5 @@
 import type { AgentConfigFile, ModelConfig } from '../core/config.js';
-import type { LLMClient, LLMResponse, Message, ThinkingBlock, Tool, ToolCall } from '../core/types.js';
+import type { LLMClient, LLMResponse, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 
 type AnthropicTextBlock = {
@@ -45,6 +45,12 @@ interface AnthropicStreamEvent {
   type?: string;
   index?: number;
   content_block?: AnthropicContentBlock;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
   delta?: {
     type?: string;
     text?: string;
@@ -57,6 +63,12 @@ interface AnthropicStreamEvent {
     id?: string;
     stop_reason?: string | null;
     stop_sequence?: string | null;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
   };
 }
 
@@ -359,6 +371,9 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
   let currentPhase: LLMPhase = 'content';
   const pendingToolUses = new Map<number, PendingToolUse>();
 
+  // 收集 usage 数据
+  let usageInfo: UsageInfo | null = null;
+
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -375,6 +390,9 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
           reasoning += delta.reasoning;
           charCount += delta.charCount;
           currentPhase = delta.phase;
+        }, (usage) => {
+          // 收集 usage 数据
+          usageInfo = usage;
         });
         await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size);
       }
@@ -390,6 +408,9 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
         reasoning += delta.reasoning;
         charCount += delta.charCount;
         currentPhase = delta.phase;
+      }, (usage) => {
+        // 收集 usage 数据
+        usageInfo = usage;
       });
       await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size);
     }
@@ -403,6 +424,7 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
     ...(toolCalls.length > 0 ? { toolCalls } : {}),
     ...(reasoning ? { reasoning } : {}),
     ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
+    ...(usageInfo ? { usage: usageInfo } : {}),
   };
 }
 
@@ -424,6 +446,7 @@ function applyAnthropicStreamEvent(
   pendingThinkingBlocks: Map<number, PendingThinkingBlock>,
   pendingToolUses: Map<number, PendingToolUse>,
   append: (delta: { content: string; reasoning: string; charCount: number; phase: LLMPhase }) => void,
+  onUsage: (usage: UsageInfo) => void,
 ): void {
   switch (event.type) {
     case 'content_block_start': {
@@ -466,6 +489,33 @@ function applyAnthropicStreamEvent(
           toolUse.inputJson = mergeToolInputJson(toolUse.inputJson, partial);
           append({ content: '', reasoning: '', charCount: 0, phase: 'tool_calling' });
         }
+      }
+      break;
+    }
+    case 'message_start': {
+      const usage = event.message?.usage;
+      if (usage && (usage.input_tokens !== undefined || usage.output_tokens !== undefined)) {
+        onUsage({
+          inputTokens: usage.input_tokens || 0,
+          outputTokens: usage.output_tokens || 0,
+          totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+          ...(usage.cache_creation_input_tokens ? { cacheCreationTokens: usage.cache_creation_input_tokens } : {}),
+          ...(usage.cache_read_input_tokens ? { cacheReadTokens: usage.cache_read_input_tokens } : {}),
+        });
+      }
+      break;
+    }
+    case 'message_delta': {
+      // Anthropic 的 message_delta usage 在事件顶层，不在 delta 里
+      const usage = event.usage;
+      if (usage && (usage.input_tokens !== undefined || usage.output_tokens !== undefined)) {
+        onUsage({
+          inputTokens: usage.input_tokens || 0,
+          outputTokens: usage.output_tokens || 0,
+          totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+          ...(usage.cache_creation_input_tokens ? { cacheCreationTokens: usage.cache_creation_input_tokens } : {}),
+          ...(usage.cache_read_input_tokens ? { cacheReadTokens: usage.cache_read_input_tokens } : {}),
+        });
       }
       break;
     }

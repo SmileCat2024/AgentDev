@@ -9,7 +9,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { createServer as createNetServer, Server, Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -223,6 +223,9 @@ class ViewerWorker {
       case 'update-agent-inspector':
         this.handleUpdateAgentInspector(msg);
         break;
+      case 'update-agent-overview':
+        this.handleUpdateAgentOverview(msg);
+        break;
       case 'push-messages':
         this.handlePushMessages(msg);
         break;
@@ -358,6 +361,13 @@ class ViewerWorker {
     const hooksMatch = url.match(/^\/api\/agents\/([^/]+)\/hooks$/);
     if (hooksMatch && req.method === 'GET') {
       this.handleGetAgentHooks(req, res, hooksMatch[1]);
+      return;
+    }
+
+    // GET /api/agents/:id/overview - 指定 Agent 的概览统计
+    const overviewMatch = url.match(/^\/api\/agents\/([^/]+)\/overview$/);
+    if (overviewMatch && req.method === 'GET') {
+      this.handleGetAgentOverview(req, res, overviewMatch[1]);
       return;
     }
 
@@ -582,6 +592,18 @@ class ViewerWorker {
       features: [],
       hooks: [],
     }));
+  }
+
+  private handleGetAgentOverview(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(session.overview || this.createEmptyOverview()));
   }
 
   /**
@@ -834,6 +856,7 @@ class ViewerWorker {
         events: [],
         lastEventCount: 0,
         logs: [],
+        overview: this.createEmptyOverview(),
       };
       this.agentSessions.set(agentId, session);
     }
@@ -881,7 +904,7 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector, activeInputRequest } = msg;
+    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector, overview, activeInputRequest } = msg;
     const session = this.getOrCreateSession(agentId, name);
 
     // 存储项目根目录（用于模板文件加载）
@@ -903,6 +926,9 @@ class ViewerWorker {
 
     if (hookInspector) {
       session.hookInspector = hookInspector;
+    }
+    if (overview) {
+      session.overview = overview;
     }
 
     // 恢复活跃的输入请求（用于重连后恢复输入框）
@@ -944,6 +970,14 @@ class ViewerWorker {
     this.updateSessionActivity(agentId);
   }
 
+  public handleUpdateAgentOverview(msg: { agentId: string; overview: AgentOverviewSnapshot }): void {
+    const { agentId, overview } = msg;
+    const session = this.agentSessions.get(agentId);
+    if (!session) return;
+    session.overview = overview;
+    this.updateSessionActivity(agentId);
+  }
+
   /**
    * 清空 Feature 模板映射（当 Agent 断开连接时调用）
    */
@@ -973,6 +1007,28 @@ class ViewerWorker {
       this.updateSessionActivity(agentId);
       this.enforceMemoryLimits(session);
     }
+  }
+
+  private createEmptyOverview(): AgentOverviewSnapshot {
+    return {
+      updatedAt: 0,
+      context: {
+        messageCount: 0,
+        charCount: 0,
+        toolCallCount: 0,
+        turnCount: 0,
+      },
+      usageStats: {
+        totalUsage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+        calls: [],
+        totalRequests: 0,
+        totalCacheHitRequests: 0,
+      },
+    };
   }
 
   /**
@@ -1977,6 +2033,252 @@ class ViewerWorker {
       gap: 12px;
     }
 
+    .overview-usage-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .context-chip-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .context-chip {
+      padding: 14px 15px;
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      background:
+        linear-gradient(135deg, rgba(91, 192, 255, 0.08), rgba(255, 156, 100, 0.08)),
+        rgba(255, 255, 255, 0.03);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 96px;
+    }
+
+    body[data-theme="light"] .context-chip {
+      background:
+        linear-gradient(135deg, rgba(91, 192, 255, 0.12), rgba(255, 156, 100, 0.10)),
+        rgba(255, 255, 255, 0.92);
+    }
+
+    .context-chip-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+    }
+
+    .context-chip-value {
+      font-size: 22px;
+      line-height: 1;
+      font-weight: 800;
+      color: var(--text-primary);
+    }
+
+    .context-chip-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .usage-card {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+        rgba(255, 255, 255, 0.02);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 184px;
+    }
+
+    body[data-theme="light"] .usage-card {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 250, 250, 0.88)),
+        rgba(255, 255, 255, 0.9);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+    }
+
+    .usage-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .usage-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-primary);
+    }
+
+    .usage-card-subtitle {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .usage-card-total {
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 800;
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+
+    .usage-bar {
+      display: flex;
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .usage-bar-fill {
+      height: 100%;
+    }
+
+    .usage-bar-fill.input {
+      background: linear-gradient(90deg, #5bc0ff, #8be8ff);
+    }
+
+    .usage-bar-fill.output {
+      background: linear-gradient(90deg, #ff9c64, #ffd17b);
+    }
+
+    .usage-split-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .usage-split-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .legend-dot.input {
+      background: #73d6ff;
+    }
+
+    .legend-dot.output {
+      background: #ffb576;
+    }
+
+    .usage-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .usage-stat-cell {
+      padding: 10px 11px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    body[data-theme="light"] .usage-stat-cell {
+      background: rgba(248, 250, 252, 0.9);
+      border-color: rgba(15, 23, 42, 0.06);
+    }
+
+    .usage-stat-cell-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin-bottom: 5px;
+    }
+
+    .usage-stat-cell-value {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .rate-ring-card {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 16px;
+      min-height: 92px;
+    }
+
+    .rate-ring {
+      width: 92px;
+      height: 92px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background:
+        conic-gradient(#7dd3a4 calc(var(--ring-percent) * 1%), rgba(255,255,255,0.08) 0);
+      position: relative;
+    }
+
+    .rate-ring::after {
+      content: '';
+      position: absolute;
+      inset: 10px;
+      border-radius: 50%;
+      background: var(--panel-bg);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    body[data-theme="light"] .rate-ring::after {
+      background: #ffffff;
+      border-color: rgba(15, 23, 42, 0.06);
+    }
+
+    .rate-ring-inner {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .rate-ring-value {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text-primary);
+      line-height: 1;
+    }
+
+    .rate-ring-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+    }
+
+    .rate-ring-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
     .hooks-collapsible {
       border: 1px solid var(--border-color);
       border-radius: 14px;
@@ -2780,6 +3082,14 @@ class ViewerWorker {
     }
 
     @media (max-width: 1360px) {
+      .overview-usage-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .context-chip-grid {
+        grid-template-columns: 1fr;
+      }
+
       .feature-grid {
         grid-template-columns: 1fr;
       }
@@ -3479,10 +3789,18 @@ class ViewerWorker {
     </aside>
 
     <aside class="right-rail" id="right-rail">
-      <button class="rail-button" id="rail-workspace" title="Overview" data-panel="workspace">
+      <button class="rail-button" id="rail-workspace" title="Structure" data-panel="workspace">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <rect x="3" y="4" width="18" height="16" rx="2"></rect>
           <path d="M9 4v16"></path>
+        </svg>
+      </button>
+      <button class="rail-button" id="rail-monitor" title="Monitor" data-panel="monitor">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M4 19h16"></path>
+          <path d="M7 16V9"></path>
+          <path d="M12 16V5"></path>
+          <path d="M17 16v-4"></path>
         </svg>
       </button>
       <button class="rail-button" id="rail-hooks" title="Features" data-panel="hooks">
@@ -3598,6 +3916,8 @@ class ViewerWorker {
     let currentLanguage = localStorage.getItem('agentdev-language') || 'zh';
     let currentHookInspector = { lifecycleOrder: [], features: [], hooks: [] };
     let currentHookInspectorSignature = '';
+    let currentOverviewSnapshot = getEmptyOverviewSnapshot();
+    let currentOverviewSignature = '';
     let currentLogs = [];
     let currentLogsSignature = '';
     let currentMcpInfo = null;
@@ -3627,16 +3947,23 @@ class ViewerWorker {
         status_no_agent: '无 Agent',
         empty_waiting: '等待消息中...',
         panel_hint: '选择右侧功能按钮以展开面板。',
-        panel_overview: '总览',
+        panel_structure: '结构',
+        panel_monitor: '监视',
         panel_features: '功能特性',
         panel_reverse_hooks: '反向钩子',
         panel_logs: '日志',
         panel_mcp: 'MCP',
-        panel_loop_flow: 'Loop Flow',
+        panel_loop_flow: '工作流',
+        panel_runtime: '运行概览',
+        panel_current_turn: '本轮',
+        panel_session_total: '累计',
+        panel_context: '上下文',
+        panel_features_summary: '功能概览',
         panel_select_lifecycle: '选择一个生命周期阶段',
         panel_inspector: '检查器',
         panel_connection: '连接状态',
         panel_messages: '消息数',
+        panel_usage: '用量',
         panel_features_label: '功能特性',
         panel_status_summary: '状态分布',
         panel_enabled: '已启用',
@@ -3657,8 +3984,30 @@ class ViewerWorker {
         panel_attached: '已挂载',
         panel_no_handlers: '当前没有挂载任何处理函数。',
         stat_active_agent: '当前 Agent',
-        stat_hook_slots: 'Hook 已占用',
-        stat_decision_points: '决策点',
+        stat_context_length: '上下文长度',
+        stat_turn_tokens: '本轮 Tokens',
+        stat_total_tokens: '累计 Tokens',
+        stat_cache_hit_rate: '缓存命中率',
+        stat_turn_requests: '本轮请求数',
+        metric_messages: '消息数',
+        metric_chars: '字符数',
+        metric_turns: '轮次',
+        metric_tool_calls: '工具调用',
+        metric_input_tokens: '输入',
+        metric_output_tokens: '输出',
+        metric_requests: 'LLM 请求',
+        metric_cache_hit_requests: '命中请求',
+        metric_cache_miss_requests: '未命中请求',
+        metric_avg_per_request: '每次平均',
+        metric_cache_read: '缓存读取',
+        metric_cache_write: '缓存写入',
+        metric_cache_hit_rate: '命中率',
+        metric_input_share: '输入占比',
+        metric_output_share: '输出占比',
+        metric_latest_turn: '最近一轮',
+        metric_session_total: '整个会话',
+        metric_no_calls: '还没有 LLM 请求',
+        metric_unavailable: '暂无',
         feature_source_missing: '暂无源码信息',
         feature_enabled: 'enabled',
         feature_partial: 'partial',
@@ -3673,10 +4022,13 @@ class ViewerWorker {
         feature_tool_render: 'render',
         feature_open_details: '查看详情',
         feature_status_label: '状态',
-        mcp_section_kicker: '模型上下文协议',
-        mcp_hero_title: '调试器 MCP 服务',
-        overview_kicker: 'ReAct 循环拓扑',
-        overview_hero_title: 'Feature Hooks 映射',
+        mcp_section_kicker: 'MCP 服务器',
+        mcp_hero_title: 'Debugger Hub MCP 服务',
+        structure_kicker: 'ReAct 循环拓扑',
+        structure_hero_title: 'Feature Hooks 映射',
+        structure_subtitle: '查看当前 agent 的 hook 映射、循环阶段说明，以及用于阅读会话链路的开发者视角解释。',
+        overview_kicker: '运行监视',
+        overview_hero_title: '一眼看清本轮、累计和缓存',
         mcp_item_tool: '工具',
         mcp_item_resource: '资源',
         mcp_item_prompt: '提示模板',
@@ -3688,7 +4040,8 @@ class ViewerWorker {
         theme_toggle_dark: '切换到深色模式',
         language_toggle: '切换到英文',
         language_toggle_short: 'EN',
-        workspace_tooltip: '总览',
+        structure_tooltip: '结构',
+        monitor_tooltip: '监视',
         features_tooltip: '功能特性',
         reverse_hooks_tooltip: '反向钩子',
         logs_tooltip: '日志',
@@ -3741,7 +4094,7 @@ class ViewerWorker {
         subagent_done: '已完成',
         subagent_view_messages: '查看消息 >',
         delete_failed_generic: '删除失败',
-        overview_subtitle: '查看当前 agent 的 hook 映射、循环阶段说明以及用于阅读会话链路的开发者视角解释。',
+        overview_subtitle: '查看上下文、Token 消耗和缓存命中等信息',
       },
       en: {
         page_title: 'Agent Debugger',
@@ -3753,16 +4106,23 @@ class ViewerWorker {
         status_no_agent: 'No agent',
         empty_waiting: 'Waiting for messages...',
         panel_hint: 'Select a tool on the right rail to open the panel.',
-        panel_overview: 'Overview',
+        panel_structure: 'Structure',
+        panel_monitor: 'Monitor',
         panel_features: 'Features',
         panel_reverse_hooks: 'Reverse Hooks',
         panel_logs: 'Logs',
         panel_mcp: 'MCP',
-        panel_loop_flow: 'Loop Flow',
+        panel_loop_flow: 'Workflow',
+        panel_runtime: 'Runtime Overview',
+        panel_current_turn: 'Current Turn',
+        panel_session_total: 'Session Total',
+        panel_context: 'Context',
+        panel_features_summary: 'Feature Summary',
         panel_select_lifecycle: 'Select a lifecycle stage',
         panel_inspector: 'Inspector',
         panel_connection: 'Connection',
         panel_messages: 'Messages',
+        panel_usage: 'Usage',
         panel_features_label: 'Features',
         panel_status_summary: 'Status Mix',
         panel_enabled: 'enabled',
@@ -3783,8 +4143,30 @@ class ViewerWorker {
         panel_attached: 'attached',
         panel_no_handlers: 'No attached handlers.',
         stat_active_agent: 'Active Agent',
-        stat_hook_slots: 'Hook Slots Filled',
-        stat_decision_points: 'Decision Points',
+        stat_context_length: 'Context Length',
+        stat_turn_tokens: 'Turn Tokens',
+        stat_total_tokens: 'Total Tokens',
+        stat_cache_hit_rate: 'Cache Hit Rate',
+        stat_turn_requests: 'Turn Requests',
+        metric_messages: 'Messages',
+        metric_chars: 'Characters',
+        metric_turns: 'Turns',
+        metric_tool_calls: 'Tool Calls',
+        metric_input_tokens: 'Input',
+        metric_output_tokens: 'Output',
+        metric_requests: 'LLM Requests',
+        metric_cache_hit_requests: 'Hit Requests',
+        metric_cache_miss_requests: 'Miss Requests',
+        metric_avg_per_request: 'Avg / Request',
+        metric_cache_read: 'Cache Read',
+        metric_cache_write: 'Cache Write',
+        metric_cache_hit_rate: 'Hit Rate',
+        metric_input_share: 'Input Share',
+        metric_output_share: 'Output Share',
+        metric_latest_turn: 'Latest Turn',
+        metric_session_total: 'Whole Session',
+        metric_no_calls: 'No LLM requests yet',
+        metric_unavailable: 'N/A',
         feature_source_missing: 'No source metadata',
         feature_enabled: 'enabled',
         feature_partial: 'partial',
@@ -3801,8 +4183,11 @@ class ViewerWorker {
         feature_status_label: 'Status',
         mcp_section_kicker: 'Model Context Protocol',
         mcp_hero_title: 'Debugger MCP Server',
-        overview_kicker: 'ReAct Loop Topology',
-        overview_hero_title: 'Feature Hooks Map',
+        structure_kicker: 'ReAct Loop Topology',
+        structure_hero_title: 'Feature Hooks Map',
+        structure_subtitle: 'Inspect the current agent hook map, loop timing guide, and developer-facing explanations for reading the session flow.',
+        overview_kicker: 'Runtime Monitor',
+        overview_hero_title: 'Current turn, totals, and cache at a glance',
         mcp_item_tool: 'tool',
         mcp_item_resource: 'resource',
         mcp_item_prompt: 'prompt',
@@ -3814,7 +4199,8 @@ class ViewerWorker {
         theme_toggle_dark: 'Switch to dark mode',
         language_toggle: 'Switch to Chinese',
         language_toggle_short: '中',
-        workspace_tooltip: 'Overview',
+        structure_tooltip: 'Structure',
+        monitor_tooltip: 'Monitor',
         features_tooltip: 'Features',
         reverse_hooks_tooltip: 'Reverse Hooks',
         logs_tooltip: 'Logs',
@@ -3867,7 +4253,7 @@ class ViewerWorker {
         subagent_done: 'Completed',
         subagent_view_messages: 'View messages >',
         delete_failed_generic: 'Delete failed',
-        overview_subtitle: 'Inspect the current agent hook map, loop timing guide, and developer-facing explanations for reading the session flow.',
+        overview_subtitle: 'Separate current context, current-turn usage, session totals, and request-level cache hits so each metric means exactly one thing.',
       },
     };
 
@@ -4024,6 +4410,66 @@ class ViewerWorker {
       return JSON.stringify(snapshot || { lifecycleOrder: [], features: [], hooks: [] });
     }
 
+    function getEmptyOverviewSnapshot() {
+      return {
+        updatedAt: 0,
+        context: {
+          messageCount: 0,
+          charCount: 0,
+          toolCallCount: 0,
+          turnCount: 0,
+        },
+        usageStats: {
+          totalUsage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          calls: [],
+          totalRequests: 0,
+          totalCacheHitRequests: 0,
+        },
+      };
+    }
+
+    function normalizeOverviewSnapshot(snapshot) {
+      const empty = getEmptyOverviewSnapshot();
+      if (!snapshot || typeof snapshot !== 'object') {
+        return empty;
+      }
+
+      return {
+        updatedAt: typeof snapshot.updatedAt === 'number' ? snapshot.updatedAt : 0,
+        context: {
+          messageCount: typeof snapshot.context?.messageCount === 'number' ? snapshot.context.messageCount : 0,
+          charCount: typeof snapshot.context?.charCount === 'number' ? snapshot.context.charCount : 0,
+          toolCallCount: typeof snapshot.context?.toolCallCount === 'number' ? snapshot.context.toolCallCount : 0,
+          turnCount: typeof snapshot.context?.turnCount === 'number' ? snapshot.context.turnCount : 0,
+        },
+        usageStats: {
+          totalUsage: {
+            inputTokens: typeof snapshot.usageStats?.totalUsage?.inputTokens === 'number' ? snapshot.usageStats.totalUsage.inputTokens : 0,
+            outputTokens: typeof snapshot.usageStats?.totalUsage?.outputTokens === 'number' ? snapshot.usageStats.totalUsage.outputTokens : 0,
+            totalTokens: typeof snapshot.usageStats?.totalUsage?.totalTokens === 'number' ? snapshot.usageStats.totalUsage.totalTokens : 0,
+            cacheCreationTokens: typeof snapshot.usageStats?.totalUsage?.cacheCreationTokens === 'number' ? snapshot.usageStats.totalUsage.cacheCreationTokens : 0,
+            cacheReadTokens: typeof snapshot.usageStats?.totalUsage?.cacheReadTokens === 'number' ? snapshot.usageStats.totalUsage.cacheReadTokens : 0,
+            reasoningTokens: typeof snapshot.usageStats?.totalUsage?.reasoningTokens === 'number' ? snapshot.usageStats.totalUsage.reasoningTokens : 0,
+            audioTokens: typeof snapshot.usageStats?.totalUsage?.audioTokens === 'number' ? snapshot.usageStats.totalUsage.audioTokens : 0,
+          },
+          calls: Array.isArray(snapshot.usageStats?.calls) ? snapshot.usageStats.calls.map((call) => ({
+            ...call,
+            cacheHitRequests: typeof call?.cacheHitRequests === 'number' ? call.cacheHitRequests : 0,
+          })) : [],
+          totalRequests: typeof snapshot.usageStats?.totalRequests === 'number' ? snapshot.usageStats.totalRequests : 0,
+          totalCacheHitRequests: typeof snapshot.usageStats?.totalCacheHitRequests === 'number' ? snapshot.usageStats.totalCacheHitRequests : 0,
+        },
+      };
+    }
+
+    function getOverviewSignature(snapshot) {
+      return JSON.stringify(normalizeOverviewSnapshot(snapshot));
+    }
+
     function normalizeHookInspector(snapshot) {
       const raw = snapshot || { lifecycleOrder: [], features: [], hooks: [] };
       const hookMap = new Map((raw.hooks || []).map(group => [group.lifecycle, group]));
@@ -4054,12 +4500,149 @@ class ViewerWorker {
       }
     }
 
+    function setCurrentOverviewSnapshot(snapshot) {
+      const normalized = normalizeOverviewSnapshot(snapshot);
+      currentOverviewSnapshot = normalized;
+      currentOverviewSignature = getOverviewSignature(normalized);
+    }
+
     function setCurrentLogs(logs) {
       currentLogs = Array.isArray(logs) ? logs : [];
       currentLogsSignature = JSON.stringify({
         count: currentLogs.length,
         last: currentLogs.length > 0 ? currentLogs[currentLogs.length - 1].id : null,
       });
+    }
+
+    function formatMetricNumber(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return '0';
+      }
+      return value.toLocaleString();
+    }
+
+    function formatRate(numerator, denominator) {
+      if (!denominator) {
+        return '0%';
+      }
+      return Math.round((numerator / denominator) * 100) + '%';
+    }
+
+    function getLatestCallSummary(overview) {
+      const calls = Array.isArray(overview?.usageStats?.calls) ? overview.usageStats.calls : [];
+      if (calls.length === 0) return null;
+      return calls.slice().sort((a, b) => (a.callIndex || 0) - (b.callIndex || 0))[calls.length - 1];
+    }
+
+    function getUsageBreakdown(summary, fallbackRequests = 0) {
+      const totalUsage = summary?.totalUsage || {};
+      const totalTokens = totalUsage.totalTokens || 0;
+      const inputTokens = totalUsage.inputTokens || 0;
+      const outputTokens = totalUsage.outputTokens || 0;
+      const requests = typeof summary?.stepCount === 'number'
+        ? summary.stepCount
+        : fallbackRequests;
+      const cacheHitRequests = typeof summary?.cacheHitRequests === 'number'
+        ? summary.cacheHitRequests
+        : 0;
+
+      return {
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        requests,
+        cacheHitRequests,
+        cacheMissRequests: Math.max(0, requests - cacheHitRequests),
+        cacheHitRate: formatRate(cacheHitRequests, requests),
+        avgPerRequest: requests > 0 ? Math.round(totalTokens / requests) : 0,
+        cacheReadTokens: totalUsage.cacheReadTokens || 0,
+        cacheCreationTokens: totalUsage.cacheCreationTokens || 0,
+        inputShare: totalTokens > 0 ? Math.round((inputTokens / totalTokens) * 100) : 0,
+        outputShare: totalTokens > 0 ? Math.round((outputTokens / totalTokens) * 100) : 0,
+      };
+    }
+
+    function renderTokenBar(inputTokens, outputTokens) {
+      const total = inputTokens + outputTokens;
+      const inputWidth = total > 0 ? (inputTokens / total) * 100 : 50;
+      const outputWidth = total > 0 ? (outputTokens / total) * 100 : 50;
+      return [
+        '<div class="usage-bar">',
+        '<div class="usage-bar-fill input" style="width:' + inputWidth + '%"></div>',
+        '<div class="usage-bar-fill output" style="width:' + outputWidth + '%"></div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderRateRing(percent, label, meta) {
+      const safePercent = Math.max(0, Math.min(100, percent));
+      return [
+        '<div class="rate-ring-card">',
+        '<div class="rate-ring" style="--ring-percent:' + safePercent + ';">',
+        '<div class="rate-ring-inner">',
+        '<div class="rate-ring-value">' + safePercent + '%</div>',
+        '<div class="rate-ring-label">' + escapeHtml(label) + '</div>',
+        '</div>',
+        '</div>',
+        '<div class="rate-ring-meta">' + escapeHtml(meta) + '</div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderUsageCard(title, summaryLabel, breakdown) {
+      return [
+        '<div class="usage-card">',
+        '<div class="usage-card-header">',
+        '<div>',
+        '<div class="usage-card-title">' + escapeHtml(title) + '</div>',
+        '<div class="usage-card-subtitle">' + escapeHtml(summaryLabel) + '</div>',
+        '</div>',
+        '<div class="usage-card-total">' + formatMetricNumber(breakdown.totalTokens) + '</div>',
+        '</div>',
+        renderTokenBar(breakdown.inputTokens, breakdown.outputTokens),
+        '<div class="usage-split-legend">',
+        '<span><i class="legend-dot input"></i>' + escapeHtml(t('metric_input_tokens')) + ' ' + formatMetricNumber(breakdown.inputTokens) + '</span>',
+        '<span><i class="legend-dot output"></i>' + escapeHtml(t('metric_output_tokens')) + ' ' + formatMetricNumber(breakdown.outputTokens) + '</span>',
+        '</div>',
+        '<div class="usage-stat-grid">',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_requests')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.requests) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_avg_per_request')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.avgPerRequest) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_input_share')) + '</div><div class="usage-stat-cell-value">' + breakdown.inputShare + '%</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_output_share')) + '</div><div class="usage-stat-cell-value">' + breakdown.outputShare + '%</div></div>',
+        '</div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderCacheCard(title, breakdown) {
+      const percent = breakdown.requests > 0
+        ? Math.round((breakdown.cacheHitRequests / breakdown.requests) * 100)
+        : 0;
+      return [
+        '<div class="usage-card cache-card">',
+        '<div class="usage-card-header">',
+        '<div class="usage-card-title">' + escapeHtml(title) + '</div>',
+        '<div class="usage-card-subtitle">' + escapeHtml(t('metric_cache_hit_rate')) + '</div>',
+        '</div>',
+        renderRateRing(percent, t('metric_cache_hit_rate'), breakdown.cacheHitRequests + ' / ' + breakdown.requests),
+        '<div class="usage-stat-grid">',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_hit_requests')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheHitRequests) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_miss_requests')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheMissRequests) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_read')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheReadTokens) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_write')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheCreationTokens) + '</div></div>',
+        '</div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderContextChip(label, value, meta) {
+      return [
+        '<div class="context-chip">',
+        '<div class="context-chip-label">' + escapeHtml(label) + '</div>',
+        '<div class="context-chip-value">' + escapeHtml(value) + '</div>',
+        '<div class="context-chip-meta">' + escapeHtml(meta) + '</div>',
+        '</div>',
+      ].join('');
     }
 
     function setCurrentMcpInfo(info) {
@@ -4546,17 +5129,7 @@ class ViewerWorker {
     window.openFeatureDetails = openFeatureDetails;
     window.closeFeatureDetails = closeFeatureDetails;
 
-    function renderOverviewPanel() {
-      const hookIcons = {
-        AgentInitiate: 'A',
-        AgentDestroy: 'D',
-        CallStart: 'C',
-        CallFinish: 'C',
-        StepStart: 'S',
-        StepFinish: 'R',
-        ToolUse: 'T',
-        ToolFinished: 'F',
-      };
+    function renderStructurePanel() {
       const activeAgent = allAgents.find(agent => agent.id === currentAgentId);
       const connected = activeAgent ? (activeAgent.connected !== false ? t('status_connected') : t('status_disconnected')) : t('status_no_agent');
       const totalHooks = currentHookInspector.hooks.reduce((sum, group) => sum + group.entries.length, 0);
@@ -4576,13 +5149,14 @@ class ViewerWorker {
       return [
         '<div class="hooks-panel">',
         '<section class="hooks-hero">',
-        '<div class="hooks-kicker">' + escapeHtml(t('overview_kicker')) + '</div>',
-        '<div class="hooks-hero-title">' + escapeHtml(t('overview_hero_title')) + '</div>',
-        '<div class="hooks-hero-subtitle">' + escapeHtml(t('overview_subtitle')) + '</div>',
+        '<div class="hooks-kicker">' + escapeHtml(t('structure_kicker')) + '</div>',
+        '<div class="hooks-hero-title">' + escapeHtml(t('structure_hero_title')) + '</div>',
+        '<div class="hooks-hero-subtitle">' + escapeHtml(t('structure_subtitle')) + '</div>',
         '<div class="hooks-stats">',
         '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_active_agent')) + '</div><div class="hooks-stat-value">' + escapeHtml(activeAgent ? activeAgent.name : t('active_none')) + '</div></div>',
-        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_hook_slots')) + '</div><div class="hooks-stat-value">' + String(totalHooks) + '</div></div>',
-        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_decision_points')) + '</div><div class="hooks-stat-value">' + String(decisionHooks) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">Hooks</div><div class="hooks-stat-value">' + String(totalHooks) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">Decision</div><div class="hooks-stat-value">' + String(decisionHooks) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('panel_features_label')) + '</div><div class="hooks-stat-value">' + String(currentHookInspector.features.length) + '</div></div>',
         '</div>',
         '</section>',
         '<section class="hooks-section">',
@@ -4599,6 +5173,55 @@ class ViewerWorker {
         '<section class="hooks-section">',
         '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(selectedOverviewLifecycle) + '</div><div class="hooks-section-meta">' + escapeHtml(selectedDoc.title[currentLanguage] || selectedDoc.title.zh) + '</div></div>',
         '<div class="feature-panel-section overview-doc"><div class="markdown-body">' + marked.parse(selectedDoc.body[currentLanguage] || selectedDoc.body.zh) + '</div></div>',
+        '</section>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderMonitorPanel() {
+      const activeAgent = allAgents.find(agent => agent.id === currentAgentId);
+      const connected = activeAgent ? (activeAgent.connected !== false ? t('status_connected') : t('status_disconnected')) : t('status_no_agent');
+      const overview = currentOverviewSnapshot || getEmptyOverviewSnapshot();
+      const totalUsage = overview.usageStats?.totalUsage || {};
+      const latestCall = getLatestCallSummary(overview);
+      const currentBreakdown = getUsageBreakdown(latestCall, 0);
+      const totalBreakdown = getUsageBreakdown({
+        totalUsage,
+        stepCount: overview.usageStats.totalRequests || 0,
+        cacheHitRequests: overview.usageStats.totalCacheHitRequests || 0,
+      }, overview.usageStats.totalRequests || 0);
+      const contextLengthLabel = formatMetricNumber(overview.context.charCount) + ' chars';
+      const latestTurnLabel = latestCall ? formatMetricNumber(currentBreakdown.totalTokens) : t('metric_no_calls');
+      return [
+        '<div class="hooks-panel">',
+        '<section class="hooks-hero">',
+        '<div class="hooks-kicker">' + escapeHtml(t('overview_kicker')) + '</div>',
+        '<div class="hooks-hero-title">' + escapeHtml(t('overview_hero_title')) + '</div>',
+        '<div class="hooks-hero-subtitle">' + escapeHtml(t('overview_subtitle')) + '</div>',
+        '<div class="hooks-stats">',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_active_agent')) + '</div><div class="hooks-stat-value">' + escapeHtml(activeAgent ? activeAgent.name : t('active_none')) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_context_length')) + '</div><div class="hooks-stat-value">' + escapeHtml(contextLengthLabel) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_turn_tokens')) + '</div><div class="hooks-stat-value">' + escapeHtml(latestTurnLabel) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_cache_hit_rate')) + '</div><div class="hooks-stat-value">' + escapeHtml(totalBreakdown.cacheHitRate) + '</div></div>',
+        '</div>',
+        '</section>',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_runtime')) + '</div><div class="hooks-section-meta">' + escapeHtml(connected) + '</div></div>',
+        '<div class="overview-usage-grid">',
+        renderUsageCard(t('panel_current_turn'), latestCall ? t('metric_latest_turn') : t('metric_no_calls'), currentBreakdown),
+        renderCacheCard(t('panel_current_turn'), currentBreakdown),
+        renderUsageCard(t('panel_session_total'), t('metric_session_total'), totalBreakdown),
+        renderCacheCard(t('panel_session_total'), totalBreakdown),
+        '</div>',
+        '</section>',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_context')) + '</div><div class="hooks-section-meta">' + escapeHtml(t('panel_connection')) + ': ' + escapeHtml(connected) + '</div></div>',
+        '<div class="context-chip-grid">',
+        renderContextChip(t('metric_messages'), formatMetricNumber(overview.context.messageCount), t('panel_context')),
+        renderContextChip(t('metric_chars'), formatMetricNumber(overview.context.charCount), t('stat_context_length')),
+        renderContextChip(t('metric_turns'), formatMetricNumber(overview.context.turnCount), t('metric_session_total')),
+        renderContextChip(t('metric_tool_calls'), formatMetricNumber(overview.context.toolCallCount), t('metric_latest_turn')),
+        '</div>',
         '</section>',
         '</div>',
       ].join('');
@@ -4754,8 +5377,12 @@ class ViewerWorker {
 
     const featurePanels = {
       workspace: {
-        title: () => t('panel_overview'),
-        render: () => renderOverviewPanel(),
+        title: () => t('panel_structure'),
+        render: () => renderStructurePanel(),
+      },
+      monitor: {
+        title: () => t('panel_monitor'),
+        render: () => renderMonitorPanel(),
       },
       hooks: {
         title: () => t('panel_features'),
@@ -4843,6 +5470,7 @@ class ViewerWorker {
       const panelResizerEl = document.getElementById('feature-panel-resizer');
       const notificationCharLabel = document.querySelector('.notification-char-count')?.nextElementSibling;
       const workspaceButton = document.getElementById('rail-workspace');
+      const monitorButton = document.getElementById('rail-monitor');
       const hooksButton = document.getElementById('rail-hooks');
       const inspectorButton = document.getElementById('rail-inspector');
       const logsButton = document.getElementById('rail-logs');
@@ -4851,7 +5479,8 @@ class ViewerWorker {
       if (sidebarToggleEl) sidebarToggleEl.title = t('sidebar_toggle');
       if (panelResizerEl) panelResizerEl.title = t('resize_panel');
       if (notificationCharLabel) notificationCharLabel.textContent = t('chars');
-      if (workspaceButton) workspaceButton.title = t('workspace_tooltip');
+      if (workspaceButton) workspaceButton.title = t('structure_tooltip');
+      if (monitorButton) monitorButton.title = t('monitor_tooltip');
       if (hooksButton) hooksButton.title = t('features_tooltip');
       if (inspectorButton) inspectorButton.title = t('reverse_hooks_tooltip');
       if (logsButton) logsButton.title = t('logs_tooltip');
@@ -4897,7 +5526,7 @@ class ViewerWorker {
 
       if (!activeFeaturePanel || !featurePanels[activeFeaturePanel]) {
         featurePanel.classList.remove('open');
-        featurePanelTitle.textContent = t('panel_overview');
+        featurePanelTitle.textContent = t('panel_structure');
         featurePanelBody.innerHTML = getFeaturePanelEmptyHtml();
         railButtons.forEach(button => button.classList.remove('active'));
         return;
@@ -5296,6 +5925,7 @@ class ViewerWorker {
           currentMessages = [];
           setCurrentLogs([]);
           setCurrentHookInspector({ lifecycleOrder: [], features: [], hooks: [] });
+          setCurrentOverviewSnapshot(getEmptyOverviewSnapshot());
           container.innerHTML = getEmptyStateHtml();
           setFollowLatest(true);
           currentAgentTitle.textContent = t('page_title');
@@ -5396,15 +6026,17 @@ class ViewerWorker {
 
     async function loadAgentData(agentId) {
       try {
-        const [msgsRes, toolsRes, hooksRes] = await Promise.all([
+        const [msgsRes, toolsRes, hooksRes, overviewRes] = await Promise.all([
           fetch(\`/api/agents/\${agentId}/messages\`),
           fetch(\`/api/agents/\${agentId}/tools\`),
-          fetch(\`/api/agents/\${agentId}/hooks\`)
+          fetch(\`/api/agents/\${agentId}/hooks\`),
+          fetch(\`/api/agents/\${agentId}/overview\`)
         ]);
 
         const msgsData = await msgsRes.json();
         const tools = await toolsRes.json();
         setCurrentHookInspector(await hooksRes.json());
+        setCurrentOverviewSnapshot(await overviewRes.json());
 
         currentMessages = msgsData.messages || [];
         toolRenderConfigs = {};
@@ -5488,11 +6120,12 @@ class ViewerWorker {
         }
 
         // 并行请求消息、通知和输入请求
-        const [msgsRes, notifRes, connectionRes, inputRes] = await Promise.all([
+        const [msgsRes, notifRes, connectionRes, inputRes, overviewRes] = await Promise.all([
           fetch(\`/api/agents/\${currentAgentId}/messages\`),
           fetch(\`/api/agents/\${currentAgentId}/notification\`),
           fetch(\`/api/agents/\${currentAgentId}/connection\`),
           fetch(\`/api/agents/\${currentAgentId}/input-requests\`),
+          fetch(\`/api/agents/\${currentAgentId}/overview\`),
         ]);
 
         const connectionData = await connectionRes.json();
@@ -5504,6 +6137,16 @@ class ViewerWorker {
         // 处理通知状态
         const notifData = await notifRes.json();
         updateNotificationStatus(notifData);
+
+        const nextOverview = normalizeOverviewSnapshot(await overviewRes.json());
+        const nextOverviewSignature = getOverviewSignature(nextOverview);
+        if (nextOverviewSignature !== currentOverviewSignature) {
+          currentOverviewSnapshot = nextOverview;
+          currentOverviewSignature = nextOverviewSignature;
+          if (activeFeaturePanel === 'workspace') {
+            renderFeaturePanel();
+          }
+        }
 
         // 处理输入请求（只在变化时重新渲染）
         const inputRequests = await inputRes.json();
@@ -6361,6 +7004,12 @@ if (isMainModule(import.meta.url)) {
     switch (msg.type) {
       case 'register-agent':
         worker.handleRegisterAgent(msg);
+        break;
+      case 'update-agent-inspector':
+        worker.handleUpdateAgentInspector(msg);
+        break;
+      case 'update-agent-overview':
+        worker.handleUpdateAgentOverview(msg);
         break;
       case 'push-messages':
         worker.handlePushMessages(msg);

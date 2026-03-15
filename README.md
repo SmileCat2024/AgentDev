@@ -93,6 +93,13 @@ npm run build
 
 ### 4. 启动调试器
 
+当前有两种后端模式：
+
+- 旧模式：本仓库内置 `ViewerWorker`
+- 新模式：独立宿主 `AgentDevClaw`，可作为 runtime 或 Electron 桌面应用运行
+
+如果你只是要快速验证本仓库的旧链路，仍然可以启动 `ViewerWorker`：
+
 ```bash
 npm run server
 ```
@@ -101,6 +108,58 @@ npm run server
 
 - Web UI: `http://localhost:2026`
 - Debugger MCP: `http://localhost:2026/mcp`
+
+如果你要走当前推荐的独立宿主链路，启动 `D:\code\AgentDevClaw` 的 runtime 或桌面应用后，可直接运行：
+
+```bash
+npm run claw:smoke:runtime
+```
+
+这会保留 `DebugHub` 的现有调用方式，但把调试数据发送到独立的 Claw host，而不是本地 `ViewerWorker`。
+
+当前能力边界：
+
+- `claw` transport 已支持：agent 注册、messages、tools、hooks、overview、notification、logs、current agent 选择、交互式输入回传、模板分发、调试 MCP
+- `AgentDev` 里可以通过 `getDebugCapabilities()` 判断当前 transport 能力
+
+常用示例也可直接走 Claw runtime：
+
+```bash
+npm run claw:agent
+npm run claw:ragent
+npm run claw:qqbot
+```
+
+输入桥 smoke 验证：
+
+```bash
+npm run claw:verify:input
+```
+
+`AgentDevClaw` 默认地址：
+
+- Web UI: `http://127.0.0.1:3030/`
+- Debugger MCP: `http://127.0.0.1:3030/mcp`
+
+如果你使用的是打包后的 Electron 宿主，页面仍然是原有熟悉的 DebugHub，而不是另一套新设计。
+
+如果你想手动设置环境变量：
+
+PowerShell:
+
+```powershell
+$env:AGENTDEV_DEBUG_TRANSPORT = 'claw'
+$env:AGENTDEV_CLAW_RUNTIME_URL = 'http://127.0.0.1:3030'
+npm run claw:smoke
+```
+
+cmd.exe:
+
+```cmd
+set AGENTDEV_DEBUG_TRANSPORT=claw
+set AGENTDEV_CLAW_RUNTIME_URL=http://127.0.0.1:3030
+npm run claw:smoke
+```
 
 ### 5. 运行示例 agent
 
@@ -181,7 +240,7 @@ Feature 自己需要明确两类东西：
 
 ### Debugger MCP
 
-`ViewerWorker` 会把同一份调试状态通过 MCP 只读暴露出去，当前内置：
+当前 debugger host 会把同一份调试状态通过 MCP 只读暴露出去。默认内置：
 
 - Tools: `list_agents`, `get_current_agent`, `get_agent`, `get_hooks`, `query_logs`
 - Resources: `debug://agents`, `debug://agents/current`, `debug://agents/{agentId}`, `debug://agents/{agentId}/hooks`
@@ -248,6 +307,13 @@ while (true) {
 - 初始化资源：`onInitiate()`
 - 运行时控制：反向钩子装饰器，例如 `@ToolUse`、`@StepFinish`
 
+模板相关的当前事实：
+
+- 调试器真正加载的是可执行的 `.render.js`
+- `getTemplatePaths()` 注册的模板会进入调试 session metadata
+- 当宿主是 `AgentDevClaw` 时，runtime 会基于 `featureTemplates + projectRoot` 提供 `/features/*` 和 `/tools/*`
+- 因此最稳妥的做法仍然是确保构建产物里的 `.render.js` 存在且可直接执行
+
 项目内已经有一个实用 skill：
 
 - `.agentdev/skills/agentdev-feature-guide`
@@ -277,7 +343,14 @@ npm run build
 npm test
 npm run server
 npm run agt
+npm run ragt
+npm run qqbot
 npm run dev
+npm run claw:agent
+npm run claw:ragent
+npm run claw:qqbot
+npm run claw:verify
+npm run claw:verify:input
 ```
 
 ## 测试约定

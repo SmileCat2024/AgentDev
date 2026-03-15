@@ -45,6 +45,8 @@ export {
 
 // 配置
 export { loadConfig, listConfigs } from './core/config.js';
+export { getDebugCapabilities } from './core/debug-capabilities.js';
+export { getClawRuntimeUrl, resolveDebugTransportMode } from './core/debug-transport.js';
 
 // 模板系统
 export * from './template/index.js';
@@ -72,6 +74,7 @@ export type {
   AgentSession,
   DebugHubIPCMessage,
 } from './core/types.js';
+export type { DebugCapabilities } from './core/debug-capabilities.js';
 export type { AgentSessionSnapshot, SessionStore } from './core/session-store.js';
 
 // Feature 类型

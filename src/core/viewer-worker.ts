@@ -26,7 +26,6 @@ import {
   TOOL_DISPLAY_NAMES,
   getToolRenderConfig
 } from './render.js';
-import { TemplateRouter } from './template-router.js';
 
 const QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT = 200;
 
@@ -49,8 +48,6 @@ class ViewerWorker {
   // Feature 模板路径映射（模板名 -> 文件路径）
   private featureTemplateMap: Record<string, string> = {};
 
-  // 模板路由器
-  private templateRouter: TemplateRouter = new TemplateRouter();
   private readonly debuggerMcp = new DebuggerMCPServer({
     listAgents: () => this.listAgentSummaries(),
     getAgent: (agentId: string) => this.getAgentDetails(agentId),
@@ -920,8 +917,6 @@ class ViewerWorker {
     // 收集 Feature 模板路径
     if (featureTemplates && typeof featureTemplates === 'object') {
       Object.assign(this.featureTemplateMap, featureTemplates);
-      // 同步到模板路由器
-      this.templateRouter.updateFeatureTemplates(featureTemplates);
     }
 
     if (hookInspector) {

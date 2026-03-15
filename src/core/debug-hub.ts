@@ -27,6 +27,9 @@ import {
   type UserInputResponse,
   type UserInputAction,
 } from './types.js';
+import { ClawDebugClient } from './claw-debug-client.js';
+import { getClawRuntimeUrl, resolveDebugTransportMode } from './debug-transport.js';
+import { getDebugCapabilities, type DebugCapabilities } from './debug-capabilities.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
 type Agent = any;
@@ -41,6 +44,8 @@ interface AgentData {
 
 export class DebugHub {
   private static instance: DebugHub;
+  private readonly transportMode: 'viewer-worker' | 'claw';
+  private readonly clawClient?: ClawDebugClient;
 
   // ========== 状态 ==========
   private agents: Map<string, AgentData> = new Map();
@@ -87,6 +92,13 @@ export class DebugHub {
     this.udsPath = process.env.AGENTDEV_UDS_PATH || getDefaultUDSPath();
     // 使用进程 PID 作为唯一标识，确保多进程环境下 Agent ID 不冲突
     this.processId = String(process.pid);
+    this.transportMode = resolveDebugTransportMode();
+    if (this.transportMode === 'claw') {
+      this.clawClient = new ClawDebugClient({
+        processId: this.processId,
+        projectRoot: process.cwd(),
+      });
+    }
   }
 
   static getInstance(): DebugHub {
@@ -104,6 +116,20 @@ export class DebugHub {
    * @param openBrowser 是否自动打开浏览器（默认 true，已废弃参数）
    */
   async start(port: number = 2026, openBrowser: boolean = true): Promise<void> {
+    if (this.transportMode === 'claw') {
+      this.workerPort = port;
+      try {
+        await this.clawClient?.ping();
+        this.clientReady = true;
+        console.log(`[DebugHub] 已连接到 Claw runtime: ${getClawRuntimeUrl()}`);
+      } catch (err) {
+        console.warn(`[DebugHub] 无法连接到 Claw runtime: ${(err as Error).message}`);
+        console.warn('[DebugHub] 调试功能将被禁用。请先启动 AgentDevClaw runtime。');
+        this.clientReady = false;
+      }
+      return;
+    }
+
     if (this.udsClient) {
       console.log(`[DebugHub] 已连接到 ViewerWorker`);
       return;
@@ -125,6 +151,11 @@ export class DebugHub {
    * 停止调试服务器
    */
   stop(): void {
+    if (this.transportMode === 'claw') {
+      this.clientReady = false;
+      return;
+    }
+
     // 停止重连定时器
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -144,6 +175,14 @@ export class DebugHub {
    * 如果已经连接，则不执行任何操作
    */
   async reconnect(): Promise<void> {
+    if (this.transportMode === 'claw') {
+      await this.start(this.workerPort ?? 2026, false);
+      if (!this.clientReady) {
+        throw new Error('Claw runtime reconnect failed');
+      }
+      return;
+    }
+
     if (this.clientReady && this.udsClient) {
       console.log('[DebugHub] 已经连接，无需重连');
       return;
@@ -206,16 +245,29 @@ export class DebugHub {
       }
 
       // 通知 Worker
-      this.sendToWorker({
-        type: 'register-agent',
-        agentId: id,
-        name: info.name,
-        createdAt: info.registeredAt,
-        projectRoot: process.cwd(), // 传递项目根目录，用于模板文件加载
-        featureTemplates, // 传递 Feature 模板路径映射
-        hookInspector,
-        overview,
-      });
+      if (this.transportMode === 'claw') {
+        void this.clawClient?.registerAgent({
+          agentId: id,
+          name: info.name,
+          projectRoot: process.cwd(),
+          featureTemplates,
+          hookInspector,
+          overview,
+        }).catch(error => {
+          console.error(`[DebugHub] Claw registerAgent 失败: ${(error as Error).message}`);
+        });
+      } else {
+        this.sendToWorker({
+          type: 'register-agent',
+          agentId: id,
+          name: info.name,
+          createdAt: info.registeredAt,
+          projectRoot: process.cwd(), // 传递项目根目录，用于模板文件加载
+          featureTemplates, // 传递 Feature 模板路径映射
+          hookInspector,
+          overview,
+        });
+      }
 
       console.log(`[DebugHub] Agent 已注册: ${id} (${info.name})`);
       return id;
@@ -231,7 +283,13 @@ export class DebugHub {
   unregisterAgent(agentId: string): void {
     const deleted = this.agents.delete(agentId);
     if (deleted) {
-      this.sendToWorker({ type: 'unregister-agent', agentId });
+      if (this.transportMode === 'claw') {
+        void this.clawClient?.unregisterAgent(agentId).catch(error => {
+          console.error(`[DebugHub] Claw unregisterAgent 失败: ${(error as Error).message}`);
+        });
+      } else {
+        this.sendToWorker({ type: 'unregister-agent', agentId });
+      }
       console.log(`[DebugHub] Agent 已注销: ${agentId}`);
 
       // 如果注销的是当前 Agent，切换到另一个
@@ -239,10 +297,16 @@ export class DebugHub {
         const remaining = Array.from(this.agents.keys());
         this.currentAgentId = remaining.length > 0 ? remaining[0] : null;
         if (this.currentAgentId) {
-          this.sendToWorker({
-            type: 'set-current-agent',
-            agentId: this.currentAgentId,
-          });
+          if (this.transportMode === 'claw') {
+            void this.clawClient?.selectAgent(this.currentAgentId).catch(error => {
+              console.error(`[DebugHub] Claw selectAgent 失败: ${(error as Error).message}`);
+            });
+          } else if (this.transportMode === 'viewer-worker') {
+            this.sendToWorker({
+              type: 'set-current-agent',
+              agentId: this.currentAgentId,
+            });
+          }
         }
       }
     }
@@ -258,10 +322,19 @@ export class DebugHub {
       return false;
     }
     this.currentAgentId = agentId;
-    this.sendToWorker({
-      type: 'set-current-agent',
-      agentId,
-    });
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.selectAgent(agentId).catch(error => {
+        console.error(`[DebugHub] Claw selectAgent 失败: ${(error as Error).message}`);
+      });
+      console.log(`[DebugHub] 当前 Agent 已切换: ${agentId}`);
+      return true;
+    }
+    if (this.transportMode === 'viewer-worker') {
+      this.sendToWorker({
+        type: 'set-current-agent',
+        agentId,
+      });
+    }
     console.log(`[DebugHub] 当前 Agent 已切换: ${agentId}`);
     return true;
   }
@@ -272,6 +345,13 @@ export class DebugHub {
    * @param messages 消息数组
    */
   pushMessages(agentId: string, messages: Message[]): void {
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.pushMessages(agentId, messages).catch(error => {
+        console.error(`[DebugHub] Claw pushMessages 失败: ${(error as Error).message}`);
+      });
+      return;
+    }
+
     this.sendToWorker({
       type: 'push-messages',
       agentId,
@@ -285,6 +365,13 @@ export class DebugHub {
    * @param tools 工具数组
    */
   registerAgentTools(agentId: string, tools: Tool[]): void {
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.registerTools(agentId, tools).catch(error => {
+        console.error(`[DebugHub] Claw registerTools 失败: ${(error as Error).message}`);
+      });
+      return;
+    }
+
     this.sendToWorker({
       type: 'register-tools',
       agentId,
@@ -293,6 +380,13 @@ export class DebugHub {
   }
 
   updateAgentInspector(agentId: string, hookInspector: HookInspectorSnapshot): void {
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.updateInspector(agentId, hookInspector).catch(error => {
+        console.error(`[DebugHub] Claw updateInspector 失败: ${(error as Error).message}`);
+      });
+      return;
+    }
+
     this.sendToWorker({
       type: 'update-agent-inspector',
       agentId,
@@ -301,6 +395,13 @@ export class DebugHub {
   }
 
   updateAgentOverview(agentId: string, overview: AgentOverviewSnapshot): void {
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.updateOverview(agentId, overview).catch(error => {
+        console.error(`[DebugHub] Claw updateOverview 失败: ${(error as Error).message}`);
+      });
+      return;
+    }
+
     this.sendToWorker({
       type: 'update-agent-overview',
       agentId,
@@ -320,6 +421,14 @@ export class DebugHub {
    */
   getCurrentAgentId(): string | null {
     return this.currentAgentId;
+  }
+
+  getTransportMode(): 'viewer-worker' | 'claw' {
+    return this.transportMode;
+  }
+
+  getCapabilities(): DebugCapabilities {
+    return getDebugCapabilities();
   }
 
   /**
@@ -345,6 +454,9 @@ export class DebugHub {
    * 检查是否已连接到 ViewerWorker
    */
   isConnected(): boolean {
+    if (this.transportMode === 'claw') {
+      return this.clientReady;
+    }
     return this.clientReady && !!this.udsClient;
   }
 
@@ -354,6 +466,13 @@ export class DebugHub {
    * @param notification 通知对象
    */
   pushNotification(agentId: string, notification: Notification): void {
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.pushNotification(agentId, notification).catch(error => {
+        console.error(`[DebugHub] Claw pushNotification 失败: ${(error as Error).message}`);
+      });
+      return;
+    }
+
     this.sendToWorker({
       type: 'push-notification',
       agentId,
@@ -382,6 +501,11 @@ export class DebugHub {
     request: UserInputRequest,
     timeout: number = Infinity,
   ): Promise<UserInputResponse> {
+    if (this.transportMode === 'claw') {
+      return this.clawClient?.requestUserInput(agentId, request, timeout)
+        ?? Promise.reject(new Error('Claw client is not available'));
+    }
+
     const requestId = `input-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     return new Promise((resolve, reject) => {
@@ -517,6 +641,44 @@ export class DebugHub {
    * 确保 ViewerWorker 能够恢复所有 Agent 的注册信息
    */
   private reregisterAllAgents(): void {
+    if (this.transportMode === 'claw') {
+      for (const [id, data] of this.agents) {
+        const hookInspector = (data.agent as any).buildHookInspectorSnapshot?.()
+          || (data.agent as any).hookInspector;
+        const overview = (data.agent as any).buildOverviewSnapshot?.();
+        const featureTemplates = this.agentFeatureTemplates.get(id) || {};
+
+        void this.clawClient?.registerAgent({
+          agentId: id,
+          name: data.info.name,
+          projectRoot: process.cwd(),
+          featureTemplates,
+          hookInspector,
+          overview,
+        }).then(async () => {
+          const tools = (data.agent as any).tools;
+          if (tools && typeof tools.getEntries === 'function') {
+            const entries = tools.getEntries();
+            const toolList = entries.map((e: any) => e.tool);
+            if (toolList.length > 0) {
+              await this.clawClient?.registerTools(id, toolList);
+            }
+          }
+
+          const context = (data.agent as any).getContext?.();
+          if (context && typeof context.getAll === 'function') {
+            const messages = context.getAll();
+            if (messages.length > 0) {
+              await this.clawClient?.pushMessages(id, messages);
+            }
+          }
+        }).catch(error => {
+          console.error(`[DebugHub] Claw re-register 失败: ${(error as Error).message}`);
+        });
+      }
+      return;
+    }
+
     if (this.agents.size === 0) {
       return;
     }

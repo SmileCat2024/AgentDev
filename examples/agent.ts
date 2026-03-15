@@ -1,6 +1,7 @@
 import { ProgrammingHelperAgent } from './ProgrammingHelperAgent.js';
 import { UserInputFeature } from '../src/features/index.js';
 import { FileSessionStore } from '../src/core/session-store.js';
+import { checkDebugTransportRunning, getDebugUiUrl, printDebugTransportHelp, resolveDebugTransportMode } from './debug-runtime.js';
 
 function resolveExampleMCPMode(): string | false | undefined {
   const rawMode = process.env.AGENTDEV_EXAMPLE_MCP?.trim();
@@ -19,34 +20,17 @@ function resolveExampleMCPMode(): string | false | undefined {
 const SESSION_ID = 'examples-programming-helper-last';
 const shouldResumeSession = process.env.AGENTDEV_RESUME_SESSION === '1';
 
-/**
- * 检查 ViewerWorker 是否运行
- */
-async function checkViewerRunning(port: number = 2026): Promise<boolean> {
-  try {
-    const res = await fetch(`http://localhost:${port}/api/agents`);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function main() {
-  // 检查 ViewerWorker 是否运行
-  const isRunning = await checkViewerRunning(2026);
+  const transport = resolveDebugTransportMode();
+  const isRunning = await checkDebugTransportRunning(2026);
   if (!isRunning) {
-    console.error('错误: ViewerWorker 服务器未运行');
-    console.error('请先启动服务器: npm run server');
-    console.error('');
-    console.error('或者在新终端运行:');
-    console.error('  npm run server');
-    console.error('');
+    printDebugTransportHelp(2026);
     console.error('程序将在 5 秒后退出...');
     await new Promise(resolve => setTimeout(resolve, 5000));
     process.exit(1);
   }
 
-  console.log('✓ 已连接到 ViewerWorker\n');
+  console.log(`✓ 已连接到 ${transport}\n`);
   const mcpMode = resolveExampleMCPMode();
   console.log(`[Example] MCP mode: ${mcpMode === undefined ? 'auto' : String(mcpMode)}`);
 
@@ -73,7 +57,7 @@ async function main() {
   }
 
   await programmingAgent.withViewer('编程小助手', 2026, false);
-  console.log('调试页面: http://localhost:2026\n');
+  console.log(`调试页面: ${getDebugUiUrl(2026)}\n`);
 
   // 交互循环
   while (true) {

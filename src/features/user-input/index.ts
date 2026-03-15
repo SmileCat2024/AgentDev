@@ -55,9 +55,16 @@ export class UserInputFeature implements AgentFeature {
 
     // 获取当前注册的 agentId（从 DebugHub）
     const agentId = debugHub.getCurrentAgentId();
+    const capabilities = debugHub.getCapabilities();
 
     if (!agentId) {
       throw new Error('Agent ID not available. UserInputFeature requires withViewer() to be called first.');
+    }
+
+    if (!capabilities.interactiveInput) {
+      throw new Error(
+        `Interactive input is not available for transport '${capabilities.transportMode}'. Current runtime URL: ${capabilities.runtimeUrl ?? 'n/a'}.`
+      );
     }
 
     const response = await debugHub.requestUserInputEvent(

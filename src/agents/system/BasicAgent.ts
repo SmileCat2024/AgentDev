@@ -1,14 +1,14 @@
 /**
  * BasicAgent - 基础 Agent 类
  *
- * 封装了通用的工具集、LLM、Skills 目录和系统环境信息
+ * 集成了常用 Feature 和系统环境信息
  * 适用于大多数 Agent 场景
  *
  * 默认自动加载配置文件，开箱即用
  */
 
 import { Agent } from '../../core/agent.js';
-import { MCPFeature, SkillFeature, SubAgentFeature, ShellFeature, OpencodeBasicFeature } from '../../features/index.js';
+import { MCPFeature, SkillFeature, SubAgentFeature, OpencodeBasicFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
@@ -16,25 +16,6 @@ import { createLLM } from '../../llm/index.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
 import { getDefaultMCPConfigDir } from '../../mcp/config.js';
-
-// 导入系统工具（保留必要的非文件操作工具）
-import {
-  webFetchTool,
-  calculatorTool,
-} from '../../tools/system/index.js';
-
-/**
- * 默认工具集
- * 注意：
- * - 文件操作工具（read/write/edit/glob/grep/ls）由 OpencodeBasicFeature 提供
- * - invokeSkillTool 由 SkillFeature 提供，不在默认工具集中
- * - 子代理工具由 SubAgentFeature 提供，不在默认工具集中
- */
-const DEFAULT_TOOLS: Tool[] = [
-  // 系统工具
-  webFetchTool,  // HTTP 请求
-  calculatorTool,// 计算器
-];
 
 /**
  * 系统环境信息上下文
@@ -74,7 +55,7 @@ export interface BasicAgentConfig {
   mcpContext?: Record<string, unknown>;
   /** 自动扫描 MCP 时排除的 serverId 列表 */
   excludeMcpServers?: string[];
-  /** 自定义工具集（可选，默认使用系统工具集） */
+  /** 自定义工具集（可选，默认使用 Feature 提供的工具） */
   tools?: Tool[];
   /** Skills 目录（可选，默认使用 .agentdev/skills） */
   skillsDir?: string;
@@ -83,7 +64,7 @@ export interface BasicAgentConfig {
 /**
  * 基础 Agent 类
  *
- * 封装了通用工具集和系统环境信息，开箱即用
+ * 集成常用 Feature 和系统环境信息，开箱即用
  * 构造函数不传任何参数时，会自动同步加载配置文件创建 LLM
  */
 export class BasicAgent extends Agent {
@@ -123,7 +104,7 @@ export class BasicAgent extends Agent {
     // 构建完整的 Agent 配置
     const agentConfig: AgentConfig = {
       llm: llm!,
-      tools: config.tools ?? DEFAULT_TOOLS,
+      tools: config.tools ?? [],
       maxTurns: Infinity,
       systemMessage: config.systemMessage,
       name: config.name,
@@ -153,9 +134,6 @@ export class BasicAgent extends Agent {
 
     // 注册 OpencodeBasicFeature（文件操作工具集）
     this.use(new OpencodeBasicFeature());
-
-    // 注册 ShellFeature（Git Bash 命令执行）
-    this.use(new ShellFeature());
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
     this.use(new SkillFeature(config.skillsDir));

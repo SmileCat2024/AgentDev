@@ -7,6 +7,10 @@
 
 import type { Tool } from './types.js';
 import type { ToolCall } from './types.js';
+import type { InlineRenderTemplate } from './types.js';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { existsSync, readFileSync } from 'fs';
 
 /**
  * Feature 上下文值类型
@@ -54,6 +58,28 @@ export interface FeatureContext {
  */
 export type FeatureStateSnapshot = unknown;
 
+/**
+ * 包信息
+ */
+export interface PackageInfo {
+  /** 包名，如 '@agentdev/shell-feature' 或 'agentdev' */
+  name: string;
+  /** 版本号（可选） */
+  version?: string;
+  /** 包根目录绝对路径 */
+  root: string;
+}
+
+/**
+ * 模板信息
+ */
+export interface TemplateInfo {
+  /** 包名 */
+  packageName: string;
+  /** 模板名（不含扩展名） */
+  templateName: string;
+}
+
 // ========== 正向钩子（纯通知，void 返回）==========
 
 /**
@@ -100,10 +126,62 @@ export interface AgentFeature {
   getAsyncTools?(ctx: FeatureInitContext): Promise<Tool[]>;
 
   /**
-   * 声明渲染模板路径
-   * 返回模板名到文件路径的映射，用于 ViewerWorker 动态加载
+   * 获取包信息
+   * 
+   * 返回 Feature 所在的包信息（包名、版本、根目录）
+   * 用于统一模板路径解析和包管理
+   * 
+   * @returns 包信息，如果 Feature 不属于任何包则返回 null
+   * 
+   * @example
+   * ```typescript
+   * getPackageInfo(): PackageInfo | null {
+   *   return {
+   *     name: '@agentdev/shell-feature',
+   *     version: '1.0.0',
+   *     root: '/path/to/package/root'
+   *   };
+   * }
+   * ```
    */
-  getTemplatePaths?(): Record<string, string>;
+  getPackageInfo?(): PackageInfo | null;
+
+  /**
+   * 获取模板名称列表
+   * 
+   * 返回 Feature 提供的模板名称列表（不含扩展名）
+   * 模板文件必须位于 {packageRoot}/dist/templates/{templateName}.render.js
+   * 
+   * @returns 模板名称数组
+   * 
+   * @example
+   * ```typescript
+   * getTemplateNames(): string[] {
+   *   return ['bash', 'trash-delete', 'trash-list'];
+   * }
+   * ```
+   */
+  getTemplateNames?(): string[];
+
+  /**
+   * 声明渲染模板（推荐方式）
+   * 直接返回模板对象，无需文件路径
+   *
+   * @example
+   * ```typescript
+   * getRenderTemplates(): Record<string, InlineRenderTemplate> {
+   *   return {
+   *     'bash': {
+   *       call: (args) => `<div class="bash-command">> ${escapeHtml(args.command)}</div>`,
+   *       result: (data, success) => success
+   *         ? `<pre class="bash-output">${escapeHtml(data)}</pre>`
+   *         : `<div class="tool-error">${escapeHtml(data)}</div>`
+   *     }
+   *   };
+   * }
+   * ```
+   */
+  getRenderTemplates?(): Record<string, InlineRenderTemplate>;
 
   /**
    * 声明上下文注入器
@@ -151,4 +229,69 @@ export interface AgentFeature {
   // ========== 反向钩子通过装饰器注册，无需接口声明 ==========
   // 使用 hooks-decorator.ts 中提供的装饰器来标记反向钩子方法
   // 例如：@ToolFinished, @LLMFinish, @StepFinish 等
+}
+
+// ========== 辅助函数 ==========
+
+/**
+ * 从 Feature 的 source 属性获取包信息
+ * 
+ * 通过向上查找 package.json 文件来确定包信息
+ * 支持三种场景：
+ * 1. 框架内置 Feature：找到 AgentDev 的 package.json
+ * 2. 外部 npm 包：找到包的 package.json
+ * 3. 用户本地 Feature：找到用户项目的 package.json
+ * 
+ * @param source Feature 的源文件路径（import.meta.url）
+ * @returns 包信息，如果找不到 package.json 则返回 null
+ */
+export function getPackageInfoFromSource(source: string | undefined): PackageInfo | null {
+  if (!source) {
+    return null;
+  }
+
+  try {
+    // 将 file:// URL 转换为文件系统路径
+    const filePath = source.startsWith('file://') ? fileURLToPath(source) : source;
+    const featureDir = dirname(filePath);
+    
+    // 向上查找 package.json
+    let currentDir = featureDir;
+    const root = process.platform === 'win32' ? currentDir.split(/[/\\]/)[0] : '';
+    
+    while (currentDir && currentDir !== root) {
+      try {
+        const packageJsonPath = join(currentDir, 'package.json');
+        
+        // 检查文件是否存在
+        if (!existsSync(packageJsonPath)) {
+          throw new Error('Not found');
+        }
+        
+        // 读取并解析 package.json
+        const content = readFileSync(packageJsonPath, 'utf-8');
+        const packageJson = JSON.parse(content);
+        
+        // 找到了 package.json
+        return {
+          name: packageJson.name || 'unknown',
+          version: packageJson.version,
+          root: currentDir,
+        };
+      } catch {
+        // 没找到，继续向上查找
+        const parentDir = dirname(currentDir);
+        if (parentDir === currentDir) {
+          // 已经到达根目录，停止查找
+          break;
+        }
+        currentDir = parentDir;
+      }
+    }
+    
+    return null;
+  } catch {
+    // 任何错误都返回 null
+    return null;
+  }
 }

@@ -10,7 +10,8 @@
 import { fileURLToPath } from 'url';
 import { createTool } from '../../core/tool.js';
 import type { Tool, UserInputAction, UserInputRequest, UserInputResponse } from '../../core/types.js';
-import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../core/feature.js';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from '../../core/feature.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { DebugHub } from '../../core/debug-hub.js';
 
 export interface UserInputFeatureConfig {
@@ -26,6 +27,29 @@ export class UserInputFeature implements AgentFeature {
 
   private defaultTimeout: number;
   private nextDraftInput = '';
+
+  /**
+   * 缓存包信息
+   */
+  private _packageInfo: PackageInfo | null = null;
+
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   * 注意：UserInputFeature 没有渲染模板
+   */
+  getTemplateNames(): string[] {
+    return [];
+  }
 
   constructor(config: UserInputFeatureConfig = {}) {
     this.defaultTimeout = config.timeout ?? Infinity; // 无限等待
@@ -130,12 +154,5 @@ export class UserInputFeature implements AgentFeature {
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
     // 清理资源（如有）
-  }
-
-  /**
-   * 模板路径声明（无模板）
-   */
-  getTemplatePaths(): Record<string, string> {
-    return {};
   }
 }

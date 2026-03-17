@@ -17,14 +17,15 @@
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { promises as fs } from 'fs';
-import type { AgentFeature, FeatureStateSnapshot } from '../../core/feature.js';
+import type { AgentFeature, FeatureStateSnapshot, PackageInfo } from '../../core/feature.js';
 import type { ToolContext } from '../../core/lifecycle.js';
 import { ToolUse, Decision } from '../../core/hooks-decorator.js';
 import type { FeatureInitContext } from '../../core/feature.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { readTool, writeTool, editTool, lsTool, globTool, grepTool } from './tools.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
 
 /**
  * OpencodeBasic Feature - 基础文件操作工具集
@@ -32,7 +33,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export class OpencodeBasicFeature implements AgentFeature {
   readonly name = 'opencode-basic';
   readonly dependencies: string[] = [];
-  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly source = __filename.replace(/\\/g, '/');
   readonly description = '提供读写文件、编辑、列目录、glob 和 grep 等基础工程化工具。包含"先读后写"安全保护机制。';
 
   /**
@@ -40,6 +41,35 @@ export class OpencodeBasicFeature implements AgentFeature {
    * 在整个 Session 生命周期中保持，用于验证 write 操作
    */
   private readFiles = new Set<string>();
+
+  /**
+   * 缓存包信息
+   */
+  private _packageInfo: PackageInfo | null = null;
+
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    return [
+      'read',
+      'write',
+      'edit',
+      'ls',
+      'glob',
+      'grep',
+    ];
+  }
 
   /**
    * Logger 实例，用于记录结构化日志
@@ -160,17 +190,4 @@ export class OpencodeBasicFeature implements AgentFeature {
     ];
   }
 
-  /**
-   * 获取渲染模板路径映射
-   */
-  getTemplatePaths() {
-    return {
-      'read': join(__dirname, 'templates', 'read.render.js'),
-      'write': join(__dirname, 'templates', 'write.render.js'),
-      'edit': join(__dirname, 'templates', 'edit.render.js'),
-      'ls': join(__dirname, 'templates', 'ls.render.js'),
-      'glob': join(__dirname, 'templates', 'glob.render.js'),
-      'grep': join(__dirname, 'templates', 'grep.render.js'),
-    };
-  }
 }

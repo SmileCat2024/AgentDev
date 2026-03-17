@@ -303,14 +303,14 @@ while (true) {
 - 同步工具：`getTools()`
 - 异步发现工具：`getAsyncTools()`
 - 注入工具上下文：`getContextInjectors()`
-- 注册模板：`getTemplatePaths()`
+- 注册模板：`getPackageInfo()` + `getTemplateNames()`
 - 初始化资源：`onInitiate()`
 - 运行时控制：反向钩子装饰器，例如 `@ToolUse`、`@StepFinish`
 
 模板相关的当前事实：
 
 - 调试器真正加载的是可执行的 `.render.js`
-- `getTemplatePaths()` 注册的模板会进入调试 session metadata
+- `getPackageInfo()` + `getTemplateNames()` 注册的模板会生成 `/template/...` URL
 - 当宿主是 `AgentDevClaw` 时，runtime 会基于 `featureTemplates + projectRoot` 提供 `/features/*` 和 `/tools/*`
 - 因此最稳妥的做法仍然是确保构建产物里的 `.render.js` 存在且可直接执行
 
@@ -324,10 +324,10 @@ while (true) {
 
 - `src/features/example-feature`
 
-它不是业务功能，而是“照猫画虎用”的最小完整示范，展示了：
+它不是业务功能，而是”照猫画虎用”的最小完整示范，展示了：
 
 - `getTools()`
-- `getTemplatePaths()`
+- `getPackageInfo()` + `getTemplateNames()`
 - `getContextInjectors()`
 - `onInitiate()` / `onDestroy()`
 - `captureState()` / `restoreState()`

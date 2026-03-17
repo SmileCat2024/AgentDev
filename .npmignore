@@ -1,0 +1,41 @@
+# Override gitignore dist/ rule for packaging
+!dist/
+
+# Include only these features
+dist/core
+dist/llm
+dist/mcp
+dist/template
+dist/skills
+dist/agents
+dist/cli
+dist/features/mcp
+dist/features/skill
+dist/features/subagent
+dist/features/todo
+dist/features/user-input
+dist/features/opencode-basic
+
+# Exclude these features
+dist/features/audio-feedback
+dist/features/audit
+dist/features/memory
+dist/features/plugin-compat
+dist/features/qqbot
+dist/features/shell
+dist/features/tts
+dist/features/visual
+dist/features/websearch
+dist/features/example-feature
+
+# Exclude tests
+dist/test
+
+# Source and dev files
+src
+examples
+scripts
+desktop
+*.log
+.DS_Store
+node_modules

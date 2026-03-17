@@ -136,15 +136,108 @@ export class DebugHub {
     }
 
     this.workerPort = port;  // 保留用于信息显示
+    this.openBrowser = openBrowser;  // 保存浏览器打开设置
+    
     try {
       await this.connectToWorker();
       console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
     } catch (err) {
-      // 连接失败只警告，不抛出异常
-      console.warn(`[DebugHub] 无法连接到 ViewerWorker: ${(err as Error).message}`);
-      console.warn(`[DebugHub] 调试功能将被禁用。请先启动 ViewerWorker 服务器。`);
-      this.clientReady = false;
+      // 连接失败，尝试自动启动 ViewerWorker
+      console.log(`[DebugHub] ViewerWorker 未运行，正在自动启动...`);
+      try {
+        await this.spawnViewerWorker();
+        // 等待服务器启动
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        // 再次尝试连接
+        await this.connectToWorker();
+        console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
+      } catch (spawnErr) {
+        console.warn(`[DebugHub] 无法启动 ViewerWorker: ${(spawnErr as Error).message}`);
+        console.warn(`[DebugHub] 调试功能将被禁用。请手动运行 'agentdev-viewer' 启动调试服务器。`);
+        this.clientReady = false;
+      }
     }
+  }
+
+  /**
+   * 自动启动 ViewerWorker 进程
+   */
+  private openBrowser: boolean = true;
+  private viewerWorkerProcess?: ReturnType<typeof import('child_process').spawn>;
+
+  private async spawnViewerWorker(): Promise<void> {
+    const { spawn } = await import('child_process');
+    const { fileURLToPath } = await import('url');
+    const { dirname, join } = await import('path');
+    
+    // 查找 viewer.js 的路径
+    let viewerPath: string;
+    
+    // 方式1: 从当前模块解析
+    try {
+      const currentDir = dirname(fileURLToPath(import.meta.url));
+      viewerPath = join(currentDir, '..', 'cli', 'viewer.js');
+    } catch {
+      // 方式2: 从 node_modules 解析
+      try {
+        const agentdevPath = require.resolve('agentdev/package.json');
+        viewerPath = join(dirname(agentdevPath), 'dist', 'cli', 'viewer.js');
+      } catch {
+        // 方式3: 使用 bin 命令
+        viewerPath = 'agentdev-viewer';
+      }
+    }
+
+    return new Promise((resolve, reject) => {
+      try {
+        // 设置环境变量
+        const env = {
+          ...process.env,
+          AGENTDEV_PORT: String(this.workerPort || 2026),
+          AGENTDEV_OPEN_BROWSER: this.openBrowser ? 'true' : 'false',
+          AGENTDEV_UDS_PATH: this.udsPath,
+        };
+
+        console.log(`[DebugHub] 启动 ViewerWorker: ${viewerPath}`);
+        
+        this.viewerWorkerProcess = spawn('node', [viewerPath], {
+          env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false,
+        });
+
+        this.viewerWorkerProcess.on('error', (err: Error) => {
+          console.error('[DebugHub] ViewerWorker 进程错误:', err.message);
+          reject(err);
+        });
+
+        // 输出 ViewerWorker 的日志
+        this.viewerWorkerProcess.stdout?.on('data', (data: Buffer) => {
+          const lines = data.toString().trim().split('\n');
+          for (const line of lines) {
+            console.log(`[ViewerWorker] ${line}`);
+          }
+        });
+
+        this.viewerWorkerProcess.stderr?.on('data', (data: Buffer) => {
+          const lines = data.toString().trim().split('\n');
+          for (const line of lines) {
+            console.error(`[ViewerWorker] ${line}`);
+          }
+        });
+
+        // 给进程一点时间启动
+        setTimeout(() => {
+          if (this.viewerWorkerProcess && !this.viewerWorkerProcess.killed) {
+            resolve();
+          } else {
+            reject(new Error('ViewerWorker 进程启动失败'));
+          }
+        }, 500);
+      } catch (err) {
+        reject(err);
+      }
+    });
   }
 
   /**

@@ -5,6 +5,7 @@ node_modules/
 dist/
 build/
 out/
+packages/
 
 # TypeScript 编译生成的文件
 src/**/*.js

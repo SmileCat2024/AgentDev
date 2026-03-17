@@ -17,8 +17,10 @@ import type {
   FeatureInitContext,
   FeatureContext,
   FeatureStateSnapshot,
+  PackageInfo,
 } from '../../core/feature.js';
 import type { Context } from '../../core/context.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { StepStart, StepFinish } from '../../core/hooks-decorator.js';
 import type { StepStartContext, StepFinishDecisionContext } from '../../core/lifecycle.js';
 import { Decision } from '../../core/lifecycle.js';
@@ -61,6 +63,8 @@ export class TodoFeature implements AgentFeature {
   // 工具工厂实例
   private toolFactory?: TodoToolFactory;
 
+  private _packageInfo: PackageInfo | null = null;
+
   constructor(config: TodoFeatureConfig = {}) {
     this.config = {
       reminderThresholdWithTasks: config.reminderThresholdWithTasks ?? 3,
@@ -82,21 +86,31 @@ export class TodoFeature implements AgentFeature {
 
   // ========== AgentFeature 接口实现 ==========
 
-  getTools(): Tool[] {
-    return this.toolFactory?.getAllTools() || [];
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
   }
 
   /**
-   * 模板路径声明
+   * 获取模板名称列表（统一打包方案）
    */
-  getTemplatePaths(): Record<string, string> {
-    return {
-      'task-create': join(__dirname, 'templates', 'task-create.render.js'),
-      'task-list': join(__dirname, 'templates', 'task-list.render.js'),
-      'task-get': join(__dirname, 'templates', 'task-get.render.js'),
-      'task-update': join(__dirname, 'templates', 'task-update.render.js'),
-      'task-clear': join(__dirname, 'templates', 'task-clear.render.js'),
-    };
+  getTemplateNames(): string[] {
+    return [
+      'task-create',
+      'task-list',
+      'task-get',
+      'task-update',
+      'task-clear',
+    ];
+  }
+
+  getTools(): Tool[] {
+    return this.toolFactory?.getAllTools() || [];
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {

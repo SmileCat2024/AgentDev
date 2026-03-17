@@ -1,52 +1,52 @@
 {
   "name": "agentdev",
   "version": "0.1.0",
-  "description": "A lightweight, decoupled AI agent framework",
+  "description": "A lightweight, decoupled AI agent framework with built-in debugger",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "agentdev-viewer": "dist/cli/viewer.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc",
-    "test": "tsx src/test/test-runner.ts",
-    "dev": "tsc --watch",
-    "agent": "tsx examples/agent.ts",
-    "agt": "tsx examples/agent.ts",
-    "ragt": "tsx examples/ragent.ts",
-    "qqbot": "tsx examples/qqbot-example.ts",
-    "server": "tsx examples/server.ts",
-    "claw:smoke": "tsx examples/claw-debug-smoke.ts",
-    "claw:smoke:runtime": "node scripts/run-claw-smoke.mjs",
-    "claw:verify": "node scripts/verify-claw-transport.mjs",
-    "claw:verify:input": "node scripts/verify-claw-input-bridge.mjs",
-    "claw:agent": "node scripts/run-with-claw-runtime.mjs agent",
-    "claw:ragent": "node scripts/run-with-claw-runtime.mjs ragt",
-    "claw:qqbot": "node scripts/run-with-claw-runtime.mjs qqbot",
-    "viewer": "node dist/cli/viewer.js",
-    "desktop:build": "npm run build && cd desktop && npm run build",
-    "python:install": "uv pip install -r requirements.txt",
-    "python:check": "python -c \"import win32gui, psutil, PIL; print('✓ Python dependencies OK')\""
+    "build": "tsc && node scripts/copy-assets.mjs",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
-    "@sliverp/qqbot": "file:../qqbot/sliverp-qqbot-1.5.4.tgz",
-    "better-sqlite3": "^12.6.2",
     "diff": "^8.0.3",
-    "express": "^5.2.1",
     "glob": "^13.0.6",
     "js-yaml": "^4.1.0",
     "open": "^11.0.0",
     "openai": "^4.73.0",
-    "sharp": "^0.34.5",
-    "sound-play": "^1.1.0",
-    "sqlite": "^5.1.1",
-    "ws": "^8.19.0",
     "zod": "^4.1.5"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
-  }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "openai",
+    "anthropic",
+    "mcp",
+    "debugger"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/agentdev.git"
+  },
+  "license": "MIT"
 }

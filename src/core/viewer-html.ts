@@ -1,4 +1,17 @@
-<!DOCTYPE html>
+/**
+ * Viewer HTML Template - 调试器前端 HTML 模板
+ *
+ * 这个文件原本是 viewer-worker.ts 中的 getHtml() 方法
+ * 已被提取为独立模块，便于维护和编辑
+ */
+
+/**
+ * 生成调试器前端页面的完整 HTML
+ * @param port - HTTP 服务器端口号
+ * @returns 完整的 HTML 字符串
+ */
+export function generateViewerHtml(port: number): string {
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -275,6 +288,7 @@
       flex: 1;
       overflow-y: auto;
       padding: 18px 20px 24px 22px;
+      position: relative;
     }
 
     .feature-panel-empty {
@@ -511,6 +525,252 @@
       gap: 12px;
     }
 
+    .overview-usage-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .context-chip-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .context-chip {
+      padding: 14px 15px;
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      background:
+        linear-gradient(135deg, rgba(91, 192, 255, 0.08), rgba(255, 156, 100, 0.08)),
+        rgba(255, 255, 255, 0.03);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 96px;
+    }
+
+    body[data-theme="light"] .context-chip {
+      background:
+        linear-gradient(135deg, rgba(91, 192, 255, 0.12), rgba(255, 156, 100, 0.10)),
+        rgba(255, 255, 255, 0.92);
+    }
+
+    .context-chip-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+    }
+
+    .context-chip-value {
+      font-size: 22px;
+      line-height: 1;
+      font-weight: 800;
+      color: var(--text-primary);
+    }
+
+    .context-chip-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .usage-card {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+        rgba(255, 255, 255, 0.02);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 184px;
+    }
+
+    body[data-theme="light"] .usage-card {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 250, 250, 0.88)),
+        rgba(255, 255, 255, 0.9);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+    }
+
+    .usage-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .usage-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-primary);
+    }
+
+    .usage-card-subtitle {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .usage-card-total {
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 800;
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+
+    .usage-bar {
+      display: flex;
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .usage-bar-fill {
+      height: 100%;
+    }
+
+    .usage-bar-fill.input {
+      background: linear-gradient(90deg, #5bc0ff, #8be8ff);
+    }
+
+    .usage-bar-fill.output {
+      background: linear-gradient(90deg, #ff9c64, #ffd17b);
+    }
+
+    .usage-split-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .usage-split-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .legend-dot.input {
+      background: #73d6ff;
+    }
+
+    .legend-dot.output {
+      background: #ffb576;
+    }
+
+    .usage-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .usage-stat-cell {
+      padding: 10px 11px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    body[data-theme="light"] .usage-stat-cell {
+      background: rgba(248, 250, 252, 0.9);
+      border-color: rgba(15, 23, 42, 0.06);
+    }
+
+    .usage-stat-cell-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin-bottom: 5px;
+    }
+
+    .usage-stat-cell-value {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .rate-ring-card {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 16px;
+      min-height: 92px;
+    }
+
+    .rate-ring {
+      width: 92px;
+      height: 92px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background:
+        conic-gradient(#7dd3a4 calc(var(--ring-percent) * 1%), rgba(255,255,255,0.08) 0);
+      position: relative;
+    }
+
+    .rate-ring::after {
+      content: '';
+      position: absolute;
+      inset: 10px;
+      border-radius: 50%;
+      background: var(--panel-bg);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    body[data-theme="light"] .rate-ring::after {
+      background: #ffffff;
+      border-color: rgba(15, 23, 42, 0.06);
+    }
+
+    .rate-ring-inner {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .rate-ring-value {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text-primary);
+      line-height: 1;
+    }
+
+    .rate-ring-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+    }
+
+    .rate-ring-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
     .hooks-collapsible {
       border: 1px solid var(--border-color);
       border-radius: 14px;
@@ -600,6 +860,42 @@
       background: rgba(255, 255, 255, 0.05);
     }
 
+    .feature-badge.status-enabled {
+      color: #14532d;
+      background: rgba(134, 239, 172, 0.92);
+      border-color: rgba(74, 222, 128, 0.9);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+    }
+
+    .feature-badge.status-partial {
+      color: #7c2d12;
+      background: rgba(253, 186, 116, 0.92);
+      border-color: rgba(251, 146, 60, 0.9);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+    }
+
+    .feature-badge.status-disabled {
+      color: #7f1d1d;
+      background: rgba(252, 165, 165, 0.9);
+      border-color: rgba(248, 113, 113, 0.88);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
+
+    body[data-theme="light"] .feature-badge.status-enabled {
+      color: #166534;
+      background: rgba(220, 252, 231, 1);
+    }
+
+    body[data-theme="light"] .feature-badge.status-partial {
+      color: #9a3412;
+      background: rgba(255, 237, 213, 1);
+    }
+
+    body[data-theme="light"] .feature-badge.status-disabled {
+      color: #991b1b;
+      background: rgba(254, 226, 226, 1);
+    }
+
     .feature-card-detail {
       display: flex;
       align-items: center;
@@ -611,35 +907,38 @@
     }
 
     .feature-detail-shell {
-      position: relative;
+      position: static;
+      min-height: 100%;
     }
 
     .feature-detail-overlay {
       position: absolute;
-      inset: 12px;
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 8px;
-      border-radius: 18px;
-      background: rgba(8, 10, 16, 0.58);
-      backdrop-filter: blur(10px);
-      z-index: 3;
+      padding: 18px;
+      background: rgba(5, 7, 12, 0.86);
+      backdrop-filter: blur(2px);
+      z-index: 20;
     }
 
     body[data-theme="light"] .feature-detail-overlay {
-      background: rgba(246, 247, 251, 0.74);
+      background: rgba(18, 20, 26, 0.72);
     }
 
     .feature-detail-window {
       width: min(100%, 720px);
-      max-height: min(100%, 680px);
+      max-height: min(100%, 700px);
       overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
       border-radius: 18px;
       border: 1px solid var(--border-color);
       background: var(--panel-bg);
-      box-shadow: 0 26px 60px var(--shadow-color);
-      padding: 16px;
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.34);
+      padding: 18px;
     }
 
     .feature-detail-head {
@@ -647,7 +946,6 @@
       align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 14px;
     }
 
     .feature-detail-title {
@@ -678,7 +976,6 @@
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
-      margin-bottom: 14px;
     }
 
     .feature-detail-stat {
@@ -907,7 +1204,384 @@
       transform: rotate(90deg);
     }
 
+    .log-toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .log-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .mcp-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .mcp-hero {
+      position: relative;
+      overflow: hidden;
+      padding: 18px;
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at top right, rgba(71, 195, 160, 0.22), transparent 34%),
+        radial-gradient(circle at bottom left, rgba(80, 133, 255, 0.16), transparent 36%),
+        linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+      box-shadow: 0 20px 50px var(--shadow-color);
+    }
+
+    .mcp-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .mcp-stat {
+      padding: 12px 13px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .mcp-stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .mcp-stat-value {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.4;
+      word-break: break-all;
+    }
+
+    .mcp-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      font-size: 12px;
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.04);
+      margin-top: 12px;
+    }
+
+    .mcp-status-pill::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #4ade80;
+      box-shadow: 0 0 16px rgba(74, 222, 128, 0.4);
+    }
+
+    .mcp-code {
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(0, 0, 0, 0.22);
+      font-size: 12px;
+      line-height: 1.65;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .mcp-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .mcp-item {
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .mcp-item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+
+    .mcp-item-name {
+      font-weight: 700;
+      color: var(--text-primary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .mcp-item-type {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .mcp-item-desc {
+      font-size: 12px;
+      line-height: 1.7;
+      color: var(--text-secondary);
+    }
+
+    .log-filter-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .log-filter-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      min-width: 54px;
+    }
+
+    .log-chip-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .log-chip {
+      appearance: none;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+    }
+
+    .log-chip:hover,
+    .log-chip.active {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    .log-input,
+    .log-select {
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-primary);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 12px;
+      min-height: 34px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .log-input:focus,
+    .log-select:focus {
+      border-color: rgba(88, 166, 255, 0.45);
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.12);
+    }
+
+    .log-input {
+      flex: 1;
+      min-width: 140px;
+    }
+
+    .log-select {
+      min-width: 130px;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      padding-right: 34px;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+        linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+      background-position:
+        calc(100% - 18px) calc(50% - 1px),
+        calc(100% - 12px) calc(50% - 1px);
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+    }
+
+    .log-select option {
+      background: var(--panel-bg);
+      color: var(--text-primary);
+    }
+
+    .log-select option:checked,
+    .log-select option:hover {
+      background: var(--hover-bg);
+      color: var(--text-primary);
+    }
+
+    .log-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+
+    .log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .log-card {
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
+      overflow: hidden;
+    }
+
+    .log-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 13px 8px 13px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .log-card-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .log-level {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      background: rgba(255,255,255,0.04);
+    }
+
+    .log-level.debug, .log-level.trace {
+      color: #7cc5ff;
+    }
+
+    .log-level.info {
+      color: #7dd3a4;
+    }
+
+    .log-level.warn {
+      color: #f6c96c;
+    }
+
+    .log-level.error {
+      color: #ff8f8f;
+    }
+
+    .log-namespace {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-family: "Fira Code", "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    }
+
+    .log-timestamp {
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .log-card-body {
+      padding: 12px 13px 13px 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .log-message {
+      font-size: 15px;
+      line-height: 1.75;
+      color: var(--text-primary);
+      word-break: break-word;
+    }
+
+    .log-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .log-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .log-details {
+      border-top: 1px solid rgba(255,255,255,0.05);
+      padding-top: 10px;
+    }
+
+    .log-details summary {
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: 12px;
+      list-style: none;
+    }
+
+    .log-details summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .log-details pre {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(0, 0, 0, 0.22);
+      color: var(--text-primary);
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
     @media (max-width: 1360px) {
+      .overview-usage-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .context-chip-grid {
+        grid-template-columns: 1fr;
+      }
+
       .feature-grid {
         grid-template-columns: 1fr;
       }
@@ -1022,6 +1696,66 @@
       scroll-behavior: smooth;
     }
 
+    .follow-latest-btn {
+      position: absolute;
+      right: 20px;
+      bottom: 132px;
+      z-index: 20;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border-color);
+      background: color-mix(in srgb, var(--panel-bg) 88%, transparent);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 8px 24px var(--shadow-color);
+      backdrop-filter: blur(10px);
+      transition: all 0.2s ease;
+    }
+
+    .follow-latest-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      transform: translateY(-1px);
+    }
+
+    .follow-latest-btn.active {
+      color: var(--text-primary);
+      border-color: color-mix(in srgb, var(--success-color) 55%, var(--border-color));
+      background: color-mix(in srgb, var(--success-color) 16%, var(--panel-bg));
+    }
+
+    .follow-latest-btn.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+    }
+
+    .follow-latest-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--text-muted);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .follow-latest-btn.active .follow-latest-dot {
+      background: var(--success-color);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--success-color) 18%, transparent);
+    }
+
+    @media (max-width: 768px) {
+      .follow-latest-btn {
+        right: 16px;
+        bottom: 116px;
+        padding: 9px 12px;
+      }
+    }
+
     /* Message Styles */
     .message-row {
       display: flex;
@@ -1042,6 +1776,24 @@
     }
 
     .role-badge { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+
+    .message-action {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+
+    .message-action:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--hover-bg);
+    }
 
     .message-content {
       padding: 12px 16px;
@@ -1432,11 +2184,46 @@
     }
 
     .user-input-footer {
-      display: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 12px;
+      gap: 12px;
     }
 
-    .user-input-submit {
-      display: none;
+    .user-input-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .user-input-action {
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    .user-input-action:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--hover-bg);
+    }
+
+    .user-input-action.danger {
+      color: #d9534f;
+      border-color: rgba(217, 83, 79, 0.35);
+    }
+
+    .user-input-action.primary {
+      color: var(--text-primary);
+      border-color: var(--text-primary);
     }
 
   </style>
@@ -1475,6 +2262,7 @@
     <div id="chat-container">
       <div class="empty-state">Waiting for messages...</div>
     </div>
+    <button id="follow-latest-btn" class="follow-latest-btn hidden" type="button"></button>
     
     <div id="user-input-container"></div>
   </div>
@@ -1493,10 +2281,18 @@
     </aside>
 
     <aside class="right-rail" id="right-rail">
-      <button class="rail-button" id="rail-workspace" title="Overview" data-panel="workspace">
+      <button class="rail-button" id="rail-workspace" title="Structure" data-panel="workspace">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <rect x="3" y="4" width="18" height="16" rx="2"></rect>
           <path d="M9 4v16"></path>
+        </svg>
+      </button>
+      <button class="rail-button" id="rail-monitor" title="Monitor" data-panel="monitor">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M4 19h16"></path>
+          <path d="M7 16V9"></path>
+          <path d="M12 16V5"></path>
+          <path d="M17 16v-4"></path>
         </svg>
       </button>
       <button class="rail-button" id="rail-hooks" title="Features" data-panel="hooks">
@@ -1512,6 +2308,22 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="6"></circle>
           <path d="m20 20-3.5-3.5"></path>
+        </svg>
+      </button>
+      <button class="rail-button" id="rail-logs" title="Logs" data-panel="logs">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M4 19h16"></path>
+          <path d="M7 15h3"></path>
+          <path d="M7 11h10"></path>
+          <path d="M7 7h7"></path>
+        </svg>
+      </button>
+      <button class="rail-button" id="rail-mcp" title="MCP" data-panel="mcp">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <rect x="3" y="5" width="18" height="14" rx="3"></rect>
+          <path d="M7 12h4"></path>
+          <path d="M13 12h4"></path>
+          <path d="M12 9v6"></path>
         </svg>
       </button>
       <div class="rail-spacer"></div>
@@ -1578,6 +2390,7 @@
     const featurePanelResizer = document.getElementById('feature-panel-resizer');
     const agentContextMenu = document.getElementById('agent-context-menu');
     const deleteAgentAction = document.getElementById('delete-agent-action');
+    const followLatestButton = document.getElementById('follow-latest-btn');
     const railButtons = Array.from(document.querySelectorAll('.rail-button'));
     const languageToggle = document.getElementById('language-toggle');
     const themeToggle = document.getElementById('theme-toggle');
@@ -1585,6 +2398,7 @@
     let currentAgentId = null;
     let allAgents = [];
     let currentMessages = [];
+    let currentInputRequests = [];
     let toolRenderConfigs = {};
     let TOOL_NAMES = {};
     let contextMenuAgentId = null;
@@ -1594,8 +2408,25 @@
     let currentLanguage = localStorage.getItem('agentdev-language') || 'zh';
     let currentHookInspector = { lifecycleOrder: [], features: [], hooks: [] };
     let currentHookInspectorSignature = '';
+    let currentOverviewSnapshot = getEmptyOverviewSnapshot();
+    let currentOverviewSignature = '';
+    let currentLogs = [];
+    let currentLogsSignature = '';
+    let currentMcpInfo = null;
+    let logPanelScope = 'current';
+    let logFilters = {
+      search: '',
+      level: 'all',
+      feature: 'all',
+      lifecycle: 'all',
+    };
     let selectedOverviewLifecycle = 'StepFinish';
     let selectedFeatureName = null;
+    let followLatestEnabled = true;
+    let suppressFollowScrollEvent = false;
+    let pendingFollowToBottom = false;
+    let lastManualScrollIntentAt = 0;
+    let followScrollSettleToken = 0;
 
     const I18N = {
       zh: {
@@ -1608,18 +2439,30 @@
         status_no_agent: '无 Agent',
         empty_waiting: '等待消息中...',
         panel_hint: '选择右侧功能按钮以展开面板。',
-        panel_overview: '总览',
-        panel_features: 'Features',
-        panel_reverse_hooks: 'Reverse Hooks',
-        panel_loop_flow: 'Loop Flow',
+        panel_structure: '结构',
+        panel_monitor: '监视',
+        panel_features: '功能特性',
+        panel_reverse_hooks: '反向钩子',
+        panel_logs: '日志',
+        panel_mcp: 'MCP',
+        panel_loop_flow: '工作流',
+        panel_runtime: '运行概览',
+        panel_current_turn: '本轮',
+        panel_session_total: '累计',
+        panel_context: '上下文',
+        panel_features_summary: '功能概览',
         panel_select_lifecycle: '选择一个生命周期阶段',
-        panel_inspector: 'Inspector',
+        panel_inspector: '检查器',
         panel_connection: '连接状态',
         panel_messages: '消息数',
-        panel_features_label: 'Features',
-        panel_enabled: '启用中',
+        panel_usage: '用量',
+        panel_features_label: '功能特性',
+        panel_status_summary: '状态分布',
+        panel_enabled: '已启用',
+        panel_partial: '部分启用',
+        panel_disabled: '已关闭',
         panel_total: '总数',
-        panel_all_features: '全部 Features',
+        panel_all_features: '全部功能特性',
         panel_registered: '已注册',
         panel_no_features: '没有 Feature',
         panel_no_feature_data: '当前 Agent 尚未上报 feature 信息。',
@@ -1633,11 +2476,34 @@
         panel_attached: '已挂载',
         panel_no_handlers: '当前没有挂载任何处理函数。',
         stat_active_agent: '当前 Agent',
-        stat_hook_slots: 'Hook 已占用',
-        stat_decision_points: '决策点',
+        stat_context_length: '上下文长度',
+        stat_turn_tokens: '本轮 Tokens',
+        stat_total_tokens: '累计 Tokens',
+        stat_cache_hit_rate: '缓存命中率',
+        stat_turn_requests: '本轮请求数',
+        metric_messages: '消息数',
+        metric_chars: '字符数',
+        metric_turns: '轮次',
+        metric_tool_calls: '工具调用',
+        metric_input_tokens: '输入',
+        metric_output_tokens: '输出',
+        metric_requests: 'LLM 请求',
+        metric_cache_hit_requests: '命中请求',
+        metric_cache_miss_requests: '未命中请求',
+        metric_avg_per_request: '每次平均',
+        metric_cache_read: '缓存读取',
+        metric_cache_write: '缓存写入',
+        metric_cache_hit_rate: '命中率',
+        metric_input_share: '输入占比',
+        metric_output_share: '输出占比',
+        metric_latest_turn: '最近一轮',
+        metric_session_total: '整个会话',
+        metric_no_calls: '还没有 LLM 请求',
+        metric_unavailable: '暂无',
         feature_source_missing: '暂无源码信息',
         feature_enabled: 'enabled',
         feature_partial: 'partial',
+        feature_disabled: 'disabled',
         feature_hooks: 'hooks',
         feature_tools: 'tools',
         feature_messages: '条消息',
@@ -1647,6 +2513,17 @@
         feature_tool_disabled: 'disabled',
         feature_tool_render: 'render',
         feature_open_details: '查看详情',
+        feature_status_label: '状态',
+        mcp_section_kicker: 'MCP 服务器',
+        mcp_hero_title: 'Debugger Hub MCP 服务',
+        structure_kicker: 'ReAct 循环拓扑',
+        structure_hero_title: 'Feature Hooks 映射',
+        structure_subtitle: '查看当前 agent 的 hook 映射、循环阶段说明，以及用于阅读会话链路的开发者视角解释。',
+        overview_kicker: '运行监视',
+        overview_hero_title: 'LLM 调用监视',
+        mcp_item_tool: '工具',
+        mcp_item_resource: '资源',
+        mcp_item_prompt: '提示模板',
         active_none: '无',
         delete_agent: '删除 Agent',
         delete_confirm: '删除这个已断开的 Agent？这只会从当前调试界面移除它的记录。',
@@ -1655,13 +2532,52 @@
         theme_toggle_dark: '切换到深色模式',
         language_toggle: '切换到英文',
         language_toggle_short: 'EN',
-        workspace_tooltip: '总览',
-        features_tooltip: 'Features',
-        reverse_hooks_tooltip: 'Reverse Hooks',
+        structure_tooltip: '结构',
+        monitor_tooltip: '监视',
+        features_tooltip: '功能特性',
+        reverse_hooks_tooltip: '反向钩子',
+        logs_tooltip: '日志',
+        mcp_tooltip: 'MCP',
+        mcp_subtitle: '调试器内置的只读 MCP 服务器，可供外部客户端和 agent 自观察使用。',
+        mcp_enabled: '已启用',
+        mcp_disabled: '已禁用',
+        mcp_endpoint: '端点',
+        mcp_transport: '传输',
+        mcp_tools: '工具',
+        mcp_resources: '资源',
+        mcp_prompts: '提示模板',
+        mcp_client_config: '客户端配置',
+        mcp_claude_desktop: 'Claude Desktop 配置',
+        mcp_codex: 'Codex 配置',
+        mcp_manual: '手动初始化示例',
+        mcp_tool_list: '工具一览',
+        mcp_resource_list: '资源一览',
+        mcp_prompt_list: '提示模板一览',
+        mcp_loading: '正在加载 MCP 信息...',
+        logs_scope: '范围',
+        logs_scope_current: '只看当前 Agent',
+        logs_scope_all: '全部',
+        logs_search: '搜索',
+        logs_search_placeholder: '按消息、namespace、feature、hook 检索',
+        logs_level: '级别',
+        logs_level_all: '全部级别',
+        logs_level_debug: 'Debug 及以上',
+        logs_level_info: 'Info 及以上',
+        logs_level_warn: 'Warn 及以上',
+        logs_level_error: '仅 Error',
+        logs_feature: 'Feature',
+        logs_feature_all: '全部 Feature',
+        logs_lifecycle: 'Lifecycle',
+        logs_lifecycle_all: '全部生命周期',
+        logs_empty: '当前筛选条件下没有日志。',
+        logs_total: '日志',
+        logs_details: '查看结构化数据',
         phase_thinking: '思考中',
         phase_content: '生成内容',
         phase_tool_calling: '工具调用',
         input_placeholder: '正在与 Agent 对话',
+        follow_latest_on: '跟随最新',
+        follow_latest_off: '回到底部',
         expand: '展开',
         collapse: '收起',
         thinking_process: '思考过程',
@@ -1670,7 +2586,7 @@
         subagent_done: '已完成',
         subagent_view_messages: '查看消息 >',
         delete_failed_generic: '删除失败',
-        overview_subtitle: '查看当前 agent 的 hook 映射、循环阶段说明以及用于阅读会话链路的开发者视角解释。',
+        overview_subtitle: '查看上下文、Token 消耗和缓存命中等信息',
       },
       en: {
         page_title: 'Agent Debugger',
@@ -1682,16 +2598,28 @@
         status_no_agent: 'No agent',
         empty_waiting: 'Waiting for messages...',
         panel_hint: 'Select a tool on the right rail to open the panel.',
-        panel_overview: 'Overview',
+        panel_structure: 'Structure',
+        panel_monitor: 'Monitor',
         panel_features: 'Features',
         panel_reverse_hooks: 'Reverse Hooks',
-        panel_loop_flow: 'Loop Flow',
+        panel_logs: 'Logs',
+        panel_mcp: 'MCP',
+        panel_loop_flow: 'Workflow',
+        panel_runtime: 'Runtime Overview',
+        panel_current_turn: 'Current Turn',
+        panel_session_total: 'Session Total',
+        panel_context: 'Context',
+        panel_features_summary: 'Feature Summary',
         panel_select_lifecycle: 'Select a lifecycle stage',
         panel_inspector: 'Inspector',
         panel_connection: 'Connection',
         panel_messages: 'Messages',
+        panel_usage: 'Usage',
         panel_features_label: 'Features',
+        panel_status_summary: 'Status Mix',
         panel_enabled: 'enabled',
+        panel_partial: 'partial',
+        panel_disabled: 'disabled',
         panel_total: 'total',
         panel_all_features: 'All Features',
         panel_registered: 'registered',
@@ -1707,11 +2635,34 @@
         panel_attached: 'attached',
         panel_no_handlers: 'No attached handlers.',
         stat_active_agent: 'Active Agent',
-        stat_hook_slots: 'Hook Slots Filled',
-        stat_decision_points: 'Decision Points',
+        stat_context_length: 'Context Length',
+        stat_turn_tokens: 'Turn Tokens',
+        stat_total_tokens: 'Total Tokens',
+        stat_cache_hit_rate: 'Cache Hit Rate',
+        stat_turn_requests: 'Turn Requests',
+        metric_messages: 'Messages',
+        metric_chars: 'Characters',
+        metric_turns: 'Turns',
+        metric_tool_calls: 'Tool Calls',
+        metric_input_tokens: 'Input',
+        metric_output_tokens: 'Output',
+        metric_requests: 'LLM Requests',
+        metric_cache_hit_requests: 'Hit Requests',
+        metric_cache_miss_requests: 'Miss Requests',
+        metric_avg_per_request: 'Avg / Request',
+        metric_cache_read: 'Cache Read',
+        metric_cache_write: 'Cache Write',
+        metric_cache_hit_rate: 'Hit Rate',
+        metric_input_share: 'Input Share',
+        metric_output_share: 'Output Share',
+        metric_latest_turn: 'Latest Turn',
+        metric_session_total: 'Whole Session',
+        metric_no_calls: 'No LLM requests yet',
+        metric_unavailable: 'N/A',
         feature_source_missing: 'No source metadata',
         feature_enabled: 'enabled',
         feature_partial: 'partial',
+        feature_disabled: 'disabled',
         feature_hooks: 'hooks',
         feature_tools: 'tools',
         feature_messages: 'messages',
@@ -1721,6 +2672,17 @@
         feature_tool_disabled: 'disabled',
         feature_tool_render: 'render',
         feature_open_details: 'Open details',
+        feature_status_label: 'Status',
+        mcp_section_kicker: 'Model Context Protocol',
+        mcp_hero_title: 'Debugger MCP Server',
+        structure_kicker: 'ReAct Loop Topology',
+        structure_hero_title: 'Feature Hooks Map',
+        structure_subtitle: 'Inspect the current agent hook map, loop timing guide, and developer-facing explanations for reading the session flow.',
+        overview_kicker: 'Runtime Monitor',
+        overview_hero_title: 'Current turn, totals, and cache at a glance',
+        mcp_item_tool: 'tool',
+        mcp_item_resource: 'resource',
+        mcp_item_prompt: 'prompt',
         active_none: 'None',
         delete_agent: 'Delete Agent',
         delete_confirm: 'Delete this disconnected agent? This only removes it from the current debugger view.',
@@ -1729,13 +2691,52 @@
         theme_toggle_dark: 'Switch to dark mode',
         language_toggle: 'Switch to Chinese',
         language_toggle_short: '中',
-        workspace_tooltip: 'Overview',
+        structure_tooltip: 'Structure',
+        monitor_tooltip: 'Monitor',
         features_tooltip: 'Features',
         reverse_hooks_tooltip: 'Reverse Hooks',
+        logs_tooltip: 'Logs',
+        mcp_tooltip: 'MCP',
+        mcp_subtitle: 'Built-in read-only MCP server for external clients and agent self-observation.',
+        mcp_enabled: 'Enabled',
+        mcp_disabled: 'Disabled',
+        mcp_endpoint: 'Endpoint',
+        mcp_transport: 'Transport',
+        mcp_tools: 'Tools',
+        mcp_resources: 'Resources',
+        mcp_prompts: 'Prompts',
+        mcp_client_config: 'Client Config',
+        mcp_claude_desktop: 'Claude Desktop config',
+        mcp_codex: 'Codex config',
+        mcp_manual: 'Manual initialize example',
+        mcp_tool_list: 'Tool Catalog',
+        mcp_resource_list: 'Resource Catalog',
+        mcp_prompt_list: 'Prompt Catalog',
+        mcp_loading: 'Loading MCP info...',
+        logs_scope: 'Scope',
+        logs_scope_current: 'Current agent',
+        logs_scope_all: 'All agents',
+        logs_search: 'Search',
+        logs_search_placeholder: 'Search message, namespace, feature, hook',
+        logs_level: 'Level',
+        logs_level_all: 'All levels',
+        logs_level_debug: 'Debug and up',
+        logs_level_info: 'Info and up',
+        logs_level_warn: 'Warn and up',
+        logs_level_error: 'Error only',
+        logs_feature: 'Feature',
+        logs_feature_all: 'All features',
+        logs_lifecycle: 'Lifecycle',
+        logs_lifecycle_all: 'All lifecycles',
+        logs_empty: 'No logs match the current filters.',
+        logs_total: 'logs',
+        logs_details: 'Structured payload',
         phase_thinking: 'Thinking',
         phase_content: 'Streaming',
         phase_tool_calling: 'Tool Calling',
         input_placeholder: 'Chatting with the agent',
+        follow_latest_on: 'Following Latest',
+        follow_latest_off: 'Jump to Latest',
         expand: 'Expand',
         collapse: 'Collapse',
         thinking_process: 'Thinking Process',
@@ -1744,13 +2745,27 @@
         subagent_done: 'Completed',
         subagent_view_messages: 'View messages >',
         delete_failed_generic: 'Delete failed',
-        overview_subtitle: 'Inspect the current agent hook map, loop timing guide, and developer-facing explanations for reading the session flow.',
+        overview_subtitle: 'Separate current context, current-turn usage, session totals, and request-level cache hits so each metric means exactly one thing.',
       },
     };
 
     function t(key) {
       const table = I18N[currentLanguage] || I18N.zh;
       return table[key] || key;
+    }
+
+    function getFeatureStatus(feature) {
+      return feature && feature.status ? feature.status : (feature && feature.enabled ? 'enabled' : 'partial');
+    }
+
+    function getFeatureStatusLabel(status) {
+      if (status === 'disabled') return t('feature_disabled');
+      if (status === 'partial') return t('feature_partial');
+      return t('feature_enabled');
+    }
+
+    function getStatusBadgeClass(status) {
+      return 'feature-badge status-' + escapeHtml(status || 'enabled');
     }
 
     function getEmptyStateHtml() {
@@ -1767,9 +2782,104 @@
         : '<svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg> ' + escapeHtml(t('collapse'));
     }
 
+    function isNearBottom() {
+      const threshold = 48;
+      return container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+    }
+
+    function updateFollowLatestButton() {
+      if (!followLatestButton) return;
+      const hasMessages = currentMessages.length > 0;
+      followLatestButton.classList.toggle('hidden', !hasMessages);
+      followLatestButton.classList.toggle('active', followLatestEnabled);
+      followLatestButton.innerHTML =
+        '<span class="follow-latest-dot"></span><span>' +
+        escapeHtml(t(followLatestEnabled ? 'follow_latest_on' : 'follow_latest_off')) +
+        '</span>';
+    }
+
+    function markManualScrollIntent() {
+      lastManualScrollIntentAt = Date.now();
+    }
+
+    function hasRecentManualScrollIntent() {
+      return Date.now() - lastManualScrollIntentAt < 500;
+    }
+
+    function animateScrollTo(targetTop, duration = 150) {
+      const settleToken = ++followScrollSettleToken;
+      lastManualScrollIntentAt = 0;
+      suppressFollowScrollEvent = true;
+
+      const startTop = container.scrollTop;
+      const delta = targetTop - startTop;
+      if (Math.abs(delta) < 1 || duration <= 0) {
+        container.scrollTop = targetTop;
+        suppressFollowScrollEvent = false;
+        return;
+      }
+
+      const startAt = performance.now();
+      const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+      const step = (now) => {
+        if (settleToken !== followScrollSettleToken) {
+          return;
+        }
+
+        const progress = Math.min(1, (now - startAt) / duration);
+        container.scrollTop = startTop + delta * easeOutCubic(progress);
+
+        if (progress < 1) {
+          requestAnimationFrame(step);
+          return;
+        }
+
+        container.scrollTop = targetTop;
+        suppressFollowScrollEvent = false;
+      };
+
+      requestAnimationFrame(step);
+    }
+
+    function scrollToLatest(behavior = 'smooth') {
+      const targetTop = container.scrollHeight;
+      if (behavior === 'auto') {
+        followScrollSettleToken += 1;
+        lastManualScrollIntentAt = 0;
+        suppressFollowScrollEvent = true;
+        container.scrollTop = targetTop;
+        suppressFollowScrollEvent = false;
+        return;
+      }
+
+      animateScrollTo(targetTop, 70);
+    }
+
+    function setFollowLatest(enabled, options = {}) {
+      const { scroll = false, behavior = 'smooth' } = options;
+      followLatestEnabled = enabled;
+      if (enabled) {
+        lastManualScrollIntentAt = 0;
+      }
+      updateFollowLatestButton();
+      if (enabled && scroll) {
+        scrollToLatest(behavior);
+      }
+    }
+
+    function scheduleScrollToLatest(behavior = 'smooth') {
+      pendingFollowToBottom = true;
+      requestAnimationFrame(() => {
+        if (!pendingFollowToBottom) return;
+        pendingFollowToBottom = false;
+        scrollToLatest(behavior);
+      });
+    }
+
     function shortenSourcePath(value) {
       if (!value) return '';
-      const normalized = String(value).replace(/\/g, '/');
+      const normalized = String(value).replace(/\\\\/g, '/');
       const srcIndex = normalized.lastIndexOf('/src/');
       if (srcIndex >= 0) return normalized.slice(srcIndex + 1);
       const agentdevIndex = normalized.lastIndexOf('/AgentDev/');
@@ -1790,6 +2900,66 @@
 
     function getHookInspectorSignature(snapshot) {
       return JSON.stringify(snapshot || { lifecycleOrder: [], features: [], hooks: [] });
+    }
+
+    function getEmptyOverviewSnapshot() {
+      return {
+        updatedAt: 0,
+        context: {
+          messageCount: 0,
+          charCount: 0,
+          toolCallCount: 0,
+          turnCount: 0,
+        },
+        usageStats: {
+          totalUsage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          calls: [],
+          totalRequests: 0,
+          totalCacheHitRequests: 0,
+        },
+      };
+    }
+
+    function normalizeOverviewSnapshot(snapshot) {
+      const empty = getEmptyOverviewSnapshot();
+      if (!snapshot || typeof snapshot !== 'object') {
+        return empty;
+      }
+
+      return {
+        updatedAt: typeof snapshot.updatedAt === 'number' ? snapshot.updatedAt : 0,
+        context: {
+          messageCount: typeof snapshot.context?.messageCount === 'number' ? snapshot.context.messageCount : 0,
+          charCount: typeof snapshot.context?.charCount === 'number' ? snapshot.context.charCount : 0,
+          toolCallCount: typeof snapshot.context?.toolCallCount === 'number' ? snapshot.context.toolCallCount : 0,
+          turnCount: typeof snapshot.context?.turnCount === 'number' ? snapshot.context.turnCount : 0,
+        },
+        usageStats: {
+          totalUsage: {
+            inputTokens: typeof snapshot.usageStats?.totalUsage?.inputTokens === 'number' ? snapshot.usageStats.totalUsage.inputTokens : 0,
+            outputTokens: typeof snapshot.usageStats?.totalUsage?.outputTokens === 'number' ? snapshot.usageStats.totalUsage.outputTokens : 0,
+            totalTokens: typeof snapshot.usageStats?.totalUsage?.totalTokens === 'number' ? snapshot.usageStats.totalUsage.totalTokens : 0,
+            cacheCreationTokens: typeof snapshot.usageStats?.totalUsage?.cacheCreationTokens === 'number' ? snapshot.usageStats.totalUsage.cacheCreationTokens : 0,
+            cacheReadTokens: typeof snapshot.usageStats?.totalUsage?.cacheReadTokens === 'number' ? snapshot.usageStats.totalUsage.cacheReadTokens : 0,
+            reasoningTokens: typeof snapshot.usageStats?.totalUsage?.reasoningTokens === 'number' ? snapshot.usageStats.totalUsage.reasoningTokens : 0,
+            audioTokens: typeof snapshot.usageStats?.totalUsage?.audioTokens === 'number' ? snapshot.usageStats.totalUsage.audioTokens : 0,
+          },
+          calls: Array.isArray(snapshot.usageStats?.calls) ? snapshot.usageStats.calls.map((call) => ({
+            ...call,
+            cacheHitRequests: typeof call?.cacheHitRequests === 'number' ? call.cacheHitRequests : 0,
+          })) : [],
+          totalRequests: typeof snapshot.usageStats?.totalRequests === 'number' ? snapshot.usageStats.totalRequests : 0,
+          totalCacheHitRequests: typeof snapshot.usageStats?.totalCacheHitRequests === 'number' ? snapshot.usageStats.totalCacheHitRequests : 0,
+        },
+      };
+    }
+
+    function getOverviewSignature(snapshot) {
+      return JSON.stringify(normalizeOverviewSnapshot(snapshot));
     }
 
     function normalizeHookInspector(snapshot) {
@@ -1822,6 +2992,360 @@
       }
     }
 
+    function setCurrentOverviewSnapshot(snapshot) {
+      const normalized = normalizeOverviewSnapshot(snapshot);
+      currentOverviewSnapshot = normalized;
+      currentOverviewSignature = getOverviewSignature(normalized);
+    }
+
+    function setCurrentLogs(logs) {
+      currentLogs = Array.isArray(logs) ? logs : [];
+      currentLogsSignature = JSON.stringify({
+        count: currentLogs.length,
+        last: currentLogs.length > 0 ? currentLogs[currentLogs.length - 1].id : null,
+      });
+    }
+
+    function formatMetricNumber(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return '0';
+      }
+      return value.toLocaleString();
+    }
+
+    function formatRate(numerator, denominator) {
+      if (!denominator) {
+        return '0%';
+      }
+      return Math.round((numerator / denominator) * 100) + '%';
+    }
+
+    function getLatestCallSummary(overview) {
+      const calls = Array.isArray(overview?.usageStats?.calls) ? overview.usageStats.calls : [];
+      if (calls.length === 0) return null;
+      return calls.slice().sort((a, b) => (a.callIndex || 0) - (b.callIndex || 0))[calls.length - 1];
+    }
+
+    function getUsageBreakdown(summary, fallbackRequests = 0) {
+      const totalUsage = summary?.totalUsage || {};
+      const totalTokens = totalUsage.totalTokens || 0;
+      const inputTokens = totalUsage.inputTokens || 0;
+      const outputTokens = totalUsage.outputTokens || 0;
+      const requests = typeof summary?.stepCount === 'number'
+        ? summary.stepCount
+        : fallbackRequests;
+      const cacheHitRequests = typeof summary?.cacheHitRequests === 'number'
+        ? summary.cacheHitRequests
+        : 0;
+
+      return {
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        requests,
+        cacheHitRequests,
+        cacheMissRequests: Math.max(0, requests - cacheHitRequests),
+        cacheHitRate: formatRate(cacheHitRequests, requests),
+        avgPerRequest: requests > 0 ? Math.round(totalTokens / requests) : 0,
+        cacheReadTokens: totalUsage.cacheReadTokens || 0,
+        cacheCreationTokens: totalUsage.cacheCreationTokens || 0,
+        inputShare: totalTokens > 0 ? Math.round((inputTokens / totalTokens) * 100) : 0,
+        outputShare: totalTokens > 0 ? Math.round((outputTokens / totalTokens) * 100) : 0,
+      };
+    }
+
+    function renderTokenBar(inputTokens, outputTokens) {
+      const total = inputTokens + outputTokens;
+      const inputWidth = total > 0 ? (inputTokens / total) * 100 : 50;
+      const outputWidth = total > 0 ? (outputTokens / total) * 100 : 50;
+      return [
+        '<div class="usage-bar">',
+        '<div class="usage-bar-fill input" style="width:' + inputWidth + '%"></div>',
+        '<div class="usage-bar-fill output" style="width:' + outputWidth + '%"></div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderRateRing(percent, label, meta) {
+      const safePercent = Math.max(0, Math.min(100, percent));
+      return [
+        '<div class="rate-ring-card">',
+        '<div class="rate-ring" style="--ring-percent:' + safePercent + ';">',
+        '<div class="rate-ring-inner">',
+        '<div class="rate-ring-value">' + safePercent + '%</div>',
+        '<div class="rate-ring-label">' + escapeHtml(label) + '</div>',
+        '</div>',
+        '</div>',
+        '<div class="rate-ring-meta">' + escapeHtml(meta) + '</div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderUsageCard(title, summaryLabel, breakdown) {
+      return [
+        '<div class="usage-card">',
+        '<div class="usage-card-header">',
+        '<div>',
+        '<div class="usage-card-title">' + escapeHtml(title) + '</div>',
+        '<div class="usage-card-subtitle">' + escapeHtml(summaryLabel) + '</div>',
+        '</div>',
+        '<div class="usage-card-total">' + formatMetricNumber(breakdown.totalTokens) + '</div>',
+        '</div>',
+        renderTokenBar(breakdown.inputTokens, breakdown.outputTokens),
+        '<div class="usage-split-legend">',
+        '<span><i class="legend-dot input"></i>' + escapeHtml(t('metric_input_tokens')) + ' ' + formatMetricNumber(breakdown.inputTokens) + '</span>',
+        '<span><i class="legend-dot output"></i>' + escapeHtml(t('metric_output_tokens')) + ' ' + formatMetricNumber(breakdown.outputTokens) + '</span>',
+        '</div>',
+        '<div class="usage-stat-grid">',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_requests')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.requests) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_avg_per_request')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.avgPerRequest) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_input_share')) + '</div><div class="usage-stat-cell-value">' + breakdown.inputShare + '%</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_output_share')) + '</div><div class="usage-stat-cell-value">' + breakdown.outputShare + '%</div></div>',
+        '</div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderCacheCard(title, breakdown) {
+      const percent = breakdown.requests > 0
+        ? Math.round((breakdown.cacheHitRequests / breakdown.requests) * 100)
+        : 0;
+      return [
+        '<div class="usage-card cache-card">',
+        '<div class="usage-card-header">',
+        '<div class="usage-card-title">' + escapeHtml(title) + '</div>',
+        '<div class="usage-card-subtitle">' + escapeHtml(t('metric_cache_hit_rate')) + '</div>',
+        '</div>',
+        renderRateRing(percent, t('metric_cache_hit_rate'), breakdown.cacheHitRequests + ' / ' + breakdown.requests),
+        '<div class="usage-stat-grid">',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_hit_requests')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheHitRequests) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_miss_requests')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheMissRequests) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_read')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheReadTokens) + '</div></div>',
+        '<div class="usage-stat-cell"><div class="usage-stat-cell-label">' + escapeHtml(t('metric_cache_write')) + '</div><div class="usage-stat-cell-value">' + formatMetricNumber(breakdown.cacheCreationTokens) + '</div></div>',
+        '</div>',
+        '</div>',
+      ].join('');
+    }
+
+    function renderContextChip(label, value, meta) {
+      return [
+        '<div class="context-chip">',
+        '<div class="context-chip-label">' + escapeHtml(label) + '</div>',
+        '<div class="context-chip-value">' + escapeHtml(value) + '</div>',
+        '<div class="context-chip-meta">' + escapeHtml(meta) + '</div>',
+        '</div>',
+      ].join('');
+    }
+
+    function setCurrentMcpInfo(info) {
+      currentMcpInfo = info || null;
+    }
+
+    function getLevelWeight(level) {
+      const weights = { trace: 10, debug: 20, info: 30, warn: 40, error: 50 };
+      return weights[level] || 0;
+    }
+
+    function formatLogTimestamp(timestamp) {
+      const date = new Date(timestamp);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        fractionalSecondDigits: 3,
+      });
+    }
+
+    function safePrettyJson(value) {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return String(value);
+      }
+    }
+
+    function getFilteredLogs() {
+      const search = logFilters.search.trim().toLowerCase();
+      const minLevel = logFilters.level;
+      return currentLogs.filter((entry) => {
+        if (minLevel !== 'all' && getLevelWeight(entry.level) < getLevelWeight(minLevel)) {
+          return false;
+        }
+        if (logFilters.feature !== 'all' && (entry.context?.feature || 'none') !== logFilters.feature) {
+          return false;
+        }
+        if (logFilters.lifecycle !== 'all' && (entry.context?.lifecycle || 'none') !== logFilters.lifecycle) {
+          return false;
+        }
+        if (search) {
+          const haystack = [
+            entry.message,
+            entry.namespace,
+            entry.context?.feature,
+            entry.context?.lifecycle,
+            entry.context?.hookMethod,
+            entry.context?.toolName,
+            entry.context?.agentName,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!haystack.includes(search)) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    function renderLogsPanel() {
+      const filteredLogs = getFilteredLogs().slice().reverse();
+      const featureOptions = Array.from(new Set(currentLogs.map((entry) => entry.context?.feature).filter(Boolean))).sort();
+      const lifecycleOptions = Array.from(new Set(currentLogs.map((entry) => entry.context?.lifecycle).filter(Boolean))).sort();
+
+      const toolbar = [
+        '<section class="log-toolbar">',
+        '<div class="log-filter-row">',
+        '<div class="log-filter-label">' + escapeHtml(t('logs_scope')) + '</div>',
+        '<div class="log-chip-group">',
+        '<button type="button" class="log-chip' + (logPanelScope === 'current' ? ' active' : '') + '" onclick="window.setLogPanelScope(&quot;current&quot;)">' + escapeHtml(t('logs_scope_current')) + '</button>',
+        '<button type="button" class="log-chip' + (logPanelScope === 'all' ? ' active' : '') + '" onclick="window.setLogPanelScope(&quot;all&quot;)">' + escapeHtml(t('logs_scope_all')) + '</button>',
+        '</div>',
+        '</div>',
+        '<div class="log-filter-row">',
+        '<div class="log-filter-label">' + escapeHtml(t('logs_search')) + '</div>',
+        '<input class="log-input" type="text" value="' + escapeHtml(logFilters.search) + '" placeholder="' + escapeHtml(t('logs_search_placeholder')) + '" oninput="window.updateLogFilter(&quot;search&quot;, this.value)">',
+        '</div>',
+        '<div class="log-filter-row">',
+        '<div class="log-filter-label">' + escapeHtml(t('logs_level')) + '</div>',
+        '<select class="log-select" onchange="window.updateLogFilter(&quot;level&quot;, this.value)">',
+        '<option value="all"' + (logFilters.level === 'all' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_all')) + '</option>',
+        '<option value="debug"' + (logFilters.level === 'debug' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_debug')) + '</option>',
+        '<option value="info"' + (logFilters.level === 'info' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_info')) + '</option>',
+        '<option value="warn"' + (logFilters.level === 'warn' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_warn')) + '</option>',
+        '<option value="error"' + (logFilters.level === 'error' ? ' selected' : '') + '>' + escapeHtml(t('logs_level_error')) + '</option>',
+        '</select>',
+        '<select class="log-select" onchange="window.updateLogFilter(&quot;feature&quot;, this.value)">',
+        '<option value="all"' + (logFilters.feature === 'all' ? ' selected' : '') + '>' + escapeHtml(t('logs_feature_all')) + '</option>',
+        featureOptions.map((feature) => '<option value="' + escapeHtml(feature) + '"' + (logFilters.feature === feature ? ' selected' : '') + '>' + escapeHtml(feature) + '</option>').join(''),
+        '</select>',
+        '<select class="log-select" onchange="window.updateLogFilter(&quot;lifecycle&quot;, this.value)">',
+        '<option value="all"' + (logFilters.lifecycle === 'all' ? ' selected' : '') + '>' + escapeHtml(t('logs_lifecycle_all')) + '</option>',
+        lifecycleOptions.map((lifecycle) => '<option value="' + escapeHtml(lifecycle) + '"' + (logFilters.lifecycle === lifecycle ? ' selected' : '') + '>' + escapeHtml(lifecycle) + '</option>').join(''),
+        '</select>',
+        '</div>',
+        '<div class="log-summary"><span>' + String(filteredLogs.length) + ' ' + escapeHtml(t('logs_total')) + '</span><span>' + escapeHtml(logPanelScope === 'current' ? (allAgents.find((agent) => agent.id === currentAgentId)?.name || t('active_none')) : t('logs_scope_all')) + '</span></div>',
+        '</section>',
+      ].join('');
+
+      if (filteredLogs.length === 0) {
+        return '<div class="log-panel">' + toolbar + '<div class="feature-panel-empty"><div>' + escapeHtml(t('logs_empty')) + '</div></div></div>';
+      }
+
+      const rows = filteredLogs.map((entry) => {
+        const metaPills = [
+          entry.context?.agentName ? '<span class="log-pill">' + escapeHtml(entry.context.agentName) + '</span>' : '',
+          entry.context?.feature ? '<span class="log-pill">feature:' + escapeHtml(entry.context.feature) + '</span>' : '',
+          entry.context?.lifecycle ? '<span class="log-pill">hook:' + escapeHtml(entry.context.lifecycle) + '</span>' : '',
+          entry.context?.hookMethod ? '<span class="log-pill">' + escapeHtml(entry.context.hookMethod) + '()</span>' : '',
+          entry.context?.toolName ? '<span class="log-pill">tool:' + escapeHtml(entry.context.toolName) + '</span>' : '',
+          typeof entry.context?.step === 'number' ? '<span class="log-pill">step ' + String(entry.context.step) + '</span>' : '',
+          typeof entry.context?.callIndex === 'number' ? '<span class="log-pill">call ' + String(entry.context.callIndex) + '</span>' : '',
+        ].filter(Boolean).join('');
+
+        const detailBlock = entry.data !== undefined
+          ? '<details class="log-details"><summary>' + escapeHtml(t('logs_details')) + '</summary><pre>' + escapeHtml(safePrettyJson(entry.data)) + '</pre></details>'
+          : '';
+
+        return [
+          '<article class="log-card">',
+          '<div class="log-card-head">',
+          '<div class="log-card-main">',
+          '<span class="log-level ' + escapeHtml(entry.level) + '">' + escapeHtml(entry.level) + '</span>',
+          '<span class="log-namespace">' + escapeHtml(entry.namespace) + '</span>',
+          '</div>',
+          '<div class="log-timestamp">' + escapeHtml(formatLogTimestamp(entry.timestamp)) + '</div>',
+          '</div>',
+          '<div class="log-card-body">',
+          '<div class="log-message">' + escapeHtml(entry.message) + '</div>',
+          metaPills ? '<div class="log-meta">' + metaPills + '</div>' : '',
+          detailBlock,
+          '</div>',
+          '</article>',
+        ].join('');
+      }).join('');
+
+      return '<div class="log-panel">' + toolbar + '<section class="log-list">' + rows + '</section></div>';
+    }
+
+    function renderMcpItems(items, typeLabel) {
+      if (!Array.isArray(items) || items.length === 0) {
+        return '<div class="feature-panel-empty"><div>' + escapeHtml(t('active_none')) + '</div></div>';
+      }
+
+      return '<div class="mcp-list">' + items.map((item) => {
+        const name = item.name || item.uri || '';
+        return [
+        '<article class="mcp-item">',
+        '<div class="mcp-item-head">',
+        '<div class="mcp-item-name">' + escapeHtml(name) + '</div>',
+        '<div class="mcp-item-type">' + escapeHtml(typeLabel) + '</div>',
+        '</div>',
+          '<div class="mcp-item-desc">' + escapeHtml(item.description || '') + '</div>',
+          '</article>',
+        ].join('');
+      }).join('') + '</div>';
+    }
+
+    function renderMcpPanel() {
+      if (!currentMcpInfo) {
+        return '<div class="feature-panel-empty"><div>' + escapeHtml(t('mcp_loading')) + '</div></div>';
+      }
+
+      const info = currentMcpInfo;
+      return [
+        '<div class="mcp-panel">',
+        '<section class="mcp-hero">',
+        '<div class="hooks-kicker">' + escapeHtml(t('mcp_section_kicker')) + '</div>',
+        '<div class="hooks-hero-title">' + escapeHtml(t('mcp_hero_title')) + '</div>',
+        '<div class="hooks-hero-subtitle">' + escapeHtml(t('mcp_subtitle')) + '</div>',
+        '<div class="mcp-status-pill">' + escapeHtml(info.enabled ? t('mcp_enabled') : t('mcp_disabled')) + '</div>',
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('panel_inspector')) + '</div>',
+        '<div class="mcp-grid">',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_endpoint')) + '</div><div class="mcp-stat-value">' + escapeHtml(info.endpoint || '') + '</div></div>',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_transport')) + '</div><div class="mcp-stat-value">' + escapeHtml(info.transport || '') + '</div></div>',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_tools')) + '</div><div class="mcp-stat-value">' + String((info.tools || []).length) + '</div></div>',
+        '<div class="mcp-stat"><div class="mcp-stat-label">' + escapeHtml(t('mcp_resources')) + '</div><div class="mcp-stat-value">' + String((info.resources || []).length) + '</div></div>',
+        '</div>',
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_client_config')) + '</div>',
+        '<div class="mcp-item-desc" style="margin-bottom:8px;">' + escapeHtml(t('mcp_claude_desktop')) + '</div>',
+        '<pre class="mcp-code">' + escapeHtml(safePrettyJson(info.commands?.claudeDesktop?.json || {})) + '</pre>',
+        '<div class="mcp-item-desc" style="margin:12px 0 8px 0;">' + escapeHtml(t('mcp_codex')) + '</div>',
+        '<pre class="mcp-code">' + escapeHtml(safePrettyJson(info.commands?.codex?.json || {})) + '</pre>',
+        '<div class="mcp-item-desc" style="margin:12px 0 8px 0;">' + escapeHtml(t('mcp_manual')) + '</div>',
+        '<pre class="mcp-code">' + escapeHtml(info.commands?.curlInitialize || '') + '</pre>',
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_tool_list')) + '</div>',
+        renderMcpItems(info.tools || [], t('mcp_item_tool')),
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_resource_list')) + '</div>',
+        renderMcpItems(info.resources || [], t('mcp_item_resource')),
+        '</section>',
+        '<section class="feature-panel-section">',
+        '<div class="feature-panel-section-title">' + escapeHtml(t('mcp_prompt_list')) + '</div>',
+        renderMcpItems(info.prompts || [], t('mcp_item_prompt')),
+        '</section>',
+        '</div>',
+      ].join('');
+    }
+
     const lifecycleDocs = {
       AgentInitiate: {
         title: { zh: 'Agent 初始化阶段', en: 'Agent initialization phase' },
@@ -1838,7 +3362,7 @@
           '~~~',
           '',
           '如果某个 feature 要在整个会话期间维持状态，这里通常是它最稳妥的切入点。相比 CallStart，它不会被每次用户输入重复触发。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'This moment fires only once when the agent truly enters its working state. It is the right place for long-lived setup such as booting background services, opening connections, warming caches, or mounting framework-level helpers.',
           '',
@@ -1851,7 +3375,7 @@
           '~~~',
           '',
           'If a feature needs to hold state across the whole session, this is usually the safest insertion point. Unlike CallStart, it is not repeated on every user request.',
-        ].join('\n'),
+        ].join('\\n'),
         },
       },
       AgentDestroy: {
@@ -1868,7 +3392,7 @@
           '~~~',
           '',
           '如果一个 feature 在 AgentInitiate 做了重量级初始化，就应该在这里成对地清理掉。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'This is the closing stage of the agent lifecycle. Use it to release external resources, stop workers, close connections, and flush traces or caches safely to disk.',
           '',
@@ -1881,7 +3405,7 @@
           '~~~',
           '',
           'If a feature performs heavyweight setup in AgentInitiate, it should usually tear that work down here.',
-        ].join('\n') },
+        ].join('\\n') },
       },
       CallStart: {
         title: { zh: 'Call 开始前', en: 'Before call start' },
@@ -1897,7 +3421,7 @@
           '~~~',
           '',
           '如果你想观察 feature 如何“提前影响”一次调用，这里通常是最有解释力的节点。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'This timing happens after the system prompt is ready but before the user input is committed into context. It is ideal for input rewriting, pre-injection, and lightweight call-level normalization.',
           '',
@@ -1910,7 +3434,7 @@
           '~~~',
           '',
           'If you want to explain how a feature affects a call before the model sees it, this is usually the clearest node.',
-        ].join('\n') },
+        ].join('\\n') },
       },
       CallFinish: {
         title: { zh: 'Call 结束后', en: 'After call finish' },
@@ -1925,7 +3449,7 @@
           '~~~',
           '',
           '它更像“回合总结”，而不是流程控制点。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'This is the settlement point after a full call completes. It fits summarization, logging, and metrics updates, but it is not the place to decide whether the next ReAct turn should continue.',
           '',
@@ -1937,7 +3461,7 @@
           '~~~',
           '',
           'It behaves more like an end-of-call summary than a flow-control decision point.',
-        ].join('\n') },
+        ].join('\\n') },
       },
       StepStart: {
         title: { zh: 'Step 开始前', en: 'Before step start' },
@@ -1954,7 +3478,7 @@
           '~~~',
           '',
           '因为它会在每一轮执行，所以调试器里把它单独看出来很重要，否则很难解释某些系统消息为什么总会出现。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'Every ReAct iteration enters here right at the beginning. It is useful for context patching, reminder injection, and local state synchronization. These hooks often run at high frequency.',
           '',
@@ -1968,7 +3492,7 @@
           '~~~',
           '',
           'Because it runs every round, surfacing it clearly in the debugger is important; otherwise it is hard to explain why some system messages keep appearing.',
-        ].join('\n') },
+        ].join('\\n') },
       },
       StepFinish: {
         title: { zh: 'Step 结束决策点', en: 'Step finish decision point' },
@@ -1986,7 +3510,7 @@
           '~~~',
           '',
           '如果某个 feature 能把 agent 的循环强行维持住，通常就是在这里介入。它解释的是“为什么这轮已经看起来结束了，但系统还在继续跑”。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'This is one of the most important control points in the ReAct loop. After the model and tools finish, a feature can decide whether the loop should continue or end right away.',
           '',
@@ -2001,7 +3525,7 @@
           '~~~',
           '',
           'If a feature can keep the agent alive beyond what looks like a natural stopping point, it is usually intervening here.',
-        ].join('\n') },
+        ].join('\\n') },
       },
       ToolUse: {
         title: { zh: '工具执行前决策点', en: 'Before tool execution decision point' },
@@ -2019,7 +3543,7 @@
           '~~~',
           '',
           '调试器里只要看清楚这里挂了谁，很多“为什么工具没执行”或者“为什么执行路径被改写”就能直接定位。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'This is another high-value inspection point. Before a tool actually runs, a feature can approve, deny, or pass it through. Security policy and dangerous-operation guards fit naturally here.',
           '',
@@ -2034,7 +3558,7 @@
           '~~~',
           '',
           'As soon as you can see who is attached here, many "why did the tool not run?" questions become much easier to answer.',
-        ].join('\n') },
+        ].join('\\n') },
       },
       ToolFinished: {
         title: { zh: '工具执行后通知点', en: 'After tool finished notify point' },
@@ -2052,7 +3576,7 @@
           '~~~',
           '',
           '这类钩子更偏“旁路观察”和“后续整理”，所以通常适合完整展开给开发者查链路。',
-        ].join('\n'),
+        ].join('\\n'),
           en: [
           'Once a tool returns its result, this point receives a pure notification. It suits post-processing, indexing, external state sync, and audit recording, but it does not change the result of the tool call that already happened.',
           '',
@@ -2067,7 +3591,7 @@
           '~~~',
           '',
           'These hooks are more about side-channel observation and cleanup, so they are usually worth showing in full detail to developers.',
-        ].join('\n') },
+        ].join('\\n') },
       },
     };
 
@@ -2097,17 +3621,7 @@
     window.openFeatureDetails = openFeatureDetails;
     window.closeFeatureDetails = closeFeatureDetails;
 
-    function renderOverviewPanel() {
-      const hookIcons = {
-        AgentInitiate: 'A',
-        AgentDestroy: 'D',
-        CallStart: 'C',
-        CallFinish: 'C',
-        StepStart: 'S',
-        StepFinish: 'R',
-        ToolUse: 'T',
-        ToolFinished: 'F',
-      };
+    function renderStructurePanel() {
       const activeAgent = allAgents.find(agent => agent.id === currentAgentId);
       const connected = activeAgent ? (activeAgent.connected !== false ? t('status_connected') : t('status_disconnected')) : t('status_no_agent');
       const totalHooks = currentHookInspector.hooks.reduce((sum, group) => sum + group.entries.length, 0);
@@ -2115,6 +3629,11 @@
         (sum, group) => sum + group.entries.filter(entry => entry.kind === 'decision').length,
         0
       );
+      const featureStatusCounts = currentHookInspector.features.reduce((acc, feature) => {
+        const status = getFeatureStatus(feature);
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, { enabled: 0, partial: 0, disabled: 0 });
       const selectedDoc = lifecycleDocs[selectedOverviewLifecycle] || lifecycleDocs.StepFinish;
       const flowChips = currentHookInspector.lifecycleOrder
         .map(name => '<button class="hooks-chip' + (name === selectedOverviewLifecycle ? ' active' : '') + '" type="button" onclick="window.selectOverviewLifecycle(&quot;' + escapeHtml(name) + '&quot;)"><strong>' + escapeHtml(name) + '</strong></button>')
@@ -2122,20 +3641,21 @@
       return [
         '<div class="hooks-panel">',
         '<section class="hooks-hero">',
-        '<div class="hooks-kicker">React Loop Topology</div>',
-        '<div class="hooks-hero-title">Feature Hooks Map</div>',
-        '<div class="hooks-hero-subtitle">' + escapeHtml(t('overview_subtitle')) + '</div>',
+        '<div class="hooks-kicker">' + escapeHtml(t('structure_kicker')) + '</div>',
+        '<div class="hooks-hero-title">' + escapeHtml(t('structure_hero_title')) + '</div>',
+        '<div class="hooks-hero-subtitle">' + escapeHtml(t('structure_subtitle')) + '</div>',
         '<div class="hooks-stats">',
         '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_active_agent')) + '</div><div class="hooks-stat-value">' + escapeHtml(activeAgent ? activeAgent.name : t('active_none')) + '</div></div>',
-        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_hook_slots')) + '</div><div class="hooks-stat-value">' + String(totalHooks) + '</div></div>',
-        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_decision_points')) + '</div><div class="hooks-stat-value">' + String(decisionHooks) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">Hooks</div><div class="hooks-stat-value">' + String(totalHooks) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">Decision</div><div class="hooks-stat-value">' + String(decisionHooks) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('panel_features_label')) + '</div><div class="hooks-stat-value">' + String(currentHookInspector.features.length) + '</div></div>',
         '</div>',
         '</section>',
         '<section class="hooks-section">',
         '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_inspector')) + '</div><div class="hooks-section-meta">' + escapeHtml(connected) + '</div></div>',
         '<div class="feature-grid">',
         '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_connection')) + '</div><div class="feature-card-detail"><span>' + escapeHtml(connected) + '</span><span>' + String(currentMessages.length) + ' ' + escapeHtml(t('feature_messages')) + '</span></div></div>',
-        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_features_label')) + '</div><div class="feature-card-detail"><span>' + String(currentHookInspector.features.filter(feature => feature.enabled).length) + ' ' + escapeHtml(t('panel_enabled')) + '</span><span>' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_total')) + '</span></div></div>',
+        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_features_label')) + '</div><div class="feature-card-detail"><span>' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_total')) + '</span><span>' + String(featureStatusCounts.enabled) + ' ' + escapeHtml(t('panel_enabled')) + '</span><span>' + String(featureStatusCounts.partial) + ' ' + escapeHtml(t('panel_partial')) + '</span><span>' + String(featureStatusCounts.disabled) + ' ' + escapeHtml(t('panel_disabled')) + '</span></div></div>',
         '</div>',
         '</section>',
         '<section class="hooks-section">',
@@ -2150,6 +3670,55 @@
       ].join('');
     }
 
+    function renderMonitorPanel() {
+      const activeAgent = allAgents.find(agent => agent.id === currentAgentId);
+      const connected = activeAgent ? (activeAgent.connected !== false ? t('status_connected') : t('status_disconnected')) : t('status_no_agent');
+      const overview = currentOverviewSnapshot || getEmptyOverviewSnapshot();
+      const totalUsage = overview.usageStats?.totalUsage || {};
+      const latestCall = getLatestCallSummary(overview);
+      const currentBreakdown = getUsageBreakdown(latestCall, 0);
+      const totalBreakdown = getUsageBreakdown({
+        totalUsage,
+        stepCount: overview.usageStats.totalRequests || 0,
+        cacheHitRequests: overview.usageStats.totalCacheHitRequests || 0,
+      }, overview.usageStats.totalRequests || 0);
+      const contextLengthLabel = formatMetricNumber(overview.context.charCount) + ' chars';
+      const latestTurnLabel = latestCall ? formatMetricNumber(currentBreakdown.totalTokens) : t('metric_no_calls');
+      return [
+        '<div class="hooks-panel">',
+        '<section class="hooks-hero">',
+        '<div class="hooks-kicker">' + escapeHtml(t('overview_kicker')) + '</div>',
+        '<div class="hooks-hero-title">' + escapeHtml(t('overview_hero_title')) + '</div>',
+        '<div class="hooks-hero-subtitle">' + escapeHtml(t('overview_subtitle')) + '</div>',
+        '<div class="hooks-stats">',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_active_agent')) + '</div><div class="hooks-stat-value">' + escapeHtml(activeAgent ? activeAgent.name : t('active_none')) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_context_length')) + '</div><div class="hooks-stat-value">' + escapeHtml(contextLengthLabel) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_turn_tokens')) + '</div><div class="hooks-stat-value">' + escapeHtml(latestTurnLabel) + '</div></div>',
+        '<div class="hooks-stat"><div class="hooks-stat-label">' + escapeHtml(t('stat_cache_hit_rate')) + '</div><div class="hooks-stat-value">' + escapeHtml(totalBreakdown.cacheHitRate) + '</div></div>',
+        '</div>',
+        '</section>',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_runtime')) + '</div><div class="hooks-section-meta">' + escapeHtml(connected) + '</div></div>',
+        '<div class="overview-usage-grid">',
+        renderUsageCard(t('panel_current_turn'), latestCall ? t('metric_latest_turn') : t('metric_no_calls'), currentBreakdown),
+        renderCacheCard(t('panel_current_turn'), currentBreakdown),
+        renderUsageCard(t('panel_session_total'), t('metric_session_total'), totalBreakdown),
+        renderCacheCard(t('panel_session_total'), totalBreakdown),
+        '</div>',
+        '</section>',
+        '<section class="hooks-section">',
+        '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_context')) + '</div><div class="hooks-section-meta">' + escapeHtml(t('panel_connection')) + ': ' + escapeHtml(connected) + '</div></div>',
+        '<div class="context-chip-grid">',
+        renderContextChip(t('metric_messages'), formatMetricNumber(overview.context.messageCount), t('panel_context')),
+        renderContextChip(t('metric_chars'), formatMetricNumber(overview.context.charCount), t('stat_context_length')),
+        renderContextChip(t('metric_turns'), formatMetricNumber(overview.context.turnCount), t('metric_session_total')),
+        renderContextChip(t('metric_tool_calls'), formatMetricNumber(overview.context.toolCallCount), t('metric_latest_turn')),
+        '</div>',
+        '</section>',
+        '</div>',
+      ].join('');
+    }
+
     function renderFeaturesPanel() {
       if (currentHookInspector.features.length === 0) {
         return '<div class="feature-panel-empty"><div class="feature-panel-section"><div class="feature-panel-section-title">' + escapeHtml(t('panel_no_features')) + '</div><div>' + escapeHtml(t('panel_no_feature_data')) + '</div></div></div>';
@@ -2157,7 +3726,9 @@
 
       const selectedFeature = currentHookInspector.features.find(feature => feature.name === selectedFeatureName) || null;
       const featureCards = currentHookInspector.features
-        .map(feature => [
+        .map(feature => {
+          const status = getFeatureStatus(feature);
+          return [
           '<div class="feature-card" role="button" tabindex="0" onclick="window.openFeatureDetails(&quot;' + escapeHtml(feature.name) + '&quot;)" title="' + escapeHtml(t('feature_open_details')) + '">',
           '<div class="feature-card-top">',
           '<div class="feature-card-main">',
@@ -2167,7 +3738,7 @@
           '<div class="feature-card-file">' + escapeHtml(shortenSourcePath(feature.source) || t('feature_source_missing')) + '</div>',
           '</div>',
           '</div>',
-          '<div class="feature-badge">' + escapeHtml(feature.enabled ? t('feature_enabled') : t('feature_partial')) + '</div>',
+          '<div class="' + getStatusBadgeClass(status) + '">' + escapeHtml(getFeatureStatusLabel(status)) + '</div>',
           '</div>',
           '<div class="feature-card-detail">',
           '<span>' + String(feature.hookCount) + ' ' + escapeHtml(t('feature_hooks')) + '</span>',
@@ -2175,7 +3746,8 @@
           feature.description ? '<span>' + escapeHtml(feature.description) + '</span>' : '',
           '</div>',
           '</div>',
-        ].join(''))
+        ].join('');
+        })
         .join('');
 
       const detailOverlay = selectedFeature ? [
@@ -2191,7 +3763,7 @@
         '<div class="feature-detail-stats">',
         '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('feature_hooks')) + '</div><div class="feature-detail-stat-value">' + String(selectedFeature.hookCount) + '</div></div>',
         '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('feature_active_tools')) + '</div><div class="feature-detail-stat-value">' + String(selectedFeature.enabledToolCount) + '/' + String(selectedFeature.toolCount) + '</div></div>',
-        '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('panel_connection')) + '</div><div class="feature-detail-stat-value">' + escapeHtml(selectedFeature.enabled ? t('feature_enabled') : t('feature_partial')) + '</div></div>',
+        '<div class="feature-detail-stat"><div class="feature-detail-stat-label">' + escapeHtml(t('feature_status_label')) + '</div><div class="feature-detail-stat-value">' + escapeHtml(getFeatureStatusLabel(getFeatureStatus(selectedFeature))) + '</div></div>',
         '</div>',
         '<div class="feature-panel-section">',
         '<div class="feature-panel-section-title">' + escapeHtml(t('panel_feature_details')) + '</div>',
@@ -2204,7 +3776,7 @@
               '<div class="feature-tool-card">',
               '<div class="feature-tool-top">',
               '<div class="feature-tool-name">' + escapeHtml(tool.name) + '</div>',
-              '<div class="feature-badge">' + escapeHtml(tool.enabled ? t('feature_tool_enabled') : t('feature_tool_disabled')) + '</div>',
+              '<div class="' + getStatusBadgeClass(tool.enabled ? 'enabled' : 'disabled') + '">' + escapeHtml(tool.enabled ? t('feature_tool_enabled') : t('feature_tool_disabled')) + '</div>',
               '</div>',
               '<div class="feature-tool-desc">' + escapeHtml(tool.description || '') + '</div>',
               '<div class="feature-tool-meta">',
@@ -2220,11 +3792,12 @@
       ].join('') : '';
 
       return [
-        '<div class="hooks-panel">',
+        '<div class="hooks-panel feature-detail-shell">',
         '<section class="hooks-section">',
         '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_all_features')) + '</div><div class="hooks-section-meta">' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_registered')) + '</div></div>',
-        '<div class="feature-detail-shell"><div class="feature-grid">' + featureCards + '</div>' + detailOverlay + '</div>',
+        '<div class="feature-grid">' + featureCards + '</div>',
         '</section>',
+        detailOverlay,
         '</div>',
       ].join('');
     }
@@ -2296,8 +3869,12 @@
 
     const featurePanels = {
       workspace: {
-        title: () => t('panel_overview'),
-        render: () => renderOverviewPanel(),
+        title: () => t('panel_structure'),
+        render: () => renderStructurePanel(),
+      },
+      monitor: {
+        title: () => t('panel_monitor'),
+        render: () => renderMonitorPanel(),
       },
       hooks: {
         title: () => t('panel_features'),
@@ -2306,6 +3883,14 @@
       inspector: {
         title: () => t('panel_reverse_hooks'),
         render: () => renderReverseHooksPanel(),
+      },
+      logs: {
+        title: () => t('panel_logs'),
+        render: () => renderLogsPanel(),
+      },
+      mcp: {
+        title: () => t('panel_mcp'),
+        render: () => renderMcpPanel(),
       },
     };
 
@@ -2344,11 +3929,11 @@
     // 默认 fallback 模板（当动态加载失败时使用）
     const RENDER_TEMPLATES = {
       'json': {
-        call: (args) => `<pre style="margin:0; font-size:12px;">${escapeHtml(JSON.stringify(args, null, 2))}</pre>`,
+        call: (args) => \`<pre style="margin:0; font-size:12px;">\${escapeHtml(JSON.stringify(args, null, 2))}</pre>\`,
         result: (data, success) => {
           if (!success) return formatError(data);
           const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
-          return `<pre class="bash-output">${escapeHtml(displayData)}</pre>`;
+          return \`<pre class="bash-output">\${escapeHtml(displayData)}</pre>\`;
         }
       }
     };
@@ -2377,15 +3962,21 @@
       const panelResizerEl = document.getElementById('feature-panel-resizer');
       const notificationCharLabel = document.querySelector('.notification-char-count')?.nextElementSibling;
       const workspaceButton = document.getElementById('rail-workspace');
+      const monitorButton = document.getElementById('rail-monitor');
       const hooksButton = document.getElementById('rail-hooks');
       const inspectorButton = document.getElementById('rail-inspector');
+      const logsButton = document.getElementById('rail-logs');
+      const mcpButton = document.getElementById('rail-mcp');
 
       if (sidebarToggleEl) sidebarToggleEl.title = t('sidebar_toggle');
       if (panelResizerEl) panelResizerEl.title = t('resize_panel');
       if (notificationCharLabel) notificationCharLabel.textContent = t('chars');
-      if (workspaceButton) workspaceButton.title = t('workspace_tooltip');
+      if (workspaceButton) workspaceButton.title = t('structure_tooltip');
+      if (monitorButton) monitorButton.title = t('monitor_tooltip');
       if (hooksButton) hooksButton.title = t('features_tooltip');
       if (inspectorButton) inspectorButton.title = t('reverse_hooks_tooltip');
+      if (logsButton) logsButton.title = t('logs_tooltip');
+      if (mcpButton) mcpButton.title = t('mcp_tooltip');
 
       languageToggle.title = t('language_toggle');
       languageToggle.textContent = t('language_toggle_short');
@@ -2402,6 +3993,7 @@
 
       if (currentMessages.length === 0) {
         container.innerHTML = getEmptyStateHtml();
+        updateFollowLatestButton();
       } else {
         render(currentMessages);
       }
@@ -2415,9 +4007,18 @@
     }
 
     function renderFeaturePanel() {
+      const activeElement = document.activeElement;
+      const preserveLogSearchFocus = activeFeaturePanel === 'logs' && activeElement && activeElement.classList && activeElement.classList.contains('log-input');
+      const preservedSelectionStart = preserveLogSearchFocus && typeof activeElement.selectionStart === 'number'
+        ? activeElement.selectionStart
+        : null;
+      const preservedSelectionEnd = preserveLogSearchFocus && typeof activeElement.selectionEnd === 'number'
+        ? activeElement.selectionEnd
+        : null;
+
       if (!activeFeaturePanel || !featurePanels[activeFeaturePanel]) {
         featurePanel.classList.remove('open');
-        featurePanelTitle.textContent = t('panel_overview');
+        featurePanelTitle.textContent = t('panel_structure');
         featurePanelBody.innerHTML = getFeaturePanelEmptyHtml();
         railButtons.forEach(button => button.classList.remove('active'));
         return;
@@ -2431,12 +4032,33 @@
       railButtons.forEach(button => {
         button.classList.toggle('active', button.dataset.panel === activeFeaturePanel);
       });
+
+      if (preserveLogSearchFocus) {
+        const nextSearchInput = featurePanelBody.querySelector('.log-input');
+        if (nextSearchInput) {
+          nextSearchInput.focus();
+          if (preservedSelectionStart !== null && preservedSelectionEnd !== null && typeof nextSearchInput.setSelectionRange === 'function') {
+            nextSearchInput.setSelectionRange(preservedSelectionStart, preservedSelectionEnd);
+          }
+        }
+      }
     }
 
     function toggleFeaturePanel(panelId) {
       activeFeaturePanel = activeFeaturePanel === panelId ? null : panelId;
       renderFeaturePanel();
     }
+
+    window.setLogPanelScope = async (scope) => {
+      logPanelScope = scope === 'all' ? 'all' : 'current';
+      await loadLogs(true);
+      renderFeaturePanel();
+    };
+
+    window.updateLogFilter = (key, value) => {
+      logFilters[key] = value;
+      renderFeaturePanel();
+    };
 
     function closeAgentContextMenu() {
       agentContextMenu.classList.remove('open');
@@ -2462,6 +4084,11 @@
     railButtons.forEach(button => {
       button.addEventListener('click', () => {
         toggleFeaturePanel(button.dataset.panel);
+        if (button.dataset.panel === 'logs' && activeFeaturePanel === 'logs') {
+          loadLogs(true).catch((error) => console.error('Failed to load logs:', error));
+        } else if (button.dataset.panel === 'mcp' && activeFeaturePanel === 'mcp') {
+          loadMcpInfo(true).catch((error) => console.error('Failed to load MCP info:', error));
+        }
       });
     });
 
@@ -2497,16 +4124,16 @@
 
     function formatError(data) {
        const text = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
-       return `<div class="tool-error">
+       return \`<div class="tool-error">
          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-         <span>${escapeHtml(text)}</span>
-       </div>`;
+         <span>\${escapeHtml(text)}</span>
+       </div>\`;
     }
 
     function interpolateTemplate(template, data) {
-      return template.replace(/{{(w+)}}/g, (_, key) => {
+      return template.replace(/\{\{(\w+)\}\}/g, (_, key) => {
         const value = data[key];
-        return value !== undefined ? String(value) : `{{${key}}}`;
+        return value !== undefined ? String(value) : \`{{\${key}}}\`;
       });
     }
 
@@ -2558,30 +4185,37 @@
     const self = this;
 
     // 系统默认模板映射（兜底）
+    // 格式：featureName/templateName
+    // 注意：这些映射仅在 FEATURE_TEMPLATE_MAP 中没有找到时使用
+    // 新增 feature 时应确保 feature 正确实现了 getPackageInfo() 和 getTemplateNames()
     const SYSTEM_TEMPLATE_MAP = {
-      'agent-spawn': 'system/subagent',
-      'agent-list': 'system/subagent',
-      'agent-send': 'system/subagent',
-      'agent-close': 'system/subagent',
-      'wait': 'system/subagent',
-      'file-read': 'system/fs',
-      'file-write': 'system/fs',
-      'file-list': 'system/fs',
-      'skill': 'system/skill',
-      'invoke_skill': 'system/skill',
-      'command': 'system/shell',
-      'bash': 'system/shell',
-      'shell': 'system/shell',
-      'web': 'system/web',
-      'fetch': 'system/web',
-      'math': 'system/math',
-      'calculator': 'system/math',
-      'read': 'opencode/read',
-      'write': 'opencode/write',
-      'edit': 'opencode/edit',
-      'ls': 'opencode/ls',
-      'glob': 'opencode/glob',
-      'grep': 'opencode/grep',
+      // SubAgent Feature
+      'agent-spawn': 'subagent/agent-spawn',
+      'agent-list': 'subagent/agent-list',
+      'agent-send': 'subagent/agent-send',
+      'agent-close': 'subagent/agent-close',
+      'wait': 'subagent/wait',
+      // Skill Feature
+      'skill': 'skill/skill',
+      'invoke_skill': 'skill/skill',
+      // OpencodeBasic Feature
+      'read': 'opencode-basic/read',
+      'write': 'opencode-basic/write',
+      'edit': 'opencode-basic/edit',
+      'ls': 'opencode-basic/ls',
+      'glob': 'opencode-basic/glob',
+      'grep': 'opencode-basic/grep',
+      // Todo Feature
+      'task-create': 'todo/task-create',
+      'task-list': 'todo/task-list',
+      'task-get': 'todo/task-get',
+      'task-update': 'todo/task-update',
+      'task-clear': 'todo/task-clear',
+      // MCP Feature
+      'mcp-tool': 'mcp/mcp-tool',
+      'mcp-result': 'mcp/mcp-tool',
+      // UserInput Feature
+      'user-input': 'user-input/user-input',
     };
 
     function resolveTemplatePath(templateName) {
@@ -2590,13 +4224,15 @@
         return FEATURE_TEMPLATE_MAP[templateName];
       }
 
-      // 2. 使用系统默认映射
+      // 2. 使用系统默认映射（统一 URL 格式）
       if (SYSTEM_TEMPLATE_MAP[templateName]) {
-        return '/tools/' + SYSTEM_TEMPLATE_MAP[templateName] + '.render.js';
+        const mapped = SYSTEM_TEMPLATE_MAP[templateName];
+        // 系统内置模板使用 /template/agentdev/{feature}/{template}.render.js
+        return '/template/agentdev/' + mapped + '.render.js';
       }
 
-      // 3. 兜底：按约定查找 opencode
-      return '/tools/opencode/' + templateName + '.render.js';
+      // 3. 兜底：使用 /template/agentdev/{template}.render.js
+      return '/template/agentdev/' + templateName + '.render.js';
     }
 
     /**
@@ -2609,12 +4245,17 @@
         return templateCache.get(templateName);
       }
 
+      // 优先检查内置模板（json 是内置的）
+      if (RENDER_TEMPLATES[templateName]) {
+        templateCache.set(templateName, RENDER_TEMPLATES[templateName]);
+        return RENDER_TEMPLATES[templateName];
+      }
+
       try {
         const path = resolveTemplatePath(templateName);
 
         // 统一使用 URL 方式加载模板
-        // Feature 模板: /features/shell/trash-delete.render.js
-        // 系统模板: /tools/system/shell.render.js
+        // Feature 模板: /template/agentdev/shell/bash.render.js
         const module = await import(path);
 
         // 1. 优先使用 default export（Feature 模板）
@@ -2635,6 +4276,10 @@
         return null;
       } catch (e) {
         console.warn('[Viewer Worker] 加载模板失败: ' + templateName, e);
+        // 回退到内置 json 模板
+        if (RENDER_TEMPLATES['json']) {
+          return RENDER_TEMPLATES['json'];
+        }
         return null;
       }
     }
@@ -2687,6 +4332,7 @@
 
         if (data.currentAgentId && data.currentAgentId !== currentAgentId) {
           currentAgentId = data.currentAgentId;
+          setFollowLatest(true);
           await loadAgentData(currentAgentId);
         }
       } catch (e) {
@@ -2703,22 +4349,22 @@
         const agentNum = parts[1] || '?';
         const pid = parts[2] || '';
         const displayId = pid ? '#'.concat(agentNum, ' (', pid, ')') : '#'.concat(agentNum);
-        return `
+        return \`
           <div
-            class="agent-item ${isActive ? 'active' : ''} ${isConnected ? '' : 'disconnected'}"
-            onclick="switchAgent('${a.id}')"
-            oncontextmenu="openAgentActions(event, '${a.id}')"
+            class="agent-item \${isActive ? 'active' : ''} \${isConnected ? '' : 'disconnected'}"
+            onclick="switchAgent('\${a.id}')"
+            oncontextmenu="openAgentActions(event, '\${a.id}')"
           >
-            <div class="agent-name">${escapeHtml(a.name)}</div>
+            <div class="agent-name">\${escapeHtml(a.name)}</div>
             <div class="agent-meta">
               <span class="agent-status">
                 <span class="agent-status-dot"></span>
-                <span>${isConnected ? escapeHtml(t('status_connected')) : escapeHtml(t('status_disconnected'))}</span>
+                <span>\${isConnected ? escapeHtml(t('status_connected')) : escapeHtml(t('status_disconnected'))}</span>
               </span>
-              · ${displayId} · ${a.messageCount} ${escapeHtml(t('feature_messages'))}
+              · \${displayId} · \${a.messageCount} \${escapeHtml(t('feature_messages'))}
             </div>
           </div>
-        `;
+        \`;
       }).join('');
       
       const activeAgent = allAgents.find(a => a.id === currentAgentId);
@@ -2740,6 +4386,7 @@
         });
         if (res.ok) {
           currentAgentId = newAgentId;
+          setFollowLatest(true);
           await loadAgentData(newAgentId);
           renderAgentList(); // Update active state
         }
@@ -2771,7 +4418,7 @@
       }
 
       try {
-        const res = await fetch(`/api/agents/${contextMenuAgentId}`, { method: 'DELETE' });
+        const res = await fetch(\`/api/agents/\${contextMenuAgentId}\`, { method: 'DELETE' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data.error || t('delete_failed_generic'));
@@ -2786,8 +4433,11 @@
         } else if (!data.currentAgentId) {
           currentAgentId = null;
           currentMessages = [];
+          setCurrentLogs([]);
           setCurrentHookInspector({ lifecycleOrder: [], features: [], hooks: [] });
+          setCurrentOverviewSnapshot(getEmptyOverviewSnapshot());
           container.innerHTML = getEmptyStateHtml();
+          setFollowLatest(true);
           currentAgentTitle.textContent = t('page_title');
         }
       } catch (e) {
@@ -2810,18 +4460,93 @@
       }
     });
     window.addEventListener('scroll', closeAgentContextMenu, true);
+    container.addEventListener('wheel', markManualScrollIntent, { passive: true });
+    container.addEventListener('touchstart', markManualScrollIntent, { passive: true });
+    container.addEventListener('keydown', (event) => {
+      if (['ArrowUp', 'PageUp', 'Home', ' '].includes(event.key)) {
+        markManualScrollIntent();
+      }
+    });
+    container.addEventListener('scroll', () => {
+      if (suppressFollowScrollEvent || !followLatestEnabled) {
+        return;
+      }
+      if (!isNearBottom() && hasRecentManualScrollIntent()) {
+        setFollowLatest(false);
+      }
+    });
+    followLatestButton.addEventListener('click', () => {
+      setFollowLatest(true, { scroll: true, behavior: 'smooth' });
+    });
+
+    async function loadLogs(forceRender = false) {
+      try {
+        const params = new URLSearchParams({
+          scope: logPanelScope,
+        });
+        if (currentAgentId) {
+          params.set('agentId', currentAgentId);
+        }
+
+        const res = await fetch('/api/logs?' + params.toString());
+        if (!res.ok) {
+          throw new Error('Failed to fetch logs');
+        }
+        const data = await res.json();
+        const nextLogs = data.logs || [];
+        const nextSignature = JSON.stringify({
+          count: nextLogs.length,
+          last: nextLogs.length > 0 ? nextLogs[nextLogs.length - 1].id : null,
+        });
+
+        if (nextSignature !== currentLogsSignature) {
+          setCurrentLogs(nextLogs);
+          if (activeFeaturePanel === 'logs') {
+            renderFeaturePanel();
+          }
+        } else if (forceRender && activeFeaturePanel === 'logs') {
+          renderFeaturePanel();
+        }
+      } catch (e) {
+        if (forceRender && activeFeaturePanel === 'logs') {
+          setCurrentLogs([]);
+          renderFeaturePanel();
+        }
+      }
+    }
+
+    async function loadMcpInfo(forceRender = false) {
+      try {
+        const res = await fetch('/api/mcp-info');
+        if (!res.ok) {
+          throw new Error('Failed to fetch MCP info');
+        }
+        const data = await res.json();
+        setCurrentMcpInfo(data);
+        if (forceRender && activeFeaturePanel === 'mcp') {
+          renderFeaturePanel();
+        }
+      } catch (e) {
+        console.error('Failed to load MCP info:', e);
+        if (forceRender && activeFeaturePanel === 'mcp') {
+          renderFeaturePanel();
+        }
+      }
+    }
 
     async function loadAgentData(agentId) {
       try {
-        const [msgsRes, toolsRes, hooksRes] = await Promise.all([
-          fetch(`/api/agents/${agentId}/messages`),
-          fetch(`/api/agents/${agentId}/tools`),
-          fetch(`/api/agents/${agentId}/hooks`)
+        const [msgsRes, toolsRes, hooksRes, overviewRes] = await Promise.all([
+          fetch(\`/api/agents/\${agentId}/messages\`),
+          fetch(\`/api/agents/\${agentId}/tools\`),
+          fetch(\`/api/agents/\${agentId}/hooks\`),
+          fetch(\`/api/agents/\${agentId}/overview\`)
         ]);
 
         const msgsData = await msgsRes.json();
         const tools = await toolsRes.json();
         setCurrentHookInspector(await hooksRes.json());
+        setCurrentOverviewSnapshot(await overviewRes.json());
 
         currentMessages = msgsData.messages || [];
         toolRenderConfigs = {};
@@ -2878,6 +4603,10 @@
         await Promise.all(loadPromises);
 
         render(currentMessages);
+        setFollowLatest(true, { scroll: true, behavior: 'auto' });
+        if (activeFeaturePanel === 'logs') {
+          await loadLogs(true);
+        }
         renderFeaturePanel();
       } catch (e) {
         console.error('Failed to load agent data:', e);
@@ -2893,16 +4622,20 @@
 
         if (!currentAgentId) {
           await loadAgents();
+          if (activeFeaturePanel === 'logs' && logPanelScope === 'all') {
+            await loadLogs();
+          }
           setTimeout(poll, 1000);
           return;
         }
 
         // 并行请求消息、通知和输入请求
-        const [msgsRes, notifRes, connectionRes, inputRes] = await Promise.all([
-          fetch(`/api/agents/${currentAgentId}/messages`),
-          fetch(`/api/agents/${currentAgentId}/notification`),
-          fetch(`/api/agents/${currentAgentId}/connection`),
-          fetch(`/api/agents/${currentAgentId}/input-requests`),
+        const [msgsRes, notifRes, connectionRes, inputRes, overviewRes] = await Promise.all([
+          fetch(\`/api/agents/\${currentAgentId}/messages\`),
+          fetch(\`/api/agents/\${currentAgentId}/notification\`),
+          fetch(\`/api/agents/\${currentAgentId}/connection\`),
+          fetch(\`/api/agents/\${currentAgentId}/input-requests\`),
+          fetch(\`/api/agents/\${currentAgentId}/overview\`),
         ]);
 
         const connectionData = await connectionRes.json();
@@ -2915,11 +4648,22 @@
         const notifData = await notifRes.json();
         updateNotificationStatus(notifData);
 
+        const nextOverview = normalizeOverviewSnapshot(await overviewRes.json());
+        const nextOverviewSignature = getOverviewSignature(nextOverview);
+        if (nextOverviewSignature !== currentOverviewSignature) {
+          currentOverviewSnapshot = nextOverview;
+          currentOverviewSignature = nextOverviewSignature;
+          if (activeFeaturePanel === 'workspace') {
+            renderFeaturePanel();
+          }
+        }
+
         // 处理输入请求（只在变化时重新渲染）
         const inputRequests = await inputRes.json();
         if (JSON.stringify(inputRequests) !== JSON.stringify(window.lastInputRequests || [])) {
           window.lastInputRequests = inputRequests;
           renderInputRequests(inputRequests);
+          updateRollbackActionVisibility();
         }
 
         if (messages.length !== currentMessages.length || messages.length === 0) {
@@ -2959,15 +4703,19 @@
         }
 
         if (activeFeaturePanel) {
-          const hooksRes = await fetch(`/api/agents/${currentAgentId}/hooks`);
-          const nextHookInspector = normalizeHookInspector(await hooksRes.json());
-          const nextSignature = getHookInspectorSignature(nextHookInspector);
-          if (nextSignature !== currentHookInspectorSignature) {
-            currentHookInspector = nextHookInspector;
-            currentHookInspectorSignature = nextSignature;
-            renderFeaturePanel();
-          } else if (activeFeaturePanel === 'inspector') {
-            renderFeaturePanel();
+          if (activeFeaturePanel === 'logs') {
+            await loadLogs();
+          } else {
+            const hooksRes = await fetch(\`/api/agents/\${currentAgentId}/hooks\`);
+            const nextHookInspector = normalizeHookInspector(await hooksRes.json());
+            const nextSignature = getHookInspectorSignature(nextHookInspector);
+            if (nextSignature !== currentHookInspectorSignature) {
+              currentHookInspector = nextHookInspector;
+              currentHookInspectorSignature = nextSignature;
+              renderFeaturePanel();
+            } else if (activeFeaturePanel === 'inspector') {
+              renderFeaturePanel();
+            }
           }
         }
 
@@ -3013,6 +4761,7 @@
     function renderInputRequests(requests) {
       const container = document.getElementById('user-input-container');
       if (!container) return;
+      currentInputRequests = requests;
 
       // 清空现有内容
       container.innerHTML = '';
@@ -3020,24 +4769,45 @@
       for (const req of requests) {
         const card = document.createElement('div');
         card.className = 'user-input-card';
-        // 极简设计：只有 Textarea
-        card.innerHTML = `
-          <textarea class="user-input-textarea" rows="1" id="input-${req.requestId}"
-            onkeydown="handleInputKey(event, '${req.requestId}')"
+        const actionsHtml = Array.isArray(req.actions) && req.actions.length > 0
+          ? '<div class="user-input-actions">' + req.actions.map(action =>
+              '<button class="user-input-action ' + escapeHtml(action.variant || 'secondary') + '" onclick="submitInputAction(\\'' + req.requestId + '\\', \\'' + escapeHtml(action.id) + '\\')">' + escapeHtml(action.label) + '</button>'
+            ).join('') + '</div>'
+          : '';
+        card.innerHTML = \`
+          <textarea class="user-input-textarea" rows="1" id="input-\${req.requestId}"
+            onkeydown="handleInputKey(event, '\${req.requestId}')"
             oninput="autoResize(this)"
-            placeholder="${escapeHtml(t('input_placeholder'))}"></textarea>
-        `;
+            placeholder="\${escapeHtml(req.placeholder || t('input_placeholder'))}"></textarea>
+          <div class="user-input-footer">
+            \${actionsHtml}
+          </div>
+        \`;
         container.appendChild(card);
         
         // Auto-focus
         setTimeout(() => {
-          const el = document.getElementById(`input-${req.requestId}`);
+          const el = document.getElementById(\`input-\${req.requestId}\`);
           if(el) {
+             if (typeof req.initialValue === 'string' && req.initialValue.length > 0) {
+               el.value = req.initialValue;
+             }
              el.focus();
+             const end = el.value.length;
+             if (typeof el.setSelectionRange === 'function') {
+               el.setSelectionRange(end, end);
+             }
              autoResize(el);
           }
         }, 50);
       }
+    }
+
+    function updateRollbackActionVisibility() {
+      const allowRollback = !!getPrimaryInputRequest();
+      document.querySelectorAll('.message-row.user .message-action').forEach((button) => {
+        button.style.display = allowRollback ? '' : 'none';
+      });
     }
 
     function autoResize(textarea) {
@@ -3061,16 +4831,24 @@
 
     // 提交输入
     async function submitInput(requestId) {
-      const textarea = document.getElementById(`input-${requestId}`);
+      const textarea = document.getElementById(\`input-\${requestId}\`);
       const input = textarea ? textarea.value : '';
 
       try {
-        const res = await fetch(`/api/agents/${currentAgentId}/input`, {
+        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requestId, input })
+          body: JSON.stringify({
+            requestId,
+            input,
+            response: {
+              kind: 'text',
+              text: input,
+            },
+          })
         });
         if (res.ok) {
+          setFollowLatest(true, { scroll: true, behavior: 'smooth' });
           // 刷新输入请求列表
           poll();
         }
@@ -3079,88 +4857,148 @@
       }
     }
 
+    function getPrimaryInputRequest() {
+      return Array.isArray(currentInputRequests) && currentInputRequests.length > 0
+        ? currentInputRequests[0]
+        : null;
+    }
+
+    function canRollbackMessage(msg) {
+      return !!getPrimaryInputRequest() && !!msg && msg.role === 'user';
+    }
+
+    async function submitInputAction(requestId, actionId, payload = {}) {
+      try {
+        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            input: '',
+            response: {
+              kind: 'action',
+              actionId,
+              payload,
+            },
+          }),
+        });
+        if (res.ok) {
+          poll();
+        }
+      } catch (e) {
+        console.error('提交动作失败:', e);
+      }
+    }
+
+    window.requestRollbackEdit = async function(messageIndex) {
+      const request = getPrimaryInputRequest();
+      if (!request) {
+        console.warn('No pending input request available for rollback action');
+        return;
+      }
+
+      const msg = currentMessages[messageIndex];
+      if (!msg || msg.role !== 'user') {
+        return;
+      }
+
+      const fallbackCallIndex = currentMessages
+        .slice(0, messageIndex + 1)
+        .filter(entry => entry.role === 'user')
+        .length - 1;
+      const callIndex = typeof msg.turn === 'number' ? msg.turn : fallbackCallIndex;
+
+      await submitInputAction(request.requestId, 'rollback_to_call', {
+        callIndex,
+        draftInput: msg.content,
+      });
+    };
+
     // 生成单条消息的 HTML
     function renderMessage(msg, index) {
       const role = msg.role;
-      const msgId = `msg-${index}`;
+      const msgId = \`msg-\${index}\`;
       let contentHtml = '';
-      let metaHtml = `<div class="role-badge">${role}</div>`;
+      let metaHtml = \`<div class="role-badge">\${role}</div>\`;
+      if (canRollbackMessage(msg)) {
+        metaHtml += \`<button class="message-action" onclick="requestRollbackEdit(\${index})">编辑此轮</button>\`;
+      }
 
       if (role === 'user' || role === 'system') {
         let style = '';
         let rowClass = role;
         if (role === 'system') {
-           const isLong = msg.content.includes('\n') || msg.content.length > 60;
+           const isLong = msg.content.includes('\\n') || msg.content.length > 60;
            if (isLong) {
              style = 'text-align: left !important;';
              rowClass += ' long-content';
            }
-           contentHtml = `<div class="message-content markdown-body" id="${msgId}" style="${style}">${marked.parse(msg.content)}</div>`;
+           contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
         } else {
-          contentHtml = `<div class="message-content markdown-body" id="${msgId}">${marked.parse(msg.content)}</div>`;
+          contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
         }
 
         if (role === 'system') {
-           return `
-            <div class="message-row ${rowClass}">
+           return \`
+            <div class="message-row \${rowClass}">
               <div class="message-meta">
-                ${metaHtml}
+                \${metaHtml}
               </div>
-              ${contentHtml}
+              \${contentHtml}
             </div>
-          `;
+          \`;
         }
-        return `
-          <div class="message-row ${role}">
+        return \`
+          <div class="message-row \${role}">
             <div class="message-meta">
-              ${metaHtml}
+              \${metaHtml}
             </div>
-            ${contentHtml}
+            \${contentHtml}
           </div>
-        `;
+        \`;
       } else if (role === 'assistant') {
         let innerContent = '';
 
         if (msg.reasoning) {
-          innerContent += `
-            <div class="reasoning-block" id="reasoning-${msgId}">
-                <div class="reasoning-header" onclick="toggleReasoning('reasoning-${msgId}')">
+          innerContent += \`
+            <div class="reasoning-block" id="reasoning-\${msgId}">
+                <div class="reasoning-header" onclick="toggleReasoning('reasoning-\${msgId}')">
                   <svg class="reasoning-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path></svg>
-                <span>${escapeHtml(t('thinking_process'))}</span>
+                <span>\${escapeHtml(t('thinking_process'))}</span>
               </div>
               <div class="reasoning-content markdown-body">
-                ${marked.parse(msg.reasoning)}
+                \${marked.parse(msg.reasoning)}
               </div>
             </div>
-          `;
+          \`;
         }
 
         // 检测子代理完成消息，使用 tool-call-container 风格渲染（类似 glob）
-        const agentCompletePattern = /^[\s\S]*\[子代理\s+(\S+)\s+执行完成\]:[\s\S]*$/;
+        const agentCompletePattern = /^[\\s\\S]*\\[子代理\\s+(\\S+)\\s+执行完成\\]:[\\s\\S]*$/;
         const agentCompleteMatch = msg.content.match(agentCompletePattern);
         if (agentCompleteMatch) {
           const agentName = agentCompleteMatch[1];
           // 查找子代理对应的 agentId（使用前端的 allAgents 数组）
           const subAgent = allAgents.find(a => a.name === agentName);
           const subAgentId = subAgent ? subAgent.id : null;
-          const clickAttr = subAgentId ? `onclick="switchAgent('${subAgentId}')"` : '';
+          const clickAttr = subAgentId ? \`onclick="switchAgent('\${subAgentId}')"\` : '';
           const linkHtml = subAgentId
-            ? `<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" ${clickAttr}>${escapeHtml(t('subagent_view_messages'))}</div>`
+            ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>\${escapeHtml(t('subagent_view_messages'))}</div>\`
             : '';
 
-          innerContent += `
+          innerContent += \`
               <div class="tool-call-container">
                 <div class="tool-header">
-                  <span class="tool-header-name">${escapeHtml(t('subagent_done'))}</span>
+                  <span class="tool-header-name">\${escapeHtml(t('subagent_done'))}</span>
                 </div>
                 <div class="tool-content">
-                  <div class="bash-command">【${escapeHtml(agentName)}】${escapeHtml(t('subagent_done'))}</div>
-                  ${linkHtml}
+                  <div class="bash-command">【\${escapeHtml(agentName)}】\${escapeHtml(t('subagent_done'))}</div>
+                  \${linkHtml}
                 </div>
               </div>
-          `;
+          \`;
         } else {
-          innerContent += `<div class="markdown-body">${marked.parse(msg.content)}</div>`;
+          innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
         }
 
         if (msg.toolCalls && msg.toolCalls.length > 0) {
@@ -3172,22 +5010,22 @@
             if (template.call) {
               innerHtml = applyTemplate(template.call, call.arguments);
             } else {
-              innerHtml = `<pre style="margin:0; font-size:12px;">${JSON.stringify(call.arguments, null, 2)}</pre>`;
+              innerHtml = \`<pre style="margin:0; font-size:12px;">\${JSON.stringify(call.arguments, null, 2)}</pre>\`;
             }
 
-            return `
+            return \`
               <div class="tool-call-container">
                 <div class="tool-header">
-                  <span class="tool-header-name">${displayName}</span>
+                  <span class="tool-header-name">\${displayName}</span>
                 </div>
-                <div class="tool-content">${innerHtml}</div>
+                <div class="tool-content">\${innerHtml}</div>
               </div>
-            `;
+            \`;
           }).join('');
           innerContent += toolsHtml;
         }
 
-        contentHtml = `<div class="message-content" id="${msgId}">${innerContent}</div>`;
+        contentHtml = \`<div class="message-content" id="\${msgId}">\${innerContent}</div>\`;
 
       } else if (role === 'tool') {
         const toolCallId = msg.toolCallId;
@@ -3198,14 +5036,14 @@
         return '';  // 这个需要在完整上下文中处理，暂时返回空
       }
 
-      return `
-        <div class="message-row ${role}">
+      return \`
+        <div class="message-row \${role}">
           <div class="message-meta">
-            ${metaHtml}
+            \${metaHtml}
           </div>
-          ${contentHtml}
+          \${contentHtml}
         </div>
-      `;
+      \`;
     }
 
     // 追加新消息（保持现有 DOM 状态）
@@ -3219,7 +5057,7 @@
 
       newMessages.forEach((msg, i) => {
         const index = startIndex + i;
-        const msgId = `msg-${index}`;
+        const msgId = \`msg-\${index}\`;
         let html = '';
 
         if (msg.role === 'user' || msg.role === 'system' || msg.role === 'assistant') {
@@ -3251,23 +5089,23 @@
              bodyHtml = applyTemplate(template.result, data, success, toolArgs);
           } else {
              const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
-             bodyHtml = `<pre class="bash-output">${displayData}</pre>`;
+             bodyHtml = \`<pre class="bash-output">\${displayData}</pre>\`;
           }
 
-          html = `
-            <div class="message-row ${msg.role}">
+          html = \`
+            <div class="message-row \${msg.role}">
               <div class="message-meta">
-                <div class="role-badge">${msg.role}</div>
+                <div class="role-badge">\${msg.role}</div>
               </div>
-              <div class="message-content" id="${msgId}" style="padding:0; overflow:hidden;">
+              <div class="message-content" id="\${msgId}" style="padding:0; overflow:hidden;">
                 <div class="tool-result-header">
-                  <span class="status-dot ${success ? 'success' : 'error'}"></span>
-                  <span>${displayName}</span>
+                  <span class="status-dot \${success ? 'success' : 'error'}"></span>
+                  <span>\${displayName}</span>
                 </div>
-                <div class="tool-result-body">${bodyHtml}</div>
+                <div class="tool-result-body">\${bodyHtml}</div>
               </div>
             </div>
-          `;
+          \`;
         }
 
         // 追加到容器
@@ -3276,6 +5114,10 @@
 
       // 对新消息应用折叠逻辑
       applyCollapseLogic(container, startIndex);
+      updateFollowLatestButton();
+      if (followLatestEnabled) {
+        scheduleScrollToLatest('smooth');
+      }
     }
 
     // 更新最后一条消息
@@ -3287,7 +5129,7 @@
         return;
       }
 
-      const msgId = `msg-${lastIndex}`;
+      const msgId = \`msg-\${lastIndex}\`;
 
       if (msg.role === 'tool') {
         // tool 消息更新：重建 tool-result-body
@@ -3315,13 +5157,18 @@
            bodyHtml = applyTemplate(template.result, data, success, toolArgs);
         } else {
            const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
-           bodyHtml = `<pre class="bash-output">${displayData}</pre>`;
+           bodyHtml = \`<pre class="bash-output">\${displayData}</pre>\`;
         }
 
         const toolResultBody = lastRow.querySelector('.tool-result-body');
         if (toolResultBody) {
           toolResultBody.innerHTML = bodyHtml;
         }
+      }
+
+      updateFollowLatestButton();
+      if (followLatestEnabled) {
+        scheduleScrollToLatest('smooth');
       }
     }
 
@@ -3371,82 +5218,86 @@
     function render(messages) {
       if (messages.length === 0) {
         container.innerHTML = getEmptyStateHtml();
+        updateFollowLatestButton();
         return;
       }
 
       const html = messages.map((msg, index) => {
         const role = msg.role;
-        const msgId = `msg-${index}`;
+        const msgId = \`msg-\${index}\`;
         let contentHtml = '';
-        let metaHtml = `<div class="role-badge">${role}</div>`;
+        let metaHtml = \`<div class="role-badge">\${role}</div>\`;
+        if (canRollbackMessage(msg)) {
+          metaHtml += \`<button class="message-action" onclick="requestRollbackEdit(\${index})">编辑此轮</button>\`;
+        }
 
         if (role === 'user' || role === 'system') {
           let style = '';
           let rowClass = role;
           if (role === 'system') {
-             const isLong = msg.content.includes('\n') || msg.content.length > 60;
+             const isLong = msg.content.includes('\\n') || msg.content.length > 60;
              if (isLong) {
                style = 'text-align: left !important;';
                rowClass += ' long-content';
              }
-             contentHtml = `<div class="message-content markdown-body" id="${msgId}" style="${style}">${marked.parse(msg.content)}</div>`;
+             contentHtml = \`<div class="message-content markdown-body" id="\${msgId}" style="\${style}">\${marked.parse(msg.content)}</div>\`;
           } else {
-            contentHtml = `<div class="message-content markdown-body" id="${msgId}">${marked.parse(msg.content)}</div>`;
+            contentHtml = \`<div class="message-content markdown-body" id="\${msgId}">\${marked.parse(msg.content)}</div>\`;
           }
           
           if (role === 'system') {
-             return `
-              <div class="message-row ${rowClass}">
+             return \`
+              <div class="message-row \${rowClass}">
                 <div class="message-meta">
-                  ${metaHtml}
+                  \${metaHtml}
                 </div>
-                ${contentHtml}
+                \${contentHtml}
               </div>
-            `;
+            \`;
           }
         } else if (role === 'assistant') {
           let innerContent = '';
 
           if (msg.reasoning) {
-            innerContent += `
-              <div class="reasoning-block" id="reasoning-${msgId}">
-                <div class="reasoning-header" onclick="toggleReasoning('reasoning-${msgId}')">
+            innerContent += \`
+              <div class="reasoning-block" id="reasoning-\${msgId}">
+                <div class="reasoning-header" onclick="toggleReasoning('reasoning-\${msgId}')">
                   <svg class="reasoning-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path></svg>
-                  <span>${escapeHtml(t('thinking_process'))}</span>
+                  <span>\${escapeHtml(t('thinking_process'))}</span>
                 </div>
                 <div class="reasoning-content markdown-body">
-                  ${marked.parse(msg.reasoning)}
+                  \${marked.parse(msg.reasoning)}
                 </div>
               </div>
-            `;
+            \`;
           }
 
           // 检测子代理完成消息，使用 tool-call-container 风格渲染（类似 glob）
-          const agentCompletePattern = /^[\s\S]*\[子代理\s+(\S+)\s+执行完成\]:[\s\S]*$/;
+          const agentCompletePattern = /^[\\s\\S]*\\[子代理\\s+(\\S+)\\s+执行完成\\]:[\\s\\S]*$/;
           const agentCompleteMatch = msg.content.match(agentCompletePattern);
           if (agentCompleteMatch) {
             const agentName = agentCompleteMatch[1];
             // 查找子代理对应的 agentId（使用前端的 allAgents 数组）
             const subAgent = allAgents.find(a => a.name === agentName);
             const subAgentId = subAgent ? subAgent.id : null;
-            const clickAttr = subAgentId ? `onclick="switchAgent('${subAgentId}')"` : '';
+            const clickAttr = subAgentId ? \`onclick="switchAgent('\${subAgentId}')"\` : '';
             const linkHtml = subAgentId
-              ? `<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" ${clickAttr}>${escapeHtml(t('subagent_view_messages'))}</div>`
+              ? \`<div style="font-size:11px; color:var(--text-secondary); margin-left:4px; cursor:pointer;" \${clickAttr}>\${escapeHtml(t('subagent_view_messages'))}</div>\`
               : '';
 
-            innerContent += `
+            innerContent += \`
               <div class="tool-call-container">
                 <div class="tool-header">
-                  <span class="tool-header-name">${escapeHtml(t('subagent'))}</span>
+                  <span class="tool-header-name">\${escapeHtml(t('subagent'))}</span>
                 </div>
                 <div class="tool-content">
-                  <div class="bash-command">${escapeHtml(agentName)} ${escapeHtml(t('subagent_done'))}</div>
-                  ${linkHtml}
+                  <div class="bash-command">\${escapeHtml(agentName)} \${escapeHtml(t('subagent_done'))}</div>
+                  \${linkHtml}
                 </div>
               </div>
-            `;
+            \`;
           } else {
-            innerContent += `<div class="markdown-body">${marked.parse(msg.content)}</div>`;
+            innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
           }
 
           if (msg.toolCalls && msg.toolCalls.length > 0) {
@@ -3458,22 +5309,22 @@
               if (template.call) {
                 innerHtml = applyTemplate(template.call, call.arguments);
               } else {
-                innerHtml = `<pre style="margin:0; font-size:12px;">${JSON.stringify(call.arguments, null, 2)}</pre>`;
+                innerHtml = \`<pre style="margin:0; font-size:12px;">\${JSON.stringify(call.arguments, null, 2)}</pre>\`;
               }
 
-              return `
+              return \`
                 <div class="tool-call-container">
                   <div class="tool-header">
-                    <span class="tool-header-name">${displayName}</span>
+                    <span class="tool-header-name">\${displayName}</span>
                   </div>
-                  <div class="tool-content">${innerHtml}</div>
+                  <div class="tool-content">\${innerHtml}</div>
                 </div>
-              `;
+              \`;
             }).join('');
             innerContent += toolsHtml;
           }
 
-          contentHtml = `<div class="message-content" id="${msgId}">${innerContent}</div>`;
+          contentHtml = \`<div class="message-content" id="\${msgId}">\${innerContent}</div>\`;
 
         } else if (role === 'tool') {
           const toolCallId = msg.toolCallId;
@@ -3500,27 +5351,27 @@
              bodyHtml = applyTemplate(template.result, data, success, toolArgs);
           } else {
              const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
-             bodyHtml = `<pre class="bash-output">${displayData}</pre>`;
+             bodyHtml = \`<pre class="bash-output">\${displayData}</pre>\`;
           }
 
-          contentHtml = `
-            <div class="message-content" id="${msgId}" style="padding:0; overflow:hidden;">
+          contentHtml = \`
+            <div class="message-content" id="\${msgId}" style="padding:0; overflow:hidden;">
               <div class="tool-result-header">
-                <span class="status-dot ${success ? 'success' : 'error'}"></span>
-                <span>${displayName}</span>
+                <span class="status-dot \${success ? 'success' : 'error'}"></span>
+                <span>\${displayName}</span>
               </div>
-              <div class="tool-result-body">${bodyHtml}</div>
-            </div>`;
+              <div class="tool-result-body">\${bodyHtml}</div>
+            </div>\`;
         }
 
-        return `
-          <div class="message-row ${role}">
+        return \`
+          <div class="message-row \${role}">
             <div class="message-meta">
-              ${metaHtml}
+              \${metaHtml}
             </div>
-            ${contentHtml}
+            \${contentHtml}
           </div>
-        `;
+        \`;
       }).join('');
 
       container.innerHTML = html;
@@ -3564,6 +5415,12 @@
            if (toggle) toggle.style.display = 'none';
         }
       });
+
+      updateRollbackActionVisibility();
+      updateFollowLatestButton();
+      if (followLatestEnabled) {
+        scheduleScrollToLatest('auto');
+      }
     }
 
     window.toggleMessage = function(id) {
@@ -3607,9 +5464,29 @@
           console.log('[Viewer] Retrying to load feature templates after agent loaded...');
           await reloadFeatureTemplateMap();
         }
+        await loadMcpInfo(false);
         poll();
       });
     });
   </script>
 </body>
-</html>
+</html>`;
+}
+
+/**
+ * 备选方案：如果未来想改为静态 HTML 文件 + 动态变量注入
+ * 可以使用此函数读取 HTML 文件并替换其中的占位符
+ */
+export async function loadViewerHtml(
+  htmlPath: string,
+  replacements: Record<string, string> = {}
+): Promise<string> {
+  // 未来如果改用静态 HTML 文件，可以在这里实现
+  // const content = await fs.readFile(htmlPath, 'utf-8');
+  // let result = content;
+  // for (const [key, value] of Object.entries(replacements)) {
+  //   result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
+  // }
+  // return result;
+  throw new Error('Static HTML loading not implemented yet');
+}

@@ -10,7 +10,8 @@
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../core/feature.js';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from '../../core/feature.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { CallStart } from '../../core/hooks-decorator.js';
 
 export interface MemoryFeatureConfig {
@@ -28,13 +29,28 @@ export class MemoryFeature implements AgentFeature {
 
   private filename: string;
   private cwd: string | undefined;
+  private _packageInfo: PackageInfo | null = null;
 
   constructor(config: MemoryFeatureConfig = {}) {
     this.filename = config.filename ?? 'CLAUDE.md';
   }
 
-  getTemplatePaths(): Record<string, string> {
-    return {};
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   * 此 Feature 没有模板，返回空数组
+   */
+  getTemplateNames(): string[] {
+    return [];
   }
 
   /**

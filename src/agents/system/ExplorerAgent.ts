@@ -7,7 +7,7 @@
  */
 
 import { Agent } from '../../core/agent.js';
-import { SkillFeature, SubAgentFeature, ShellFeature, OpencodeBasicFeature } from '../../features/index.js';
+import { SkillFeature, SubAgentFeature, OpencodeBasicFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
@@ -113,9 +113,6 @@ export class ExplorerAgent extends Agent {
 
     // 注册 OpencodeBasicFeature（文件操作工具集）
     this.use(new OpencodeBasicFeature());
-
-    // 注册 ShellFeature（Git Bash 命令执行）
-    this.use(new ShellFeature());
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
     this.use(new SkillFeature(config.skillsDir));

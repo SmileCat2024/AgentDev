@@ -10,7 +10,8 @@
  */
 
 import type { Tool } from '../../core/types.js';
-import type { AgentFeature, FeatureInitContext, FeatureContext } from '../../core/feature.js';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from '../../core/feature.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -131,6 +132,7 @@ export class QQBotFeature implements AgentFeature {
   private processingLock: Promise<void> = Promise.resolve();
   private gatewayStarted: boolean = false;
   private abortController: AbortController | null = null;
+  private _packageInfo: PackageInfo | null = null;
 
   constructor(config: QQBotFeatureConfig = {}) {
     this.config = config;
@@ -260,8 +262,22 @@ export class QQBotFeature implements AgentFeature {
     return [];
   }
 
-  getTemplatePaths(): Record<string, string> {
-    return {};
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   * 此 Feature 没有模板，返回空数组
+   */
+  getTemplateNames(): string[] {
+    return [];
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {

@@ -394,11 +394,27 @@ class AgentBase {
     // 确保 Feature 工具已注册（包括 SubAgentFeature 等提供的工具）
     await this.ensureFeatureTools();
 
-    // 收集 Feature 模板路径
+    // 收集 Feature 模板信息（使用新的统一方式）
     const featureTemplates: Record<string, string> = {};
+
     for (const feature of this.features.values()) {
-      if (feature.getTemplatePaths) {
-        Object.assign(featureTemplates, feature.getTemplatePaths());
+      // 使用 getPackageInfo() + getTemplateNames() 方式
+      if (feature.getPackageInfo && feature.getTemplateNames) {
+        const pkgInfo = feature.getPackageInfo();
+        const templateNames = feature.getTemplateNames();
+
+        if (pkgInfo && templateNames.length > 0) {
+          for (const templateName of templateNames) {
+            // 构建统一的 URL 格式
+            // 独立 npm 包（@agentdev/*）不包含 feature.name，因为一个包只有一个 feature
+            // 内置 feature 使用 /template/{packageName}/{featureName}/{templateName}.render.js
+            const isStandalonePackage = pkgInfo.name.startsWith('@agentdev/') && pkgInfo.name !== 'agentdev';
+            const url = isStandalonePackage
+              ? `/template/${pkgInfo.name}/${templateName}.render.js`
+              : `/template/${pkgInfo.name}/${feature.name}/${templateName}.render.js`;
+            featureTemplates[templateName] = url;
+          }
+        }
       }
     }
 
@@ -827,6 +843,41 @@ class AgentBase {
   }
 
   // ========== 内部方法 ==========
+
+  /**
+   * 解析相对路径（处理 ./ 和 ../）
+   * @param baseDir 基础目录
+   * @param relativePath 相对路径
+   * @returns 绝对路径
+   */
+  private resolveRelativePath(baseDir: string, relativePath: string): string {
+    // 规范化路径（统一使用 / 分隔符）
+    const normalizedBase = baseDir.replace(/\\/g, '/');
+    const normalizedRelative = relativePath.replace(/\\/g, '/');
+    
+    // 分割路径
+    const baseParts = normalizedBase.split('/').filter(p => p.length > 0);
+    const relativeParts = normalizedRelative.split('/');
+    
+    // 处理每个部分
+    for (const part of relativeParts) {
+      if (part === '.') {
+        // 当前目录，忽略
+        continue;
+      } else if (part === '..') {
+        // 上级目录
+        if (baseParts.length > 0) {
+          baseParts.pop();
+        }
+      } else {
+        baseParts.push(part);
+      }
+    }
+    
+    // 重建路径
+    const result = '/' + baseParts.join('/');
+    return result;
+  }
 
   /**
    * 确保执行器已初始化（延迟初始化）

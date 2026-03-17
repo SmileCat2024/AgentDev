@@ -6,6 +6,7 @@ import type {
   FeatureInitContext,
   FeatureStateSnapshot,
   ContextInjector,
+  PackageInfo,
 } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import type {
@@ -15,6 +16,7 @@ import type {
 } from '../../core/lifecycle.js';
 import { CallStart, StepFinish, ToolUse } from '../../core/hooks-decorator.js';
 import { Decision } from '../../core/lifecycle.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { createExampleTool } from './tools.js';
 import type {
   ExampleFeatureConfig,
@@ -39,6 +41,8 @@ export class ExampleFeature implements AgentFeature {
     notes: [],
   };
   private logger?: FeatureInitContext['logger'];
+
+  private _packageInfo: PackageInfo | null = null;
 
   constructor(config: ExampleFeatureConfig = {}) {
     this.config = {
@@ -96,11 +100,22 @@ export class ExampleFeature implements AgentFeature {
     ];
   }
 
-  getTemplatePaths(): Record<string, string> {
-    return {
-      'example-tool': join(__dirname, 'templates', 'example-tool.render.js'),
-      'example_tool': join(__dirname, 'templates', 'example-tool.render.js'),
-    };
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    // 两个别名指向同一个模板文件
+    return ['example-tool', 'example_tool'];
   }
 
   getContextInjectors(): Map<string | RegExp, ContextInjector> {

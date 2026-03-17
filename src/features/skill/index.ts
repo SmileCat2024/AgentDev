@@ -21,7 +21,9 @@ import type {
   FeatureInitContext,
   ContextInjector,
   ToolContextValue,
+  PackageInfo,
 } from '../../core/feature.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import type { ToolCall } from '../../core/types.js';
 import { invokeSkillTool } from './tools.js';
@@ -33,7 +35,7 @@ import { DataSourceRegistry, createListRenderer } from '../../template/data-sour
 import type { PlaceholderContext } from '../../template/types.js';
 import { PlaceholderResolver } from '../../template/resolver.js';
 
-// ESM 中获取 __dirname
+// ESM 中获取 __filename
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -62,6 +64,28 @@ export class SkillFeature implements AgentFeature {
   private skillsDir?: string;
   private skills: SkillMetadata[] = [];
 
+  /**
+   * 缓存包信息
+   */
+  private _packageInfo: PackageInfo | null = null;
+
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    return ['skill'];
+  }
+
   constructor(input?: SkillFeatureInput) {
     if (typeof input === 'string') {
       // 字符串路径
@@ -80,16 +104,6 @@ export class SkillFeature implements AgentFeature {
    */
   getTools(): Tool[] {
     return [invokeSkillTool];
-  }
-
-  /**
-   * 模板路径声明
-   */
-  getTemplatePaths(): Record<string, string> {
-    return {
-      'skill': join(__dirname, 'templates', 'skill.render.js'),
-      'invoke_skill': join(__dirname, 'templates', 'skill.render.js'),
-    };
   }
 
   /**

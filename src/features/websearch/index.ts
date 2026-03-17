@@ -12,8 +12,9 @@
 
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import type { AgentFeature, FeatureInitContext } from '../../core/feature.js';
+import type { AgentFeature, FeatureInitContext, PackageInfo } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { createWebFetchTool } from './tools.js';
 import type { MCPClient } from '../../mcp/client.js';
 import { MCPConnectionManager } from '../../mcp/connection-manager.js';
@@ -70,6 +71,7 @@ export class WebSearchFeature implements AgentFeature {
 
   private readonly manager = new MCPConnectionManager();
   private readonly crawl4aiClients = new Map<string, MCPClient>();
+  private _packageInfo: PackageInfo | null = null;
 
   constructor(private readonly config: WebSearchFeatureConfig = {}) {}
 
@@ -119,13 +121,20 @@ export class WebSearchFeature implements AgentFeature {
   }
 
   /**
-   * 模板路径声明
+   * 获取包信息（统一打包方案）
    */
-  getTemplatePaths(): Record<string, string> {
-    return {
-      'web-fetch': join(__dirname, 'templates', 'web-fetch.render.js'),
-      'web_fetch': join(__dirname, 'templates', 'web-fetch.render.js'),
-      'crawl4ai': join(__dirname, 'templates', 'crawl4ai.render.js'),
-    };
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    // web-fetch 和 web_fetch 是别名，crawl4ai 是独立模板
+    return ['web-fetch', 'web_fetch', 'crawl4ai'];
   }
 }

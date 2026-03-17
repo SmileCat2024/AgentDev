@@ -13,16 +13,16 @@
 
 import { readFile } from 'fs/promises';
 import { fileURLToPath } from 'url';
-import { dirname, resolve, join } from 'path';
+import { resolve } from 'path';
 import { cwd } from 'process';
-import type { AgentFeature, FeatureInitContext } from '../../core/feature.js';
+import type { AgentFeature, FeatureInitContext, PackageInfo } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { createShellCommandTool } from './tools.js';
 import { safeTrashDeleteTool, safeTrashListTool, safeTrashRestoreTool } from './tools-trash.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 /**
  * Shell Feature 实现
@@ -34,6 +34,29 @@ export class ShellFeature implements AgentFeature {
   readonly description = '提供 bash 执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 
   private bashDescription?: string;
+  private _packageInfo: PackageInfo | null = null;
+
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    return [
+      'bash',
+      'trash-delete',
+      'trash-list',
+      'trash-restore',
+    ];
+  }
 
   /**
    * 获取同步工具（垃圾桶工具）
@@ -65,20 +88,4 @@ export class ShellFeature implements AgentFeature {
     return [createShellCommandTool(this.bashDescription)];
   }
 
-  /**
-   * 模板路径声明（垃圾桶工具 + bash 工具模板）
-   */
-  getTemplatePaths(): Record<string, string> {
-    return {
-      // Bash 工具模板
-      'bash': join(__dirname, 'templates', 'bash.render.js'),
-      // 垃圾桶工具模板
-      'safe_trash_delete': join(__dirname, 'templates', 'trash-delete.render.js'),
-      'safe_trash_list': join(__dirname, 'templates', 'trash-list.render.js'),
-      'safe_trash_restore': join(__dirname, 'templates', 'trash-restore.render.js'),
-      'trash-delete': join(__dirname, 'templates', 'trash-delete.render.js'),
-      'trash-list': join(__dirname, 'templates', 'trash-list.render.js'),
-      'trash-restore': join(__dirname, 'templates', 'trash-restore.render.js'),
-    };
-  }
 }

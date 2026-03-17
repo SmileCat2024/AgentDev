@@ -26,7 +26,9 @@ import type {
   FeatureInitContext,
   ContextInjector,
   ToolContextValue,
+  PackageInfo,
 } from '../../core/feature.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import { loadAllMCPConfigs, loadMCPConfigFromInput } from '../../mcp/config.js';
 import { MCPConnectionManager } from '../../mcp/connection-manager.js';
@@ -61,6 +63,28 @@ export class MCPFeature implements AgentFeature {
   private config?: MCPConfig;
   private mcpContext?: Record<string, unknown>;
 
+  /**
+   * 缓存包信息
+   */
+  private _packageInfo: PackageInfo | null = null;
+
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    return ['mcp-tool'];
+  }
+
   constructor(input?: MCPFeatureInput, options: MCPFeatureOptions = {}) {
     if (typeof input === 'string') {
       this.config = loadMCPConfigFromInput(input);
@@ -78,16 +102,6 @@ export class MCPFeature implements AgentFeature {
    */
   getTools(): Tool[] {
     return [];
-  }
-
-  /**
-   * 模板路径声明
-   */
-  getTemplatePaths(): Record<string, string> {
-    return {
-      'mcp-tool': join(__dirname, 'templates', 'mcp-tool.render.js'),
-      'mcp-result': join(__dirname, 'templates', 'mcp-tool.render.js'),
-    };
   }
 
   /**

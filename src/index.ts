@@ -17,18 +17,14 @@ export * from './features/index.js';
 // 预置 Agent 类
 export * from './agents/index.js';
 
-// 工具加载器
-export { loadToolsFromDir, loadSystemTools, loadUserTools, loadAllTools } from './tools/loader.js';
-
 // 生命周期类型
-export type { ToolContext, ToolResult, HookResult } from './core/lifecycle.js';
+export type { ToolContext, ToolResult, HookResult, AgentInitiateContext } from './core/lifecycle.js';
 
-// 系统工具
-export * as fsTools from './tools/system/fs.js';
-export * as webTools from './tools/system/web.js';
-export * as mathTools from './tools/system/math.js';
-// Shell 工具已迁移到 src/features/shell/ (ShellFeature)
-// Skill 工具已迁移到 src/features/skill/ (SkillFeature)
+// 注意：所有工具现在通过 Feature 系统提供
+// - 文件操作工具：OpencodeBasicFeature
+// - 系统工具（web_fetch, calculator）：SystemToolsFeature
+// - Shell 工具：ShellFeature（独立包 @agentdev/shell-feature）
+// - Skill 工具：SkillFeature
 
 // 消息
 export { system, user, assistant, toolResult, createMessage } from './core/message.js';
@@ -44,9 +40,13 @@ export {
 } from './llm/index.js';
 
 // 配置
-export { loadConfig, listConfigs } from './core/config.js';
+export { loadConfig, loadConfigSync, listConfigs } from './core/config.js';
 export { getDebugCapabilities } from './core/debug-capabilities.js';
 export { getClawRuntimeUrl, resolveDebugTransportMode } from './core/debug-transport.js';
+
+// Viewer
+export { ViewerWorker } from './core/viewer-worker.js';
+export { getDefaultUDSPath } from './core/types.js';
 
 // 模板系统
 export * from './template/index.js';
@@ -84,7 +84,14 @@ export type {
   FeatureContext,
   ContextInjector,
   ToolContextValue,
+  FeatureStateSnapshot,
+  PackageInfo,
 } from './core/feature.js';
+
+// 重新导出核心功能模块
+export { getPackageInfoFromSource } from './core/feature.js';
+export { CallStart } from './core/hooks-decorator.js';
+export type { CallStartContext } from './core/lifecycle.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';
 

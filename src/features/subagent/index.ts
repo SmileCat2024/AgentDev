@@ -19,7 +19,9 @@ import type {
   FeatureContext,
   ContextInjector,
   FeatureStateSnapshot,
+  PackageInfo,
 } from '../../core/feature.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import type { ToolCall } from '../../core/types.js';
 import type { SubAgentStatus } from '../../core/lifecycle.js';
@@ -60,6 +62,34 @@ export class SubAgentFeature implements AgentFeature {
 
   // 工具工厂实例
   private toolFactory?: SubAgentToolFactory;
+
+  /**
+   * 缓存包信息
+   */
+  private _packageInfo: PackageInfo | null = null;
+
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    return [
+      'agent-spawn',
+      'agent-list',
+      'agent-send',
+      'agent-close',
+      'wait',
+    ];
+  }
 
   constructor() {
     // 无参数配置（可扩展）
@@ -103,19 +133,6 @@ export class SubAgentFeature implements AgentFeature {
    */
   getTools(): Tool[] {
     return this.toolFactory?.getAllTools() || [];
-  }
-
-  /**
-   * 模板路径声明
-   */
-  getTemplatePaths(): Record<string, string> {
-    return {
-      'agent-spawn': join(__dirname, 'templates', 'agent-spawn.render.js'),
-      'agent-list': join(__dirname, 'templates', 'agent-list.render.js'),
-      'agent-send': join(__dirname, 'templates', 'agent-send.render.js'),
-      'agent-close': join(__dirname, 'templates', 'agent-close.render.js'),
-      'wait': join(__dirname, 'templates', 'wait.render.js'),
-    };
   }
 
   getContextInjectors(): Map<string | RegExp, ContextInjector> {

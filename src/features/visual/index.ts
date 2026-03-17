@@ -49,8 +49,10 @@ import type {
   FeatureInitContext,
   FeatureContext,
   FeatureStateSnapshot,
+  PackageInfo,
 } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { CallStart } from '../../core/hooks-decorator.js';
 import type { CallStartContext } from '../../core/lifecycle.js';
 import type {
@@ -175,6 +177,25 @@ export class VisualFeature implements AgentFeature {
 
   // ========== AgentFeature 接口实现 ==========
 
+  private _packageInfo: PackageInfo | null = null;
+
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   */
+  getTemplateNames(): string[] {
+    return ['capture'];
+  }
+
   getTools(): Tool[] {
     return [];
   }
@@ -198,12 +219,6 @@ export class VisualFeature implements AgentFeature {
         this.cacheManager // 传递 cacheManager 以支持缓存回退
       ),
     ];
-  }
-
-  getTemplatePaths() {
-    return {
-      capture: join(__dirname, 'templates', 'capture.render.js'),
-    };
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {

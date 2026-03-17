@@ -61,7 +61,9 @@ import type {
   FeatureInitContext,
   FeatureContext,
   FeatureStateSnapshot,
+  PackageInfo,
 } from '../../core/feature.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
 import { StepFinish } from '../../core/hooks-decorator.js';
 import type { StepFinishedContext } from '../../core/lifecycle.js';
 import type {
@@ -114,6 +116,7 @@ export class TTSFeature implements AgentFeature {
 
   // 内部状态
   private state: TTSState;
+  private _packageInfo: PackageInfo | null = null;
 
   constructor(config: TTSFeatureConfig = {}) {
     // 初始化状态
@@ -165,8 +168,22 @@ export class TTSFeature implements AgentFeature {
     return [];
   }
 
-  getTemplatePaths() {
-    return {};
+  /**
+   * 获取包信息（统一打包方案）
+   */
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  /**
+   * 获取模板名称列表（统一打包方案）
+   * 此 Feature 没有模板，返回空数组
+   */
+  getTemplateNames(): string[] {
+    return [];
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {

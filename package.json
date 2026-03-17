@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "agentdev-viewer": "dist/cli/viewer.js"
+    "agentdev-viewer": "dist/cli/viewer.js",
+    "agentdev-server": "dist/cli/server.js"
   },
   "files": [
     "dist",
@@ -14,8 +15,28 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.mjs",
-    "prepublishOnly": "npm run build"
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "create-feature": "node packages/create-feature/dist/cli.js",
+    "copy-example": "node scripts/copy-example-feature.mjs",
+    "server": "node dist/cli/server.js"
+  },
+  "tsup": {
+    "entry": [
+      "src/index.ts",
+      "src/cli/viewer.ts",
+      "src/cli/server.ts"
+    ],
+    "format": "esm",
+    "dts": true,
+    "clean": true,
+    "sourcemap": true,
+    "assets": [
+      "src/**/*",
+      "!src/**/*.ts",
+      "!src/**/*.tsx"
+    ]
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
@@ -30,6 +51,7 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
+    "tsup": "^8.3.5",
     "typescript": "^5.3.3"
   },
   "engines": {

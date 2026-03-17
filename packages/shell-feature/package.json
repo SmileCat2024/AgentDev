@@ -1,0 +1,32 @@
+{
+  "name": "@agentdev/shell-feature",
+  "version": "0.1.0",
+  "description": "Shell execution feature for AgentDev - provides bash execution and safe trash operations",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "agentdev": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "agentdev": "file:../.."
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "shell",
+    "bash",
+    "trash"
+  ],
+  "license": "MIT"
+}

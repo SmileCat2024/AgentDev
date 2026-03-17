@@ -1,41 +1,45 @@
-# Override gitignore dist/ rule for packaging
-!dist/
+# npm package - 通过 package.json "files" 字段控制
+# "files": ["dist", "README.md", "LICENSE"]
+# .npmignore 只需要排除 dist/ 之外不需要的内容
 
-# Include only these features
-dist/core
-dist/llm
-dist/mcp
-dist/template
-dist/skills
-dist/agents
-dist/cli
-dist/features/mcp
-dist/features/skill
-dist/features/subagent
-dist/features/todo
-dist/features/user-input
-dist/features/opencode-basic
+# 源码和开发文件
+src/
+examples/
+scripts/
+desktop/
+packages/
+test/
 
-# Exclude these features
-dist/features/audio-feedback
-dist/features/audit
-dist/features/memory
-dist/features/plugin-compat
-dist/features/qqbot
-dist/features/shell
-dist/features/tts
-dist/features/visual
-dist/features/websearch
-dist/features/example-feature
+# 开发配置
+tsconfig.json
+.prettierrc*
+.eslintrc*
 
-# Exclude tests
-dist/test
+# 依赖
+node_modules/
 
-# Source and dev files
-src
-examples
-scripts
-desktop
+# 构建中间文件
+*.tsbuildinfo
+
+# 临时文件
 *.log
+.tmp/
+temp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-node_modules
+Thumbs.db
+
+# 本地配置
+.env*
+.gitignore
+
+# 技能文档（用户项目自己的）
+.claude/
+.agentdev

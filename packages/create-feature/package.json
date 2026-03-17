@@ -1,0 +1,37 @@
+{
+  "name": "@agentdev/create-feature",
+  "version": "0.1.0",
+  "description": "CLI tool to create AgentDev Feature packages",
+  "type": "module",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "tsup": {
+    "entry": ["src/cli.ts"],
+    "format": "esm",
+    "clean": true,
+    "sourcemap": true
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "prompts": "^2.4.2",
+    "minimist": "^1.2.8"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "cli",
+    "scaffold"
+  ],
+  "license": "MIT"
+}

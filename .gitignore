@@ -5,19 +5,12 @@ node_modules/
 dist/
 build/
 out/
-packages/
 
-# TypeScript 编译生成的文件
+# TypeScript 编译生成的文件（仅在 src/ 目录下）
 src/**/*.js
 src/**/*.js.map
 src/**/*.d.ts
 src/**/*.d.ts.map
-
-# Examples 目录下的编译文件
-examples/**/*.js
-examples/**/*.js.map
-examples/**/*.d.ts
-examples/**/*.d.ts.map
 
 # IDE/编辑器配置
 .vscode/
@@ -25,13 +18,22 @@ examples/**/*.d.ts.map
 *.swp
 *.swo
 *~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
 # 操作系统生成的文件
 .DS_Store
+.AppleDouble
+.LSOverride
 Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
 
 # 日志文件
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -53,20 +55,37 @@ coverage/
 # 临时文件
 tmp/
 temp/
+test-example/
+.trash/
+
+# Claude Code 本地配置（用户专属，不应提交）
+.claude/
 
 # 包管理器文件
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# 类型定义文件（如果由编译生成）
-*.d.ts
-
 # 运行时数据
-pids
+pids/
 *.pid
 *.seed
 *.pid.lock
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Desktop App - 忽略打包产物和依赖，但保留源代码
+desktop/dist/
+desktop/node_modules/
+desktop/package-lock.json
+desktop/*.js.bak
+desktop/*.tmp
+desktop/nul
 
 # 调试
 npm-debug.log*
@@ -97,7 +116,6 @@ ehthumbs_vista.db
 *.sw?
 
 # 特定于项目的目录
-.claude/
 .trash/
 docs/
 .agentdev/
@@ -107,15 +125,3 @@ pyproject.toml
 requirements.txt
 uv.lock
 src/features/visual/python/__pycache__/
-
-# Desktop App - 忽略打包产物和依赖，但保留源代码
-desktop/dist/
-desktop/node_modules/
-desktop/package-lock.json
-# Desktop 临时文件（图标转换脚本等）
-desktop/*.js.bak
-desktop/*.tmp
-desktop/nul
-
-# 注意：之前末尾错误地列出了一些应该被跟踪的文件
-# 如果需要跟踪 CLAUDE.md, pyproject.toml 等文件，不应该在这里列出

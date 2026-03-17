@@ -2,16 +2,26 @@
  * ViewerWorker 服务器启动程序
  *
  * 用途：独立启动调试查看器服务器
- * 运行：npm run server 或 node dist/cli/server.js
+ * 运行：npm run server [port] [no-browser] [uds-path]
  *
  * 功能：
  * - 启动 ViewerWorker 独立进程
  * - 服务器运行期间可以被多个 Agent 连接
  * - Ctrl+C 关闭服务器
+ *
+ * 参数：
+ *   port - HTTP 端口（默认 2026）
+ *   no-browser - 不自动打开浏览器（传递字符串 "false"）
+ *   uds-path - 自定义 UDS 路径（可选）
+ *
+ * 环境变量：
+ *   AGENTDEV_PORT - HTTP 端口（默认 2026）
+ *   AGENTDEV_OPEN_BROWSER - 是否打开浏览器（默认 true）
+ *   AGENTDEV_UDS_PATH - UDS 路径（默认自动检测平台）
  */
 
-import { ViewerWorker } from '../src/core/viewer-worker.js';
-import { getDefaultUDSPath } from '../src/core/types.js';
+import { ViewerWorker } from '../core/viewer-worker.js';
+import { getDefaultUDSPath } from '../core/types.js';
 
 const DEFAULT_PORT = 2026;
 

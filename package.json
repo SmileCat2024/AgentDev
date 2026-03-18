@@ -1,6 +1,6 @@
 {
   "name": "agentdev",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A lightweight, decoupled AI agent framework with built-in debugger",
   "type": "module",
   "main": "dist/index.js",
@@ -26,21 +26,18 @@
     "entry": [
       "src/index.ts",
       "src/cli/viewer.ts",
-      "src/cli/server.ts"
+      "src/cli/server.ts",
+      "src/features/*/templates/*.render.ts"
     ],
     "format": "esm",
     "dts": true,
     "clean": true,
-    "sourcemap": true,
-    "assets": [
-      "src/**/*",
-      "!src/**/*.ts",
-      "!src/**/*.tsx"
-    ]
+    "sourcemap": true
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
+    "agentdev": "file:agentdev-0.1.0.tgz",
     "diff": "^8.0.3",
     "glob": "^13.0.6",
     "js-yaml": "^4.1.0",
@@ -50,8 +47,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "tsx": "^4.7.0",
     "tsup": "^8.3.5",
+    "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   },
   "engines": {

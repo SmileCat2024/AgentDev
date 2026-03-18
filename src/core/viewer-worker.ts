@@ -300,6 +300,12 @@ class ViewerWorker {
       return;
     }
 
+    // 静态资源：chunk 文件和其他 JS/CSS 文件
+    if (/^\/(chunk-|BasicAgent-|ExplorerAgent-|notification-|resolver-|types-|index\.js).*$/.test(url)) {
+      this.handleStaticAsset(req, res, url);
+      return;
+    }
+
     res.writeHead(404);
     res.end('Not Found');
   }
@@ -1843,6 +1849,36 @@ class ViewerWorker {
       });
     } catch (err: any) {
       console.error('[Viewer Worker] npm Feature 模板处理错误:', err.message);
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Internal server error');
+    }
+  }
+
+  /**
+   * 处理静态资源文件（chunk、js、css 等）
+   * 支持 agentdev npm 包中的共享模块
+   */
+  public handleStaticAsset(req: IncomingMessage, res: ServerResponse, url: string): void {
+    try {
+      // 获取当前 Agent 的项目根目录
+      const session = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
+      const projectRoot = session?.projectRoot || process.cwd();
+
+      // 提取文件名（去掉开头的 /）
+      const fileName = url.substring(1); // 如 /chunk-xxx.js -> chunk-xxx.js
+
+      // 构建搜索路径
+      const searchPaths = [
+        // npm 包模式：node_modules/agentdev/dist/{file}
+        join(projectRoot, 'node_modules', 'agentdev', 'dist', fileName),
+        // 开发模式：项目根目录 dist/{file}
+        join(projectRoot, 'dist', fileName),
+      ];
+
+      // 按顺序尝试每个路径
+      this.tryReadFile(searchPaths, 0, res, url);
+    } catch (err: any) {
+      console.error('[Viewer Worker] 静态资源处理错误:', err.message);
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Internal server error');
     }

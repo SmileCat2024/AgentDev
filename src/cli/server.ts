@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * ViewerWorker 服务器启动程序
  *

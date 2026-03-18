@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Viewer Worker Standalone CLI
  *

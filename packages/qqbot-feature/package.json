@@ -1,0 +1,33 @@
+{
+  "name": "@agentdev/qqbot-feature",
+  "version": "0.1.0",
+  "description": "QQ Bot feature for AgentDev - enables QQ bot integration",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "agentdev": ">=0.1.0"
+  },
+  "dependencies": {
+    "oicq": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "agentdev": "file:../.."
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "qqbot"
+  ],
+  "license": "MIT"
+}

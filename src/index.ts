@@ -9,6 +9,8 @@ export { Agent } from './core/agent.js';
 export { Context } from './core/context.js';
 export { createTool, ToolRegistry } from './core/tool.js';
 export { DebugHub } from './core/debug-hub.js';
+export { createLogger, installConsoleBridge, runWithLogScope } from './core/logging.js';
+export type { Logger, LoggerBindings } from './core/logging.js';
 export { FileSessionStore, getDefaultSessionStore } from './core/session-store.js';
 
 // Feature 系统
@@ -18,7 +20,7 @@ export * from './features/index.js';
 export * from './agents/index.js';
 
 // 生命周期类型
-export type { ToolContext, ToolResult, HookResult, AgentInitiateContext } from './core/lifecycle.js';
+export type { ToolContext, ToolResult, HookResult, AgentInitiateContext, Decision, DecisionResult } from './core/lifecycle.js';
 
 // 注意：所有工具现在通过 Feature 系统提供
 // - 文件操作工具：OpencodeBasicFeature
@@ -90,8 +92,8 @@ export type {
 
 // 重新导出核心功能模块
 export { getPackageInfoFromSource } from './core/feature.js';
-export { CallStart } from './core/hooks-decorator.js';
-export type { CallStartContext } from './core/lifecycle.js';
+export { CallStart, CallFinish, StepStart, StepFinish, ToolUse, ToolFinished } from './core/hooks-decorator.js';
+export type { CallStartContext, CallFinishContext, StepStartContext, StepFinishedContext } from './core/lifecycle.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';
 

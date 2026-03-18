@@ -3,7 +3,7 @@ import { inspect } from 'util';
 import { DebugHub } from './debug-hub.js';
 import type { DebugLogEntry, LogContextRef, LogLevel, Notification } from './types.js';
 
-interface LoggerBindings extends LogContextRef {
+export interface LoggerBindings extends LogContextRef {
   tags?: string[];
 }
 

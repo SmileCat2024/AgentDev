@@ -4231,8 +4231,10 @@ export function generateViewerHtml(port: number): string {
         return '/template/agentdev/' + mapped + '.render.js';
       }
 
-      // 3. 兜底：使用 /template/agentdev/{template}.render.js
-      return '/template/agentdev/' + templateName + '.render.js';
+      // 3. 兜底：返回 null，让调用者等待或使用默认模板
+      // 不再盲目生成错误的URL，而是等待 FEATURE_TEMPLATE_MAP 加载完成
+      console.warn('[Viewer] Template "' + templateName + '" not found in FEATURE_TEMPLATE_MAP or SYSTEM_TEMPLATE_MAP, waiting...');
+      return null;
     }
 
     /**
@@ -4240,7 +4242,7 @@ export function generateViewerHtml(port: number): string {
      * 支持从 Feature 目录或系统目录加载
      * 如果加载失败，回退到内置模板
      */
-    async function loadTemplate(templateName) {
+    async function loadTemplate(templateName, retryCount = 0) {
       if (templateCache.has(templateName)) {
         return templateCache.get(templateName);
       }
@@ -4253,6 +4255,24 @@ export function generateViewerHtml(port: number): string {
 
       try {
         const path = resolveTemplatePath(templateName);
+
+        // 如果 path 为 null，说明 FEATURE_TEMPLATE_MAP 还未加载完成
+        if (!path) {
+          // 最多重试 3 次，每次等待 500ms
+          if (retryCount < 3) {
+            console.log('[Viewer] Waiting for FEATURE_TEMPLATE_MAP to load... (attempt ' + (retryCount + 1) + ')');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            // 重新加载模板映射
+            await loadFeatureTemplateMap();
+            return loadTemplate(templateName, retryCount + 1);
+          }
+          console.warn('[Viewer] Template "' + templateName + '" not found after retries');
+          // 回退到内置 json 模板
+          if (RENDER_TEMPLATES['json']) {
+            return RENDER_TEMPLATES['json'];
+          }
+          return null;
+        }
 
         // 统一使用 URL 方式加载模板
         // Feature 模板: /template/agentdev/shell/bash.render.js

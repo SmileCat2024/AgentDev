@@ -1,0 +1,37 @@
+{
+  "name": "@agentdev/websearch-feature",
+  "version": "0.1.0",
+  "description": "Web search and content fetching feature for AgentDev",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "agentdev": ">=0.1.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/js-yaml": "^4.0.5",
+    "typescript": "^5.3.3",
+    "agentdev": "file:../.."
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "web",
+    "search",
+    "fetch",
+    "crawl"
+  ],
+  "license": "MIT"
+}

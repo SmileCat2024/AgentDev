@@ -1,0 +1,34 @@
+{
+  "name": "@agentdev/audit-feature",
+  "version": "0.1.0",
+  "description": "Audit feature for AgentDev - tracks and logs tool usage",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "agentdev": ">=0.1.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "agentdev": "file:../..",
+    "@types/better-sqlite3": "^7.6.0"
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "audit"
+  ],
+  "license": "MIT"
+}

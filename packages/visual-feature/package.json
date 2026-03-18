@@ -1,0 +1,37 @@
+{
+  "name": "@agentdev/visual-feature",
+  "version": "0.1.0",
+  "description": "Visual understanding feature for AgentDev - provides window capture and vision model analysis",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "agentdev": ">=0.1.0"
+  },
+  "dependencies": {
+    "openai": "^4.73.0",
+    "sharp": "^0.33.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "agentdev": "file:../.."
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "visual",
+    "vision",
+    "screenshot",
+    "window"
+  ],
+  "license": "MIT"
+}

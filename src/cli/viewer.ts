@@ -5,7 +5,12 @@
  * 独立启动 ViewerWorker 服务器的命令行工具
  *
  * 使用方法：
- *   node dist/cli/viewer.js
+ *   agentdev-viewer [port] [no-browser] [uds-path]
+ *
+ * 参数：
+ *   port      - HTTP 端口（默认 2026）
+ *   no-browser - 不自动打开浏览器（传递 "false"）
+ *   uds-path  - 自定义 UDS 路径（可选）
  *
  * 环境变量：
  *   AGENTDEV_UDS_PATH - UDS 路径（默认自动检测平台）
@@ -16,10 +21,12 @@
 import { ViewerWorker } from '../core/viewer-worker.js';
 import { getDefaultUDSPath } from '../core/types.js';
 
+const DEFAULT_PORT = 2026;
+
 async function main() {
-  const udsPath = process.env.AGENTDEV_UDS_PATH || getDefaultUDSPath();
-  const port = parseInt(process.env.AGENTDEV_PORT || '2026', 10);
-  const openBrowser = process.env.AGENTDEV_OPEN_BROWSER !== 'false';
+  const udsPath = process.env.AGENTDEV_UDS_PATH || process.argv[4] || getDefaultUDSPath();
+  const port = parseInt(process.env.AGENTDEV_PORT || process.argv[2] || String(DEFAULT_PORT), 10);
+  const openBrowser = process.env.AGENTDEV_OPEN_BROWSER !== 'false' && process.argv[3] !== 'false';
 
   console.log(`[Viewer Worker] 正在启动...`);
   console.log(`[Viewer Worker] UDS: ${udsPath}`);

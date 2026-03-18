@@ -37,7 +37,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
-    "agentdev": "file:agentdev-0.1.0.tgz",
     "diff": "^8.0.3",
     "glob": "^13.0.6",
     "js-yaml": "^4.1.0",
@@ -65,7 +64,17 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/agentdev.git"
+    "url": "git+https://github.com/your-org/agentdev.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "test": "test"
+  },
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/your-org/agentdev/issues"
+  },
+  "homepage": "https://github.com/your-org/agentdev#readme"
 }

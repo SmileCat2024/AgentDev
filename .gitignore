@@ -87,36 +87,7 @@ desktop/*.js.bak
 desktop/*.tmp
 desktop/nul
 
-# 调试
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# Windows
-Thumbs.db
-ehthumbs.db
-ehthumbs_vista.db
-
-# Linux
-*~
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
 # 特定于项目的目录
-.trash/
 docs/
 .agentdev/
 config/
@@ -124,4 +95,4 @@ CLAUDE.md
 pyproject.toml
 requirements.txt
 uv.lock
-src/features/visual/python/__pycache__/
+src/features/visual/python/__pycache__

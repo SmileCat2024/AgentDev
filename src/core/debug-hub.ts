@@ -167,25 +167,32 @@ export class DebugHub {
 
   private async spawnViewerWorker(): Promise<void> {
     const { spawn } = await import('child_process');
+    const { existsSync } = await import('fs');
     const { fileURLToPath } = await import('url');
     const { dirname, join } = await import('path');
-    
+
     // 查找 viewer.js 的路径
     let viewerPath: string;
-    
-    // 方式1: 从当前模块解析
+
+    // 方式1: 优先使用 require.resolve（最可靠）
     try {
-      const currentDir = dirname(fileURLToPath(import.meta.url));
-      viewerPath = join(currentDir, '..', 'cli', 'viewer.js');
+      const agentdevPath = require.resolve('agentdev/package.json');
+      viewerPath = join(dirname(agentdevPath), 'dist', 'cli', 'viewer.js');
     } catch {
-      // 方式2: 从 node_modules 解析
+      // 方式2: 从当前模块解析
       try {
-        const agentdevPath = require.resolve('agentdev/package.json');
-        viewerPath = join(dirname(agentdevPath), 'dist', 'cli', 'viewer.js');
+        const currentDir = dirname(fileURLToPath(import.meta.url));
+        viewerPath = join(currentDir, '..', 'cli', 'viewer.js');
       } catch {
         // 方式3: 使用 bin 命令
         viewerPath = 'agentdev-viewer';
       }
+    }
+
+    // 验证文件存在
+    if (viewerPath !== 'agentdev-viewer' && !existsSync(viewerPath)) {
+      // 回退到 bin 命令
+      viewerPath = 'agentdev-viewer';
     }
 
     return new Promise((resolve, reject) => {
@@ -199,11 +206,17 @@ export class DebugHub {
         };
 
         console.log(`[DebugHub] 启动 ViewerWorker: ${viewerPath}`);
-        
-        this.viewerWorkerProcess = spawn('node', [viewerPath], {
+
+        // 如果是 bin 命令，直接运行命令；否则用 node 执行
+        const isBinCommand = viewerPath === 'agentdev-viewer' || viewerPath === 'agentdev-server';
+        const command = isBinCommand ? viewerPath : 'node';
+        const args = isBinCommand ? [] : [viewerPath];
+
+        this.viewerWorkerProcess = spawn(command, args, {
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
+          shell: isBinCommand, // bin 命令需要 shell 来解析
         });
 
         this.viewerWorkerProcess.on('error', (err: Error) => {

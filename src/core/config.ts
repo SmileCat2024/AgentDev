@@ -8,9 +8,9 @@
  */
 
 import { readFile, readdir } from 'fs/promises';
-import { readFileSync, readdirSync } from 'fs';
-import { resolve, dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { readFileSync, readdirSync, existsSync } from 'fs';
+import { resolve, join } from 'path';
+import { cwd } from 'process';
 
 /**
  * 统一配置类型
@@ -40,10 +40,11 @@ export interface AgentConfigFile {
 
 /**
  * 获取项目根目录
+ *
+ * 使用 process.cwd() 而不是模块路径，以支持 npm link 环境
  */
 function getProjectRoot(): string {
-  const __filename = fileURLToPath(import.meta.url);
-  return resolve(dirname(__filename), '../..');
+  return cwd();
 }
 
 /**
@@ -54,6 +55,14 @@ export async function loadConfig(name: string = 'default'): Promise<AgentConfigF
   const projectRoot = getProjectRoot();
   const configDir = join(projectRoot, 'config');
   const configPath = resolve(configDir, `${name}.json`);
+
+  if (!existsSync(configPath)) {
+    throw new Error(
+      `配置文件不存在: ${configPath}\n` +
+      `请在项目目录下创建 config/${name}.json 文件，\n` +
+      `或通过 config.llm 参数直接传入 LLM 实例。`
+    );
+  }
 
   const content = await readFile(configPath, 'utf-8');
   const raw = JSON.parse(content);
@@ -70,6 +79,14 @@ export function loadConfigSync(name: string = 'default'): AgentConfigFile {
   const projectRoot = getProjectRoot();
   const configDir = join(projectRoot, 'config');
   const configPath = resolve(configDir, `${name}.json`);
+
+  if (!existsSync(configPath)) {
+    throw new Error(
+      `配置文件不存在: ${configPath}\n` +
+      `请在项目目录下创建 config/${name}.json 文件，\n` +
+      `或通过 config.llm 参数直接传入 LLM 实例。`
+    );
+  }
 
   const content = readFileSync(configPath, 'utf-8');
   const raw = JSON.parse(content);

@@ -233,9 +233,7 @@ export class QQBotFeature implements AgentFeature {
     }
 
     // 否则从配置文件读取
-    const currentDir = dirname(fileURLToPath(import.meta.url));
-    const projectRoot = join(currentDir, '../../..');
-    const defaultConfigPath = join(projectRoot, '.agentdev', 'qqbot.config.json');
+    const defaultConfigPath = join(process.cwd(), '.agentdev', 'qqbot.config.json');
     const configPath = this.config.configPath || defaultConfigPath;
 
     const fileConfig = loadConfigFromFile(configPath);

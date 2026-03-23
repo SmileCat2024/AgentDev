@@ -1936,6 +1936,8 @@ export function generateViewerHtml(port: number): string {
       border-radius: 0 0 6px 6px;
       padding: 12px;
       overflow-x: auto;
+      overflow-y: auto;
+      max-height: 400px;
       font-size: 13px;
     }
 
@@ -2347,7 +2349,7 @@ export function generateViewerHtml(port: number): string {
     // 加载 Feature 模板映射
     async function loadFeatureTemplateMap() {
       try {
-        const response = await fetch('/api/templates/feature');
+        const response = await fetch('/api/templates/feature' + (currentAgentId ? '?agentId=' + encodeURIComponent(currentAgentId) : ''));
         if (response.ok) {
           const data = await response.json();
           if (Object.keys(data).length > 0) {
@@ -4823,11 +4825,42 @@ export function generateViewerHtml(port: number): string {
       }
     }
 
-    function updateRollbackActionVisibility() {
+    function syncRollbackActionButtons() {
       const allowRollback = !!getPrimaryInputRequest();
-      document.querySelectorAll('.message-row.user .message-action').forEach((button) => {
-        button.style.display = allowRollback ? '' : 'none';
+      const rows = container.querySelectorAll('.message-row');
+
+      rows.forEach((row, index) => {
+        const msg = currentMessages[index];
+        const meta = row.querySelector('.message-meta');
+        if (!meta) return;
+
+        const existingButton = meta.querySelector('.message-action');
+        const shouldShow = allowRollback && !!msg && msg.role === 'user';
+
+        if (!shouldShow) {
+          if (existingButton) {
+            existingButton.remove();
+          }
+          return;
+        }
+
+        if (existingButton) {
+          existingButton.setAttribute('onclick', 'requestRollbackEdit(' + index + ')');
+          existingButton.style.display = '';
+          return;
+        }
+
+        const button = document.createElement('button');
+        button.className = 'message-action';
+        button.type = 'button';
+        button.textContent = '编辑此轮';
+        button.setAttribute('onclick', 'requestRollbackEdit(' + index + ')');
+        meta.appendChild(button);
       });
+    }
+
+    function updateRollbackActionVisibility() {
+      syncRollbackActionButtons();
     }
 
     function autoResize(textarea) {
@@ -5134,6 +5167,7 @@ export function generateViewerHtml(port: number): string {
 
       // 对新消息应用折叠逻辑
       applyCollapseLogic(container, startIndex);
+      updateRollbackActionVisibility();
       updateFollowLatestButton();
       if (followLatestEnabled) {
         scheduleScrollToLatest('smooth');
@@ -5186,6 +5220,7 @@ export function generateViewerHtml(port: number): string {
         }
       }
 
+      updateRollbackActionVisibility();
       updateFollowLatestButton();
       if (followLatestEnabled) {
         scheduleScrollToLatest('smooth');
@@ -5430,13 +5465,13 @@ export function generateViewerHtml(port: number): string {
            const isCollapsed = el.classList.contains('collapsed');
            btnBar.innerHTML = '<button class="expand-toggle-btn" onclick="toggleMessage(&quot;' + el.id + '&quot;)">' + getToggleButtonLabel(isCollapsed) + '</button>';
            
-        } else {
-           const toggle = row.querySelector('.collapse-toggle');
-           if (toggle) toggle.style.display = 'none';
-        }
-      });
+         } else {
+            const toggle = row.querySelector('.collapse-toggle');
+            if (toggle) toggle.style.display = 'none';
+         }
+       });
 
-      updateRollbackActionVisibility();
+       updateRollbackActionVisibility();
       updateFollowLatestButton();
       if (followLatestEnabled) {
         scheduleScrollToLatest('auto');

@@ -90,6 +90,7 @@ desktop/nul
 # 特定于项目的目录
 docs/
 .agentdev/
+packages/
 config/
 CLAUDE.md
 pyproject.toml

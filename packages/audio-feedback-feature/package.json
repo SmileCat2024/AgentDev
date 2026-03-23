@@ -10,15 +10,28 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup && npm run copy-assets",
+    "dev": "tsup --watch",
+    "copy-assets": "node scripts/copy-assets.mjs",
     "prepublishOnly": "npm run build"
+  },
+  "tsup": {
+    "entry": ["src/index.ts"],
+    "format": "esm",
+    "dts": true,
+    "clean": true,
+    "sourcemap": true,
+    "external": ["sound-play"]
   },
   "peerDependencies": {
     "agentdev": ">=0.1.0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "sound-play": "^1.0.0"
+  },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "tsup": "^8.3.5",
     "typescript": "^5.3.3",
     "agentdev": "file:../.."
   },

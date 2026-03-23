@@ -1,61 +1,43 @@
 /**
  * TTSFeature - 文本朗读功能模块
  *
- * 提供：
- * 1. @StepFinish 钩子：在每个 step 结束时自动朗读模型输出
- *    - 包括工具调用轮和非工具调用轮
- *    - 只要有 assistant 文本回复就会朗读
- *    - 默认自动播放音频（使用 pygame）
- *
- * Python 环境要求：
- * - 需要安装 kokoro、soundfile、pygame 库
- *
- * 安装方式：
- *   uv 方式（推荐）：
- *   uv pip install kokoro soundfile pygame
- *
- *   或使用 pip：
- *   pip install kokoro soundfile pygame
- *
- * Python 调用方式：
- * - 默认使用 'python' 命令（从 PATH 中查找）
- * - 如果使用 uv，可以配置为 'uv run'
+ * 使用小米 Mimo TTS API 进行文本转语音：
+ * - 在每个 step 结束时自动朗读模型输出
+ * - 支持工具调用轮和非工具调用轮
+ * - 生成后立即播放，不保存音频文件
  *
  * @example
  * ```typescript
- * import { TTSFeature } from './features/index.js';
+ * import { TTSFeature } from '@agentdev/tts-feature';
  *
  * // 使用默认配置
  * const agent = new Agent({ ... }).use(new TTSFeature());
  *
- * // 自定义声音和语速
+ * // 自定义 API 配置
  * const agent = new Agent({ ... }).use(new TTSFeature({
- *   model: {
- *     voice: 'zf_xiaoxiao',
- *     speed: 1.3
+ *   api: {
+ *     apiKey: 'your-api-key',
+ *     baseURL: 'https://api.xiaomimimo.com/v1',
+ *     voice: 'default_zh'
+ *   },
+ *   style: {
+ *     systemPrompt: '你是一个活泼的香港女生',
+ *     styleTags: '开心 粤语 撒娇'
  *   }
  * }));
  *
  * // 禁用自动播放
  * const agent = new Agent({ ... }).use(new TTSFeature({
- *   output: {
- *     autoPlay: false
- *   }
- * }));
- *
- * // 使用 uv
- * const agent = new Agent({ ... }).use(new TTSFeature({
- *   pythonPath: 'uv',
- *   pythonArgs: ['run']
+ *   output: { autoPlay: false }
  * }));
  * ```
  */
 
-import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
+import OpenAI from 'openai';
+import soundPlay from 'sound-play';
 import type {
   AgentFeature,
   FeatureInitContext,
@@ -72,49 +54,26 @@ import type {
   TTSState,
 } from './types.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
 // ========== 默认配置 ==========
 
-const DEFAULT_VOICE = 'zf_xiaobei';
-const DEFAULT_LANG = 'zh';
-const DEFAULT_SPEED = 1.2;
-
-/**
- * 获取项目本地 Python 路径
- * 优先使用 .venv 中的 Python，回退到系统 PATH 中的 python
- */
-function getDefaultPythonPath(): string {
-  const projectRoot = process.cwd();
-  const venvPython =
-    process.platform === 'win32'
-      ? join(projectRoot, '.venv', 'Scripts', 'python.exe')
-      : join(projectRoot, '.venv', 'bin', 'python');
-
-  if (existsSync(venvPython)) {
-    console.log(`[TTSFeature] Using project Python: ${venvPython}`);
-    return venvPython;
-  }
-
-  console.log('[TTSFeature] Using system Python from PATH');
-  return 'python';
-}
+const DEFAULT_API_BASE_URL = 'https://api.xiaomimimo.com/v1';
+const DEFAULT_MODEL = 'mimo-v2-tts';
+const DEFAULT_VOICE = 'default_zh';
+const DEFAULT_FORMAT = 'mp3';
+const DEFAULT_TEMPERATURE = 0.7;
+const DEFAULT_SYSTEM_PROMPT = '你是一个活泼的香港女生，正在和朋友聊天，用粤语口吻';
+const DEFAULT_STYLE_TAGS = '开心 粤语 撒娇';
 
 // ========== TTSFeature 实现 ==========
 
 export class TTSFeature implements AgentFeature {
   readonly name = 'tts';
   readonly dependencies: string[] = [];
-  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
-  readonly description = '提供文本朗读能力，支持在非工具调用轮自动朗读模型输出。';
+  readonly source = import.meta.url.replace(/^file:\/\/\//, '').replace(/\\/g, '/');
+  readonly description = '提供文本朗读能力，使用小米 Mimo TTS API 将文本转换为语音并播放。';
 
-  private config: TTSFeatureConfig & {
-    pythonPath: string;
-    checkPythonEnv: boolean;
-    outputDir: string;
-  };
-
-  // 内部状态
+  private config: Required<Pick<TTSFeatureConfig, 'api' | 'style' | 'output' | 'triggers'>>;
+  private client: OpenAI;
   private state: TTSState;
   private _packageInfo: PackageInfo | null = null;
 
@@ -126,28 +85,35 @@ export class TTSFeature implements AgentFeature {
       totalUtterances: 0,
     };
 
-    // 创建输出目录（默认使用项目目录）
-    const projectRoot = process.cwd();
-    const defaultOutputDir = join(projectRoot, '.agentdev', 'tts');
-    const outputDir = config.output?.outputDir || defaultOutputDir;
-
-    if (!existsSync(outputDir)) {
-      mkdirSync(outputDir, { recursive: true });
+    // 获取 API Key
+    const apiKey = config.api?.apiKey ?? process.env.XIAOMI_TTS_API_KEY ?? '';
+    if (!apiKey) {
+      console.warn('[TTSFeature] ⚠ API Key not found. Please set XIAOMI_TTS_API_KEY environment variable or pass apiKey in config.');
     }
 
+    // 初始化 OpenAI 客户端
+    this.client = new OpenAI({
+      apiKey,
+      baseURL: config.api?.baseURL ?? DEFAULT_API_BASE_URL,
+    });
+
+    // 合并配置
     this.config = {
-      pythonPath: config.pythonPath ?? getDefaultPythonPath(),
-      pythonArgs: config.pythonArgs,
-      checkPythonEnv: config.checkPythonEnv ?? true,
-      outputDir,
-      output: {
-        outputDir,
-        autoPlay: config.output?.autoPlay ?? true,  // 默认自动播放
+      api: {
+        apiKey,
+        baseURL: config.api?.baseURL ?? DEFAULT_API_BASE_URL,
+        model: config.api?.model ?? DEFAULT_MODEL,
+        format: config.api?.format ?? DEFAULT_FORMAT,
+        voice: config.api?.voice ?? DEFAULT_VOICE,
+        temperature: config.api?.temperature ?? DEFAULT_TEMPERATURE,
       },
-      model: {
-        voice: config.model?.voice ?? DEFAULT_VOICE,
-        lang: config.model?.lang ?? DEFAULT_LANG,
-        speed: config.model?.speed ?? DEFAULT_SPEED,
+      style: {
+        systemPrompt: config.style?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+        styleTags: config.style?.styleTags ?? DEFAULT_STYLE_TAGS,
+        lang: config.style?.lang ?? 'zh',
+      },
+      output: {
+        autoPlay: config.output?.autoPlay ?? true,
       },
       triggers: {
         autoEnabled: config.triggers?.autoEnabled ?? true,
@@ -168,9 +134,6 @@ export class TTSFeature implements AgentFeature {
     return [];
   }
 
-  /**
-   * 获取包信息（统一打包方案）
-   */
   getPackageInfo(): PackageInfo | null {
     if (!this._packageInfo) {
       this._packageInfo = getPackageInfoFromSource(this.source);
@@ -178,27 +141,18 @@ export class TTSFeature implements AgentFeature {
     return this._packageInfo;
   }
 
-  /**
-   * 获取模板名称列表（统一打包方案）
-   * 此 Feature 没有模板，返回空数组
-   */
   getTemplateNames(): string[] {
     return [];
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {
     console.log(
-      `[TTSFeature] Initialized with voice=${this.config.model?.voice}, lang=${this.config.model?.lang}, pythonPath=${this.config.pythonPath}`
+      `[TTSFeature] Initialized with model=${this.config.api.model}, voice=${this.config.api.voice}`
     );
-
-    // 检测 Python 环境
-    if (this.config.checkPythonEnv) {
-      await this.checkPythonEnvironment();
-    }
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
-    // 清理临时文件（可选）
+    // 清理资源
   }
 
   captureState(): FeatureStateSnapshot {
@@ -228,144 +182,116 @@ export class TTSFeature implements AgentFeature {
   // ========== 私有方法 ==========
 
   /**
-   * 检测 Python 环境和依赖库
+   * 检查消息是否包含工具调用
    */
-  private async checkPythonEnvironment(): Promise<void> {
-    const testScript = `
-import sys
-try:
-    from kokoro import KPipeline
-    import soundfile
-    print("OK")
-except ImportError as e:
-    print(f"MISSING: {e}")
-`;
+  private messageHasToolCall(message: any): boolean {
+    if (!message || !message.content) {
+      return false;
+    }
 
-    return new Promise((resolve) => {
-      const args = this.config.pythonArgs
-        ? [...this.config.pythonArgs, '-c', testScript]
-        : ['-c', testScript];
+    // 字符串内容 - 没有工具调用
+    if (typeof message.content === 'string') {
+      return false;
+    }
 
-      const child = spawn(this.config.pythonPath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
-      });
+    // 数组内容 - 检查是否有 tool-use 或 tool-response
+    if (Array.isArray(message.content)) {
+      return message.content.some((part: any) =>
+        part.type === 'tool-use' || part.type === 'tool-response'
+      );
+    }
 
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout?.on('data', (d) => stdout += d.toString());
-      child.stderr?.on('data', (d) => stderr += d.toString());
-
-      child.on('close', (code) => {
-        if (stdout.includes('OK')) {
-          console.log('[TTSFeature] ✓ Python environment check passed');
-        } else {
-          console.warn('[TTSFeature] ⚠ Python environment check failed:');
-          console.warn(`  Exit code: ${code}`);
-          if (stderr) console.warn(`  Error: ${stderr}`);
-          console.warn('');
-          console.warn('Required Python libraries: kokoro, soundfile');
-          console.warn('');
-          console.warn('Install with uv:');
-          console.warn('  uv pip install kokoro soundfile');
-          console.warn('');
-          console.warn('Or with pip:');
-          console.warn('  pip install kokoro soundfile');
-        }
-        resolve();
-      });
-
-      child.on('error', (error) => {
-        console.warn('[TTSFeature] ⚠ Failed to run Python:', error.message);
-        console.warn('  Please check your pythonPath configuration.');
-        console.warn('  If using uv, try: new TTSFeature({ pythonPath: "uv python" })');
-        resolve();
-      });
-    });
+    return false;
   }
 
   /**
-   * 调用 Python 脚本生成 TTS 音频
+   * 生成 TTS 音频并播放
    */
-  private async generateTTS(text: string): Promise<TTSResult> {
-    const scriptPath = join(__dirname, 'python', 'tts.py');
+  private async generateAndPlay(text: string): Promise<TTSResult> {
     const utteranceId = randomUUID();
-    const outputPath = join(this.config.outputDir, `${utteranceId}.wav`);
+    const startTime = Date.now();
 
-    const config = {
-      text,
-      voice: this.config.model?.voice ?? DEFAULT_VOICE,
-      lang: this.config.model?.lang ?? DEFAULT_LANG,
-      speed: this.config.model?.speed ?? DEFAULT_SPEED,
-      output: outputPath,
-    };
-
-    return new Promise((resolve) => {
-      const args = this.config.pythonArgs
-        ? [...this.config.pythonArgs, scriptPath]
-        : [scriptPath];
-
-      const child = spawn(this.config.pythonPath, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
-      });
-
-      // 将配置通过 stdin 传递给 Python
-      child.stdin?.write(JSON.stringify(config));
-      child.stdin?.end();
-
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout?.on('data', (d) => stdout += d.toString());
-      child.stderr?.on('data', (d) => stderr += d.toString());
-
-      child.on('close', (code) => {
-        if (code !== 0) {
-          resolve({
-            success: false,
-            error: `Python script failed (exit code ${code}): ${stderr}`,
-          });
-          return;
-        }
-
-        try {
-          const result = JSON.parse(stdout.trim());
-          if (result.success) {
-            this.state.lastUtteranceId = utteranceId;
-            this.state.totalUtterances += 1;
-            resolve({
-              success: true,
-              outputPath: result.output_path,
-              duration: result.duration,
-            });
-          } else {
-            resolve({
-              success: false,
-              error: result.error || 'Unknown error',
-            });
+    try {
+      // 调用小米 TTS API
+      // 使用 any 绕过 OpenAI SDK 的类型检查（小米 API 扩展了标准格式）
+      const completion = await this.client.chat.completions.create({
+        model: this.config.api.model as any,
+        messages: [
+          { role: 'user', content: this.config.style.systemPrompt as string },
+          {
+            role: 'assistant',
+            content: `<style>${this.config.style.styleTags}</style>${text}`
           }
-        } catch (error) {
-          resolve({
-            success: false,
-            error: `Failed to parse Python output: ${error}`,
-          });
-        }
-      });
+        ],
+        audio: {
+          format: this.config.api.format as any,
+          voice: this.config.api.voice as any
+        },
+        temperature: this.config.api.temperature,
+        max_tokens: 4096
+      } as any);
 
-      child.on('error', (error) => {
-        resolve({
+      const message = completion.choices[0].message;
+      if (!message.audio?.data) {
+        return {
           success: false,
-          error: `Failed to spawn Python: ${error.message}`,
-        });
-      });
-    });
+          error: '没有音频数据返回'
+        };
+      }
+
+      // 解码音频数据
+      const audioBuffer = Buffer.from(message.audio.data, 'base64');
+
+      // 如果启用自动播放，则播放音频
+      if (this.config.output.autoPlay) {
+        await this.playAudio(audioBuffer);
+      }
+
+      const duration = (Date.now() - startTime) / 1000;
+
+      // 更新状态
+      this.state.lastUtteranceId = utteranceId;
+      this.state.totalUtterances += 1;
+
+      return {
+        success: true,
+        duration
+      };
+
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message || 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * 播放音频（使用 sound-play 包，与 audio-feedback-feature 相同）
+   */
+  private async playAudio(audioBuffer: Buffer): Promise<void> {
+    // 使用项目本地目录
+    const projectRoot = process.cwd();
+    const ttsDir = path.join(projectRoot, '.agentdev', 'tts', 'temp');
+
+    // 确保目录存在
+    await fs.mkdir(ttsDir, { recursive: true });
+
+    const ext = this.config.api.format === 'wav' ? 'wav' : 'mp3';
+    const tempFile = path.join(ttsDir, `tts-${Date.now()}.${ext}`);
+
+    // 写入音频文件
+    await fs.writeFile(tempFile, audioBuffer);
+
+    // 使用 sound-play 播放（等待播放完成后才返回）
+    await (soundPlay as any).play(tempFile, 1.0);
+
+    // 播放完成后清理文件
+    fs.unlink(tempFile).catch(() => {});
   }
 
   /**
    * 提取模型输出的正文部分
-   * 过滤掉系统消息、工具调用等，只保留实际的回复内容
    */
   private extractMainResponse(ctx: StepFinishedContext): string | null {
     const messages = ctx.context.getAll();
@@ -398,7 +324,6 @@ except ImportError as e:
 
   /**
    * 在每个 step 结束时自动朗读模型输出
-   * 包括工具调用轮和非工具调用轮
    */
   @StepFinish
   async speakOnStepFinish(ctx: StepFinishedContext): Promise<void> {
@@ -407,13 +332,28 @@ except ImportError as e:
       return;
     }
 
-    // 检查是否应该触发（可选）
-    // 这里我们总是尝试朗读，因为 @StepFinish 在每个 step 结束时都会调用
+    // 检查是否只在非工具调用轮触发
+    if (triggers.onlyOnNonToolCalls) {
+      // 获取当前 step 的 assistant 消息
+      const messages = ctx.context.getAll();
+      const lastMessage = messages[messages.length - 1];
+
+      // 如果最后一条消息不是 assistant，或者包含工具调用，则跳过
+      if (!lastMessage || lastMessage.role !== 'assistant') {
+        return;
+      }
+
+      // 检查是否包含工具调用
+      const hasToolUse = this.messageHasToolCall(lastMessage);
+      if (hasToolUse) {
+        console.log('[TTSFeature] Tool call detected, skipping TTS');
+        return;
+      }
+    }
 
     // 提取正文
     const text = this.extractMainResponse(ctx);
     if (!text) {
-      // 没有正文内容，不朗读
       return;
     }
 
@@ -433,13 +373,13 @@ except ImportError as e:
       console.log(`[TTSFeature] Text truncated (${text.length} -> ${maxLength})`);
     }
 
-    // 生成 TTS（Python 侧会自动处理播放）
+    // 生成并播放 TTS
     console.log(`[TTSFeature] Generating TTS for ${textToSpeak.length} characters...`);
-    const result = await this.generateTTS(textToSpeak);
+    const result = await this.generateAndPlay(textToSpeak);
 
     if (result.success) {
       console.log(
-        `[TTSFeature] ✓ TTS generated: ${result.outputPath} (${result.duration?.toFixed(2)}s)`
+        `[TTSFeature] ✓ TTS played successfully (${result.duration?.toFixed(2)}s)`
       );
     } else {
       console.warn(`[TTSFeature] ✗ TTS failed: ${result.error}`);

@@ -1,24 +1,28 @@
 {
   "name": "agentdev",
-  "version": "0.1.5",
+  "version": "0.1.10",
   "description": "A lightweight, decoupled AI agent framework with built-in debugger",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "agentdev-viewer": "dist/cli/viewer.cmd",
-    "agentdev-server": "dist/cli/server.cmd"
+    "agentdev-server": "dist/cli/server.cmd",
+    "agentdev-create-feature": "dist/create-feature-cli.cmd"
   },
   "files": [
     "dist",
     "README.md",
     "LICENSE"
   ],
+  "bundleDependencies": [
+    "@sliverp/qqbot"
+  ],
   "scripts": {
     "build": "tsup && node scripts/generate-bin-cmds.mjs",
     "dev": "tsup --watch",
     "prepublishOnly": "npm run build",
-    "create-feature": "node packages/create-feature/dist/cli.js",
+    "create-feature": "node dist/create-feature-cli.js",
     "copy-example": "node scripts/copy-example-feature.mjs",
     "server": "node dist/cli/server.js"
   },
@@ -37,14 +41,19 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
+    "@sliverp/qqbot": "1.5.5",
+    "better-sqlite3": "^12.8.0",
     "diff": "^8.0.3",
     "glob": "^13.0.6",
     "js-yaml": "^4.1.0",
     "open": "^11.0.0",
     "openai": "^4.73.0",
+    "sharp": "^0.33.5",
+    "sound-play": "^1.1.0",
     "zod": "^4.1.5"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.11.0",
     "tsup": "^8.3.5",
     "tsx": "^4.7.0",

@@ -58,9 +58,10 @@ const featureMeta = {
 };
 
 // 基础 package.json 模板
-function createPackageJson(featureName, meta) {
+function createPackageJson(featureName, meta, hasTemplates) {
   const devDeps = {
     '@types/node': '^20.11.0',
+    tsup: '^8.3.5',
     typescript: '^5.3.3',
     agentdev: 'file:../..'
   };
@@ -69,6 +70,10 @@ function createPackageJson(featureName, meta) {
   if (meta.dependencies.includes('better-sqlite3')) {
     devDeps['@types/better-sqlite3'] = '^7.6.0';
   }
+
+  const tsupEntry = hasTemplates
+    ? ['src/index.ts', 'src/templates/*.render.ts']
+    : ['src/index.ts'];
 
   return {
     name: meta.name,
@@ -79,8 +84,16 @@ function createPackageJson(featureName, meta) {
     types: 'dist/index.d.ts',
     files: ['dist', 'README.md'],
     scripts: {
-      build: 'tsc',
+      build: 'tsup',
+      dev: 'tsup --watch',
       prepublishOnly: 'npm run build'
+    },
+    tsup: {
+      entry: tsupEntry,
+      format: 'esm',
+      dts: true,
+      clean: true,
+      sourcemap: true
     },
     peerDependencies: {
       agentdev: '>=0.1.0'
@@ -101,20 +114,13 @@ const tsconfigJson = {
     target: 'ES2022',
     module: 'ES2022',
     moduleResolution: 'node',
-    lib: ['ES2022'],
-    declaration: true,
-    declarationMap: true,
-    sourceMap: true,
     outDir: './dist',
     rootDir: './src',
     strict: true,
     esModuleInterop: true,
     skipLibCheck: true,
-    forceConsistentCasingInFileNames: true,
-    resolveJsonModule: true,
-    allowSyntheticDefaultImports: true,
-    experimentalDecorators: true,
-    emitDecoratorMetadata: true
+    declaration: true,
+    sourceMap: true
   },
   include: ['src/**/*'],
   exclude: ['node_modules', 'dist']
@@ -250,8 +256,11 @@ async function main() {
     // 创建目录结构
     ensureDir(srcDir);
 
+    // 检测是否有模板文件
+    const hasTemplates = existsSync(join(srcFeatureDir, 'templates'));
+
     // 写入 package.json
-    const packageJson = createPackageJson(featureName, meta);
+    const packageJson = createPackageJson(featureName, meta, hasTemplates);
     writeFileSync(join(packageDir, 'package.json'), JSON.stringify(packageJson, null, 2));
 
     // 写入 tsconfig.json

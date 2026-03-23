@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/qqbot-feature",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "QQ Bot feature for AgentDev - enables QQ bot integration",
   "type": "module",
   "main": "dist/index.js",
@@ -8,6 +8,9 @@
   "files": [
     "dist",
     "README.md"
+  ],
+  "bundleDependencies": [
+    "@sliverp/qqbot"
   ],
   "scripts": {
     "build": "tsc",
@@ -17,12 +20,12 @@
     "agentdev": ">=0.1.0"
   },
   "dependencies": {
-    "oicq": "latest"
+    "@sliverp/qqbot": "1.5.5"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.3",
-    "agentdev": "file:../.."
+    "agentdev": "file:../..",
+    "typescript": "^5.3.3"
   },
   "keywords": [
     "agentdev",

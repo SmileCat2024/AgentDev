@@ -10,14 +10,23 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "prepublishOnly": "npm run build"
+  },
+  "tsup": {
+    "entry": ["src/index.ts", "src/templates/*.render.ts"],
+    "format": "esm",
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
   },
   "peerDependencies": {
     "agentdev": ">=0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "tsup": "^8.3.5",
     "typescript": "^5.3.3",
     "agentdev": "file:../.."
   },

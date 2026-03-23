@@ -20,7 +20,8 @@ export * from './features/index.js';
 export * from './agents/index.js';
 
 // 生命周期类型
-export type { ToolContext, ToolResult, HookResult, AgentInitiateContext, Decision, DecisionResult } from './core/lifecycle.js';
+export { Decision } from './core/lifecycle.js';
+export type { ToolContext, ToolResult, HookResult, AgentInitiateContext, DecisionResult } from './core/lifecycle.js';
 
 // 注意：所有工具现在通过 Feature 系统提供
 // - 文件操作工具：OpencodeBasicFeature

@@ -46,8 +46,8 @@ class ViewerWorker {
   // 当前选中的 Agent ID
   private currentAgentId: string | null = null;
 
-  // Feature 模板路径映射（模板名 -> 文件路径）
-  private featureTemplateMap: Record<string, string> = {};
+  // Feature 模板路径映射（agentId -> 模板名 -> URL）
+  private featureTemplateMap: Map<string, Record<string, string>> = new Map();
 
   private readonly debuggerMcp = new DebuggerMCPServer({
     listAgents: () => this.listAgentSummaries(),
@@ -345,7 +345,7 @@ class ViewerWorker {
 
     // GET /api/templates/feature - 获取 Feature 模板映射
     if (url === '/api/templates/feature' && req.method === 'GET') {
-      this.handleGetFeatureTemplates(req, res);
+      this.handleGetFeatureTemplates(req, res, urlObj.searchParams);
       return;
     }
 
@@ -531,17 +531,24 @@ class ViewerWorker {
   /**
    * GET /api/templates/feature - 获取 Feature 模板映射
    */
-  public handleGetFeatureTemplates(req: IncomingMessage, res: ServerResponse): void {
-    console.log('[Viewer Worker] handleGetFeatureTemplates called, featureTemplateMap keys:', Object.keys(this.featureTemplateMap));
+  public handleGetFeatureTemplates(req: IncomingMessage, res: ServerResponse, searchParams?: URLSearchParams): void {
+    // 确定目标 agentId：优先用 query 参数，其次用 currentAgentId
+    const targetAgentId = searchParams?.get('agentId') || this.currentAgentId;
 
-    // 获取当前 Agent 的项目根目录
-    const projectRoot = this.currentAgentId
-      ? this.agentSessions.get(this.currentAgentId)?.projectRoot
-      : undefined;
+    // 获取目标 Agent 的项目根目录和模板映射
+    const session = targetAgentId ? this.agentSessions.get(targetAgentId) : undefined;
+    const projectRoot = session?.projectRoot;
+    const templates = targetAgentId ? this.featureTemplateMap.get(targetAgentId) : undefined;
+
+    if (!templates || Object.keys(templates).length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end('{}');
+      return;
+    }
 
     // 将绝对路径转换为 HTTP URL
     const featureTemplateMapForFrontend: Record<string, string> = {};
-    for (const [templateName, absolutePath] of Object.entries(this.featureTemplateMap)) {
+    for (const [templateName, absolutePath] of Object.entries(templates)) {
       const normalizedPath = absolutePath.replace(/\\/g, '/');
       const url = this.templatePathToUrl(normalizedPath, projectRoot);
       if (url) {
@@ -1087,9 +1094,9 @@ class ViewerWorker {
       session.clientId = clientId;
     }
 
-    // 收集 Feature 模板路径
+    // 收集 Feature 模板路径（按 agent 隔离）
     if (featureTemplates && typeof featureTemplates === 'object') {
-      Object.assign(this.featureTemplateMap, featureTemplates);
+      this.featureTemplateMap.set(agentId, featureTemplates);
     }
 
     if (hookInspector) {
@@ -1150,8 +1157,7 @@ class ViewerWorker {
    * 清空 Feature 模板映射（当 Agent 断开连接时调用）
    */
   private clearFeatureTemplates(agentId: string): void {
-    // 可以在这里实现基于 agentId 的清理逻辑
-    // 目前简单实现：不清空，因为多个 Agent 可能共享 Feature
+    this.featureTemplateMap.delete(agentId);
   }
 
   /**
@@ -1294,6 +1300,7 @@ class ViewerWorker {
   public handleUnregisterAgent(msg: any): void {
     const { agentId } = msg;
     this.agentSessions.delete(agentId);
+    this.clearFeatureTemplates(agentId);
     console.log(`[Viewer Worker] Agent 已注销: ${agentId}`);
 
     // 如果注销的是当前 Agent，切换到另一个

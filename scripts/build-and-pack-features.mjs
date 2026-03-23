@@ -21,7 +21,10 @@ const featuresToBuild = [
   'memory-feature',
   'plugin-compat-feature',
   'qqbot-feature',
+  'shell-feature',
   'tts-feature',
+  'visual-feature',
+  'websearch-feature',
 ];
 
 function exec(cmd, options = {}) {

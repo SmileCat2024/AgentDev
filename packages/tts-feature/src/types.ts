@@ -7,60 +7,73 @@
  */
 export interface TTSFeatureConfig {
   /**
-   * Python 可执行文件路径
-   * 默认：项目 .venv 中的 Python 或系统 PATH 中的 python
+   * 小米 TTS API 配置
    */
-  pythonPath?: string;
-
-  /**
-   * Python 额外参数（如 uv run）
-   * 例如：['run', '--with', 'kokoro', '--with', 'soundfile']
-   */
-  pythonArgs?: string[];
-
-  /**
-   * 是否在初始化时检查 Python 环境
-   * 默认：true
-   */
-  checkPythonEnv?: boolean;
-
-  /**
-   * TTS 模型配置
-   */
-  model?: {
+  api?: {
     /**
-     * 默认声音 ID
-     * 中文常用：zf_xiaobei, zf_xiaoxiao, zf_xiaomei
-     * 英文常用：af_bella, af_heart
-     * 默认：zf_xiaobei
+     * API Key
+     * 默认：从环境变量 XIAOMI_TTS_API_KEY 读取
+     */
+    apiKey?: string;
+
+    /**
+     * Base URL
+     * 默认：https://api.xiaomimimo.com/v1
+     */
+    baseURL?: string;
+
+    /**
+     * 模型名称
+     * 默认：mimo-v2-tts
+     */
+    model?: string;
+
+    /**
+     * 音频格式
+     * 默认：mp3
+     */
+    format?: 'mp3' | 'wav' | 'pcm';
+
+    /**
+     * 音色
+     * 默认：default_zh
      */
     voice?: string;
 
     /**
-     * 语言代码
-     * 'zh'（中文优先） 或 'a'/'en'（英文优先）
-     * 默认：zh
+     * 温度参数
+     * 默认：0.7
      */
-    lang?: string;
+    temperature?: number;
+  };
+
+  /**
+   * TTS 风格配置
+   */
+  style?: {
+    /**
+     * 系统提示词（角色设定）
+     * 默认：香港女生
+     */
+    systemPrompt?: string;
 
     /**
-     * 语速倍率
-     * 0.8~1.5 之间合理
-     * 默认：1.0
+     * 风格标签
+     * 示例：开心 粤语 撒娇
      */
-    speed?: number;
+    styleTags?: string;
+
+    /**
+     * 语言
+     * 默认：zh
+     */
+    lang?: 'zh' | 'en' | 'yue';
   };
 
   /**
    * 音频输出配置
    */
   output?: {
-    /**
-     * 输出目录
-     * 默认：.agentdev/tts
-     */
-    outputDir?: string;
-
     /**
      * 是否自动播放生成的音频
      * 默认：true
@@ -73,7 +86,7 @@ export interface TTSFeatureConfig {
    */
   triggers?: {
     /**
-     * 是否启用自动朗读（非工具调用轮）
+     * 是否启用自动朗读
      * 默认：true
      */
     autoEnabled?: boolean;
@@ -93,9 +106,7 @@ export interface TTSFeatureConfig {
     maxLength?: number;
 
     /**
-     * 是否只在非结束轮触发
-     * true: 只在没有工具调用时朗读
-     * false: 所有响应都朗读
+     * 是否只在非工具调用轮触发
      * 默认：true
      */
     onlyOnNonToolCalls?: boolean;
@@ -107,7 +118,6 @@ export interface TTSFeatureConfig {
  */
 export interface TTSResult {
   success: boolean;
-  outputPath?: string;
   duration?: number;
   error?: string;
 }

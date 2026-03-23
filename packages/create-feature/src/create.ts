@@ -5,7 +5,7 @@
  * 不生成详细的示例代码
  */
 
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync as fsExistsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -40,12 +40,16 @@ export async function createFeature(featureName: string): Promise<void> {
   // 创建目录结构
   mkdirSync(join(targetDir, 'src'), { recursive: true });
   mkdirSync(join(targetDir, 'src', 'templates'), { recursive: true });
+  mkdirSync(join(targetDir, 'scripts'), { recursive: true });
 
   // 生成 package.json
   generatePackageJson(targetDir, packageName, featureSlug);
 
   // 生成 tsconfig.json
   generateTsConfig(targetDir);
+
+  // 生成 copy-assets 脚本
+  generateCopyAssetsScript(targetDir);
 
   // 生成最基础的 Feature 类
   generateMinimalFeatureClass(targetDir, featureClass);
@@ -74,21 +78,17 @@ function generatePackageJson(targetDir: string, packageName: string, featureSlug
     types: 'dist/index.d.ts',
     files: ['dist', 'README.md'],
     scripts: {
-      build: 'tsup',
+      build: 'tsup && npm run copy-assets',
       dev: 'tsup --watch',
+      'copy-assets': 'node scripts/copy-assets.mjs',
       prepublishOnly: 'npm run build'
     },
     tsup: {
-      entry: ['src/index.ts'],
+      entry: ['src/index.ts', 'src/templates/*.render.ts'],
       format: 'esm',
       dts: true,
       clean: true,
-      // 通用资源复制：所有非 TS 文件
-      assets: [
-        'src/**/*',
-        '!src/**/*.ts',
-        '!src/**/*.tsx'
-      ]
+      sourcemap: true
     },
     peerDependencies: {
       agentdev: '>=0.1.0'
@@ -260,6 +260,68 @@ MIT
 }
 
 /**
+ * 生成 copy-assets 脚本
+ * 用于复制非 TypeScript 资源文件到 dist 目录
+ */
+function generateCopyAssetsScript(targetDir: string): void {
+  const content = `#!/usr/bin/env node
+/**
+ * Copy non-TypeScript assets to dist directory
+ * This script automatically copies files like .py, .mp3, .json, etc.
+ */
+
+import { copyFileSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { join, dirname, relative } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const rootDir = join(__dirname, '..');
+const srcDir = join(rootDir, 'src');
+const distDir = join(rootDir, 'dist');
+
+// Extensions to copy (non-TypeScript files)
+const ASSET_EXTENSIONS = new Set([
+  '.mp3', '.wav', '.ogg', '.flac',  // Audio
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',  // Images
+  '.json',  // Config files
+  '.py', '.sh', '.bash', '.zsh',  // Scripts
+  '.txt', '.md', '.rst',  // Docs
+  '.yml', '.yaml', '.toml', '.ini',  // Config
+  '.sql', '.graphql', '.gql',  // Data
+  '.html', '.css', '.scss', '.less',  // Styles
+  '.wasm', '.bin',  // Binary
+]);
+
+function isAssetFile(filename) {
+  const idx = filename.lastIndexOf('.');
+  return idx >= 0 && ASSET_EXTENSIONS.has(filename.slice(idx).toLowerCase());
+}
+
+function copyDirectory(src, dest) {
+  const entries = readdirSync(src, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = join(src, entry.name);
+    const destPath = join(dest, entry.name);
+
+    if (entry.isDirectory()) {
+      copyDirectory(srcPath, destPath);
+    } else if (entry.isFile() && isAssetFile(entry.name)) {
+      mkdirSync(dirname(destPath), { recursive: true });
+      copyFileSync(srcPath, destPath);
+      console.log(\`Copied: \${relative(rootDir, srcPath)}\`);
+    }
+  }
+}
+
+// Copy assets from src to dist
+copyDirectory(srcDir, distDir);
+`;
+
+  writeFileSync(join(targetDir, 'scripts', 'copy-assets.mjs'), content);
+}
+
+/**
  * 工具函数
  */
 
@@ -277,10 +339,8 @@ function toKebabCase(str: string): string {
 
 function existsSync(path: string): boolean {
   try {
-    require('fs').existsSync(path);
-    return true;
+    return !!fsExistsSync(path);
   } catch {
-    const { existsSync: fsExistsSync } = require('fs');
-    return fsExistsSync(path);
+    return false;
   }
 }

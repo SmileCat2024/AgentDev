@@ -389,6 +389,7 @@ export class DebugHub {
   unregisterAgent(agentId: string): void {
     const deleted = this.agents.delete(agentId);
     if (deleted) {
+      this.agentFeatureTemplates.delete(agentId);
       if (this.transportMode === 'claw') {
         void this.clawClient?.unregisterAgent(agentId).catch(error => {
           console.error(`[DebugHub] Claw unregisterAgent 失败: ${(error as Error).message}`);

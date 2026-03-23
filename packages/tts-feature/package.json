@@ -1,7 +1,7 @@
 {
   "name": "@agentdev/tts-feature",
   "version": "0.1.0",
-  "description": "Text-to-Speech feature for AgentDev - converts text to speech",
+  "description": "Text-to-Speech feature for AgentDev - 使用小米 Mimo TTS API 将文本转换为语音并播放",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,22 +10,38 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "prepublishOnly": "npm run build"
+  },
+  "tsup": {
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": "esm",
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
   },
   "peerDependencies": {
     "agentdev": ">=0.1.0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "openai": "^4.73.0",
+    "sound-play": "^1.1.0"
+  },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.3",
-    "agentdev": "file:../.."
+    "agentdev": "file:../..",
+    "tsup": "^8.3.5",
+    "typescript": "^5.3.3"
   },
   "keywords": [
     "agentdev",
     "feature",
-    "tts"
+    "tts",
+    "xiaomi",
+    "mimo"
   ],
   "license": "MIT"
 }

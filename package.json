@@ -19,7 +19,7 @@
     "@sliverp/qqbot"
   ],
   "scripts": {
-    "build": "tsup && node scripts/generate-bin-cmds.mjs",
+    "build": "tsup && node scripts/copy-feature-skills.mjs && node scripts/generate-bin-cmds.mjs",
     "dev": "tsup --watch",
     "prepublishOnly": "npm run build",
     "create-feature": "node dist/create-feature-cli.js",

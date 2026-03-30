@@ -200,4 +200,6 @@ export interface VisualFeatureConfig {
     /** 是否跳过空图，默认 true */
     skipEmptyImage?: boolean;
   };
+  /** 工作目录（默认 process.cwd()） */
+  workspaceDir?: string;
 }

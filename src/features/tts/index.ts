@@ -84,8 +84,8 @@ const DEFAULT_SPEED = 1.2;
  * 获取项目本地 Python 路径
  * 优先使用 .venv 中的 Python，回退到系统 PATH 中的 python
  */
-function getDefaultPythonPath(): string {
-  const projectRoot = process.cwd();
+function getDefaultPythonPath(workspaceDir?: string): string {
+  const projectRoot = workspaceDir ?? process.cwd();
   const venvPython =
     process.platform === 'win32'
       ? join(projectRoot, '.venv', 'Scripts', 'python.exe')
@@ -127,7 +127,7 @@ export class TTSFeature implements AgentFeature {
     };
 
     // 创建输出目录（默认使用项目目录）
-    const projectRoot = process.cwd();
+    const projectRoot = config.workspaceDir ?? process.cwd();
     const defaultOutputDir = join(projectRoot, '.agentdev', 'tts');
     const outputDir = config.output?.outputDir || defaultOutputDir;
 
@@ -136,7 +136,7 @@ export class TTSFeature implements AgentFeature {
     }
 
     this.config = {
-      pythonPath: config.pythonPath ?? getDefaultPythonPath(),
+      pythonPath: config.pythonPath ?? getDefaultPythonPath(config.workspaceDir),
       pythonArgs: config.pythonArgs,
       checkPythonEnv: config.checkPythonEnv ?? true,
       outputDir,

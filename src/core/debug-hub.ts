@@ -322,7 +322,8 @@ export class DebugHub {
     name?: string,
     featureTemplates?: Record<string, string>,
     hookInspector?: HookInspectorSnapshot,
-    overview?: AgentOverviewSnapshot
+    overview?: AgentOverviewSnapshot,
+    projectRoot?: string
   ): string {
     // 等待注册锁
     while (this.registrationLock) {
@@ -331,11 +332,13 @@ export class DebugHub {
     this.registrationLock = true;
 
     try {
+      const resolvedProjectRoot = projectRoot || process.cwd();
       const id = `agent-${this.nextId++}-${this.processId}`;
       const info: AgentInfo = {
         id,
         name: name || agent.constructor.name,
         registeredAt: Date.now(),
+        projectRoot: resolvedProjectRoot,
       };
 
       this.agents.set(id, { info, agent });
@@ -355,7 +358,7 @@ export class DebugHub {
         void this.clawClient?.registerAgent({
           agentId: id,
           name: info.name,
-          projectRoot: process.cwd(),
+          projectRoot: resolvedProjectRoot,
           featureTemplates,
           hookInspector,
           overview,
@@ -368,7 +371,7 @@ export class DebugHub {
           agentId: id,
           name: info.name,
           createdAt: info.registeredAt,
-          projectRoot: process.cwd(), // 传递项目根目录，用于模板文件加载
+          projectRoot: resolvedProjectRoot,
           featureTemplates, // 传递 Feature 模板路径映射
           hookInspector,
           overview,
@@ -758,7 +761,7 @@ export class DebugHub {
         void this.clawClient?.registerAgent({
           agentId: id,
           name: data.info.name,
-          projectRoot: process.cwd(),
+          projectRoot: data.info.projectRoot || process.cwd(),
           featureTemplates,
           hookInspector,
           overview,
@@ -812,7 +815,7 @@ export class DebugHub {
         agentId: id,
         name: data.info.name,
         createdAt: data.info.registeredAt,
-        projectRoot: process.cwd(),
+        projectRoot: data.info.projectRoot || process.cwd(),
         featureTemplates,
         hookInspector,
         overview,

@@ -37,50 +37,45 @@ The CLI creates a complete Feature package with:
 
 ```
 my-feature/
-├── package.json          # Configured with tsup
+├── package.json          # Build/publish scripts
 ├── tsconfig.json         # TypeScript configuration
+├── tsup.config.ts        # Dynamic tsup entry discovery
 ├── README.md             # Documentation
+├── skills/               # Optional skills shipped with the Feature
+├── scripts/
+│   └── copy-assets.mjs   # Copies non-TS assets and skills into dist/
 └── src/
-    ├── index.ts          # Feature class (with getPackageInfo + getTemplateNames)
-    ├── types.ts          # Type definitions
-    ├── tools.ts          # Tool creation functions
-    ├── templates/        # Template source files
-    │   └── *.render.ts
-    └── python/           # Python scripts (auto-copied to dist)
+    ├── index.ts          # Minimal Feature class skeleton
+    └── templates/        # Optional tool render templates
+        └── *.render.ts
 ```
 
 ## Key Features
 
-### ✅ Zero Configuration for Resources
+### ✅ Templates Are Optional
 
-No need to write copy-assets.mjs scripts! The generated `package.json` includes:
+The generated `tsup.config.ts` only includes template entries when `src/templates/*.render.ts` actually exists, so a brand-new Feature package builds cleanly without placeholder templates.
 
-```json
-{
-  "tsup": {
-    "assets": [
-      "src/**/*.py",    // Python scripts
-      "src/**/*.json",  // Config files
-      "src/**/*.txt",   // Text files
-      "src/**/*.md"     // Documentation
-    ]
-  }
-}
-```
+### ✅ Asset Copying Included
 
-Just add your files to `src/` and run `npm run build` - tsup handles everything.
+The scaffold includes `scripts/copy-assets.mjs` and runs it after `tsup`, so non-TypeScript resources like `.py`, `.json`, `.md`, or image/audio files can live under `src/` and be copied into `dist/`.
 
-### ✅ New Template System
+If you add a package-root `skills/` directory, the same script also copies it into `dist/skills/`, so standalone Feature packages can ship skills in a form that AgentDev discovers automatically after install.
+
+### ✅ Current Tool Schema
 
 Generated Feature uses the modern template system:
 
 ```typescript
-// ✅ New way (what the CLI generates)
+// Feature metadata
 getPackageInfo(): PackageInfo | null
 getTemplateNames(): string[]
 
-// ❌ Old way (completely removed)
-getTemplatePaths(): Record<string, string>  // DELETED
+// Tool definitions should use:
+parameters: {
+  type: 'object',
+  properties: {}
+}
 ```
 
 ### ✅ Standalone Development
@@ -106,7 +101,7 @@ cd my-cool-feature
 npm install
 
 # 3. Write your code
-# Edit src/index.ts, src/tools.ts, etc.
+# Edit src/index.ts and add optional files under src/templates/, other src subfolders, or package-root skills/ as needed.
 
 # 4. Build
 npm run build
@@ -131,21 +126,7 @@ const agent = new Agent({
 
 ## Custom Resource Types
 
-If you need to copy other file types, just add to the `assets` array in `package.json`:
-
-```json
-{
-  "tsup": {
-    "assets": [
-      "src/**/*.py",
-      "src/**/*.json",
-      "src/**/*.txt",
-      "src/**/*.md",
-      "src/**/*.csv"     // ← Add your type
-    ]
-  }
-}
-```
+If you need to copy other file types, extend `ASSET_EXTENSIONS` in `scripts/copy-assets.mjs`.
 
 ## License
 

@@ -259,6 +259,8 @@ export interface AgentConfig {
   maxTurns?: number;
   systemMessage?: string | TemplateSource;
   name?: string;  // Agent 显示名称（用于调试）
+  projectRoot?: string;
+  workspaceDir?: string;
 
   // ========== Feature 系统 ==========
   /**
@@ -286,6 +288,7 @@ export interface AgentInfo {
   id: string;           // 唯一标识，如 "agent-1"
   name: string;         // 显示名称
   registeredAt: number; // 注册时间戳
+  projectRoot?: string;
 }
 
 /**

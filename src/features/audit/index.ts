@@ -113,6 +113,8 @@ export interface AuditFeatureConfig {
   dbPath?: string;
   /** 缓存有效期（天数，0 表示永久，默认 0） */
   cacheTtlDays?: number;
+  /** 工作目录（默认 process.cwd()） */
+  workspaceDir?: string;
 }
 
 /**
@@ -126,7 +128,8 @@ export class AuditFeature implements AgentFeature {
   readonly source = fileURLToPath(import.meta.url).replace(/\\\\/g, '/');
   readonly description = '在工具执行前审计高风险 shell 命令，必要时阻断执行。';
 
-  private config: Required<AuditFeatureConfig> & {
+  private config: Omit<Required<AuditFeatureConfig>, 'workspaceDir'> & {
+    workspaceDir?: string;
     enableCache: boolean;
     dbPath: string;
     cacheTtlDays: number;
@@ -146,7 +149,7 @@ export class AuditFeature implements AgentFeature {
       cacheTtlDays: config.cacheTtlDays ?? 0,
     };
 
-    this.dbPath = resolve(process.cwd(), this.config.dbPath);
+    this.dbPath = resolve(config.workspaceDir ?? process.cwd(), this.config.dbPath);
 
     // 初始化 OpenAI 客户端（连接本地服务）
     this.client = new OpenAI({

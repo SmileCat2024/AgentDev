@@ -14,15 +14,24 @@
 import { readFile } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { resolve } from 'path';
-import { cwd } from 'process';
 import type { AgentFeature, FeatureInitContext, PackageInfo } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
-import { createShellCommandTool } from './tools.js';
-import { safeTrashDeleteTool, safeTrashListTool, safeTrashRestoreTool } from './tools-trash.js';
+import { createShellCommandTool, runShellCommand, type ShellExecutionResult } from './tools.js';
+import { createSafeTrashDeleteTool, createSafeTrashListTool, createSafeTrashRestoreTool } from './tools-trash.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
+
+export interface ShellFeatureConfig {
+  workspaceDir?: string;
+  workdir?: string;
+  resourceRoot?: string;
+}
+
+export interface ShellFeaturePublicApi {
+  run(command: string): Promise<ShellExecutionResult>;
+}
 
 /**
  * Shell Feature 实现
@@ -35,6 +44,23 @@ export class ShellFeature implements AgentFeature {
 
   private bashDescription?: string;
   private _packageInfo: PackageInfo | null = null;
+  private readonly workspaceDir: string;
+  private readonly workdir: string;
+  private readonly resourceRoot: string;
+
+  constructor(config: ShellFeatureConfig = {}) {
+    this.workspaceDir = config.workspaceDir || process.cwd();
+    this.workdir = config.workdir || this.workspaceDir;
+    this.resourceRoot = config.resourceRoot || process.cwd();
+  }
+
+  async run(command: string): Promise<ShellExecutionResult> {
+    return runShellCommand(command, {
+      workspaceDir: this.workspaceDir,
+      workdir: this.workdir,
+      resourceRoot: this.resourceRoot,
+    });
+  }
 
   /**
    * 获取包信息（统一打包方案）
@@ -63,9 +89,9 @@ export class ShellFeature implements AgentFeature {
    */
   getTools(): Tool[] {
     return [
-      safeTrashDeleteTool,
-      safeTrashListTool,
-      safeTrashRestoreTool,
+      createSafeTrashDeleteTool(this.workdir),
+      createSafeTrashListTool(this.workdir),
+      createSafeTrashRestoreTool(this.workdir),
     ];
   }
 
@@ -77,7 +103,7 @@ export class ShellFeature implements AgentFeature {
     if (!this.bashDescription) {
       // 优先尝试从外部文件加载
       try {
-        const descriptionPath = resolve(cwd(), '.agentdev/prompts/tool-bash.md');
+        const descriptionPath = resolve(this.resourceRoot, '.agentdev/prompts/tool-bash.md');
         this.bashDescription = await readFile(descriptionPath, 'utf-8');
       } catch {
         // 回退到内部默认描述
@@ -85,7 +111,11 @@ export class ShellFeature implements AgentFeature {
       }
     }
 
-    return [createShellCommandTool(this.bashDescription)];
+    return [createShellCommandTool(this.bashDescription, {
+      workspaceDir: this.workspaceDir,
+      workdir: this.workdir,
+      resourceRoot: this.resourceRoot,
+    })];
   }
 
 }

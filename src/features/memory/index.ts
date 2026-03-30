@@ -19,6 +19,10 @@ export interface MemoryFeatureConfig {
   filename?: string;
   /** 是否强制注入，即使文件不存在也记录日志 */
   forceInject?: boolean;
+  /** 读取 CLAUDE.md 的工作目录 */
+  workspaceDir?: string;
+  /** 宿主资源目录；如果提供，优先从这里读取 CLAUDE.md */
+  resourceRoot?: string;
 }
 
 export class MemoryFeature implements AgentFeature {
@@ -28,11 +32,12 @@ export class MemoryFeature implements AgentFeature {
   readonly description = '自动读取并注入项目 CLAUDE.md 文件作为系统提示词。';
 
   private filename: string;
-  private cwd: string | undefined;
+  private sourceRoot: string;
   private _packageInfo: PackageInfo | null = null;
 
   constructor(config: MemoryFeatureConfig = {}) {
     this.filename = config.filename ?? 'CLAUDE.md';
+    this.sourceRoot = config.resourceRoot ?? config.workspaceDir ?? process.cwd();
   }
 
   /**
@@ -66,7 +71,7 @@ export class MemoryFeature implements AgentFeature {
     }
 
     // 获取当前工作目录
-    const cwd = process.cwd();
+    const cwd = this.sourceRoot;
 
     // 查找 CLAUDE.md 文件
     const filePath = resolve(cwd, this.filename);

@@ -7,7 +7,7 @@
 import type { ToolCall, Message } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
-import type { ContextInjector } from '../feature.js';
+import type { AgentFeature, ContextInjector } from '../feature.js';
 import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext } from '../lifecycle.js';
 import type { ToolExecResult } from '../context.js';
 import type { HooksRegistry } from '../hooks-registry.js';
@@ -68,6 +68,9 @@ export class ToolExecutor {
         step,
         input,
         context,
+        getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
+          return this.parentAgent.getFeature(featureName) as T | undefined;
+        },
       };
 
       logger.info('Tool execution scheduled', {
@@ -116,6 +119,9 @@ export class ToolExecutor {
         step,
         input,
         context,
+        getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
+          return this.parentAgent.getFeature(featureName) as T | undefined;
+        },
       };
 
       if (blocked || !tool) {

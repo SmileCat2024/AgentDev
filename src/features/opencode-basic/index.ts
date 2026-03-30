@@ -15,7 +15,7 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
+import { resolve } from 'path';
 import { promises as fs } from 'fs';
 import type { AgentFeature, FeatureStateSnapshot, PackageInfo } from '../../core/feature.js';
 import type { ToolContext } from '../../core/lifecycle.js';
@@ -23,9 +23,21 @@ import { ToolUse, Decision } from '../../core/hooks-decorator.js';
 import type { FeatureInitContext } from '../../core/feature.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
-import { readTool, writeTool, editTool, lsTool, globTool, grepTool } from './tools.js';
+import {
+  createReadTool,
+  createWriteTool,
+  createEditTool,
+  createLsTool,
+  createGlobTool,
+  createGrepTool,
+  resolveWorkspacePath,
+} from './tools.js';
 
 const __filename = fileURLToPath(import.meta.url);
+
+export interface OpencodeBasicFeatureConfig {
+  workspaceDir?: string;
+}
 
 /**
  * OpencodeBasic Feature - 基础文件操作工具集
@@ -75,6 +87,11 @@ export class OpencodeBasicFeature implements AgentFeature {
    * Logger 实例，用于记录结构化日志
    */
   private logger: any;
+  private readonly workspaceDir: string;
+
+  constructor(config: OpencodeBasicFeatureConfig = {}) {
+    this.workspaceDir = config.workspaceDir || process.cwd();
+  }
 
   /**
    * Feature 初始化时清空读取历史
@@ -111,7 +128,7 @@ export class OpencodeBasicFeature implements AgentFeature {
     // 记录 read 操作
     if (toolName === 'read') {
       const filePath = ctx.call.arguments?.filePath as string;
-      const normalizedPath = resolve(filePath);
+      const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
       this.readFiles.add(normalizedPath);
 
       this.logger?.info('File read tracked', {
@@ -128,7 +145,7 @@ export class OpencodeBasicFeature implements AgentFeature {
     // 验证 write 操作
     if (toolName === 'write') {
       const filePath = ctx.call.arguments?.filePath as string;
-      const normalizedPath = resolve(filePath);
+      const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
 
       // 检查文件是否存在
       const exists = await fs.stat(normalizedPath)
@@ -181,12 +198,12 @@ export class OpencodeBasicFeature implements AgentFeature {
    */
   getTools() {
     return [
-      readTool,
-      writeTool,
-      editTool,
-      lsTool,
-      globTool,
-      grepTool,
+      createReadTool(this.workspaceDir),
+      createWriteTool(this.workspaceDir),
+      createEditTool(this.workspaceDir),
+      createLsTool(this.workspaceDir),
+      createGlobTool(this.workspaceDir),
+      createGrepTool(this.workspaceDir),
     ];
   }
 

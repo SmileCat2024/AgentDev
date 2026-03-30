@@ -48,6 +48,9 @@ export async function createFeature(featureName: string): Promise<void> {
   // 生成 tsconfig.json
   generateTsConfig(targetDir);
 
+  // 生成 tsup 配置
+  generateTsupConfig(targetDir);
+
   // 生成 copy-assets 脚本
   generateCopyAssetsScript(targetDir);
 
@@ -82,13 +85,6 @@ function generatePackageJson(targetDir: string, packageName: string, featureSlug
       dev: 'tsup --watch',
       'copy-assets': 'node scripts/copy-assets.mjs',
       prepublishOnly: 'npm run build'
-    },
-    tsup: {
-      entry: ['src/index.ts', 'src/templates/*.render.ts'],
-      format: 'esm',
-      dts: true,
-      clean: true,
-      sourcemap: true
     },
     peerDependencies: {
       agentdev: '>=0.1.0'
@@ -131,6 +127,37 @@ function generateTsConfig(targetDir: string): void {
   };
 
   writeFileSync(join(targetDir, 'tsconfig.json'), JSON.stringify(tsConfig, null, 2));
+}
+
+/**
+ * 生成 tsup.config.ts
+ * 仅在模板文件真实存在时才把它们加入 entry，避免空模板目录导致构建报错。
+ */
+function generateTsupConfig(targetDir: string): void {
+  const content = `import { existsSync, readdirSync } from 'fs';
+import { defineConfig } from 'tsup';
+
+function getTemplateEntries(): string[] {
+  const templateDir = 'src/templates';
+  if (!existsSync(templateDir)) {
+    return [];
+  }
+
+  return readdirSync(templateDir)
+    .filter((name) => name.endsWith('.render.ts'))
+    .map((name) => \`\${templateDir}/\${name}\`);
+}
+
+export default defineConfig({
+  entry: ['src/index.ts', ...getTemplateEntries()],
+  format: ['esm'],
+  dts: true,
+  clean: true,
+  sourcemap: true,
+});
+`;
+
+  writeFileSync(join(targetDir, 'tsup.config.ts'), content);
 }
 
 /**
@@ -266,18 +293,21 @@ MIT
 function generateCopyAssetsScript(targetDir: string): void {
   const content = `#!/usr/bin/env node
 /**
- * Copy non-TypeScript assets to dist directory
- * This script automatically copies files like .py, .mp3, .json, etc.
+ * Copy non-TypeScript assets and optional feature skills to dist directory.
+ * - Files under src/ are mirrored into dist/
+ * - Files under skills/ are mirrored into dist/skills/
  */
 
-import { copyFileSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { join, dirname, relative } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
 const srcDir = join(rootDir, 'src');
+const skillsDir = join(rootDir, 'skills');
 const distDir = join(rootDir, 'dist');
+const distSkillsDir = join(distDir, 'skills');
 
 // Extensions to copy (non-TypeScript files)
 const ASSET_EXTENSIONS = new Set([
@@ -298,6 +328,10 @@ function isAssetFile(filename) {
 }
 
 function copyDirectory(src, dest) {
+  if (!existsSync(src)) {
+    return;
+  }
+
   const entries = readdirSync(src, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -314,8 +348,30 @@ function copyDirectory(src, dest) {
   }
 }
 
+function copySkillsDirectory(src, dest) {
+  if (!existsSync(src)) {
+    return;
+  }
+
+  const entries = readdirSync(src, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = join(src, entry.name);
+    const destPath = join(dest, entry.name);
+
+    if (entry.isDirectory()) {
+      copySkillsDirectory(srcPath, destPath);
+    } else if (entry.isFile()) {
+      mkdirSync(dirname(destPath), { recursive: true });
+      copyFileSync(srcPath, destPath);
+      console.log(\`Copied skill: \${relative(rootDir, srcPath)}\`);
+    }
+  }
+}
+
 // Copy assets from src to dist
 copyDirectory(srcDir, distDir);
+copySkillsDirectory(skillsDir, distSkillsDir);
 `;
 
   writeFileSync(join(targetDir, 'scripts', 'copy-assets.mjs'), content);

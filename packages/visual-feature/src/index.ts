@@ -82,9 +82,9 @@ const DEFAULT_ADVANCED_MODEL = 'Qwen3.5-9B-Q4_K_M';
  * 获取项目本地 Python 路径
  * 优先使用 .venv 中的 Python，回退到系统 PATH 中的 python
  */
-function getDefaultPythonPath(): string {
+function getDefaultPythonPath(workspaceDir?: string): string {
   // 检测项目根目录的 .venv
-  const projectRoot = process.cwd();
+  const projectRoot = workspaceDir ?? process.cwd();
   const venvPython =
     process.platform === 'win32'
       ? join(projectRoot, '.venv', 'Scripts', 'python.exe')

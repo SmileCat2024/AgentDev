@@ -76,7 +76,8 @@ export class PluginCompatFeature implements AgentFeature {
     }
 
     // 获取插件根目录（默认：.agentdev/plugins）
-    this.pluginRoots = config?.pluginRoots ?? [resolve(process.cwd(), '.agentdev/plugins')];
+    const resourceRoot = config?.resourceRoot ?? ctx.config?.projectRoot ?? ctx.config?.workspaceDir ?? process.cwd();
+    this.pluginRoots = config?.pluginRoots ?? [resolve(resourceRoot, '.agentdev/plugins')];
 
     // 加载插件
     await this.loadPlugins();

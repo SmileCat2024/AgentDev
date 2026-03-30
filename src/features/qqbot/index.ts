@@ -91,6 +91,10 @@ export interface QQBotFeatureConfig {
   systemPrompt?: string;
   /** 附加配置（传递给 Gateway） */
   cfg?: Record<string, unknown>;
+  /** 工作目录（默认 process.cwd()） */
+  workspaceDir?: string;
+  /** 宿主资源目录；默认从这里查找 .agentdev/qqbot.config.json */
+  resourceRoot?: string;
 }
 
 /**
@@ -233,7 +237,8 @@ export class QQBotFeature implements AgentFeature {
     }
 
     // 否则从配置文件读取
-    const defaultConfigPath = join(process.cwd(), '.agentdev', 'qqbot.config.json');
+    const configRoot = this.config.resourceRoot ?? this.config.workspaceDir ?? process.cwd();
+    const defaultConfigPath = join(configRoot, '.agentdev', 'qqbot.config.json');
     const configPath = this.config.configPath || defaultConfigPath;
 
     const fileConfig = loadConfigFromFile(configPath);

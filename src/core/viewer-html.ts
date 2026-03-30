@@ -5050,6 +5050,9 @@ export function generateViewerHtml(port: number): string {
                 </div>
               </div>
           \`;
+        } else if (msg.content.startsWith('[Error:')) {
+          // 错误消息使用红色样式
+          innerContent += \`<div class="tool-error">\${escapeHtml(msg.content)}</div>\`;
         } else {
           innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
         }

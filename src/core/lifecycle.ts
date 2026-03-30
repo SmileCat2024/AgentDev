@@ -6,6 +6,7 @@
 import type { ToolCall, Tool, LLMResponse, Message } from './types.js';
 import { Context } from './context.js';
 import type { Agent } from './agent.js';
+import type { AgentFeature } from './feature.js';
 
 // ========== 概念定义 ==========
 /**
@@ -198,6 +199,8 @@ export interface ToolContext {
   input: string;
   /** 消息上下文（可读写） */
   context: Context;
+  /** 获取其他 Feature */
+  getFeature<T extends AgentFeature>(name: string): T | undefined;
 }
 
 /**
@@ -224,6 +227,8 @@ export interface ToolResult {
   input: string;
   /** 消息上下文 */
   context: Context;
+  /** 获取其他 Feature */
+  getFeature<T extends AgentFeature>(name: string): T | undefined;
 }
 
 /**

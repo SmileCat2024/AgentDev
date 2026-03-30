@@ -71,6 +71,9 @@ export interface VisualUnderstandingResult {
  * VisualFeature 配置
  */
 export interface VisualFeatureConfig {
+  /** 工作目录（默认 process.cwd()） */
+  workspaceDir?: string;
+
   // ========== 自动视觉理解配置（后台监控使用）==========
   /** LLM 服务地址（默认 localhost:7575） */
   baseUrl?: string;

@@ -59,6 +59,10 @@ export interface BasicAgentConfig {
   tools?: Tool[];
   /** Skills 目录（可选，默认使用 .agentdev/skills） */
   skillsDir?: string;
+  /** 调试器和模板解析使用的项目根目录 */
+  projectRoot?: string;
+  /** 工具默认操作的工作目录 */
+  workspaceDir?: string;
 }
 
 /**
@@ -81,10 +85,11 @@ export class BasicAgent extends Agent {
    * @param config 基础配置（全部可选，不传则使用默认配置）
    */
   constructor(config: BasicAgentConfig = {}) {
+    const workspaceDir = config.workspaceDir ?? cwd();
     // 建立系统环境信息
     const systemContext: SystemContext = {
-      SYSTEM_WORKING_DIR: cwd(),
-      SYSTEM_IS_GIT_REPOSITORY: existsSync(cwd() + '/.git'),
+      SYSTEM_WORKING_DIR: workspaceDir,
+      SYSTEM_IS_GIT_REPOSITORY: existsSync(workspaceDir + '/.git'),
       SYSTEM_PLATFORM: platform,
       SYSTEM_DATE: new Date().toISOString().split('T')[0], // YYYY-MM-DD
       SYSTEM_CURRENT_MODEL: 'unknown', // 稍后更新
@@ -108,6 +113,8 @@ export class BasicAgent extends Agent {
       maxTurns: Infinity,
       systemMessage: config.systemMessage,
       name: config.name,
+      projectRoot: config.projectRoot,
+      workspaceDir,
     };
 
     super(agentConfig);
@@ -133,7 +140,7 @@ export class BasicAgent extends Agent {
     }
 
     // 注册 OpencodeBasicFeature（文件操作工具集）
-    this.use(new OpencodeBasicFeature());
+    this.use(new OpencodeBasicFeature({ workspaceDir }));
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
     this.use(new SkillFeature(config.skillsDir));
@@ -144,6 +151,10 @@ export class BasicAgent extends Agent {
     // 预禁用不需要的子代理工具，确保首次快照与运行时一致
     this.getTools().disable('list_agents');
     this.getTools().disable('close_agent');
+
+    // 注册可创建的子代理类型
+    this.registerAgentType('BasicAgent', () => new BasicAgent({ llm: this.llm }));
+    this.registerAgentType('ExplorerAgent', () => import('./ExplorerAgent.js').then(m => new m.ExplorerAgent({ llm: this.llm })));
   }
 
   /**

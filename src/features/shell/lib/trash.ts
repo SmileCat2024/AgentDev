@@ -4,8 +4,7 @@
  * 复刻自 safe_rm.py 的 SafeRm 类
  */
 
-import { join, resolve } from 'path';
-import { cwd } from 'process';
+import { isAbsolute, join, resolve } from 'path';
 import { FileSystem } from './fs.js';
 import {
   validateOperator,
@@ -184,7 +183,13 @@ export function safeRm(
   validateOperator(operator);
 
   // 解析命令
-  const { files, force, interactive } = parseRmCommand(rmCommand);
+  const { files: parsedFiles, force, interactive } = parseRmCommand(rmCommand);
+  const files = parsedFiles.map((file) => {
+    if (!workingDir || isAbsolute(file)) {
+      return file;
+    }
+    return resolve(workingDir, file);
+  });
 
   // 检查是否有文件要删除
   if (files.length === 0) {
@@ -201,8 +206,6 @@ export function safeRm(
     mode = Mode.MODE_UNSPECIFIED;
   }
 
-  // 处理工作目录
-  let originalDir: string | null = null;
   if (workingDir) {
     if (!FileSystem.exists(workingDir)) {
       throw new SafeRmError(
@@ -211,22 +214,14 @@ export function safeRm(
         { working_dir: workingDir }
       );
     }
-    originalDir = cwd();
-    process.chdir(workingDir);
   }
 
-  try {
-    const safeRmInstance = new SafeRm({
-      trashDir,
-      workingDir,
-      operator,
-      verbose,
-    });
+  const safeRmInstance = new SafeRm({
+    trashDir,
+    workingDir,
+    operator,
+    verbose,
+  });
 
-    return safeRmInstance.trashAll(files, mode);
-  } finally {
-    if (originalDir !== null) {
-      process.chdir(originalDir);
-    }
-  }
+  return safeRmInstance.trashAll(files, mode);
 }

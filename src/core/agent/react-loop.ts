@@ -129,14 +129,21 @@ export class ReActLoopRunner {
             this.agent.recordUsage(callIndex, step, response.usage);
           }
 
-          // 添加助手响应
-          context.addAssistantMessage(response, callIndex);
-
-          // 推送消息到 DebugHub
-          this.pushToDebug(context.getAll());
-
-          // 检查是否需要调用工具
           const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
+
+          // 如果LLM返回空内容且没有toolCalls，只推送错误消息到debugger hub（不进入context）
+          if (!response.content && !hasToolCalls) {
+            this.pushToDebug([
+              ...context.getAll(),
+              { role: 'assistant', content: '[Error: LLM returned empty response]', turn: callIndex },
+            ]);
+          } else {
+            // 添加助手响应
+            context.addAssistantMessage(response, callIndex);
+            // 推送消息到 DebugHub
+            this.pushToDebug(context.getAll());
+          }
+
           if (!hasToolCalls) {
           // 无工具调用：执行 StepFinish 钩子
             const stepFinishResult = await this.executeHookFn(
@@ -260,11 +267,17 @@ export class ReActLoopRunner {
           return 'next';
         } catch (error) {
           await rollbackToStepCheckpoint(checkpoint, context, this.agent.features);
-          this.pushToDebug(context.getAll());
-          logger.warn('Step rolled back after failure', {
-            step,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          // 构造错误消息（仅显示，不进入context）
+          const errorMessages: Message[] = [
+            ...context.getAll(),
+            { role: 'assistant', content: `[Error: ${errorMsg}]`, turn: callIndex },
+          ];
+          // 直接推送到debugPusher
+          if (this.agent.debugPusher) {
+            this.agent.debugPusher.pushMessages(this.agent.agentId ?? '', errorMessages);
+          }
+          logger.warn('Step rolled back after failure', { step, error: errorMsg });
           throw error;
         }
       });

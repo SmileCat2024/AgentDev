@@ -2,8 +2,7 @@
  * SafeRm - 安全删除核心逻辑
  */
 
-import { join, resolve } from 'path';
-import { cwd } from 'process';
+import { isAbsolute, join, resolve } from 'path';
 import { FileSystem } from './fs.js';
 import { validateOperator, generateTrashName, createTrashInfo, parseRmCommand } from './trashinfo.js';
 import {
@@ -107,7 +106,13 @@ export function safeRm(
   verbose: number = 0
 ): SafeRmResult {
   validateOperator(operator);
-  const { files, force, interactive } = parseRmCommand(rmCommand);
+  const { files: parsedFiles, force, interactive } = parseRmCommand(rmCommand);
+  const files = parsedFiles.map((file) => {
+    if (!workingDir || isAbsolute(file)) {
+      return file;
+    }
+    return resolve(workingDir, file);
+  });
 
   if (files.length === 0) throwNoFilesSpecifiedError();
 
@@ -116,19 +121,12 @@ export function safeRm(
   else if (interactive) mode = Mode.MODE_INTERACTIVE;
   else mode = Mode.MODE_UNSPECIFIED;
 
-  let originalDir: string | null = null;
   if (workingDir) {
     if (!FileSystem.exists(workingDir)) {
       throw new SafeRmError(ErrorCode.ERROR_WORKING_DIR_NOT_FOUND, '工作目录不存在', { working_dir: workingDir });
     }
-    originalDir = cwd();
-    process.chdir(workingDir);
   }
 
-  try {
-    const safeRmInstance = new SafeRm({ trashDir, workingDir, operator, verbose });
-    return safeRmInstance.trashAll(files, mode);
-  } finally {
-    if (originalDir !== null) process.chdir(originalDir);
-  }
+  const safeRmInstance = new SafeRm({ trashDir, workingDir, operator, verbose });
+  return safeRmInstance.trashAll(files, mode);
 }

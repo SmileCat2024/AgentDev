@@ -111,6 +111,8 @@ export interface TTSFeatureConfig {
      */
     onlyOnNonToolCalls?: boolean;
   };
+  /** 工作目录（默认 process.cwd()） */
+  workspaceDir?: string;
 }
 
 /**

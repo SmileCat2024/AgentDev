@@ -63,6 +63,7 @@ export class SkillFeature implements AgentFeature {
 
   private skillsDir?: string;
   private skills: SkillMetadata[] = [];
+  private featureSkills: SkillMetadata[] = [];
 
   /**
    * 缓存包信息
@@ -121,8 +122,19 @@ export class SkillFeature implements AgentFeature {
    * 执行 Skills 发现并注册数据源
    */
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    // 先发现用户自定义 skills（.agentdev/skills/）
     if (this.skillsDir) {
       this.skills = await discover({ dir: this.skillsDir });
+    }
+
+    // 合并 Feature 自带 skills，用户 skills 优先（同名覆盖）
+    if (this.featureSkills.length > 0) {
+      const userSkillNames = new Set(this.skills.map(s => s.name));
+      for (const s of this.featureSkills) {
+        if (!userSkillNames.has(s.name)) {
+          this.skills.push(s);
+        }
+      }
     }
 
     // 注册 skills 数据源到全局注册中心
@@ -140,6 +152,14 @@ export class SkillFeature implements AgentFeature {
         return PlaceholderResolver.resolve(template, skillContext);
       },
     });
+  }
+
+  /**
+   * 注入来自其他 Feature 的 skills
+   * 由 Agent 在 onInitiate 之前调用
+   */
+  addFeatureSkills(skills: SkillMetadata[]): void {
+    this.featureSkills = skills;
   }
 
   /**

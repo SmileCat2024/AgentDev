@@ -47,6 +47,7 @@ export interface FeatureInitContext {
 export interface FeatureContext {
   agentId: string;
   config: import('./types.js').AgentConfig;
+  getFeature<T extends AgentFeature>(name: string): T | undefined;
 }
 
 /**

@@ -52,12 +52,22 @@ export class SubAgentToolFactory {
           return { error: '无法获取父代理引用' };
         }
 
+        // 动态校验类型是否在注册表中
+        const availableTypes = parentAgent.getRegisteredAgentTypes();
+        if (availableTypes.length > 0 && !availableTypes.includes(type)) {
+          return {
+            error: `未知的子代理类型: "${type}"。可用类型: ${availableTypes.join(', ')}`,
+            availableTypes,
+          };
+        }
+
         const agentId = await pool.spawn(type, async (t) => await parentAgent.createAgentByType(t));
 
         return {
           agentId,
           type,
           status: 'idle',
+          availableTypes: parentAgent.getRegisteredAgentTypes(),
           allAgents: pool.list().map(i => ({
             agentId: i.id,
             type: i.type,

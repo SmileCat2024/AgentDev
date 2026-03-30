@@ -19,6 +19,7 @@ const MAX_LINE_LENGTH = 2000;
 const MAX_BYTES = 50 * 1024;
 const LS_LIMIT = 100;
 const SEARCH_LIMIT = 100;
+const DEFAULT_WORKSPACE_DIR = process.cwd();
 
 const IGNORE_PATTERNS = [
   'node_modules/**',
@@ -45,6 +46,20 @@ const IGNORE_PATTERNS = [
   'venv/**',
   'env/**'
 ];
+
+function resolveWorkspacePath(filePath: string, workspaceDir: string = DEFAULT_WORKSPACE_DIR): string {
+  if (path.isAbsolute(filePath)) {
+    return path.normalize(filePath);
+  }
+  return path.resolve(workspaceDir, filePath);
+}
+
+function resolveWorkspaceSearchPath(searchPath: string | undefined, workspaceDir: string = DEFAULT_WORKSPACE_DIR): string {
+  if (!searchPath) {
+    return workspaceDir;
+  }
+  return resolveWorkspacePath(searchPath, workspaceDir);
+}
 
 // ============================================================================
 // Read Tool - 文件读取
@@ -91,7 +106,8 @@ async function isBinaryFile(filepath: string): Promise<boolean> {
 /**
  * 文件读取工具
  */
-export const readTool = createTool({
+export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
+  return createTool({
   name: 'read',
   description: 'Read a file from the local filesystem. Can read files with offset/limit for pagination, and can also read directory contents. For large files, use offset and limit parameters to read in chunks.',
   render: 'read',
@@ -114,20 +130,21 @@ export const readTool = createTool({
     required: ['filePath']
   },
   execute: async ({ filePath, offset: offsetParam, limit: limitParam }) => {
-    console.log(`[read] ${filePath}`);
+    const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
+    console.log(`[read] ${resolvedFilePath}`);
 
     if (offsetParam !== undefined && offsetParam < 1) {
       throw new Error('offset must be greater than or equal to 1');
     }
 
-    const stats = await stat(filePath).catch(() => null);
+    const stats = await stat(resolvedFilePath).catch(() => null);
     if (!stats) {
-      throw new Error(`File not found: ${filePath}`);
+      throw new Error(`File not found: ${resolvedFilePath}`);
     }
 
     // 处理目录
     if (stats.isDirectory()) {
-      const dirents = await readdir(filePath, { withFileTypes: true });
+      const dirents = await readdir(resolvedFilePath, { withFileTypes: true });
       const entries: string[] = [];
 
       for (const dirent of dirents) {
@@ -135,7 +152,7 @@ export const readTool = createTool({
           entries.push(dirent.name + path.sep);
         } else if (dirent.isSymbolicLink()) {
           try {
-            const targetStats = await stat(path.join(filePath, dirent.name));
+            const targetStats = await stat(path.join(resolvedFilePath, dirent.name));
             entries.push(targetStats.isDirectory() ? dirent.name + path.sep : dirent.name);
           } catch {
             entries.push(dirent.name);
@@ -155,7 +172,7 @@ export const readTool = createTool({
 
       return {
         type: 'directory',
-        path: filePath,
+        path: resolvedFilePath,
         totalEntries: entries.length,
         offset,
         limit,
@@ -165,12 +182,12 @@ export const readTool = createTool({
     }
 
     // 处理文件
-    const isBinary = await isBinaryFile(filePath);
+    const isBinary = await isBinaryFile(resolvedFilePath);
     if (isBinary) {
-      throw new Error(`Cannot read binary file: ${filePath}`);
+      throw new Error(`Cannot read binary file: ${resolvedFilePath}`);
     }
 
-    const content = await readFile(filePath, 'utf-8');
+    const content = await readFile(resolvedFilePath, 'utf-8');
     const lines = content.split('\n');
 
     const limit = limitParam ?? DEFAULT_READ_LIMIT;
@@ -213,7 +230,7 @@ export const readTool = createTool({
 
     return {
       type: 'file',
-      path: filePath,
+        path: resolvedFilePath,
       totalLines,
       offset,
       limit,
@@ -223,7 +240,10 @@ export const readTool = createTool({
       content: contentWithLines.join('\n')
     };
   }
-});
+  });
+}
+
+export const readTool = createReadTool();
 
 // ============================================================================
 // Write Tool - 文件写入
@@ -232,7 +252,8 @@ export const readTool = createTool({
 /**
  * 文件写入工具
  */
-export const writeTool = createTool({
+export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
+  return createTool({
   name: 'write',
   description: 'Write content to a file. Creates new files or overwrites existing files. THIS TOOL WILL OVERWRITE THE EXISTING FILE IF it exists. Only use this tool when explicitly requested to do so. Always prefer editing existing files using the edit tool when the file already exists.',
   render: 'write',
@@ -251,25 +272,29 @@ export const writeTool = createTool({
     required: ['filePath', 'content']
   },
   execute: async ({ filePath, content }) => {
-    console.log(`[write] ${filePath}`);
+    const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
+    console.log(`[write] ${resolvedFilePath}`);
 
-    const exists = await stat(filePath).then(() => true).catch(() => false);
-    const contentOld = exists ? await readFile(filePath, 'utf-8') : '';
+    const exists = await stat(resolvedFilePath).then(() => true).catch(() => false);
+    const contentOld = exists ? await readFile(resolvedFilePath, 'utf-8') : '';
 
     // 生成 diff
-    const diff = createTwoFilesPatch(filePath, filePath, contentOld, content);
+    const diff = createTwoFilesPatch(resolvedFilePath, resolvedFilePath, contentOld, content);
 
     // 写入文件
-    await writeFile(filePath, content, 'utf-8');
+    await writeFile(resolvedFilePath, content, 'utf-8');
 
     return {
-      filePath,
+      filePath: resolvedFilePath,
       existed: exists,
       diff,
       message: `File ${exists ? 'updated' : 'created'} successfully`
     };
   }
-});
+  });
+}
+
+export const writeTool = createWriteTool();
 
 // ============================================================================
 // Edit Tool - 文件编辑
@@ -706,7 +731,8 @@ function replace(content: string, oldString: string, newString: string, replaceA
 /**
  * 文件编辑工具
  */
-export const editTool = createTool({
+export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
+  return createTool({
   name: 'edit',
   description: 'Make exact string replacements in a file. Uses multiple intelligent matching strategies including block anchor matching, whitespace normalization, and indentation flexibility. Always provides a diff preview of changes.',
   render: 'edit',
@@ -733,23 +759,24 @@ export const editTool = createTool({
     required: ['filePath', 'oldString', 'newString']
   },
   execute: async ({ filePath, oldString, newString, replaceAll = false }) => {
-    console.log(`[edit] ${filePath}`);
+    const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
+    console.log(`[edit] ${resolvedFilePath}`);
 
     if (oldString === newString) {
       throw new Error('No changes to apply: oldString and newString are identical.');
     }
 
     // 检查文件是否存在
-    const exists = await stat(filePath).then(() => true).catch(() => false);
+    const exists = await stat(resolvedFilePath).then(() => true).catch(() => false);
     if (!exists) {
-      throw new Error(`File not found: ${filePath}`);
+      throw new Error(`File not found: ${resolvedFilePath}`);
     }
 
-    const contentOld = await readFile(filePath, 'utf-8');
+    const contentOld = await readFile(resolvedFilePath, 'utf-8');
     const contentNew = replace(contentOld, oldString, newString, replaceAll);
 
     // 生成 diff
-    const diff = createTwoFilesPatch(filePath, filePath, contentOld, contentNew);
+    const diff = createTwoFilesPatch(resolvedFilePath, resolvedFilePath, contentOld, contentNew);
 
     // 计算变更统计
     let additions = 0;
@@ -760,17 +787,20 @@ export const editTool = createTool({
     }
 
     // 写入文件
-    await writeFile(filePath, contentNew, 'utf-8');
+    await writeFile(resolvedFilePath, contentNew, 'utf-8');
 
     return {
-      filePath,
+      filePath: resolvedFilePath,
       diff,
       additions,
       deletions,
       message: 'Edit applied successfully'
     };
   }
-});
+  });
+}
+
+export const editTool = createEditTool();
 
 // ============================================================================
 // LS Tool - 目录列表
@@ -779,7 +809,8 @@ export const editTool = createTool({
 /**
  * 目录列表工具
  */
-export const lsTool = createTool({
+export function createLsTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
+  return createTool({
   name: 'ls',
   description: 'List files in a directory with tree structure output. Automatically ignores common build/cache directories.',
   render: 'ls',
@@ -799,13 +830,14 @@ export const lsTool = createTool({
     required: ['dirPath']
   },
   execute: async ({ dirPath, ignore = [] }) => {
-    console.log(`[ls] ${dirPath}`);
+    const resolvedDirPath = resolveWorkspacePath(dirPath, workspaceDir);
+    console.log(`[ls] ${resolvedDirPath}`);
 
     const ignoreGlobs = [...IGNORE_PATTERNS, ...ignore.map((p: string) => `${p}/**`)];
 
     // glob 返回 Promise<string[]>，不是异步迭代器
     const matches = await glob('**/*', {
-      cwd: dirPath,
+      cwd: resolvedDirPath,
       absolute: false,
       dot: true,
       ignore: ignoreGlobs,
@@ -866,16 +898,19 @@ export const lsTool = createTool({
       return output;
     }
 
-    const treeOutput = `${dirPath}${path.sep}\n${renderDir('.', 0)}`;
+    const treeOutput = `${resolvedDirPath}${path.sep}\n${renderDir('.', 0)}`;
 
     return {
-      path: dirPath,
+      path: resolvedDirPath,
       count: files.length,
       truncated: files.length >= LS_LIMIT,
       tree: treeOutput
     };
   }
-});
+  });
+}
+
+export const lsTool = createLsTool();
 
 // ============================================================================
 // Glob Tool - 文件模式搜索
@@ -884,7 +919,8 @@ export const lsTool = createTool({
 /**
  * Glob 文件搜索工具
  */
-export const globTool = createTool({
+export function createGlobTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
+  return createTool({
   name: 'glob',
   description: 'Fast file pattern matching tool that works with any codebase size. Supports glob patterns like "**/*.js" or "src/**/*.ts". Returns matching file paths sorted by modification time.',
   render: 'glob',
@@ -902,14 +938,15 @@ export const globTool = createTool({
     },
     required: ['pattern']
   },
-  execute: async ({ pattern, searchPath = process.cwd() }) => {
-    console.log(`[glob] ${pattern} in ${searchPath}`);
+  execute: async ({ pattern, searchPath }) => {
+    const resolvedSearchPath = resolveWorkspaceSearchPath(searchPath, workspaceDir);
+    console.log(`[glob] ${pattern} in ${resolvedSearchPath}`);
 
     const files: Array<{ path: string; mtime: number }> = [];
 
     // 使用 glob 进行文件搜索
     const matches = await glob(pattern, {
-      cwd: searchPath,
+      cwd: resolvedSearchPath,
       absolute: true,
       windowsPathsNoEscape: true,
       nodir: true,
@@ -938,7 +975,10 @@ export const globTool = createTool({
       files: files.map(f => f.path)
     };
   }
-});
+  });
+}
+
+export const globTool = createGlobTool();
 
 // ============================================================================
 // Grep Tool - 内容搜索
@@ -972,7 +1012,8 @@ async function getRipgrepPath(): Promise<string> {
 /**
  * Grep 内容搜索工具
  */
-export const grepTool = createTool({
+export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
+  return createTool({
   name: 'grep',
   description: 'A powerful search tool built on ripgrep. Supports full regex syntax, file type filtering, and context control. Use this tool for content searches; NEVER invoke grep or rg as Bash commands.',
   render: 'grep',
@@ -994,8 +1035,9 @@ export const grepTool = createTool({
     },
     required: ['pattern']
   },
-  execute: async ({ pattern, searchPath = process.cwd(), include }, context) => {
-    console.log(`[grep] ${pattern} in ${searchPath}`);
+  execute: async ({ pattern, searchPath, include }, context) => {
+    const resolvedSearchPath = resolveWorkspaceSearchPath(searchPath, workspaceDir);
+    console.log(`[grep] ${pattern} in ${resolvedSearchPath}`);
 
     const rgPath = await getRipgrepPath();
     const args = ['-nH', '--hidden', '--no-messages', '--field-match-separator=|', '--regexp', pattern];
@@ -1003,7 +1045,7 @@ export const grepTool = createTool({
     if (include) {
       args.push('--glob', include);
     }
-    args.push(searchPath);
+    args.push(resolvedSearchPath);
 
     try {
       // 使用 spawn 避免在 Windows 上 shell 解析特殊字符（如 |）的问题
@@ -1083,4 +1125,9 @@ export const grepTool = createTool({
       throw error;
     }
   }
-});
+  });
+}
+
+export const grepTool = createGrepTool();
+
+export { resolveWorkspacePath };

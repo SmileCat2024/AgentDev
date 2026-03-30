@@ -72,7 +72,9 @@ export class TTSFeature implements AgentFeature {
   readonly source = import.meta.url.replace(/^file:\/\/\//, '').replace(/\\/g, '/');
   readonly description = '提供文本朗读能力，使用小米 Mimo TTS API 将文本转换为语音并播放。';
 
-  private config: Required<Pick<TTSFeatureConfig, 'api' | 'style' | 'output' | 'triggers'>>;
+  private config: Omit<Required<Pick<TTSFeatureConfig, 'api' | 'style' | 'output' | 'triggers'>>, 'workspaceDir'> & {
+    workspaceDir?: string;
+  };
   private client: OpenAI;
   private state: TTSState;
   private _packageInfo: PackageInfo | null = null;
@@ -99,6 +101,7 @@ export class TTSFeature implements AgentFeature {
 
     // 合并配置
     this.config = {
+      workspaceDir: config.workspaceDir,
       api: {
         apiKey,
         baseURL: config.api?.baseURL ?? DEFAULT_API_BASE_URL,
@@ -271,7 +274,7 @@ export class TTSFeature implements AgentFeature {
    */
   private async playAudio(audioBuffer: Buffer): Promise<void> {
     // 使用项目本地目录
-    const projectRoot = process.cwd();
+    const projectRoot = this.config.workspaceDir ?? process.cwd();
     const ttsDir = path.join(projectRoot, '.agentdev', 'tts', 'temp');
 
     // 确保目录存在

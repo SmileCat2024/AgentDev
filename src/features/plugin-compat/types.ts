@@ -243,6 +243,8 @@ export interface PluginCompatConfig {
   enabled?: boolean;
   /** 插件根目录列表 */
   pluginRoots?: string[];
+  /** 宿主资源目录；默认从这里解析 .agentdev/plugins */
+  resourceRoot?: string;
   /** 启用的兼容表面 */
   surfaces?: {
     /** 工具兼容 */

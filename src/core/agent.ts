@@ -38,6 +38,11 @@ import type {
 } from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
 import { TemplateLoader } from '../template/loader.js';
+import { discover } from '../skills/loader.js';
+import type { SkillMetadata } from '../skills/types.js';
+import { existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 // 导入重构后的模块
 import { HookErrorHandling, executeHook } from './agent/hooks-executor.js';
@@ -77,6 +82,9 @@ class AgentBase {
   // 子代理相关
   protected _agentId?: string;
   protected _parentPool?: any; // AgentPool reference from parent
+
+  // Agent 类型注册表（实例级，由子类构造函数自行注册可创建的子代理类型）
+  private _agentTypeRegistry = new Map<string, () => AgentBase | Promise<AgentBase>>();
 
   // Feature 系统
   private features = new Map<string, AgentFeature>();
@@ -383,7 +391,12 @@ class AgentBase {
   /**
    * 启用可视化查看器
    */
-  async withViewer(name?: string, port?: number, openBrowser?: boolean): Promise<this> {
+  async withViewer(
+    name?: string,
+    port?: number,
+    openBrowser?: boolean,
+    options?: { projectRoot?: string }
+  ): Promise<this> {
     this.debugHub = DebugHub.getInstance();
     this.debugEnabled = true;
 
@@ -423,7 +436,8 @@ class AgentBase {
       name || this.constructor.name,
       featureTemplates,
       this.buildHookInspectorSnapshot(),
-      this.buildOverviewSnapshot()
+      this.buildOverviewSnapshot(),
+      options?.projectRoot ?? this.config.projectRoot
     );
     this.syncRegisteredToolsToDebug();
     this.pushInspectorSnapshot();
@@ -613,9 +627,35 @@ class AgentBase {
   }
 
   /**
-   * 创建 Agent 实例（子类可覆盖）
+   * 注册一个可创建的子代理类型
+   *
+   * 通常在 Agent 子类的构造函数中调用：
+   * this.registerAgentType('MyAgent', () => new MyAgent({ llm: this.llm }));
+   */
+  public registerAgentType(name: string, factory: () => AgentBase | Promise<AgentBase>): this {
+    this._agentTypeRegistry.set(name, factory);
+    return this;
+  }
+
+  /**
+   * 获取当前已注册的所有子代理类型名
+   */
+  public getRegisteredAgentTypes(): string[] {
+    return Array.from(this._agentTypeRegistry.keys());
+  }
+
+  /**
+   * 创建 Agent 实例
+   *
+   * 优先从实例注册表查找，未命中则 fallback 到内置类型（向后兼容）。
+   * 子类无需覆盖此方法，通过 registerAgentType() 即可扩展。
    */
   public async createAgentByType(type: string): Promise<AgentBase> {
+    // 优先查实例注册表
+    const factory = this._agentTypeRegistry.get(type);
+    if (factory) return factory();
+
+    // fallback: 内置类型（向后兼容）
     switch (type) {
       case 'ExplorerAgent': {
         const { ExplorerAgent } = await import('../agents/system/ExplorerAgent.js');
@@ -657,7 +697,13 @@ class AgentBase {
     for (const feature of this.features.values()) {
       if (feature.onDestroy) {
         try {
-          await feature.onDestroy({ agentId: this.agentId || '', config: this.config });
+          await feature.onDestroy({
+            agentId: this.agentId || '',
+            config: this.config,
+            getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
+              return this.features.get(featureName) as T | undefined;
+            },
+          });
         } catch (error) {
           console.warn(`[Agent] Feature ${feature.name} cleanup error:`, error);
         }
@@ -774,10 +820,26 @@ class AgentBase {
   }
 
   /**
+   * 按名称获取已挂载的 Feature 实例
+   */
+  getFeature<T extends AgentFeature>(featureName: string): T | undefined {
+    return this.features.get(featureName) as T | undefined;
+  }
+
+  /**
    * 确保 Feature 工具已注册
    */
   private async ensureFeatureTools(): Promise<void> {
     if (this.featureToolsReady) return;
+
+    // 预收集所有 Feature 自带的 skills，在 onInitiate 之前注入 SkillFeature
+    const featureSkills = await this.collectFeatureSkills();
+    if (featureSkills.length > 0) {
+      const skillFeature = this.features.get('skill') as any;
+      if (skillFeature?.addFeatureSkills) {
+        skillFeature.addFeatureSkills(featureSkills);
+      }
+    }
 
     for (const [name, feature] of this.features) {
       const featureLogger = createLogger(`feature.${name}`, {
@@ -840,6 +902,42 @@ class AgentBase {
 
     this.featureToolsReady = true;
     this.pushInspectorSnapshot();
+  }
+
+  /**
+   * 收集所有 Feature 自带的 skills
+   * 约定：Feature 目录下存在 skills/ 目录则自动发现
+   */
+  private async collectFeatureSkills(): Promise<SkillMetadata[]> {
+    const collected: SkillMetadata[] = [];
+
+    for (const [name, feature] of this.features) {
+      if (name === 'skill') continue;
+      if (!feature.source) continue;
+
+      const filePath = feature.source.startsWith('file://')
+        ? fileURLToPath(feature.source) : feature.source;
+      const featureDir = dirname(filePath);
+
+      // 候选1: source 同级/skills（内置 Feature: dist/features/{name}/skills/）
+      const candidate1 = join(featureDir, 'skills');
+      // 候选2: 包根/skills（独立 npm 包: {pkgRoot}/skills/）
+      const pkgInfo = feature.getPackageInfo?.();
+      const candidate2 = pkgInfo ? join(pkgInfo.root, 'skills') : null;
+
+      const skillsDir = existsSync(candidate1)
+        ? candidate1
+        : (candidate2 && existsSync(candidate2) ? candidate2 : null);
+
+      if (!skillsDir) continue;
+
+      const found = await discover({ dir: skillsDir });
+      if (found.length > 0) {
+        collected.push(...found);
+      }
+    }
+
+    return collected;
   }
 
   // ========== 内部方法 ==========

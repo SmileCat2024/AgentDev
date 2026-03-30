@@ -6,6 +6,9 @@
  * TTS Feature 配置选项
  */
 export interface TTSFeatureConfig {
+  /** 工作目录（默认 process.cwd()） */
+  workspaceDir?: string;
+
   /**
    * Python 可执行文件路径
    * 默认：项目 .venv 中的 Python 或系统 PATH 中的 python

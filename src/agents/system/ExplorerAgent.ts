@@ -126,6 +126,10 @@ export class ExplorerAgent extends Agent {
     this.getTools().disable('safe_trash_delete');
     this.getTools().disable('safe_trash_list');
     this.getTools().disable('safe_trash_restore');
+
+    // 注册可创建的子代理类型
+    this.registerAgentType('ExplorerAgent', () => new ExplorerAgent({ llm: this.llm }));
+    this.registerAgentType('BasicAgent', () => import('./BasicAgent.js').then(m => new m.BasicAgent({ llm: this.llm })));
   }
 
   /**

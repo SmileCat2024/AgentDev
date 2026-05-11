@@ -9,7 +9,14 @@
 
 import { fileURLToPath } from 'url';
 import { createTool } from '../../core/tool.js';
-import type { Tool, UserInputAction, UserInputRequest, UserInputResponse } from '../../core/types.js';
+import type {
+  Tool,
+  UserInputAction,
+  UserInputChoiceAnswer,
+  UserInputQuestion,
+  UserInputRequest,
+  UserInputResponse,
+} from '../../core/types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from '../../core/feature.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import { DebugHub } from '../../core/debug-hub.js';
@@ -18,6 +25,30 @@ export interface UserInputFeatureConfig {
   /** 默认超时时间（毫秒），默认无限等待 */
   timeout?: number;
 }
+
+interface ChoiceToolQuestionInput {
+  id: string;
+  question: string;
+  options: Array<{
+    id: string;
+    label: string;
+    description?: string;
+  }>;
+  allowCustom?: boolean;
+  customLabel?: string;
+  customPlaceholder?: string;
+}
+
+const choiceToolRender = {
+  call: {
+    call: '<div class="bash-command">等待用户在选择弹窗中决策</div>',
+    result: '',
+  },
+  result: {
+    call: '',
+    result: '<div class="bash-command">用户已完成选择</div>',
+  },
+};
 
 export class UserInputFeature implements AgentFeature {
   readonly name = 'user-input';
@@ -125,25 +156,170 @@ export class UserInputFeature implements AgentFeature {
     }, timeout);
   }
 
+  async requestUserChoices(
+    prompt: string,
+    questions: UserInputQuestion[],
+    timeout?: number,
+  ): Promise<UserInputChoiceAnswer[]> {
+    const normalizedQuestions = this.normalizeChoiceQuestions(questions);
+    const response = await this.requestUserInputEvent({
+      prompt,
+      mode: 'choices',
+      questions: normalizedQuestions,
+    }, timeout);
+
+    if (response.kind !== 'choices') {
+      throw new Error(`Expected choice input but received '${response.kind}'`);
+    }
+    return response.choices ?? [];
+  }
+
+  private normalizeChoiceQuestions(questions: UserInputQuestion[]): UserInputQuestion[] {
+    if (!Array.isArray(questions) || questions.length === 0) {
+      throw new Error('At least one choice question is required.');
+    }
+
+    return questions.map((question, index) => {
+      const id = String(question.id || `question_${index + 1}`).trim();
+      const text = String(question.question || '').trim();
+      const options = Array.isArray(question.options) ? question.options : [];
+
+      if (!text) {
+        throw new Error(`Question ${index + 1} is missing a question prompt.`);
+      }
+      if (options.length < 1 || options.length > 4) {
+        throw new Error(`Question ${index + 1} must provide 1 to 4 options.`);
+      }
+
+      return {
+        id,
+        question: text,
+        options: options.map((option, optionIndex) => {
+          const optionId = String(option.id || `option_${optionIndex + 1}`).trim();
+          const label = String(option.label || '').trim();
+          if (!label) {
+            throw new Error(`Question ${index + 1}, option ${optionIndex + 1} is missing a label.`);
+          }
+          return {
+            id: optionId,
+            label,
+            description: option.description ? String(option.description) : undefined,
+          };
+        }),
+        allowCustom: Boolean(question.allowCustom),
+        customLabel: question.customLabel ? String(question.customLabel) : undefined,
+        customPlaceholder: question.customPlaceholder ? String(question.customPlaceholder) : undefined,
+      };
+    });
+  }
+
   getTools(): Tool[] {
     return [
       createTool({
-        name: 'get_user_input',
-        description: '请求用户通过调试界面输入文本。当需要用户确认或补充信息时使用。',
+        name: 'ask_user_choice',
+        description: '向用户展示 1 道选择题，让用户点击或用键盘选择 1~4 个选项之一；可允许用户选择“其他”并输入自定义内容。',
         parameters: {
           type: 'object',
           properties: {
             prompt: {
               type: 'string',
-              description: '提示用户输入的问题或说明'
+              description: '选择卡片的总说明，简要说明为什么需要用户决策。'
+            },
+            question: {
+              type: 'string',
+              description: '要问用户的具体问题。'
+            },
+            options: {
+              type: 'array',
+              description: '1~4 个可选项。',
+              minItems: 1,
+              maxItems: 4,
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', description: '稳定选项 ID。' },
+                  label: { type: 'string', description: '选项显示文本。' },
+                  description: { type: 'string', description: '可选的补充说明。' }
+                },
+                required: ['id', 'label']
+              }
+            },
+            allowCustom: {
+              type: 'boolean',
+              description: '是否显示一个额外自定义选项，允许用户输入想说的话。'
+            },
+            customLabel: {
+              type: 'string',
+              description: '自定义选项的显示文本，例如“都不是，我想补充”。'
+            },
+            customPlaceholder: {
+              type: 'string',
+              description: '自定义输入框占位提示。'
             }
           },
-          required: ['prompt']
+          required: ['prompt', 'question', 'options']
         },
-        execute: async ({ prompt }) => {
-          const input = await this.requestUserInput(prompt);
-          return { input };
+        execute: async ({ prompt, question, options, allowCustom, customLabel, customPlaceholder }) => {
+          const choices = await this.requestUserChoices(prompt, [{
+            id: 'question',
+            question,
+            options,
+            allowCustom,
+            customLabel,
+            customPlaceholder,
+          }]);
+          return { choices, choice: choices[0] ?? null };
         },
+        render: choiceToolRender,
+      }),
+      createTool({
+        name: 'ask_user_choices',
+        description: '一次向用户展示多道选择题。每题有 1~4 个选项，可各自允许自定义输入；用户完成一道后会直接进入下一道。',
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: '选择卡片的总说明，简要说明为什么需要用户决策。'
+            },
+            questions: {
+              type: 'array',
+              description: '一组选择题。每道题必须有 1~4 个选项。',
+              minItems: 1,
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', description: '稳定问题 ID。' },
+                  question: { type: 'string', description: '问题文本。' },
+                  options: {
+                    type: 'array',
+                    minItems: 1,
+                    maxItems: 4,
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', description: '稳定选项 ID。' },
+                        label: { type: 'string', description: '选项显示文本。' },
+                        description: { type: 'string', description: '可选的补充说明。' }
+                      },
+                      required: ['id', 'label']
+                    }
+                  },
+                  allowCustom: { type: 'boolean', description: '是否允许用户输入自定义内容。' },
+                  customLabel: { type: 'string', description: '自定义选项显示文本。' },
+                  customPlaceholder: { type: 'string', description: '自定义输入框占位提示。' }
+                },
+                required: ['id', 'question', 'options']
+              }
+            }
+          },
+          required: ['prompt', 'questions']
+        },
+        execute: async ({ prompt, questions }: { prompt: string; questions: ChoiceToolQuestionInput[] }) => {
+          const choices = await this.requestUserChoices(prompt, questions);
+          return { choices };
+        },
+        render: choiceToolRender,
       }),
     ];
   }

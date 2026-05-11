@@ -64,8 +64,10 @@ export function createTool(
  */
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
-  private enabled = new Set<string>();      // 启用的工具名
+  private enabled = new Set<string>();        // 启用的工具名
+  private disabled = new Set<string>();       // 禁用（屏蔽）的工具名
   private pendingDisabled = new Set<string>(); // 工具注册前的预禁用状态
+  private pendingRemoved = new Set<string>();  // 工具注册前的预移除状态
   private sources = new Map<string, string>(); // 工具来源追踪
 
   /**
@@ -73,10 +75,15 @@ export class ToolRegistry {
    */
   register(tool: Tool, source?: string): this {
     this.tools.set(tool.name, tool);
-    if (this.pendingDisabled.has(tool.name)) {
+    if (this.pendingRemoved.has(tool.name)) {
       this.enabled.delete(tool.name);
+      this.disabled.delete(tool.name);
+    } else if (this.pendingDisabled.has(tool.name)) {
+      this.enabled.delete(tool.name);
+      this.disabled.add(tool.name);
     } else {
       this.enabled.add(tool.name);  // 默认启用
+      this.disabled.delete(tool.name);
     }
     if (source) {
       this.sources.set(tool.name, source);
@@ -85,14 +92,17 @@ export class ToolRegistry {
   }
 
   /**
-   * 禁用工具
+   * 禁用工具（LLM 可见，但执行时会被拦截）
    */
   disable(name: string): boolean {
     this.pendingDisabled.add(name);
+    this.pendingRemoved.delete(name);
     if (!this.tools.has(name)) {
       return true;
     }
-    return this.enabled.delete(name);
+    this.enabled.delete(name);
+    this.disabled.add(name);
+    return true;
   }
 
   /**
@@ -100,6 +110,8 @@ export class ToolRegistry {
    */
   enable(name: string): boolean {
     this.pendingDisabled.delete(name);
+    this.pendingRemoved.delete(name);
+    this.disabled.delete(name);
     if (this.tools.has(name)) {
       this.enabled.add(name);
       return true;
@@ -108,10 +120,45 @@ export class ToolRegistry {
   }
 
   /**
+   * 移除工具（LLM 不可见，承接旧 disable 行为）
+   */
+  remove(name: string): boolean {
+    this.pendingRemoved.add(name);
+    this.pendingDisabled.delete(name);
+    this.disabled.delete(name);
+    if (!this.tools.has(name)) {
+      return true;
+    }
+    this.enabled.delete(name);
+    return true;
+  }
+
+  /**
+   * 取消移除工具，恢复为启用状态
+   */
+  unremove(name: string): boolean {
+    return this.enable(name);
+  }
+
+  /**
    * 检查工具是否启用
    */
   isEnabled(name: string): boolean {
     return this.enabled.has(name);
+  }
+
+  /**
+   * 检查工具是否禁用（屏蔽）
+   */
+  isDisabled(name: string): boolean {
+    return this.disabled.has(name);
+  }
+
+  /**
+   * 检查工具是否移除
+   */
+  isRemoved(name: string): boolean {
+    return this.tools.has(name) && !this.enabled.has(name) && !this.disabled.has(name);
   }
 
   /**
@@ -124,9 +171,10 @@ export class ToolRegistry {
   /**
    * 获取工具条目（调试快照用）
    */
-  getEntries(): Array<{ tool: Tool; enabled: boolean; source?: string }> {
+  getEntries(): Array<{ tool: Tool; state: 'enabled' | 'disabled' | 'removed'; enabled: boolean; source?: string }> {
     return Array.from(this.tools.entries()).map(([name, tool]) => ({
       tool,
+      state: this.enabled.has(name) ? 'enabled' : this.disabled.has(name) ? 'disabled' : 'removed',
       enabled: this.enabled.has(name),
       source: this.sources.get(name),
     }));
@@ -140,10 +188,10 @@ export class ToolRegistry {
   }
 
   /**
-   * 获取所有工具（只返回启用的）
+   * 获取所有 LLM 可见工具（启用 + 禁用）
    */
   getAll(): Tool[] {
-    return Array.from(this.enabled)
+    return Array.from(new Set([...this.enabled, ...this.disabled]))
       .map(name => this.tools.get(name))
       .filter((t): t is Tool => t !== undefined);
   }

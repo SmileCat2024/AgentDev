@@ -12,6 +12,7 @@ export interface AudioFeedbackRuntimeState {
   volume: number;
   audioPath: string;
   playCount: number;
+  activeMode: 'play-feedback' | 'mute-feedback' | null;
 }
 
 export interface AudioFeedbackSnapshot {
@@ -19,4 +20,5 @@ export interface AudioFeedbackSnapshot {
   volume: number;
   audioPath: string;
   playCount: number;
+  activeMode: 'play-feedback' | 'mute-feedback' | null;
 }

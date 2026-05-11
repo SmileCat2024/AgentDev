@@ -4,6 +4,7 @@ import type {
   AgentFeature,
   FeatureContext,
   FeatureInitContext,
+  FeatureManifestDefinition,
   FeatureStateSnapshot,
 } from '../../core/feature.js';
 import type { CallFinishContext } from '../../core/lifecycle.js';
@@ -35,6 +36,7 @@ export class AudioFeedbackFeature implements AgentFeature {
     volume: 0.5,
     audioPath: '',
     playCount: 0,
+    activeMode: null,
   };
   private logger?: FeatureInitContext['logger'];
 
@@ -47,6 +49,88 @@ export class AudioFeedbackFeature implements AgentFeature {
     this.runtime.enabled = this.config.enabled;
     this.runtime.volume = this.config.volume;
     this.runtime.audioPath = this.config.audioPath;
+  }
+
+  getFeatureManifest(): FeatureManifestDefinition {
+    return {
+      schemaVersion: 1 as const,
+      settings: {
+        properties: {
+          enabled: {
+            type: 'boolean',
+            title: '默认启用',
+            description: 'Agent 启动后是否默认播放提醒音频。',
+            default: this.config.enabled,
+          },
+          volume: {
+            type: 'number',
+            title: '音量',
+            description: '播放音量，范围 0 到 1。',
+            default: this.config.volume,
+            min: 0,
+            max: 1,
+            step: 0.05,
+          },
+          audioPath: {
+            type: 'file',
+            title: '音频文件路径',
+            description: '可选自定义提醒音频文件路径；留空时使用 Feature 内置音频。',
+            default: this.config.audioPath,
+            accept: 'audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac',
+            placeholder: '选择自定义提醒音频文件',
+          },
+        },
+      },
+    };
+  }
+
+  getFlowModes() {
+    return [
+      {
+        id: 'play-feedback',
+        title: '播放提醒音',
+        description: '当前阶段在每次 call 完成后播放提醒音频。',
+      },
+      {
+        id: 'mute-feedback',
+        title: '静音',
+        description: '当前阶段关闭提醒音频播放。',
+      },
+    ];
+  }
+
+  getFlowVariables() {
+    return [
+      {
+        key: 'audioFeedbackEnabled',
+        type: 'boolean' as const,
+        title: '音频提醒已启用',
+        description: '当前 audio feedback feature 是否会在 call 结束时播放提醒音。',
+        resolver: () => this.runtime.enabled,
+      },
+      {
+        key: 'audioFeedbackPlayCount',
+        type: 'number' as const,
+        title: '提醒音播放次数',
+        description: '当前会话中已经播放提醒音的次数。',
+        resolver: () => this.runtime.playCount,
+      },
+    ];
+  }
+
+  applyFlowMode(modeId: string): void {
+    if (modeId === 'mute-feedback') {
+      this.runtime.activeMode = 'mute-feedback';
+      this.setEnabled(false);
+      return;
+    }
+    this.runtime.activeMode = 'play-feedback';
+    this.setEnabled(true);
+  }
+
+  resetFlowModes(): void {
+    this.runtime.activeMode = null;
+    this.setEnabled(this.config.enabled);
   }
 
   /**
@@ -93,6 +177,7 @@ export class AudioFeedbackFeature implements AgentFeature {
       volume: this.runtime.volume,
       audioPath: this.runtime.audioPath,
       playCount: this.runtime.playCount,
+      activeMode: this.runtime.activeMode,
     };
     return snapshot;
   }
@@ -104,6 +189,9 @@ export class AudioFeedbackFeature implements AgentFeature {
     this.runtime.volume = typeof state.volume === 'number' ? state.volume : 0.5;
     this.runtime.audioPath = typeof state.audioPath === 'string' ? state.audioPath : this.config.audioPath;
     this.runtime.playCount = typeof state.playCount === 'number' ? state.playCount : 0;
+    this.runtime.activeMode = state.activeMode === 'mute-feedback' || state.activeMode === 'play-feedback'
+      ? state.activeMode
+      : null;
   }
 
   /**

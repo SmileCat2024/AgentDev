@@ -21,7 +21,12 @@ async function main(): Promise<void> {
 
   assert(registry.has('future_tool'), 'tool should be registered');
   assert(!registry.isEnabled('future_tool'), 'pre-disabled tool should stay disabled after registration');
-  assert(registry.getAll().length === 0, 'disabled tool should not appear in enabled tool list');
+  assert(registry.isDisabled('future_tool'), 'pre-disabled tool should be in disabled state after registration');
+  assert(registry.getAll().some(tool => tool.name === 'future_tool'), 'disabled tool should still appear in LLM-visible tool list');
+
+  assert(registry.remove('future_tool') === true, 'remove should work after registration');
+  assert(registry.isRemoved('future_tool'), 'tool should become removed after remove');
+  assert(!registry.getAll().some(tool => tool.name === 'future_tool'), 'removed tool should not appear in LLM-visible tool list');
 
   assert(registry.enable('future_tool') === true, 'enable should work after registration');
   assert(registry.isEnabled('future_tool'), 'tool should become enabled after enable');

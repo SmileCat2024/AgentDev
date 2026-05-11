@@ -332,7 +332,7 @@ export interface HookLifecycleSnapshot {
 export interface FeatureInspectorSnapshot {
   name: string;
   enabled: boolean;
-  status: 'enabled' | 'disabled' | 'partial';
+  status: 'enabled' | 'disabled' | 'removed' | 'partial';
   hookCount: number;
   toolCount: number;
   enabledToolCount: number;
@@ -341,7 +341,8 @@ export interface FeatureInspectorSnapshot {
   tools: Array<{
     name: string;
     description: string;
-    enabled: boolean;
+    state: 'enabled' | 'disabled' | 'removed';
+    enabled?: boolean;
     renderCall?: string;
     renderResult?: string;
   }>;
@@ -508,6 +509,8 @@ export interface RequestInputMsg {
   placeholder?: string;
   initialValue?: string;
   actions?: UserInputAction[];
+  mode?: UserInputRequestMode;
+  questions?: UserInputQuestion[];
 }
 
 /**
@@ -529,17 +532,43 @@ export interface UserInputAction {
   payload?: Record<string, unknown>;
 }
 
+export type UserInputRequestMode = 'text' | 'choices';
+
+export interface UserInputOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  question: string;
+  options: UserInputOption[];
+  allowCustom?: boolean;
+  customLabel?: string;
+  customPlaceholder?: string;
+}
+
 export interface UserInputRequest {
   prompt: string;
   placeholder?: string;
   initialValue?: string;
   actions?: UserInputAction[];
+  mode?: UserInputRequestMode;
+  questions?: UserInputQuestion[];
+}
+
+export interface UserInputChoiceAnswer {
+  questionId: string;
+  optionId?: string;
+  customText?: string;
 }
 
 export interface UserInputResponse {
-  kind: 'text' | 'action';
+  kind: 'text' | 'action' | 'choices';
   text?: string;
   actionId?: string;
+  choices?: UserInputChoiceAnswer[];
   payload?: Record<string, unknown>;
 }
 

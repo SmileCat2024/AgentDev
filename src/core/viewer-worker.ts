@@ -932,6 +932,8 @@ class ViewerWorker {
       placeholder: data.placeholder,
       initialValue: data.initialValue,
       actions: data.actions,
+      mode: data.mode,
+      questions: data.questions,
       timestamp: data.timestamp,
     }));
 
@@ -1563,6 +1565,8 @@ class ViewerWorker {
       placeholder: msg.placeholder,
       initialValue: (msg as any).initialValue,
       actions: msg.actions,
+      mode: msg.mode,
+      questions: msg.questions,
       timestamp: Date.now(),
     });
 

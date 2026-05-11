@@ -33,7 +33,14 @@ async function main(): Promise<void> {
   assert(snapshot.volume === 0.5, 'snapshot volume should be 0.5');
   assert(typeof snapshot.audioPath === 'string', 'snapshot should have audioPath');
   assert(snapshot.playCount === 0, 'playCount should start at 0');
+  assert(snapshot.activeMode === null, 'activeMode should start as null');
   console.log('[PASS] State snapshot');
+
+  const flowModes = feature.getFlowModes?.() || [];
+  assert(flowModes.length === 2, 'feature should expose two flow modes');
+  assert(flowModes.some((mode) => mode.id === 'play-feedback'), 'feature should expose play-feedback mode');
+  assert(flowModes.some((mode) => mode.id === 'mute-feedback'), 'feature should expose mute-feedback mode');
+  console.log('[PASS] Flow mode declarations');
 
   // 3. 测试 API 方法
   feature.setEnabled(false);
@@ -43,6 +50,18 @@ async function main(): Promise<void> {
   feature.setEnabled(true);
   assert(feature.isEnabled() === true, 'feature should be enabled');
   console.log('[PASS] setEnabled(true)');
+
+  feature.applyFlowMode?.('mute-feedback');
+  assert(feature.isEnabled() === false, 'mute-feedback mode should disable playback');
+  console.log('[PASS] applyFlowMode(mute-feedback)');
+
+  feature.applyFlowMode?.('play-feedback');
+  assert(feature.isEnabled() === true, 'play-feedback mode should enable playback');
+  console.log('[PASS] applyFlowMode(play-feedback)');
+
+  feature.resetFlowModes?.();
+  assert(feature.isEnabled() === true, 'resetFlowModes should restore constructor baseline');
+  console.log('[PASS] resetFlowModes()');
 
   feature.setVolume(0.8);
   const newSnapshot = feature.captureState() as AudioFeedbackSnapshot;
@@ -70,6 +89,7 @@ async function main(): Promise<void> {
     volume: 0.3,
     audioPath: '/test/path.mp3',
     playCount: 42,
+    activeMode: 'mute-feedback',
   };
 
   feature.restoreState(testSnapshot);
@@ -78,6 +98,7 @@ async function main(): Promise<void> {
   assert(restoredSnapshot.enabled === false, 'should restore enabled state');
   assert(restoredSnapshot.volume === 0.3, 'should restore volume');
   assert(restoredSnapshot.playCount === 42, 'should restore playCount');
+  assert(restoredSnapshot.activeMode === 'mute-feedback', 'should restore activeMode');
   console.log('[PASS] State restoration');
 
   console.log('\n[DONE] Audio Feedback Feature smoke test passed');

@@ -81,6 +81,36 @@ export interface TemplateInfo {
   templateName: string;
 }
 
+/**
+ * Feature Manifest 配置项
+ *
+ * 用于声明 Feature 在 Agent Project 级别可配置的静态参数。
+ * Claw 等消费端可根据该契约自动渲染表单。
+ */
+export interface FeatureManifestSettingProperty {
+  type: 'string' | 'number' | 'boolean' | 'select' | 'file';
+  title: string;
+  description?: string;
+  default?: unknown;
+  options?: Array<{ label: string; value: string | number | boolean }>;
+  placeholder?: string;
+  /** number 类型下的最小值 */
+  min?: number;
+  /** number 类型下的最大值 */
+  max?: number;
+  /** number 类型下的步进值 */
+  step?: number;
+  /** file 类型下的可接受文件类型，如 '.mp3,.wav' 或 'audio/*' */
+  accept?: string | string[];
+}
+
+export interface FeatureManifestDefinition {
+  schemaVersion: 1;
+  settings?: {
+    properties: Record<string, FeatureManifestSettingProperty>;
+  };
+}
+
 // ========== 正向钩子（纯通知，void 返回）==========
 
 /**
@@ -183,6 +213,14 @@ export interface AgentFeature {
    * ```
    */
   getRenderTemplates?(): Record<string, InlineRenderTemplate>;
+
+  /**
+   * 声明 Feature 的项目级静态配置契约（Manifest）
+   *
+   * 该契约回答“这个 Feature 平时怎么工作”，
+   * 与 Flow 节点中的 Mode（什么时候、以什么状态工作）是正交的。
+   */
+  getFeatureManifest?(): FeatureManifestDefinition | null;
 
   /**
    * 声明上下文注入器

@@ -804,6 +804,36 @@ class AgentBase {
   }
 
   /**
+   * 移除 Feature 的所有工具（从 LLM 工具列表物理移除）
+   *
+   * @example
+   * agent.remove('mcp')  // 移除 MCP 工具
+   */
+  remove(featureName: string): this {
+    const feature = this.features.get(featureName);
+    if (!feature) {
+      console.warn(`[Agent] Feature '${featureName}' 不存在`);
+      return this;
+    }
+
+    const tools = feature.getTools?.() ?? [];
+    let count = 0;
+    for (const tool of tools) {
+      if (this.tools.remove(tool.name)) {
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      console.log(`[Agent] 已移除 Feature '${featureName}' 的 ${count} 个工具`);
+      this.syncRegisteredToolsToDebug();
+      this.pushInspectorSnapshot();
+    }
+
+    return this;
+  }
+
+  /**
    * 检查 Feature 是否启用
    *
    * @example
@@ -1149,6 +1179,7 @@ class AgentBase {
     const toolEntriesByFeature = new Map<string, Array<{
       name: string;
       description: string;
+      state: 'enabled' | 'disabled' | 'removed';
       enabled: boolean;
       renderCall?: string;
       renderResult?: string;
@@ -1190,7 +1221,8 @@ class AgentBase {
       toolEntriesByFeature.get(entry.source)!.push({
         name: entry.tool.name,
         description: summarizeToolDescription(entry.tool.description),
-        enabled: entry.enabled,
+        state: entry.state,
+        enabled: entry.state === 'enabled',
         renderCall,
         renderResult,
       });
@@ -1198,10 +1230,14 @@ class AgentBase {
 
     const features = Array.from(this.features.values()).map(feature => {
       const tools = toolEntriesByFeature.get(feature.name) || [];
-      const enabledToolCount = tools.filter(tool => tool.enabled).length;
-      const status: 'enabled' | 'disabled' | 'partial' = tools.length === 0
+      const enabledToolCount = tools.filter(tool => tool.state === 'enabled').length;
+      const disabledToolCount = tools.filter(tool => tool.state === 'disabled').length;
+      const removedToolCount = tools.filter(tool => tool.state === 'removed').length;
+      const status: 'enabled' | 'disabled' | 'removed' | 'partial' = tools.length === 0
         ? 'enabled'
-        : enabledToolCount === 0
+        : removedToolCount === tools.length
+          ? 'removed'
+          : disabledToolCount === tools.length
           ? 'disabled'
           : enabledToolCount === tools.length
             ? 'enabled'

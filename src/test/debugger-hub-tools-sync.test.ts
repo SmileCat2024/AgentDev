@@ -86,9 +86,12 @@ async function main(): Promise<void> {
     await waitFor(() => {
       const session = (worker as any).agentSessions.get(agentId);
       return !!session
-        && !session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool')
-        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number; status?: string }) =>
-          feature.name === 'toggle' && feature.enabledToolCount === 0 && feature.status === 'disabled'
+        && session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool')
+        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number; status?: string; tools?: Array<{ name: string; state?: string }> }) =>
+          feature.name === 'toggle'
+          && feature.enabledToolCount === 0
+          && feature.status === 'disabled'
+          && feature.tools?.some(tool => tool.name === 'toggle_tool' && tool.state === 'disabled')
         );
     });
 
@@ -111,9 +114,12 @@ async function main(): Promise<void> {
     await waitFor(() => {
       const session = (worker as any).agentSessions.get(preDisabledAgentId);
       return !!session
-        && !session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool')
-        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number; status?: string }) =>
-          feature.name === 'toggle' && feature.enabledToolCount === 0 && feature.status === 'disabled'
+        && session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool')
+        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number; status?: string; tools?: Array<{ name: string; state?: string }> }) =>
+          feature.name === 'toggle'
+          && feature.enabledToolCount === 0
+          && feature.status === 'disabled'
+          && feature.tools?.some(tool => tool.name === 'toggle_tool' && tool.state === 'disabled')
         );
     });
 
@@ -139,7 +145,14 @@ async function main(): Promise<void> {
 
     await waitFor(() => {
       const session = (worker as any).agentSessions.get(initiateAgentId);
-      return !!session && !session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool');
+      return !!session
+        && session.tools.some((tool: { name: string }) => tool.name === 'toggle_tool')
+        && session.hookInspector?.features?.some((feature: { name: string; enabledToolCount: number; status?: string; tools?: Array<{ name: string; state?: string }> }) =>
+          feature.name === 'toggle'
+          && feature.enabledToolCount === 0
+          && feature.status === 'disabled'
+          && feature.tools?.some(tool => tool.name === 'toggle_tool' && tool.state === 'disabled')
+        );
     });
 
     console.log('[PASS] debugger hub tool registry stays in sync after onInitiate disables tools');

@@ -25,13 +25,12 @@ import type {
 } from '../../core/feature.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
-import type { ToolCall } from '../../core/types.js';
 import { invokeSkillTool } from './tools.js';
 import { discover } from '../../skills/loader.js';
 import type { SkillMetadata, SkillsOptions } from '../../skills/types.js';
 import { join as pathJoin, resolve, isAbsolute } from 'path';
 import { cwd } from 'process';
-import { DataSourceRegistry, createListRenderer } from '../../template/data-source.js';
+import { DataSourceRegistry } from '../../template/data-source.js';
 import type { PlaceholderContext } from '../../template/types.js';
 import { PlaceholderResolver } from '../../template/resolver.js';
 
@@ -105,6 +104,43 @@ export class SkillFeature implements AgentFeature {
    */
   getTools(): Tool[] {
     return [invokeSkillTool];
+  }
+
+  /**
+   * 向 Flow 暴露 Skills 相关变量
+   */
+  getFlowVariables() {
+    return [
+      {
+        key: 'skillSummaryItems',
+        type: 'string',
+        title: '技能列表数组',
+        description: '可用技能的“名称：介绍”数组，适合做变量遍历或直接插入。',
+        resolver: () => this.skills.map(skill => `${skill.name}：${skill.description}`),
+      },
+      {
+        key: 'skillSummaryText',
+        type: 'string',
+        title: '技能列表文本',
+        description: '可用技能的多行文本版本，每行一条“- 名称：介绍”。',
+        resolver: () => this.skills.map(skill => `- ${skill.name}：${skill.description}`).join('\n'),
+      },
+    ];
+  }
+
+  /**
+   * 向 Flow 暴露可直接复用的节点 Prompt 模板
+   */
+  getFlowNodeTemplates() {
+    return [
+      {
+        id: 'skill-availability-prompt',
+        name: '技能列表提示',
+        description: '向 Agent 注入当前可用技能列表，并提示通过 invoke_skill 激活具体技能。',
+        prompt: '你有以下技能可用，可使用invoke_skill工具激活：\n{{skillSummaryText}}',
+        tools: { enable: ['invoke_skill'] },
+      },
+    ];
   }
 
   /**

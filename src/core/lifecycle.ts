@@ -169,6 +169,8 @@ export interface StepStartContext {
   context: Context;
   /** 原始用户输入 */
   input: string;
+  /** Agent 实例（用于访问当前会话中的 Feature、工具和输入状态） */
+  agent?: any;
 }
 
 /**

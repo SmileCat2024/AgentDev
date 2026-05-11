@@ -79,6 +79,48 @@ export class ToolExecutor {
         step,
       });
 
+      if (tool && this.tools.isDisabled(call.name)) {
+        const result: ToolResult = {
+          success: false,
+          data: null,
+          error: 'This tool is currently disabled and cannot be used.',
+          duration: Date.now() - startTime,
+          call,
+          tool,
+          step,
+          input,
+          context,
+          getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
+            return this.parentAgent.getFeature(featureName) as T | undefined;
+          },
+        };
+
+        logger.warn('Tool execution blocked', {
+          toolName: call.name,
+          reason: result.error,
+        });
+
+        const errorResult: ToolExecResult = {
+          success: false,
+          result: { error: result.error },
+        };
+        context.addToolMessage(call, errorResult, callIndex);
+
+        await this.executeHookFn(
+          'onToolFinished',
+          () => this.onToolFinishedFn(result),
+          { input, step }
+        );
+
+        const decisionCtx: ToolFinishedDecisionContext = {
+          ...result,
+          toolName: call.name,
+        };
+        await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
+
+        return;
+      }
+
       // ========== ToolUse 正向钩子 ==========
       let blocked = false;
       let blockReason: string | undefined;
@@ -112,7 +154,9 @@ export class ToolExecutor {
       const result: ToolResult = {
         success: false,
         data: null,
-        error: blockReason || (tool ? undefined : `Tool "${call.name}" not found`),
+        error: this.tools.isDisabled(call.name)
+          ? 'This tool is currently disabled and cannot be used.'
+          : blockReason || (tool ? undefined : `Tool "${call.name}" not found`),
         duration: Date.now() - startTime,
         call,
         tool: tool!,
@@ -124,7 +168,7 @@ export class ToolExecutor {
         },
       };
 
-      if (blocked || !tool) {
+      if (blocked || !tool || this.tools.isDisabled(call.name)) {
         logger.warn('Tool execution blocked', {
           toolName: call.name,
           reason: result.error,

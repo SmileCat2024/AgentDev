@@ -31,6 +31,22 @@ function formatError(data: any): string {
 }
 
 /**
+ * 使用 hljs 将 JSON 渲染为带行号的语法高亮
+ */
+function renderJsonHighlight(data: any): string {
+  const displayData = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+  const lines = displayData.split('\n');
+  return '<div class="code-read-container">' + lines.map((line: string, i: number) => {
+    let highlighted: string;
+    try { highlighted = (hljs as any).highlight(line, { language: 'json' }).value; }
+    catch (e) { highlighted = escapeHtml(line); }
+    return '<div class="code-read-line"><span class="code-read-line-num">' + (i + 1) + '</span><span class="code-read-content">' + highlighted + '</span></div>';
+  }).join('') + '</div>';
+}
+
+declare const hljs: any;
+
+/**
  * MCP 工具调用渲染模板
  */
 export default {
@@ -40,7 +56,7 @@ export default {
   result: (data: any, success?: boolean) => {
     if (!success) return formatError(data);
     if (typeof data === 'object') {
-      return `<pre class="bash-output">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+      return renderJsonHighlight(data);
     }
     return `<pre class="bash-output">${escapeHtml(String(data))}</pre>`;
   }

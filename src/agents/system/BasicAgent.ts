@@ -149,8 +149,8 @@ export class BasicAgent extends Agent {
     this.use(new SubAgentFeature());
 
     // 预禁用不需要的子代理工具，确保首次快照与运行时一致
-    this.getTools().disable('list_agents');
-    this.getTools().disable('close_agent');
+    this.getTools().remove('list_agents');
+    this.getTools().remove('close_agent');
 
     // 注册可创建的子代理类型
     this.registerAgentType('BasicAgent', () => new BasicAgent({ llm: this.llm }));

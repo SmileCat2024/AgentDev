@@ -881,6 +881,13 @@ export function generateViewerHtml(port: number): string {
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
     }
 
+    .feature-badge.status-removed {
+      color: #fff1f2;
+      background: rgba(190, 18, 60, 0.72);
+      border-color: rgba(225, 29, 72, 0.75);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
+
     body[data-theme="light"] .feature-badge.status-enabled {
       color: #166534;
       background: rgba(220, 252, 231, 1);
@@ -894,6 +901,11 @@ export function generateViewerHtml(port: number): string {
     body[data-theme="light"] .feature-badge.status-disabled {
       color: #991b1b;
       background: rgba(254, 226, 226, 1);
+    }
+
+    body[data-theme="light"] .feature-badge.status-removed {
+      color: #881337;
+      background: rgba(255, 228, 230, 1);
     }
 
     .feature-card-detail {
@@ -2140,6 +2152,30 @@ export function generateViewerHtml(port: number): string {
       display: flex;
     }
 
+    #user-input-container.choice-input-active {
+      top: 56px;
+      bottom: 0;
+      padding: 24px;
+      align-items: center;
+      background: rgba(5, 7, 12, 0.64);
+      backdrop-filter: blur(5px);
+      pointer-events: auto;
+    }
+
+    body[data-theme="light"] #user-input-container.choice-input-active {
+      background: rgba(18, 20, 26, 0.32);
+    }
+
+    #user-input-container.choice-input-active.choice-collapsed {
+      top: auto;
+      bottom: 22px;
+      padding: 0 24px;
+      align-items: flex-end;
+      background: transparent;
+      backdrop-filter: none;
+      pointer-events: none;
+    }
+
     .user-input-card {
       pointer-events: auto;
       background: var(--input-card-bg);
@@ -2226,6 +2262,215 @@ export function generateViewerHtml(port: number): string {
     .user-input-action.primary {
       color: var(--text-primary);
       border-color: var(--text-primary);
+    }
+
+    .user-choice-card {
+      gap: 12px;
+      padding: 18px 20px;
+      border-radius: 20px;
+      width: min(100%, 520px);
+      max-height: min(100%, 720px);
+      overflow: auto;
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.38);
+    }
+
+    .user-choice-card:focus {
+      outline: none;
+      border-color: var(--input-card-border);
+    }
+
+    .user-choice-topline {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .user-choice-title {
+      flex: 1;
+      min-width: 0;
+      color: var(--text-primary);
+      font-size: 18px;
+      line-height: 1.45;
+      font-weight: 700;
+    }
+
+    .user-choice-progress {
+      margin-left: auto;
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: nowrap;
+      padding-top: 1px;
+    }
+
+    .user-choice-question {
+      color: var(--text-secondary);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .user-choice-close {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-primary);
+      cursor: pointer;
+      flex-shrink: 0;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .user-choice-close:hover {
+      background: var(--hover-bg);
+    }
+
+    .user-choice-options {
+      display: grid;
+      gap: 8px;
+    }
+
+    .user-choice-option {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 10px;
+      align-items: flex-start;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-primary);
+      border-radius: 12px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-family: inherit;
+      text-align: left;
+      transition: border-color 0.16s ease, background 0.16s ease;
+    }
+
+    .user-choice-option:hover,
+    .user-choice-option.active {
+      border-color: var(--text-secondary);
+      background: var(--hover-bg);
+    }
+
+    .user-choice-key {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      line-height: 1;
+      margin-top: 1px;
+    }
+
+    .user-choice-option.active .user-choice-key {
+      color: var(--text-primary);
+      border-color: var(--text-primary);
+    }
+
+    .user-choice-label {
+      font-size: 14px;
+      line-height: 1.35;
+      color: var(--text-primary);
+      overflow-wrap: anywhere;
+    }
+
+    .user-choice-description {
+      margin-top: 3px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--text-muted);
+      overflow-wrap: anywhere;
+    }
+
+    .user-choice-custom {
+      display: none;
+      margin-top: -2px;
+    }
+
+    .user-choice-custom.active {
+      display: block;
+    }
+
+    .user-choice-custom textarea {
+      width: 100%;
+      min-height: 42px;
+      max-height: 140px;
+      resize: none;
+      box-sizing: border-box;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-primary);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 14px;
+      line-height: 1.45;
+      outline: none;
+    }
+
+    .user-choice-custom textarea:focus {
+      border-color: var(--text-secondary);
+    }
+
+    .user-choice-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .user-choice-submit {
+      border: 1px solid var(--text-primary);
+      background: var(--text-primary);
+      color: var(--bg-primary);
+      border-radius: 999px;
+      padding: 7px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .user-choice-mini {
+      pointer-events: auto;
+      width: min(100% - 24px, 420px);
+      border: 1px solid var(--input-card-border);
+      background: var(--input-card-bg);
+      color: var(--text-primary);
+      border-radius: 999px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 10px 32px var(--shadow-strong);
+      cursor: pointer;
+      font-family: inherit;
+      text-align: left;
+    }
+
+    .user-choice-mini-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .user-choice-mini-meta {
+      color: var(--text-muted);
+      font-size: 12px;
+      white-space: nowrap;
     }
 
   </style>
@@ -2401,6 +2646,7 @@ export function generateViewerHtml(port: number): string {
     let allAgents = [];
     let currentMessages = [];
     let currentInputRequests = [];
+    let choiceInputState = {};
     let toolRenderConfigs = {};
     let TOOL_NAMES = {};
     let contextMenuAgentId = null;
@@ -2463,6 +2709,7 @@ export function generateViewerHtml(port: number): string {
         panel_enabled: '已启用',
         panel_partial: '部分启用',
         panel_disabled: '已关闭',
+        panel_removed: '已移除',
         panel_total: '总数',
         panel_all_features: '全部功能特性',
         panel_registered: '已注册',
@@ -2506,6 +2753,7 @@ export function generateViewerHtml(port: number): string {
         feature_enabled: 'enabled',
         feature_partial: 'partial',
         feature_disabled: 'disabled',
+        feature_removed: 'removed',
         feature_hooks: 'hooks',
         feature_tools: 'tools',
         feature_messages: '条消息',
@@ -2513,6 +2761,7 @@ export function generateViewerHtml(port: number): string {
         feature_active_tools: '启用工具',
         feature_tool_enabled: 'enabled',
         feature_tool_disabled: 'disabled',
+        feature_tool_removed: 'removed',
         feature_tool_render: 'render',
         feature_open_details: '查看详情',
         feature_status_label: '状态',
@@ -2622,6 +2871,7 @@ export function generateViewerHtml(port: number): string {
         panel_enabled: 'enabled',
         panel_partial: 'partial',
         panel_disabled: 'disabled',
+        panel_removed: 'removed',
         panel_total: 'total',
         panel_all_features: 'All Features',
         panel_registered: 'registered',
@@ -2665,6 +2915,7 @@ export function generateViewerHtml(port: number): string {
         feature_enabled: 'enabled',
         feature_partial: 'partial',
         feature_disabled: 'disabled',
+        feature_removed: 'removed',
         feature_hooks: 'hooks',
         feature_tools: 'tools',
         feature_messages: 'messages',
@@ -2672,6 +2923,7 @@ export function generateViewerHtml(port: number): string {
         feature_active_tools: 'Active Tools',
         feature_tool_enabled: 'enabled',
         feature_tool_disabled: 'disabled',
+        feature_tool_removed: 'removed',
         feature_tool_render: 'render',
         feature_open_details: 'Open details',
         feature_status_label: 'Status',
@@ -2761,6 +3013,7 @@ export function generateViewerHtml(port: number): string {
     }
 
     function getFeatureStatusLabel(status) {
+      if (status === 'removed') return t('feature_removed');
       if (status === 'disabled') return t('feature_disabled');
       if (status === 'partial') return t('feature_partial');
       return t('feature_enabled');
@@ -3635,7 +3888,7 @@ export function generateViewerHtml(port: number): string {
         const status = getFeatureStatus(feature);
         acc[status] = (acc[status] || 0) + 1;
         return acc;
-      }, { enabled: 0, partial: 0, disabled: 0 });
+      }, { enabled: 0, partial: 0, disabled: 0, removed: 0 });
       const selectedDoc = lifecycleDocs[selectedOverviewLifecycle] || lifecycleDocs.StepFinish;
       const flowChips = currentHookInspector.lifecycleOrder
         .map(name => '<button class="hooks-chip' + (name === selectedOverviewLifecycle ? ' active' : '') + '" type="button" onclick="window.selectOverviewLifecycle(&quot;' + escapeHtml(name) + '&quot;)"><strong>' + escapeHtml(name) + '</strong></button>')
@@ -3657,7 +3910,7 @@ export function generateViewerHtml(port: number): string {
         '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_inspector')) + '</div><div class="hooks-section-meta">' + escapeHtml(connected) + '</div></div>',
         '<div class="feature-grid">',
         '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_connection')) + '</div><div class="feature-card-detail"><span>' + escapeHtml(connected) + '</span><span>' + String(currentMessages.length) + ' ' + escapeHtml(t('feature_messages')) + '</span></div></div>',
-        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_features_label')) + '</div><div class="feature-card-detail"><span>' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_total')) + '</span><span>' + String(featureStatusCounts.enabled) + ' ' + escapeHtml(t('panel_enabled')) + '</span><span>' + String(featureStatusCounts.partial) + ' ' + escapeHtml(t('panel_partial')) + '</span><span>' + String(featureStatusCounts.disabled) + ' ' + escapeHtml(t('panel_disabled')) + '</span></div></div>',
+        '<div class="feature-card"><div class="feature-card-name">' + escapeHtml(t('panel_features_label')) + '</div><div class="feature-card-detail"><span>' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_total')) + '</span><span>' + String(featureStatusCounts.enabled) + ' ' + escapeHtml(t('panel_enabled')) + '</span><span>' + String(featureStatusCounts.partial) + ' ' + escapeHtml(t('panel_partial')) + '</span><span>' + String(featureStatusCounts.disabled) + ' ' + escapeHtml(t('panel_disabled')) + '</span><span>' + String(featureStatusCounts.removed) + ' ' + escapeHtml(t('panel_removed')) + '</span></div></div>',
         '</div>',
         '</section>',
         '<section class="hooks-section">',
@@ -3778,7 +4031,7 @@ export function generateViewerHtml(port: number): string {
               '<div class="feature-tool-card">',
               '<div class="feature-tool-top">',
               '<div class="feature-tool-name">' + escapeHtml(tool.name) + '</div>',
-              '<div class="' + getStatusBadgeClass(tool.enabled ? 'enabled' : 'disabled') + '">' + escapeHtml(tool.enabled ? t('feature_tool_enabled') : t('feature_tool_disabled')) + '</div>',
+              '<div class="' + getStatusBadgeClass(tool.state || (tool.enabled ? 'enabled' : 'disabled')) + '">' + escapeHtml(tool.state === 'removed' ? t('feature_tool_removed') : tool.state === 'disabled' || tool.enabled === false ? t('feature_tool_disabled') : t('feature_tool_enabled')) + '</div>',
               '</div>',
               '<div class="feature-tool-desc">' + escapeHtml(tool.description || '') + '</div>',
               '<div class="feature-tool-meta">',
@@ -4784,11 +5037,26 @@ export function generateViewerHtml(port: number): string {
       const container = document.getElementById('user-input-container');
       if (!container) return;
       currentInputRequests = requests;
+      const hasChoiceRequest = Array.isArray(requests) && requests.some(isChoiceInputRequest);
 
       // 清空现有内容
       container.innerHTML = '';
+      container.classList.toggle('choice-input-active', hasChoiceRequest);
+      container.classList.remove('choice-collapsed');
+      container.onclick = hasChoiceRequest
+        ? function(event) {
+            if (event.target === container) {
+              collapsePrimaryChoiceRequest();
+            }
+          }
+        : null;
 
       for (const req of requests) {
+        if (isChoiceInputRequest(req)) {
+          renderChoiceInputRequest(container, req);
+          continue;
+        }
+
         const card = document.createElement('div');
         card.className = 'user-input-card';
         const actionsHtml = Array.isArray(req.actions) && req.actions.length > 0
@@ -4824,6 +5092,277 @@ export function generateViewerHtml(port: number): string {
         }, 50);
       }
     }
+
+    function isChoiceInputRequest(req) {
+      return !!req && req.mode === 'choices' && Array.isArray(req.questions) && req.questions.length > 0;
+    }
+
+    function getChoiceRequestById(requestId) {
+      return (currentInputRequests || []).find(req => req.requestId === requestId) || null;
+    }
+
+    function getChoiceState(requestId) {
+      if (!choiceInputState[requestId]) {
+        choiceInputState[requestId] = {
+          questionIndex: 0,
+          answers: [],
+          selectedIndex: 0,
+          selectedIndexByQuestion: {},
+          customTextByQuestion: {},
+          collapsed: false,
+        };
+      }
+      return choiceInputState[requestId];
+    }
+
+    function getChoiceOptionCount(question) {
+      const optionCount = Array.isArray(question?.options) ? Math.min(question.options.length, 4) : 0;
+      return optionCount + (question?.allowCustom ? 1 : 0);
+    }
+
+    function buildChoiceAnswer(req, state, questionIndex) {
+      const question = req?.questions?.[questionIndex] || {};
+      const options = Array.isArray(question.options) ? question.options.slice(0, 4) : [];
+      const selectedIndex = state.selectedIndexByQuestion?.[question.id] ?? (questionIndex === state.questionIndex ? state.selectedIndex : 0);
+      const isCustom = question.allowCustom && selectedIndex >= options.length;
+      return isCustom
+        ? {
+            questionId: question.id,
+            customText: (state.customTextByQuestion[question.id] || '').trim(),
+          }
+        : {
+            questionId: question.id,
+            optionId: options[selectedIndex]?.id,
+          };
+    }
+
+    function rememberCurrentChoice(req, state) {
+      const question = req?.questions?.[state.questionIndex] || {};
+      if (!question.id) return;
+      state.selectedIndexByQuestion[question.id] = state.selectedIndex || 0;
+      state.answers[state.questionIndex] = buildChoiceAnswer(req, state, state.questionIndex);
+    }
+
+    function renderChoiceInputRequest(container, req) {
+      const state = getChoiceState(req.requestId);
+      const questions = Array.isArray(req.questions) ? req.questions : [];
+      if (state.collapsed) {
+        container.classList.add('choice-collapsed');
+        const mini = document.createElement('button');
+        mini.className = 'user-choice-mini';
+        mini.type = 'button';
+        mini.setAttribute('onclick', \`expandChoiceRequest('\${req.requestId}')\`);
+        mini.innerHTML = \`
+          <span class="user-choice-mini-title">\${escapeHtml(req.prompt || '等待你的选择')}</span>
+          <span class="user-choice-mini-meta">\${Math.min((state.questionIndex || 0) + 1, questions.length)} / \${questions.length}</span>
+        \`;
+        container.appendChild(mini);
+        return;
+      }
+
+      container.classList.remove('choice-collapsed');
+      const questionIndex = Math.max(0, Math.min(state.questionIndex || 0, questions.length - 1));
+      state.questionIndex = questionIndex;
+      const question = questions[questionIndex] || {};
+      const options = Array.isArray(question.options) ? question.options.slice(0, 4) : [];
+      const hasCustom = !!question.allowCustom;
+      const optionCount = options.length + (hasCustom ? 1 : 0);
+      state.selectedIndex = Math.max(0, Math.min(state.selectedIndexByQuestion?.[question.id] ?? state.selectedIndex ?? 0, Math.max(0, optionCount - 1)));
+
+      const card = document.createElement('div');
+      card.className = 'user-input-card user-choice-card';
+      card.tabIndex = 0;
+      card.setAttribute('onkeydown', \`handleChoiceKey(event, '\${req.requestId}')\`);
+
+      const optionHtml = options.map((option, index) => \`
+        <button class="user-choice-option \${index === state.selectedIndex ? 'active' : ''}" type="button" onclick="selectChoiceOption('\${req.requestId}', \${index})">
+          <span class="user-choice-key">\${index + 1}</span>
+          <span>
+            <span class="user-choice-label">\${escapeHtml(option.label || option.id || ('选项 ' + (index + 1)))}</span>
+            \${option.description ? \`<span class="user-choice-description">\${escapeHtml(option.description)}</span>\` : ''}
+          </span>
+        </button>
+      \`).join('');
+
+      const customIndex = options.length;
+      const customActive = hasCustom && state.selectedIndex === customIndex;
+      const customText = state.customTextByQuestion[question.id] || '';
+      const customHtml = hasCustom ? \`
+        <button class="user-choice-option \${customActive ? 'active' : ''}" type="button" onclick="selectChoiceOption('\${req.requestId}', \${customIndex})">
+          <span class="user-choice-key">\${customIndex + 1}</span>
+          <span>
+            <span class="user-choice-label">\${escapeHtml(question.customLabel || '其他，我想补充')}</span>
+            <span class="user-choice-description">选择后可以直接输入想说的话</span>
+          </span>
+        </button>
+        <div class="user-choice-custom \${customActive ? 'active' : ''}">
+          <textarea id="choice-custom-\${req.requestId}" rows="2"
+            oninput="updateChoiceCustomText('\${req.requestId}', this.value); autoResize(this)"
+            onkeydown="handleChoiceCustomKey(event, '\${req.requestId}')"
+            placeholder="\${escapeHtml(question.customPlaceholder || '输入你的补充内容')}">\${escapeHtml(customText)}</textarea>
+        </div>
+      \` : '';
+
+      card.innerHTML = \`
+        <div class="user-choice-topline">
+          <div class="user-choice-title">\${escapeHtml(req.prompt || '需要你做个选择')}</div>
+          <div class="user-choice-progress">\${questionIndex + 1} / \${questions.length}</div>
+          <button class="user-choice-close" type="button" title="临时收起" onclick="collapseChoiceRequest('\${req.requestId}')">×</button>
+        </div>
+        <div class="user-choice-question">\${escapeHtml(question.question || '')}</div>
+        <div class="user-choice-options">
+          \${optionHtml}
+          \${customHtml}
+        </div>
+        <div class="user-choice-footer">
+          <span>↑↓ 选项，←→ 题目，Enter 确认</span>
+          <button class="user-choice-submit" type="button" onclick="confirmChoiceQuestion('\${req.requestId}')">\${questionIndex + 1 === questions.length ? '提交' : '下一题'}</button>
+        </div>
+      \`;
+
+      container.appendChild(card);
+      setTimeout(() => {
+        const customInput = customActive ? document.getElementById(\`choice-custom-\${req.requestId}\`) : null;
+        const target = customInput || card;
+        target.focus();
+        if (customInput) {
+          const end = customInput.value.length;
+          customInput.setSelectionRange(end, end);
+          autoResize(customInput);
+        }
+      }, 30);
+    }
+
+    function rerenderChoiceRequest(requestId) {
+      renderInputRequests(currentInputRequests || []);
+    }
+
+    window.selectChoiceOption = function(requestId, optionIndex) {
+      const req = getChoiceRequestById(requestId);
+      const state = getChoiceState(requestId);
+      state.selectedIndex = optionIndex;
+      const question = req?.questions?.[state.questionIndex];
+      if (question?.id) {
+        state.selectedIndexByQuestion[question.id] = optionIndex;
+      }
+      rerenderChoiceRequest(requestId);
+    };
+
+    window.collapseChoiceRequest = function(requestId) {
+      const state = getChoiceState(requestId);
+      const req = getChoiceRequestById(requestId);
+      rememberCurrentChoice(req, state);
+      state.collapsed = true;
+      rerenderChoiceRequest(requestId);
+    };
+
+    window.expandChoiceRequest = function(requestId) {
+      const state = getChoiceState(requestId);
+      state.collapsed = false;
+      rerenderChoiceRequest(requestId);
+    };
+
+    function collapsePrimaryChoiceRequest() {
+      const request = (currentInputRequests || []).find(isChoiceInputRequest);
+      if (request) {
+        window.collapseChoiceRequest(request.requestId);
+      }
+    }
+
+    window.updateChoiceCustomText = function(requestId, value) {
+      const req = getChoiceRequestById(requestId);
+      const state = getChoiceState(requestId);
+      const question = req?.questions?.[state.questionIndex];
+      if (question?.id) {
+        state.customTextByQuestion[question.id] = value;
+      }
+    };
+
+    window.handleChoiceKey = function(event, requestId) {
+      const req = getChoiceRequestById(requestId);
+      if (!req) return;
+      const state = getChoiceState(requestId);
+      const question = req.questions[state.questionIndex] || {};
+      const optionCount = getChoiceOptionCount(question);
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        state.selectedIndex = Math.min(optionCount - 1, (state.selectedIndex || 0) + 1);
+        if (question.id) state.selectedIndexByQuestion[question.id] = state.selectedIndex;
+        rerenderChoiceRequest(requestId);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        state.selectedIndex = Math.max(0, (state.selectedIndex || 0) - 1);
+        if (question.id) state.selectedIndexByQuestion[question.id] = state.selectedIndex;
+        rerenderChoiceRequest(requestId);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        rememberCurrentChoice(req, state);
+        state.questionIndex = Math.min(req.questions.length - 1, state.questionIndex + 1);
+        state.selectedIndex = state.selectedIndexByQuestion[req.questions[state.questionIndex]?.id] ?? 0;
+        rerenderChoiceRequest(requestId);
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        rememberCurrentChoice(req, state);
+        state.questionIndex = Math.max(0, state.questionIndex - 1);
+        state.selectedIndex = state.selectedIndexByQuestion[req.questions[state.questionIndex]?.id] ?? 0;
+        rerenderChoiceRequest(requestId);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        confirmChoiceQuestion(requestId);
+      }
+    };
+
+    window.handleChoiceCustomKey = function(event, requestId) {
+      if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey) {
+        event.preventDefault();
+        confirmChoiceQuestion(requestId);
+      }
+    };
+
+    window.confirmChoiceQuestion = async function(requestId) {
+      const req = getChoiceRequestById(requestId);
+      if (!req) return;
+      const state = getChoiceState(requestId);
+      const questions = req.questions || [];
+      rememberCurrentChoice(req, state);
+
+      if (state.questionIndex < questions.length - 1) {
+        state.questionIndex += 1;
+        state.selectedIndex = state.selectedIndexByQuestion[questions[state.questionIndex]?.id] ?? 0;
+        rerenderChoiceRequest(requestId);
+        return;
+      }
+
+      const finalAnswers = questions.map((_, index) => state.answers[index] || buildChoiceAnswer(req, state, index));
+      const summary = finalAnswers.map((item, index) => {
+        const q = questions[index] || {};
+        if (item.customText) return \`\${q.question || item.questionId}: \${item.customText}\`;
+        const option = (q.options || []).find(candidate => candidate.id === item.optionId);
+        return \`\${q.question || item.questionId}: \${option?.label || item.optionId || ''}\`;
+      }).join('\\n');
+
+      try {
+        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            input: summary,
+            response: {
+              kind: 'choices',
+              choices: finalAnswers,
+              text: summary,
+            },
+          }),
+        });
+        if (res.ok) {
+          delete choiceInputState[requestId];
+          poll();
+        }
+      } catch (e) {
+        console.error('提交选择失败:', e);
+      }
+    };
 
     function syncRollbackActionButtons() {
       const allowRollback = !!getPrimaryInputRequest();

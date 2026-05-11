@@ -63,6 +63,8 @@ export class DebugHub {
     placeholder?: string;
     initialValue?: string;
     actions?: UserInputAction[];
+    mode?: UserInputRequest['mode'];
+    questions?: UserInputRequest['questions'];
     timestamp: number;
   }>();
 
@@ -643,6 +645,8 @@ export class DebugHub {
         placeholder: request.placeholder,
         initialValue: request.initialValue,
         actions: request.actions,
+        mode: request.mode,
+        questions: request.questions,
         timestamp: Date.now(),
       });
 
@@ -655,6 +659,8 @@ export class DebugHub {
         placeholder: request.placeholder,
         initialValue: request.initialValue,
         actions: request.actions,
+        mode: request.mode,
+        questions: request.questions,
         timeout,
       } as RequestInputMsg);
     });

@@ -98,12 +98,12 @@ export class ReActLoopRunner {
           // ========== Step Start ==========
           await this.executeHookFn(
             'onStepStart',
-            () => this.onStepStartFn({ step, callIndex, context, input }),
+            () => this.onStepStartFn({ step, callIndex, context, input, agent: this.agent }),
             { input, step }
           );
 
           // 执行反向钩子 @StepStart（void 返回，仅做处理）
-          await this.hooksRegistry.executeVoid(CoreLifecycle.StepStart, { step, callIndex, context, input });
+          await this.hooksRegistry.executeVoid(CoreLifecycle.StepStart, { step, callIndex, context, input, agent: this.agent });
 
           // 执行 LLM 调用
           const llmStartTime = Date.now();
@@ -153,6 +153,7 @@ export class ReActLoopRunner {
                 callIndex,
                 context,
                 input,
+                agent: this.agent,
                 llmResponse: response,
                 toolCallsCount: 0,
               }),
@@ -165,6 +166,7 @@ export class ReActLoopRunner {
               callIndex,
               context,
               input,
+              agent: this.agent,
               llmResponse: response,
               toolCallsCount: 0,
               hasActiveSubAgents: this.checkActiveSubAgents(),
@@ -221,6 +223,7 @@ export class ReActLoopRunner {
               callIndex,
               context,
               input,
+              agent: this.agent,
               llmResponse: response,
               toolCallsCount: response.toolCalls?.length ?? 0,
             }),
@@ -233,6 +236,7 @@ export class ReActLoopRunner {
             callIndex,
             context,
             input,
+            agent: this.agent,
             llmResponse: response,
             toolCallsCount: response.toolCalls?.length ?? 0,
             hasActiveSubAgents: this.checkActiveSubAgents(),

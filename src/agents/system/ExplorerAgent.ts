@@ -121,11 +121,11 @@ export class ExplorerAgent extends Agent {
     this.use(new SubAgentFeature());
 
     // 预禁用只读模式下不应暴露的工具，确保首次快照与运行时一致
-    this.getTools().disable('write');
-    this.getTools().disable('edit');
-    this.getTools().disable('safe_trash_delete');
-    this.getTools().disable('safe_trash_list');
-    this.getTools().disable('safe_trash_restore');
+    this.getTools().remove('write');
+    this.getTools().remove('edit');
+    this.getTools().remove('safe_trash_delete');
+    this.getTools().remove('safe_trash_list');
+    this.getTools().remove('safe_trash_restore');
 
     // 注册可创建的子代理类型
     this.registerAgentType('ExplorerAgent', () => new ExplorerAgent({ llm: this.llm }));

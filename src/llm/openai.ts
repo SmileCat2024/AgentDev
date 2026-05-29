@@ -6,6 +6,18 @@
 import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 import OpenAI from 'openai';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
+import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
+import { initHttpClient } from './http-client.js';
+
+// 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
+let httpClientInitPromise: Promise<void> | null = null;
+function ensureHttpClientInitialized() {
+  if (!httpClientInitPromise) {
+    httpClientInitPromise = initHttpClient();
+  }
+  return httpClientInitPromise;
+}
 
 // GLM-4.7等模型扩展了OpenAI的响应格式，添加了reasoning_content字段
 interface ExtendedChatCompletionMessage extends OpenAI.Chat.ChatCompletionMessage {
@@ -17,6 +29,7 @@ export class OpenAILLM implements LLMClient {
   private modelName: string;
   private maxTokens?: number;
   private providerOptions?: Record<string, unknown>;
+  private initPromise: Promise<void>;
 
   constructor(
     apiKey: string,
@@ -32,12 +45,15 @@ export class OpenAILLM implements LLMClient {
     this.modelName = modelName;
     this.maxTokens = maxTokens;
     this.providerOptions = providerOptions;
+    this.initPromise = ensureHttpClientInitialized();
   }
 
   /**
-   * 聊天 - 核心方法（内部使用流式处理）
+   * 聊天 - 核心方法（内部使用流式处理，带重试）
    */
-  async chat(messages: Message[], tools: Tool[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools: Tool[], options?: { signal?: AbortSignal }): Promise<LLMResponse> {
+    // 确保 HTTP 客户端已初始化
+    await this.initPromise;
     // 转换消息格式为 OpenAI 格式
     const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = messages.map(m => {
       const base = { content: m.content };
@@ -57,7 +73,6 @@ export class OpenAILLM implements LLMClient {
       },
     }));
 
-    // ========== 流式处理（内部） ==========
     const requestBody = {
       model: this.modelName,
       messages: chatMessages,
@@ -68,120 +83,154 @@ export class OpenAILLM implements LLMClient {
       ...(this.providerOptions ?? {}),
     } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 
-    const stream = await this.client.chat.completions.create(requestBody);
-
-    // 累积内容
-    let content = '';
-    let reasoning = '';
-    let currentPhase: LLMPhase = 'content';
-    let charCount = 0;
-
-    // 累积 tool_calls
-    // tool_calls 在流中是增量的，需要合并
-    interface AccumulatedToolCall {
-      id: string;
-      name: string;
-      arguments: string;
-    }
-    const accumulatedToolCalls: Map<number, AccumulatedToolCall> = new Map();
-
-    // 收集 usage 数据
-    let usageInfo: UsageInfo | null = null;
-
-    // 迭代流式响应
-    for await (const chunk of stream) {
-      // 收集 usage 数据（OpenAI 需要 stream_options.include_usage，且 usage-only 最后一块可能没有 choices）
-      if (chunk.usage) {
-        const u = chunk.usage;
-        const extendedDetails = u as any;
-        let reasoningTokens = 0;
-        if (extendedDetails.prompt_tokens_details?.reasoning_tokens) {
-          reasoningTokens += extendedDetails.prompt_tokens_details.reasoning_tokens;
-        }
-        if (extendedDetails.completion_tokens_details?.reasoning_tokens) {
-          reasoningTokens += extendedDetails.completion_tokens_details.reasoning_tokens;
+    for (let attempt = 1; attempt <= DEFAULT_MAX_RETRIES + 1; attempt++) {
+      try {
+        // 检查中断信号
+        if (options?.signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
         }
 
-        usageInfo = {
-          inputTokens: u.prompt_tokens || 0,
-          outputTokens: u.completion_tokens || 0,
-          totalTokens: (u.prompt_tokens || 0) + (u.completion_tokens || 0),
-          ...(reasoningTokens > 0 ? { reasoningTokens } : {}),
-        };
-      }
+        const stream = await this.client.chat.completions.create(requestBody, {
+          signal: options?.signal,
+        });
 
-      const delta = chunk.choices[0]?.delta;
-      if (!delta) {
-        continue;
-      }
+        // ========== 流式处理（内部） ==========
 
-      // 判断当前阶段并累积内容
-      // 使用类型断言处理扩展字段 reasoning_content（GLM-4.7 等模型支持）
-      const rawDelta = delta as { reasoning_content?: string; content?: string | null };
-      if (rawDelta.reasoning_content) {
-        currentPhase = 'thinking';
-        reasoning += rawDelta.reasoning_content;
-        charCount += rawDelta.reasoning_content.length;
-      } else if (delta.content) {
-        currentPhase = 'content';
-        content += delta.content;
-        charCount += delta.content.length;
-      }
+        // 累积内容
+        let content = '';
+        let reasoning = '';
+        let currentPhase: LLMPhase = 'content';
+        let charCount = 0;
 
-      // 处理 tool_calls（增量累积）
-      if (delta.tool_calls) {
-        currentPhase = 'tool_calling';
-        for (const toolCall of delta.tool_calls) {
-          const index = toolCall.index;
-          if (index === undefined) continue;
+        // 累积 tool_calls
+        interface AccumulatedToolCall {
+          id: string;
+          name: string;
+          arguments: string;
+        }
+        const accumulatedToolCalls: Map<number, AccumulatedToolCall> = new Map();
 
-          if (!accumulatedToolCalls.has(index)) {
-            accumulatedToolCalls.set(index, {
-              id: toolCall.id || '',
-              name: toolCall.function?.name || '',
-              arguments: toolCall.function?.arguments || '',
-            });
-          } else {
-            const accumulated = accumulatedToolCalls.get(index)!;
-            if (toolCall.id) accumulated.id = toolCall.id;
-            if (toolCall.function?.name) accumulated.name += toolCall.function.name;
-            if (toolCall.function?.arguments) accumulated.arguments += toolCall.function.arguments;
+        // 收集 usage 数据
+        let usageInfo: UsageInfo | null = null;
+
+        // 迭代流式响应
+        for await (const chunk of stream) {
+          // 在流式读取中检查中断信号
+          if (options?.signal?.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+          }
+
+          if (chunk.usage) {
+            const u = chunk.usage;
+            const extendedDetails = u as any;
+            let reasoningTokens = 0;
+            if (extendedDetails.prompt_tokens_details?.reasoning_tokens) {
+              reasoningTokens += extendedDetails.prompt_tokens_details.reasoning_tokens;
+            }
+            if (extendedDetails.completion_tokens_details?.reasoning_tokens) {
+              reasoningTokens += extendedDetails.completion_tokens_details.reasoning_tokens;
+            }
+
+            usageInfo = {
+              inputTokens: u.prompt_tokens || 0,
+              outputTokens: u.completion_tokens || 0,
+              totalTokens: (u.prompt_tokens || 0) + (u.completion_tokens || 0),
+              ...(reasoningTokens > 0 ? { reasoningTokens } : {}),
+            };
+          }
+
+          const delta = chunk.choices[0]?.delta;
+          if (!delta) {
+            continue;
+          }
+
+          const rawDelta = delta as { reasoning_content?: string; content?: string | null };
+          if (rawDelta.reasoning_content) {
+            currentPhase = 'thinking';
+            reasoning += rawDelta.reasoning_content;
+            charCount += rawDelta.reasoning_content.length;
+          } else if (delta.content) {
+            currentPhase = 'content';
+            content += delta.content;
+            charCount += delta.content.length;
+          }
+
+          if (delta.tool_calls) {
+            currentPhase = 'tool_calling';
+            for (const toolCall of delta.tool_calls) {
+              const index = toolCall.index;
+              if (index === undefined) continue;
+
+              if (!accumulatedToolCalls.has(index)) {
+                accumulatedToolCalls.set(index, {
+                  id: toolCall.id || '',
+                  name: toolCall.function?.name || '',
+                  arguments: toolCall.function?.arguments || '',
+                });
+              } else {
+                const accumulated = accumulatedToolCalls.get(index)!;
+                if (toolCall.id) accumulated.id = toolCall.id;
+                if (toolCall.function?.name) accumulated.name += toolCall.function.name;
+                if (toolCall.function?.arguments) accumulated.arguments += toolCall.function.arguments;
+              }
+            }
+          }
+
+          try {
+            const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
+            if (charCount > 0 || accumulatedToolCalls.size > 0) {
+              emitNotification(createLLMCharCount(charCount, currentPhase));
+            }
+          } catch {
+            // 通知模块不可用，忽略
+          }
+
+          if (chunk.choices[0]?.finish_reason) {
+            break;
           }
         }
-      }
 
-      // 发送字符计数通知（每 100ms 最多一次，由 emitNotification 节流）
-      try {
-        const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
-        if (charCount > 0 || accumulatedToolCalls.size > 0) {
-          emitNotification(createLLMCharCount(charCount, currentPhase));
+        // 构建最终的 tool_calls 数组
+        let toolCalls: ToolCall[] | undefined;
+        if (accumulatedToolCalls.size > 0) {
+          toolCalls = Array.from(accumulatedToolCalls.values()).map(tc => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: JSON.parse(tc.arguments),
+          }));
         }
-      } catch {
-        // 通知模块不可用，忽略
-      }
 
-      // 检查是否完成
-      if (chunk.choices[0]?.finish_reason) {
-        break;
+        return {
+          content,
+          toolCalls,
+          reasoning,
+          ...(usageInfo ? { usage: usageInfo } : {}),
+        };
+      } catch (error) {
+        // 中断错误不重试，直接传播
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error;
+        }
+        // AbortError from fetch/signal
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error;
+        }
+
+        // OpenAI SDK 错误对象上通常有 status 和 headers
+        const status = (error as any)?.status as number | undefined;
+        if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(error, status)) {
+          const retryAfterMs = parseRetryAfter((error as any)?.headers);
+          const delayMs = getRetryDelay(attempt, retryAfterMs);
+          await sleep(delayMs);
+          continue;
+        }
+        // 重试耗尽或不可重试 → 分类包装后抛出
+        throw classifyAndWrapError(error, status);
       }
     }
 
-    // 构建最终的 tool_calls 数组
-    let toolCalls: ToolCall[] | undefined;
-    if (accumulatedToolCalls.size > 0) {
-      toolCalls = Array.from(accumulatedToolCalls.values()).map(tc => ({
-        id: tc.id,
-        name: tc.name,
-        arguments: JSON.parse(tc.arguments),
-      }));
-    }
-
-    return {
-      content,
-      toolCalls,
-      reasoning,
-      ...(usageInfo ? { usage: usageInfo } : {}),
-    };
+    // 理论上不会到这里
+    throw new Error('OpenAI API call failed after all retries');
   }
 }
 

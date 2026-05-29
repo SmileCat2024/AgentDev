@@ -55,6 +55,8 @@ export class DebugHub {
 
   // 输入请求回调映射：requestId → resolver
   private pendingInputRequests = new Map<string, (response: UserInputResponse) => void>();
+  private queuedInputHandler?: (agentId: string, input: { id: string; text: string; timestamp: number }) => void | Promise<void>;
+  private interruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
 
   // 活跃的输入请求元数据（用于重连恢复）：agentId → requestInfo
   private activeInputRequests = new Map<string, {
@@ -543,6 +545,25 @@ export class DebugHub {
     return getDebugCapabilities();
   }
 
+  setQueuedInputHandler(handler?: (agentId: string, input: { id: string; text: string; timestamp: number }) => void | Promise<void>): void {
+    this.queuedInputHandler = handler;
+  }
+
+  setInterruptHandler(handler?: (agentId: string, clearQueue: boolean) => void | Promise<void>): void {
+    this.interruptHandler = handler;
+  }
+
+  consumeQueuedInput(agentId: string, inputId: string): void {
+    if (this.transportMode === 'claw') {
+      return;
+    }
+    this.sendToWorker({
+      type: 'consume-queued-input',
+      agentId,
+      inputId,
+    } as DebugHubIPCMessage);
+  }
+
   /**
    * 根据 Agent 实例获取其 ID
    */
@@ -747,6 +768,32 @@ export class DebugHub {
           this.pendingInputRequests.delete(msg.requestId);
         } else {
           console.warn(`[DebugHub] 未知输入响应: ${msg.requestId}`);
+        }
+        break;
+
+      case 'queue-input':
+        if (this.queuedInputHandler && msg.input?.id && typeof msg.input?.text === 'string') {
+          Promise.resolve(this.queuedInputHandler(msg.agentId, msg.input)).catch((error) => {
+            console.error('[DebugHub] 处理 queue-input 失败:', error);
+          });
+        }
+        break;
+
+      // 处理中断信号
+      case 'interrupt-agent':
+        console.log(`[DebugHub] 收到中断信号: agentId=${msg.agentId}, knownAgents=[${[...this.agents.keys()].join(',')}]`);
+        const agentData = this.agents.get(msg.agentId);
+        console.log(`[DebugHub] agentData found=${!!agentData}, hasAgent=${!!agentData?.agent}, hasInterrupt=${typeof (agentData?.agent as any)?.interrupt}`);
+        if (agentData?.agent && typeof (agentData.agent as any).interrupt === 'function') {
+          const interrupted = (agentData.agent as any).interrupt();
+          console.log(`[DebugHub] agent.interrupt() returned: ${interrupted}`);
+        } else {
+          console.warn(`[DebugHub] Agent 不支持中断: ${msg.agentId}`);
+        }
+        if (this.interruptHandler) {
+          Promise.resolve(this.interruptHandler(msg.agentId, msg.clearQueue === true)).catch((error) => {
+            console.error('[DebugHub] interruptHandler 执行失败:', error);
+          });
         }
         break;
     }

@@ -211,7 +211,15 @@ export class ToolExecutor {
           }
         }
 
+        // 传递 AbortSignal 给工具（支持中断）
+        const signal = this.parentAgent._abortController?.signal;
+        console.log(`[ToolExecutor] executing tool="${call.name}", signal=${!!signal}, signal.aborted=${signal?.aborted}`);
+        if (signal) {
+          toolContext = { ...toolContext, signal };
+        }
+
         const data = await tool.execute(call.arguments, toolContext);
+        console.log(`[ToolExecutor] tool="${call.name}" completed, signal.aborted=${signal?.aborted}`);
         result.success = true;
         result.data = data;
 

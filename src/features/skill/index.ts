@@ -19,6 +19,7 @@ import { dirname, join } from 'path';
 import type {
   AgentFeature,
   FeatureInitContext,
+  FeatureManifestDefinition,
   ContextInjector,
   ToolContextValue,
   PackageInfo,
@@ -26,7 +27,7 @@ import type {
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import { invokeSkillTool } from './tools.js';
-import { discover } from '../../skills/loader.js';
+import { discover, discoverMulti } from '../../skills/loader.js';
 import type { SkillMetadata, SkillsOptions } from '../../skills/types.js';
 import { join as pathJoin, resolve, isAbsolute } from 'path';
 import { cwd } from 'process';
@@ -44,6 +45,12 @@ const __dirname = dirname(__filename);
 export interface SkillFeatureConfig extends SkillsOptions {
   /** Skills 目录路径 */
   dir?: string;
+  /** 是否扫描 .agentdev/skills，默认 true */
+  scanAgentdevDir?: boolean;
+  /** 是否扫描 .claude/skills，默认 false */
+  scanClaudeDir?: boolean;
+  /** 额外 skills 目录列表 */
+  extraDirs?: string[];
 }
 
 /**
@@ -63,6 +70,9 @@ export class SkillFeature implements AgentFeature {
   private skillsDir?: string;
   private skills: SkillMetadata[] = [];
   private featureSkills: SkillMetadata[] = [];
+  private scanAgentdevDir: boolean = true;
+  private scanClaudeDir: boolean = false;
+  private extraDirs: string[] = [];
 
   /**
    * 缓存包信息
@@ -88,13 +98,13 @@ export class SkillFeature implements AgentFeature {
 
   constructor(input?: SkillFeatureInput) {
     if (typeof input === 'string') {
-      // 字符串路径
       this.skillsDir = isAbsolute(input) ? input : resolve(cwd(), input);
     } else if (input && typeof input === 'object') {
-      // 配置对象
       this.skillsDir = input.dir;
+      this.scanAgentdevDir = input.scanAgentdevDir ?? true;
+      this.scanClaudeDir = input.scanClaudeDir ?? false;
+      this.extraDirs = Array.isArray(input.extraDirs) ? input.extraDirs.filter(Boolean) : [];
     } else {
-      // 默认路径
       this.skillsDir = pathJoin(cwd(), '.agentdev', 'skills');
     }
   }
@@ -143,6 +153,35 @@ export class SkillFeature implements AgentFeature {
     ];
   }
 
+  getFeatureManifest(): FeatureManifestDefinition {
+    return {
+      schemaVersion: 1 as const,
+      settings: {
+        properties: {
+          scanAgentdevDir: {
+            type: 'boolean',
+            title: '扫描 .agentdev/skills',
+            description: '是否从工作目录的 .agentdev/skills/ 加载技能文件。',
+            default: true,
+          },
+          scanClaudeDir: {
+            type: 'boolean',
+            title: '扫描 .claude/skills',
+            description: '是否从工作目录的 .claude/skills/ 加载技能文件。',
+            default: false,
+          },
+          extraDirs: {
+            type: 'directory',
+            title: '额外技能目录',
+            description: '额外加载技能文件的目录列表（至多 5 个），同名技能会自动加后缀区分。',
+            default: [],
+            maxItems: 5,
+          },
+        },
+      },
+    };
+  }
+
   /**
    * 声明上下文注入器
    * 为 invoke_skill 工具注入 _context.skills
@@ -158,10 +197,13 @@ export class SkillFeature implements AgentFeature {
    * 执行 Skills 发现并注册数据源
    */
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
-    // 先发现用户自定义 skills（.agentdev/skills/）
-    if (this.skillsDir) {
-      this.skills = await discover({ dir: this.skillsDir });
-    }
+    // 使用多目录发现：.agentdev/skills + .claude/skills + 额外目录
+    this.skills = await discoverMulti({
+      dir: this.skillsDir,
+      scanAgentdevDir: this.scanAgentdevDir,
+      scanClaudeDir: this.scanClaudeDir,
+      extraDirs: this.extraDirs,
+    });
 
     // 合并 Feature 自带 skills，用户 skills 优先（同名覆盖）
     if (this.featureSkills.length > 0) {

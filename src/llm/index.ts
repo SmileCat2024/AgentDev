@@ -5,6 +5,10 @@ import { createOpenAILLM } from './openai.js';
 
 export { AnthropicLLM, compileContextForAnthropic, createAnthropicLLM } from './anthropic.js';
 export { OpenAILLM, createOpenAILLM } from './openai.js';
+export { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep as retrySleep } from './retry.js';
+export { ClassifiedAPIError, classifyAPIError, classifyAndWrapError, extractConnectionErrorDetails, getUserFriendlyMessage } from './api-errors.js';
+export type { APIErrorType, ConnectionErrorDetails } from './api-errors.js';
+export { initHttpClient, getGlobalDispatcher } from './http-client.js';
 
 export function createLLM(config: AgentConfigFile): LLMClient;
 export function createLLM(modelConfig: ModelConfig): LLMClient;

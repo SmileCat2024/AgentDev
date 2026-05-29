@@ -9,6 +9,7 @@
 
 import { Agent } from '../../core/agent.js';
 import { MCPFeature, SkillFeature, SubAgentFeature, OpencodeBasicFeature } from '../../features/index.js';
+import type { SkillFeatureConfig } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
@@ -16,6 +17,18 @@ import { createLLM } from '../../llm/index.js';
 import { existsSync } from 'fs';
 import { cwd, platform } from 'process';
 import { getDefaultMCPConfigDir } from '../../mcp/config.js';
+
+function hasMeaningfulMcpFeatureConfig(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const config = value as Record<string, unknown>;
+  const scanAgentdevDir = config.scanAgentdevDir;
+  const extraConfigFiles = Array.isArray(config.extraConfigFiles)
+    ? config.extraConfigFiles.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  return scanAgentdevDir === false || extraConfigFiles.length > 0;
+}
 
 /**
  * 系统环境信息上下文
@@ -59,6 +72,10 @@ export interface BasicAgentConfig {
   tools?: Tool[];
   /** Skills 目录（可选，默认使用 .agentdev/skills） */
   skillsDir?: string;
+  /** SkillFeature 完整配置（可选，覆盖 skillsDir） */
+  skillConfig?: SkillFeatureConfig;
+  /** Feature 特定配置（可选） */
+  features?: AgentConfig['features'];
   /** 调试器和模板解析使用的项目根目录 */
   projectRoot?: string;
   /** 工具默认操作的工作目录 */
@@ -115,6 +132,7 @@ export class BasicAgent extends Agent {
       name: config.name,
       projectRoot: config.projectRoot,
       workspaceDir,
+      features: config.features,
     };
 
     super(agentConfig);
@@ -128,7 +146,8 @@ export class BasicAgent extends Agent {
     this.setSystemContext(systemContext);
 
     const hasDefaultMCPConfigs = existsSync(getDefaultMCPConfigDir());
-    const shouldEnableMCP = config.mcpServer !== false && (typeof config.mcpServer === 'string' || hasDefaultMCPConfigs);
+    const hasFeatureScopedMcpConfig = hasMeaningfulMcpFeatureConfig(config.features?.mcp);
+    const shouldEnableMCP = config.mcpServer !== false && (typeof config.mcpServer === 'string' || hasDefaultMCPConfigs || hasFeatureScopedMcpConfig);
     if (shouldEnableMCP) {
       this._mcpFeature = typeof config.mcpServer === 'string'
         ? new MCPFeature(config.mcpServer)
@@ -143,7 +162,7 @@ export class BasicAgent extends Agent {
     this.use(new OpencodeBasicFeature({ workspaceDir }));
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
-    this.use(new SkillFeature(config.skillsDir));
+    this.use(new SkillFeature(config.skillConfig || config.skillsDir));
 
     // 注册 SubAgentFeature（子代理工具和消息处理）
     this.use(new SubAgentFeature());

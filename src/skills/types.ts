@@ -20,4 +20,10 @@ export interface SkillMetadata {
 export interface SkillsOptions {
   /** skills 目录，默认 cwd/.agentdev/skills */
   dir?: string;
+  /** 是否扫描 cwd/.agentdev/skills，默认 true */
+  scanAgentdevDir?: boolean;
+  /** 是否扫描 cwd/.claude/skills，默认 false */
+  scanClaudeDir?: boolean;
+  /** 额外 skills 目录列表，至多 5 个 */
+  extraDirs?: string[];
 }

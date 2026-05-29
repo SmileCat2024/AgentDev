@@ -33,6 +33,10 @@ interface ChoiceToolQuestionInput {
     id: string;
     label: string;
     description?: string;
+    allowSupplement?: boolean;
+    supplementRequired?: boolean;
+    supplementLabel?: string;
+    supplementPlaceholder?: string;
   }>;
   allowCustom?: boolean;
   customLabel?: string;
@@ -204,6 +208,10 @@ export class UserInputFeature implements AgentFeature {
             id: optionId,
             label,
             description: option.description ? String(option.description) : undefined,
+            allowSupplement: Boolean(option.allowSupplement),
+            supplementRequired: Boolean(option.supplementRequired),
+            supplementLabel: option.supplementLabel ? String(option.supplementLabel) : undefined,
+            supplementPlaceholder: option.supplementPlaceholder ? String(option.supplementPlaceholder) : undefined,
           };
         }),
         allowCustom: Boolean(question.allowCustom),
@@ -239,7 +247,11 @@ export class UserInputFeature implements AgentFeature {
                 properties: {
                   id: { type: 'string', description: '稳定选项 ID。' },
                   label: { type: 'string', description: '选项显示文本。' },
-                  description: { type: 'string', description: '可选的补充说明。' }
+                  description: { type: 'string', description: '可选的补充说明。' },
+                  allowSupplement: { type: 'boolean', description: '是否允许用户在选择此选项后补充自由文本。' },
+                  supplementRequired: { type: 'boolean', description: '补充文本是否为必填（仅 allowSupplement 为 true 时有效）。' },
+                  supplementLabel: { type: 'string', description: '补充文本输入框的标签。' },
+                  supplementPlaceholder: { type: 'string', description: '补充文本输入框的占位提示。' }
                 },
                 required: ['id', 'label']
               }
@@ -300,7 +312,11 @@ export class UserInputFeature implements AgentFeature {
                       properties: {
                         id: { type: 'string', description: '稳定选项 ID。' },
                         label: { type: 'string', description: '选项显示文本。' },
-                        description: { type: 'string', description: '可选的补充说明。' }
+                        description: { type: 'string', description: '可选的补充说明。' },
+                        allowSupplement: { type: 'boolean', description: '是否允许用户在选择此选项后补充自由文本。' },
+                        supplementRequired: { type: 'boolean', description: '补充文本是否为必填。' },
+                        supplementLabel: { type: 'string', description: '补充文本输入框的标签。' },
+                        supplementPlaceholder: { type: 'string', description: '补充文本输入框的占位提示。' }
                       },
                       required: ['id', 'label']
                     }

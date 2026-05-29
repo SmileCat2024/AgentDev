@@ -7,6 +7,7 @@ import { readdir, readFile } from 'fs/promises';
 import { resolve, isAbsolute, join, normalize, dirname, isAbsolute as pathIsAbsolute } from 'path';
 import { existsSync } from 'fs';
 import type { SkillMetadata, SkillsOptions } from './types.js';
+import { cwd as processCwd } from 'process';
 
 /**
  * 解析 SKILL.md 文件的 YAML frontmatter
@@ -171,4 +172,50 @@ function resolveSkillsDir(dir?: string): string {
 
   // 默认使用 cwd/.agentdev/skills
   return resolve(cwd, '.agentdev', 'skills');
+}
+
+/**
+ * 对同名 skill 添加序号后缀：第一个保持原名，后续加 (1)、(2)...
+ */
+function deduplicateSkills(skills: SkillMetadata[]): SkillMetadata[] {
+  const nameCount = new Map<string, number>();
+  return skills.map(skill => {
+    const count = nameCount.get(skill.name) || 0;
+    nameCount.set(skill.name, count + 1);
+    if (count === 0) return skill;
+    return { ...skill, name: `${skill.name} (${count})` };
+  });
+}
+
+/**
+ * 多目录发现：按配置扫描 .agentdev/skills、.claude/skills 及额外目录，
+ * 合并结果并对同名 skill 自动加后缀。
+ */
+export async function discoverMulti(options: SkillsOptions = {}): Promise<SkillMetadata[]> {
+  const {
+    scanAgentdevDir = true,
+    scanClaudeDir = false,
+    extraDirs = [],
+  } = options;
+  const cwd = processCwd();
+  const directories: string[] = [];
+
+  if (scanAgentdevDir) {
+    directories.push(resolve(cwd, '.agentdev', 'skills'));
+  }
+  if (scanClaudeDir) {
+    directories.push(resolve(cwd, '.claude', 'skills'));
+  }
+  const limitedExtras = extraDirs.filter(Boolean).slice(0, 5);
+  for (const d of limitedExtras) {
+    directories.push(isAbsolute(d) ? d : resolve(cwd, d));
+  }
+
+  const allSkills: SkillMetadata[] = [];
+  for (const dir of directories) {
+    const skills = await discover({ dir });
+    allSkills.push(...skills);
+  }
+
+  return deduplicateSkills(allSkills);
 }

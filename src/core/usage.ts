@@ -71,6 +71,8 @@ export interface UsageStatsSnapshot {
   totalRequests: number;
   /** 命中缓存的请求数（request-level） */
   totalCacheHitRequests: number;
+  /** 最后一次请求的用量（用于显示当前上下文占用） */
+  lastRequestUsage?: UsageInfo;
 }
 
 /**
@@ -95,6 +97,9 @@ export class UsageStats {
 
   /** 当前 Call 的 Step 记录（临时，用于聚合） */
   private currentStepRecords: StepUsageRecord[] = [];
+
+  /** 最后一次 LLM 调用的用量（用于显示当前上下文占用） */
+  private lastRequestUsage: UsageInfo | null = null;
 
   /**
    * 记录一次 LLM 调用的用量
@@ -165,6 +170,9 @@ export class UsageStats {
     if (usage.audioTokens) {
       callSummary.totalUsage.audioTokens = (callSummary.totalUsage.audioTokens || 0) + usage.audioTokens;
     }
+
+    // 更新最后一次请求的用量（用于UI显示当前上下文占用）
+    this.lastRequestUsage = { ...usage };
   }
 
   /**
@@ -213,6 +221,13 @@ export class UsageStats {
   }
 
   /**
+   * 获取最后一次请求的用量（用于显示当前上下文占用）
+   */
+  getLastRequestUsage(): UsageInfo | null {
+    return this.lastRequestUsage ? { ...this.lastRequestUsage } : null;
+  }
+
+  /**
    * 获取格式化的用量报告
    */
   getReport(): string {
@@ -248,6 +263,7 @@ export class UsageStats {
       calls: this.getAllCallUsage(),
       totalRequests: this.totalRequests,
       totalCacheHitRequests: this.totalCacheHitRequests,
+      lastRequestUsage: this.lastRequestUsage ? { ...this.lastRequestUsage } : undefined,
     };
   }
 
@@ -262,6 +278,8 @@ export class UsageStats {
     for (const call of snapshot.calls) {
       this.currentCallUsage.set(call.callIndex, { ...call });
     }
+    // 恢复最后一次请求的用量
+    this.lastRequestUsage = snapshot.lastRequestUsage ? { ...snapshot.lastRequestUsage } : null;
     // Step 记录不恢复，因为它是临时的中间数据
     this.currentStepRecords = [];
   }

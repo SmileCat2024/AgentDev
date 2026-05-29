@@ -65,9 +65,13 @@ export function emitNotification(notification: Notification): void {
   }
 
   const now = Date.now();
+  const notificationType = String(notification.type || '');
+  const bypassThrottle = notificationType === 'call.start'
+    || notificationType === 'call.finish'
+    || notificationType === 'llm.complete';
 
   // 节流：状态类通知需要节流，事件类通知不需要
-  if (notification.category === 'state') {
+  if (notification.category === 'state' && !bypassThrottle) {
     const timeSinceLast = now - lastNotificationTime;
     if (timeSinceLast < THROTTLE_INTERVAL) {
       // 跳过此次通知
@@ -153,5 +157,30 @@ export function createToolComplete(
       success,
       duration,
     },
+  };
+}
+
+/**
+ * 创建 Call 开始通知
+ */
+export function createCallStart(): Notification {
+  return {
+    type: 'call.start',
+    category: 'state',
+    timestamp: Date.now(),
+    data: {},
+  };
+}
+
+/**
+ * 创建 Call 结束通知
+ * @param completed 是否正常完成（false 表示被中断或出错）
+ */
+export function createCallFinish(completed: boolean): Notification {
+  return {
+    type: 'call.finish',
+    category: 'state',
+    timestamp: Date.now(),
+    data: { completed },
   };
 }

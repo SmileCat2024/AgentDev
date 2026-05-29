@@ -20,10 +20,10 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import type {
   AgentFeature,
   FeatureInitContext,
+  FeatureManifestDefinition,
   ContextInjector,
   ToolContextValue,
   PackageInfo,
@@ -38,7 +38,6 @@ import type { MCPConfig } from '../../mcp/types.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 /**
  * MCP Feature 配置类型
@@ -47,6 +46,13 @@ export type MCPFeatureInput = MCPConfig | string;
 
 export interface MCPFeatureOptions {
   excludeServers?: string[];
+}
+
+export interface MCPFeatureConfig {
+  /** 是否加载工作目录 .agentdev/mcps 下的系统 MCP 配置，默认 true */
+  scanAgentdevDir?: boolean;
+  /** 额外加载的 MCP 配置文件列表 */
+  extraConfigFiles?: string[];
 }
 
 /**
@@ -60,6 +66,8 @@ export class MCPFeature implements AgentFeature {
 
   private readonly manager = new MCPConnectionManager();
   private clients = new Map<string, MCPClient>();
+  private readonly input?: MCPFeatureInput;
+  private readonly options: MCPFeatureOptions;
   private config?: MCPConfig;
   private mcpContext?: Record<string, unknown>;
 
@@ -86,15 +94,75 @@ export class MCPFeature implements AgentFeature {
   }
 
   constructor(input?: MCPFeatureInput, options: MCPFeatureOptions = {}) {
+    this.input = input;
+    this.options = options;
+
     if (typeof input === 'string') {
       this.config = loadMCPConfigFromInput(input);
     } else if (input) {
       this.config = input;
-    } else {
-      this.config = loadAllMCPConfigs(undefined, {
-        excludeServers: options.excludeServers,
-      });
     }
+  }
+
+  getFeatureManifest(): FeatureManifestDefinition {
+    return {
+      schemaVersion: 1 as const,
+      settings: {
+        properties: {
+          scanAgentdevDir: {
+            type: 'boolean',
+            title: '加载 .agentdev/mcps',
+            description: '是否从工作目录的 .agentdev/mcps/ 加载系统 MCP 配置文件。',
+            default: true,
+          },
+          extraConfigFiles: {
+            type: 'file',
+            title: '额外 MCP 配置文件',
+            description: '额外加载多个 MCP 配置文件（至多 5 个），重名 server/tool 会自动加后缀区分。',
+            default: [],
+            accept: '.json',
+            maxItems: 5,
+          },
+        },
+      },
+    };
+  }
+
+  private resolveFeatureConfig(featureConfig: unknown): MCPFeatureConfig {
+    if (!featureConfig || typeof featureConfig !== 'object') {
+      return {
+        scanAgentdevDir: true,
+        extraConfigFiles: [],
+      };
+    }
+
+    const config = featureConfig as Record<string, unknown>;
+    return {
+      scanAgentdevDir: config.scanAgentdevDir === undefined ? true : config.scanAgentdevDir !== false,
+      extraConfigFiles: Array.isArray(config.extraConfigFiles)
+        ? config.extraConfigFiles.filter((value): value is string => typeof value === 'string' && value.length > 0)
+        : [],
+    };
+  }
+
+  private resolveRuntimeConfig(ctx: FeatureInitContext): MCPConfig | undefined {
+    if (this.config) {
+      return this.config;
+    }
+
+    if (typeof this.input === 'string') {
+      this.config = loadMCPConfigFromInput(this.input);
+      return this.config;
+    }
+
+    const featureConfig = this.resolveFeatureConfig(ctx.featureConfig);
+    this.config = loadAllMCPConfigs(undefined, {
+      loadDefaultDir: featureConfig.scanAgentdevDir,
+      extraConfigFiles: featureConfig.extraConfigFiles,
+      excludeServers: this.options.excludeServers,
+    });
+
+    return this.config;
   }
 
   /**
@@ -107,12 +175,13 @@ export class MCPFeature implements AgentFeature {
   /**
    * 获取异步工具（需要连接 MCP 服务器）
    */
-  async getAsyncTools(_ctx: FeatureInitContext): Promise<Tool[]> {
-    if (!this.config) {
+  async getAsyncTools(ctx: FeatureInitContext): Promise<Tool[]> {
+    const config = this.resolveRuntimeConfig(ctx);
+    if (!config) {
       return [];
     }
 
-    const result = await mountMCPToolsFromConfig(this.config, {
+    const result = await mountMCPToolsFromConfig(config, {
       manager: this.manager,
       clients: this.clients,
       onError: (serverId, error) => {

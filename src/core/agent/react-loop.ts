@@ -18,6 +18,7 @@ import type { HooksRegistry } from '../hooks-registry.js';
 import { CoreLifecycle, Decision, normalizeDecision } from '../lifecycle.js';
 import { createStepCheckpoint, rollbackToStepCheckpoint } from '../checkpoint.js';
 import { createLogger, runWithLogScope } from '../logging.js';
+import { ClassifiedAPIError } from '../../llm/api-errors.js';
 
 const logger = createLogger('agent.react');
 
@@ -42,6 +43,7 @@ export class ReActLoopRunner {
       hooksRegistry: HooksRegistry;
       recordUsage(callIndex: number, step: number, usage: UsageInfo): void;
       endCallUsage(callIndex: number): void;
+      stepSaveFn?: () => Promise<void>;
     },
     private executeHookFn: (
       hookName: string,
@@ -73,8 +75,10 @@ export class ReActLoopRunner {
   async run(input: string, context: Context, options: {
     isFirstCall: boolean;
     callIndex: number;  // 用户交互序号
+    signal?: AbortSignal;
   }): Promise<ReActResult> {
-    const { isFirstCall, callIndex } = options;
+    const { isFirstCall, callIndex, signal } = options;
+    console.log(`[ReactLoop.run] START callIndex=${callIndex}, signal=${!!signal}, signal.aborted=${signal?.aborted}`);
 
     // ========== ReAct 循环 ==========
     let completed = false;
@@ -92,6 +96,13 @@ export class ReActLoopRunner {
         logger.debug('Step started', { step, callIndex });
 
         try {
+          // 检查中断信号
+          console.log(`[ReactLoop] step=${step} signal.aborted=${signal?.aborted}`);
+          if (signal?.aborted) {
+            logger.info('Step skipped due to interrupt', { step });
+            return 'interrupted' as const;
+          }
+
           // 推送消息到 DebugHub
           this.pushToDebug(context.getAll());
 
@@ -113,7 +124,8 @@ export class ReActLoopRunner {
             tags: ['llm'],
           }, async () => await this.agent.llm.chat(
             context.getAll(),
-            this.agent.tools.getAll()
+            this.agent.tools.getAll(),
+            signal ? { signal } : undefined
           ));
           const llmDuration = Date.now() - llmStartTime;
 
@@ -205,11 +217,42 @@ export class ReActLoopRunner {
 
         // 执行工具
           let waitCalled = false;
-          for (const call of response.toolCalls) {
+          let interrupted = false;
+          console.log(`[ReactLoop] step=${step} executing ${response.toolCalls.length} toolCalls, signal.aborted=${signal?.aborted}`);
+          for (let i = 0; i < response.toolCalls.length; i++) {
+            const call = response.toolCalls[i];
+
+            // 在执行每个工具前检查中断信号
+            console.log(`[ReactLoop] step=${step} tool[${i}]="${call.name}" pre-execute signal.aborted=${signal?.aborted}`);
+            if (signal?.aborted) {
+              interrupted = true;
+              // 为当前及剩余的 tool calls 补齐 interrupted result
+              for (let j = i; j < response.toolCalls.length; j++) {
+                const pendingCall = response.toolCalls[j];
+                context.addToolMessage(pendingCall, {
+                  success: false,
+                  result: { error: 'Interrupted by user' },
+                }, callIndex);
+                logger.info('Tool result padded for interrupt', { toolName: pendingCall.name, toolIndex: j });
+              }
+              break;
+            }
+
             if (call.name === 'wait') {
               waitCalled = true;
             }
             await this.executeToolFn(call, input, context, step, callIndex);
+            console.log(`[ReactLoop] step=${step} tool[${i}]="${call.name}" post-execute done, signal.aborted=${signal?.aborted}`);
+          }
+
+          // 如果在 tool 执行中被中断，结束当前 call
+          if (interrupted) {
+            this.pushToDebug(context.getAll());
+            const lastContent = context.getAll().filter(m => m.role === 'assistant' && m.content).pop();
+            finalResponse = lastContent?.content ?? response.content ?? '';
+            completed = false;
+            logger.info('Call interrupted during tool execution', { step });
+            return 'interrupted' as const;
           }
 
           // 推送消息到 DebugHub
@@ -270,21 +313,44 @@ export class ReActLoopRunner {
           logger.debug('Step finished with tool calls, continuing loop by default', { step });
           return 'next';
         } catch (error) {
-          await rollbackToStepCheckpoint(checkpoint, context, this.agent.features);
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          // 构造错误消息（仅显示，不进入context）
-          const errorMessages: Message[] = [
-            ...context.getAll(),
-            { role: 'assistant', content: `[Error: ${errorMsg}]`, turn: callIndex },
-          ];
-          // 直接推送到debugPusher
-          if (this.agent.debugPusher) {
-            this.agent.debugPusher.pushMessages(this.agent.agentId ?? '', errorMessages);
+          // 如果是中断导致的错误，不回滚，直接传播
+          if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+            logger.info('Step aborted by interrupt signal', { step });
+            return 'interrupted' as const;
           }
-          logger.warn('Step rolled back after failure', { step, error: errorMsg });
+
+          await rollbackToStepCheckpoint(checkpoint, context, this.agent.features);
+
+          // 根据错误类型生成不同的用户可见消息
+          let errorMsg: string;
+          let errorTag: string;
+
+          if (error instanceof ClassifiedAPIError) {
+            // 来自 LLM 层的分类错误 — 使用用户友好消息
+            errorMsg = error.userMessage;
+            errorTag = `[API Error: ${error.errorType}]`;
+          } else {
+            // 其他运行时错误 — 原始消息
+            errorMsg = error instanceof Error ? error.message : String(error);
+            errorTag = '[Error]';
+          }
+
+          // 错误消息进入 context，保持 context/viewer 一致性
+          context.addAssistantMessage({ content: `${errorTag} ${errorMsg}` }, callIndex);
+          this.pushToDebug(context.getAll());
+          logger.warn('Step rolled back after failure', { step, errorType: error instanceof ClassifiedAPIError ? error.errorType : 'unknown', error: errorMsg });
           throw error;
         }
       });
+
+      // Step 完成后自动保存 session（如果启用了 stepSave）
+      if (this.agent.stepSaveFn && stepResult !== 'interrupted') {
+        try {
+          await this.agent.stepSaveFn();
+        } catch (saveError) {
+          logger.warn('Step auto-save failed', { step, error: saveError instanceof Error ? saveError.message : String(saveError) });
+        }
+      }
 
       if (stepResult === 'break') {
         break;
@@ -292,8 +358,35 @@ export class ReActLoopRunner {
       if (stepResult === 'continue') {
         continue outerLoop;
       }
+      if (stepResult === 'interrupted') {
+        // 用户中断：不触发 onInterrupt 钩子（已在上面补齐 tool result）
+        break;
+      }
       if (typeof stepResult === 'object') {
         return stepResult;
+      }
+
+      // ========== Step 级别队列检查 ==========
+      // 在每个 step 结束后检查是否有排队消息，如果有则注入并继续循环
+      if (this.agent.agentId) {
+        try {
+          const queuedInput = await this.fetchQueuedInput(this.agent.agentId);
+          if (queuedInput) {
+            logger.info('Step 级别队列：注入排队消息', {
+              step,
+              queuedInput: queuedInput.slice(0, 100),
+            });
+            // 将排队消息作为新的用户输入注入 context
+            context.addUserMessage(queuedInput, callIndex);
+            // 推送到 DebugHub
+            this.pushToDebug(context.getAll());
+            // 继续循环，不要 break
+            continue outerLoop;
+          }
+        } catch (e) {
+          // 队列查询失败，忽略，继续正常流程
+          logger.debug('队列查询失败，忽略', { error: e instanceof Error ? e.message : String(e) });
+        }
       }
     }
 
@@ -323,6 +416,38 @@ export class ReActLoopRunner {
       completed,
       turns: this.agent._currentStep + 1,
     };
+  }
+
+  /**
+   * 从 ViewerWorker 获取并消费一条排队消息
+   *
+   * @param agentId Agent ID
+   * @returns 排队消息文本，如果没有则返回 null
+   */
+  private async fetchQueuedInput(agentId: string): Promise<string | null> {
+    // 从环境变量获取 ViewerWorker 端口
+    const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
+    const viewerUrl = `http://127.0.0.1:${viewerPort}`;
+
+    try {
+      const res = await fetch(`${viewerUrl}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!res.ok) {
+        return null;
+      }
+
+      const data = await res.json();
+      if (data.input && data.input.text) {
+        return data.input.text;
+      }
+      return null;
+    } catch (e) {
+      // 网络错误或 ViewerWorker 不可用
+      return null;
+    }
   }
 
   /**

@@ -5,6 +5,8 @@ import { isAbsolute, join, resolve } from 'path';
 import type { MCPConfig, MCPServerConfig } from './types.js';
 
 export interface LoadAllMCPConfigsOptions {
+  loadDefaultDir?: boolean;
+  extraConfigFiles?: string[];
   excludeServers?: string[];
 }
 
@@ -83,16 +85,16 @@ function normalizeToMCPConfig(
   return undefined;
 }
 
-export function getDefaultMCPConfigDir(rootDir: string = cwd()): string {
-  return join(rootDir, '.agentdev', 'mcps');
-}
-
-export function loadMCPConfigFromInput(input: string, rootDir: string = cwd()): MCPConfig | undefined {
+function resolveMCPConfigInput(
+  input: string,
+  rootDir: string = cwd()
+): { configPath: string; fallbackServerId: string } {
   let configPath: string;
   let fallbackServerId = 'default';
 
   if (isAbsolute(input)) {
     configPath = input;
+    fallbackServerId = basename(configPath, '.json');
   } else if (input.includes('/') || input.includes('\\')) {
     configPath = resolve(rootDir, input);
     fallbackServerId = basename(configPath, '.json');
@@ -101,59 +103,110 @@ export function loadMCPConfigFromInput(input: string, rootDir: string = cwd()): 
     fallbackServerId = input;
   }
 
+  return { configPath, fallbackServerId };
+}
+
+function loadMCPConfigFile(configPath: string, fallbackServerId: string): MCPConfig | undefined {
+  const config = readConfigFile(configPath);
+  if (!config) {
+    return undefined;
+  }
+
+  const normalized = normalizeToMCPConfig(config, fallbackServerId);
+  if (!normalized || Object.keys(normalized.servers).length === 0) {
+    console.warn(`[MCP] Ignoring invalid config file: ${configPath}`);
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function getDedupedServerId(serverId: string, existingServerIds: Set<string>): string {
+  if (!existingServerIds.has(serverId)) {
+    return serverId;
+  }
+
+  let suffix = 1;
+  let nextServerId = `${serverId} (${suffix})`;
+  while (existingServerIds.has(nextServerId)) {
+    suffix += 1;
+    nextServerId = `${serverId} (${suffix})`;
+  }
+
+  return nextServerId;
+}
+
+function mergeMCPConfig(
+  merged: MCPConfig,
+  config: MCPConfig,
+  excludedServers: Set<string>
+): void {
+  const existingServerIds = new Set(Object.keys(merged.servers));
+
+  for (const [serverId, serverConfig] of Object.entries(config.servers)) {
+    if (excludedServers.has(serverId)) {
+      continue;
+    }
+
+    const dedupedServerId = getDedupedServerId(serverId, existingServerIds);
+    merged.servers[dedupedServerId] = serverConfig;
+    existingServerIds.add(dedupedServerId);
+  }
+}
+
+export function getDefaultMCPConfigDir(rootDir: string = cwd()): string {
+  return join(rootDir, '.agentdev', 'mcps');
+}
+
+export function loadMCPConfigFromInput(input: string, rootDir: string = cwd()): MCPConfig | undefined {
+  const { configPath, fallbackServerId } = resolveMCPConfigInput(input, rootDir);
+
   if (!existsSync(configPath)) {
     console.warn(`[MCP] Config file does not exist: ${configPath}`);
     return undefined;
   }
 
-  return normalizeToMCPConfig(readConfigFile(configPath), fallbackServerId);
+  return loadMCPConfigFile(configPath, fallbackServerId);
 }
 
 export function loadAllMCPConfigs(
   rootDir: string = cwd(),
   options: LoadAllMCPConfigsOptions = {}
 ): MCPConfig | undefined {
-  const configDir = getDefaultMCPConfigDir(rootDir);
-  if (!existsSync(configDir)) {
-    return undefined;
-  }
-
+  const shouldLoadDefaultDir = options.loadDefaultDir ?? true;
+  const extraConfigFiles = Array.isArray(options.extraConfigFiles)
+    ? options.extraConfigFiles.filter(Boolean)
+    : [];
   const excludedServers = new Set(options.excludeServers ?? []);
   const merged: MCPConfig = { servers: {} };
-  const entries = readdirSync(configDir, { withFileTypes: true });
+  if (shouldLoadDefaultDir) {
+    const configDir = getDefaultMCPConfigDir(rootDir);
+    if (existsSync(configDir)) {
+      const entries = readdirSync(configDir, { withFileTypes: true });
 
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) {
-      continue;
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) {
+          continue;
+        }
+
+        const configPath = join(configDir, entry.name);
+        const config = loadMCPConfigFile(configPath, basename(entry.name, '.json'));
+        if (!config) {
+          continue;
+        }
+
+        mergeMCPConfig(merged, config, excludedServers);
+      }
     }
+  }
 
-    const configPath = join(configDir, entry.name);
-    const config = readConfigFile(configPath);
+  for (const configFile of extraConfigFiles) {
+    const config = loadMCPConfigFromInput(configFile, rootDir);
     if (!config) {
       continue;
     }
 
-    if (isMCPConfig(config)) {
-      const normalized = normalizeToMCPConfig(config, basename(entry.name, '.json'));
-      if (normalized && Object.keys(normalized.servers).length > 0) {
-        for (const [serverId, serverConfig] of Object.entries(normalized.servers)) {
-          if (!excludedServers.has(serverId)) {
-            merged.servers[serverId] = serverConfig;
-          }
-        }
-        continue;
-      }
-    }
-
-    const serverId = basename(entry.name, '.json');
-    if (isMCPServerConfig(config)) {
-      if (!excludedServers.has(serverId)) {
-        merged.servers[serverId] = config;
-      }
-      continue;
-    }
-
-    console.warn(`[MCP] Ignoring invalid config file: ${configPath}`);
+    mergeMCPConfig(merged, config, excludedServers);
   }
 
   return Object.keys(merged.servers).length > 0 ? merged : undefined;

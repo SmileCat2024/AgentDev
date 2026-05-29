@@ -1,6 +1,18 @@
 import type { AgentConfigFile, ModelConfig } from '../core/config.js';
 import type { LLMClient, LLMResponse, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
+import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
+import { initHttpClient } from './http-client.js';
+
+// 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
+let httpClientInitPromise: Promise<void> | null = null;
+function ensureHttpClientInitialized() {
+  if (!httpClientInitPromise) {
+    httpClientInitPromise = initHttpClient();
+  }
+  return httpClientInitPromise;
+}
 
 type AnthropicTextBlock = {
   type: 'text';
@@ -112,6 +124,8 @@ const DEFAULT_THINKING_KEEP_TURNS = 5;
 const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
 
 export class AnthropicLLM implements LLMClient {
+  private initPromise: Promise<void>;
+
   constructor(
     private readonly apiKey: string,
     private readonly modelName: string = 'claude-sonnet-4-5-20250929',
@@ -119,55 +133,96 @@ export class AnthropicLLM implements LLMClient {
     private readonly maxTokens: number = DEFAULT_MAX_TOKENS,
     private readonly thinkingBudgetTokens?: number,
     private readonly thinkingKeepTurns: number = DEFAULT_THINKING_KEEP_TURNS,
-  ) {}
+  ) {
+    this.initPromise = ensureHttpClientInitialized();
+  }
 
-  async chat(messages: Message[], tools: Tool[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools: Tool[], options?: { signal?: AbortSignal }): Promise<LLMResponse> {
+    // 确保 HTTP 客户端已初始化
+    await this.initPromise;
     const compiled = compileContextForAnthropic(messages, tools);
-    const response = await fetch(resolveAnthropicMessagesUrl(this.baseUrl), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
-        ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
-          ? { 'anthropic-beta': CONTEXT_MANAGEMENT_BETA }
-          : {}),
-      },
-      body: JSON.stringify({
-        model: this.modelName,
-        max_tokens: this.maxTokens,
-        stream: true,
-        ...(this.thinkingBudgetTokens && this.thinkingBudgetTokens >= 1024
-          ? { thinking: { type: 'enabled', budget_tokens: this.thinkingBudgetTokens } }
-          : {}),
-        ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
-          ? { context_management: createContextManagementConfig(this.thinkingKeepTurns) }
-          : {}),
-        ...(compiled.system ? { system: compiled.system } : {}),
-        messages: compiled.messages,
-        ...(compiled.tools && compiled.tools.length > 0 ? { tools: compiled.tools } : {}),
-      }),
-    });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
-    }
+    for (let attempt = 1; attempt <= DEFAULT_MAX_RETRIES + 1; attempt++) {
+      let response: Response | undefined;
+      try {
+        // 检查中断信号
+        if (options?.signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
 
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const payload = await response.json() as AnthropicCompatErrorPayload;
-      if (isCompatErrorPayload(payload)) {
-        throw new Error(`Anthropic-compatible API error ${payload.code ?? 'unknown'}: ${payload.msg ?? payload.message ?? 'unknown error'}`);
+        response = await fetch(resolveAnthropicMessagesUrl(this.baseUrl), {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': this.apiKey,
+            'anthropic-version': '2023-06-01',
+            ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
+              ? { 'anthropic-beta': CONTEXT_MANAGEMENT_BETA }
+              : {}),
+          },
+          body: JSON.stringify({
+            model: this.modelName,
+            max_tokens: this.maxTokens,
+            stream: true,
+            ...(this.thinkingBudgetTokens && this.thinkingBudgetTokens >= 1024
+              ? { thinking: { type: 'enabled', budget_tokens: this.thinkingBudgetTokens } }
+              : {}),
+            ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
+              ? { context_management: createContextManagementConfig(this.thinkingKeepTurns) }
+              : {}),
+            ...(compiled.system ? { system: compiled.system } : {}),
+            messages: compiled.messages,
+            ...(compiled.tools && compiled.tools.length > 0 ? { tools: compiled.tools } : {}),
+          }),
+          signal: options?.signal,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          const err = new Error(`Anthropic API error ${response.status}: ${errorText}`);
+          (err as any).status = response.status;
+          throw err;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const payload = await response.json() as AnthropicCompatErrorPayload;
+          if (isCompatErrorPayload(payload)) {
+            const err = new Error(`Anthropic-compatible API error ${payload.code ?? 'unknown'}: ${payload.msg ?? payload.message ?? 'unknown error'}`);
+            (err as any).status = payload.code;
+            throw err;
+          }
+          throw new Error(`Anthropic streaming expected SSE but received JSON: ${JSON.stringify(payload)}`);
+        }
+
+        if (!response.body) {
+          throw new Error('Anthropic API returned an empty response body');
+        }
+
+        return await readAnthropicStream(response.body, options?.signal);
+      } catch (error) {
+        // 中断错误不重试，直接传播
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error;
+        }
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error;
+        }
+
+        const status = (error as any)?.status as number | undefined;
+        if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(error, status)) {
+          const retryAfterMs = parseRetryAfter(response?.headers);
+          const delayMs = getRetryDelay(attempt, retryAfterMs);
+          await sleep(delayMs);
+          continue;
+        }
+        // 重试耗尽或不可重试 → 分类包装后抛出
+        throw classifyAndWrapError(error, status);
       }
-      throw new Error(`Anthropic streaming expected SSE but received JSON: ${JSON.stringify(payload)}`);
     }
 
-    if (!response.body) {
-      throw new Error('Anthropic API returned an empty response body');
-    }
-
-    return readAnthropicStream(response.body);
+    // 理论上不会到这里，但 TypeScript 需要返回值
+    throw new Error('Anthropic API call failed after all retries');
   }
 }
 
@@ -360,7 +415,7 @@ function stringifyToolValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LLMResponse> {
+async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<LLMResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -374,10 +429,28 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
   // 收集 usage 数据
   let usageInfo: UsageInfo | null = null;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  // 创建 signal abort 监听 Promise，用于 race 中断 reader.read()
+  const createAbortPromise = (): Promise<never> => new Promise<never>((_, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      signal!.removeEventListener('abort', onAbort);
+      reader.cancel().catch(() => {});
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
+  try {
+    while (true) {
+      // 用 Promise.race 让 reader.read() 可被 signal 中断
+      const { value, done } = signal
+        ? await Promise.race([reader.read(), createAbortPromise()])
+        : await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
     let separatorIndex = buffer.indexOf('\n\n');
     while (separatorIndex >= 0) {
@@ -398,6 +471,12 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>): Promise<LL
       }
       separatorIndex = buffer.indexOf('\n\n');
     }
+  }
+  } catch (e) {
+    // AbortError 直接传播
+    if (e instanceof DOMException && e.name === 'AbortError') throw e;
+    if (e instanceof Error && e.name === 'AbortError') throw e;
+    throw e;
   }
 
   if (buffer.trim()) {
@@ -495,10 +574,11 @@ function applyAnthropicStreamEvent(
     case 'message_start': {
       const usage = event.message?.usage;
       if (usage && (usage.input_tokens !== undefined || usage.output_tokens !== undefined)) {
+        const realInput = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
         onUsage({
-          inputTokens: usage.input_tokens || 0,
+          inputTokens: realInput,
           outputTokens: usage.output_tokens || 0,
-          totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+          totalTokens: realInput + (usage.output_tokens || 0),
           ...(usage.cache_creation_input_tokens ? { cacheCreationTokens: usage.cache_creation_input_tokens } : {}),
           ...(usage.cache_read_input_tokens ? { cacheReadTokens: usage.cache_read_input_tokens } : {}),
         });
@@ -509,10 +589,11 @@ function applyAnthropicStreamEvent(
       // Anthropic 的 message_delta usage 在事件顶层，不在 delta 里
       const usage = event.usage;
       if (usage && (usage.input_tokens !== undefined || usage.output_tokens !== undefined)) {
+        const realInput = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
         onUsage({
-          inputTokens: usage.input_tokens || 0,
+          inputTokens: realInput,
           outputTokens: usage.output_tokens || 0,
-          totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+          totalTokens: realInput + (usage.output_tokens || 0),
           ...(usage.cache_creation_input_tokens ? { cacheCreationTokens: usage.cache_creation_input_tokens } : {}),
           ...(usage.cache_read_input_tokens ? { cacheReadTokens: usage.cache_read_input_tokens } : {}),
         });
@@ -555,15 +636,6 @@ function stringifyInitialInput(input: unknown): string {
 
 function mergeToolInputJson(current: string, partial: string): string {
   if (!current.trim()) return partial;
-
-  const currentTrimmed = current.trim();
-  const partialTrimmed = partial.trim();
-  if (currentTrimmed === '{}') {
-    return partial;
-  }
-  if (partialTrimmed.startsWith('{') || partialTrimmed.startsWith('[')) {
-    return partial;
-  }
   return current + partial;
 }
 
@@ -590,7 +662,31 @@ function finalizeToolCalls(pendingToolUses: Map<number, PendingToolUse>): ToolCa
 function parseToolInput(inputJson: string): Record<string, any> {
   const trimmed = inputJson.trim();
   if (!trimmed) return {};
-  return JSON.parse(trimmed) as Record<string, any>;
+  try {
+    return JSON.parse(trimmed) as Record<string, any>;
+  } catch {
+    // Fallback: extract the first valid JSON object from the string.
+    // Some Anthropic-compatible endpoints (e.g. DeepSeek) may produce
+    // tool-call input JSON with trailing non-JSON content in streaming deltas.
+    const braceStart = trimmed.indexOf('{');
+    if (braceStart < 0) return {};
+    let depth = 0;
+    for (let i = braceStart; i < trimmed.length; i++) {
+      if (trimmed[i] === '{') depth++;
+      else if (trimmed[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          const candidate = trimmed.slice(braceStart, i + 1);
+          try {
+            return JSON.parse(candidate) as Record<string, any>;
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+    throw new SyntaxError(`Failed to parse tool input JSON: ${trimmed.slice(0, 200)}`);
+  }
 }
 
 export function createAnthropicLLM(config: AgentConfigFile): AnthropicLLM;

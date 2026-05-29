@@ -322,7 +322,7 @@ export class MCPConnectionManager {
 
       if (isDirectProcess) {
         this.log('info', `[MCP] Using direct process communication for ${name}`);
-        const response = await this.sendDirectRequest(connection, 'tools/list', {}, 10000);
+        const response = await this.sendDirectRequest(connection, 'tools/list', {}, 300000);
         const tools = response.result?.tools || [];
         connection.toolCount = tools.length;
         this.log('info', `[MCP] Received ${tools.length} tools`);
@@ -335,7 +335,7 @@ export class MCPConnectionManager {
           params: {},
         },
         ListToolsResultSchema,
-        { timeout: 5000 }
+        { timeout: 300000 }
       );
       const tools = response.tools || [];
       connection.toolCount = tools.length;
@@ -371,7 +371,7 @@ export class MCPConnectionManager {
         const response = await this.sendDirectRequest(connection, 'tools/call', {
           name,
           arguments: args,
-        }, 30000);
+        }, 300000);
         const result = this.normalizeToolCallResponse(response);
         this.log('info', `[MCP] Tool ${name} returned: ${result.isError ? 'ERROR' : 'OK'}`);
         return result;
@@ -386,7 +386,7 @@ export class MCPConnectionManager {
           },
         },
         CompatibilityCallToolResultSchema,
-        { timeout: 30000 }
+        { timeout: 300000 }
       );
       return this.normalizeToolCallResponse(response);
     } catch (error) {

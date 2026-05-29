@@ -111,6 +111,12 @@ class AgentBase {
   // 用户输入缓存（用于 Feature 修改待注入的输入内容）
   private _pendingInput: string | null = null;
 
+  // 中断控制：外部可通过 interrupt() 中断正在运行的 onCall
+  private _abortController: AbortController | null = null;
+
+  // Step 级自动保存配置
+  private _stepAutoSave?: { sessionId: string; store: SessionStore };
+
   // 模块实例（延迟初始化）
   private templateResolver?: TemplateResolver;
   private toolExecutor?: ToolExecutor;
@@ -208,10 +214,18 @@ class AgentBase {
 
     // ========== Call Start ==========
     const context = this.persistentContext ?? new Context();
+    // Ensure persistentContext points to the active context immediately,
+    // so that stepSaveFn (triggered after each ReAct step) saves the
+    // correct context rather than a stale reference.
+    this.persistentContext = context;
     const nextCallIndex = this._callIndex + 1;
     const isFirstCall = nextCallIndex === 0;
     const callStartTime = Date.now();
     const callId = Date.now();
+
+    // 创建 AbortController 用于本次 call 的中断控制
+    this._abortController = new AbortController();
+    console.log(`[Agent.onCall] Created _abortController for input="${input.slice(0, 50)}", callIndex=${nextCallIndex}`);
 
     // 递增 callIndex（用户交互序号）
     this._callIndex = nextCallIndex;
@@ -240,6 +254,8 @@ class AgentBase {
         { hookName: 'onCallStart', input }
       );
 
+      let preCallRuntime: Awaited<ReturnType<typeof this.captureRuntimeSnapshot>> | undefined;
+      let finalInput: string | undefined;
       try {
       // ========== Agent Initiate（仅首次）==========
       if (!this._initialized) {
@@ -263,8 +279,8 @@ class AgentBase {
         this._initialized = true;
       }
 
-      const preCallRuntime = await this.captureRuntimeSnapshot(context, this._callIndex - 1);
 
+      preCallRuntime = await this.captureRuntimeSnapshot(context, this._callIndex - 1);
       // ========== CallStart 反向钩子 ==========
       // 在系统提示词之后、用户输入之前调用，确保 Feature 可以正确注入消息
 
@@ -276,8 +292,14 @@ class AgentBase {
       this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
 
+      // 发送 call.start 通知（供前端消费 agent 运行状态）
+      try {
+        const { emitNotification, createCallStart } = await import('./notification.js');
+        emitNotification(createCallStart());
+      } catch { /* notification 模块不可用 */ }
+
       // 添加用户输入（使用可能被 Feature 修改过的缓存）
-      const finalInput = this._pendingInput ?? input;
+      finalInput = this._pendingInput ?? input;
       context.addUserMessage(finalInput, this._callIndex);
       this.pushToDebug(context.getAll());
 
@@ -285,7 +307,7 @@ class AgentBase {
       this.ensureExecutorsInitialized();
 
       // ========== ReAct 循环 ==========
-      const result = await this.reactRunner!.run(input, context, { isFirstCall, callIndex: this._callIndex });
+      const result = await this.reactRunner!.run(input, context, { isFirstCall, callIndex: this._callIndex, signal: this._abortController?.signal });
 
       // 保存上下文
       this.persistentContext = context;
@@ -317,6 +339,12 @@ class AgentBase {
         completed: result.completed,
       });
 
+      // 发送 call.finish 通知（成功）
+      try {
+        const { emitNotification, createCallFinish } = await import('./notification.js');
+        emitNotification(createCallFinish(result.completed));
+      } catch { /* notification 模块不可用 */ }
+
         this.logger.info('Call completed', {
           completed: result.completed,
           turns: result.turns,
@@ -331,6 +359,15 @@ class AgentBase {
       // 保留异常发生后最新的上下文状态。
       // 如果 step-level rollback 已触发，这里保存的就是回滚后的上下文。
       this.persistentContext = context;
+
+      // 失败调用也提交 checkpoint，保持与成功调用对称
+      if (preCallRuntime && finalInput !== undefined) {
+        this.commitCallCheckpoint({
+          callIndex: this._callIndex,
+          draftInput: finalInput,
+          runtime: preCallRuntime,
+        });
+      }
 
       // 如果是子代理，报告错误中断给父代理
       if (this._agentId && this._parentPool) {
@@ -363,6 +400,12 @@ class AgentBase {
         completed: false,
       });
 
+      // 发送 call.finish 通知（异常）
+      try {
+        const { emitNotification, createCallFinish } = await import('./notification.js');
+        emitNotification(createCallFinish(false));
+      } catch { /* notification 模块不可用 */ }
+
         this.logger.error('Call failed', {
           error: errorMsg,
           durationMs: Date.now() - callStartTime,
@@ -370,21 +413,25 @@ class AgentBase {
         throw error;
 
       } finally {
-        this._callStartTimes.delete(callId);
-        this._currentCallInput = undefined;
-        this._currentStep = 0;
+         console.log(`[Agent.onCall FINALLY] _abortController=${!!this._abortController}, signal.aborted=${this._abortController?.signal?.aborted}`);
+         this._callStartTimes.delete(callId);
+         this._currentCallInput = undefined;
+         this._currentStep = 0;
 
-        // 清理输入缓存
-        this._pendingInput = null;
+         // 清理输入缓存
+         this._pendingInput = null;
 
-        // 清除通知上下文
-        try {
-          const { _clearNotificationAgent } = await import('./notification.js');
-          _clearNotificationAgent();
-        } catch {
-          // 通知模块不可用，忽略
-        }
-      }
+         // 不清理 _abortController，让它保持可用以便 interrupt 调用
+         // 下次 onCall 会创建新的 AbortController 并覆盖旧的
+
+         // 清除通知上下文
+         try {
+           const { _clearNotificationAgent } = await import('./notification.js');
+           _clearNotificationAgent();
+         } catch {
+           // 通知模块不可用，忽略
+         }
+       }
     });
   }
 
@@ -508,6 +555,32 @@ class AgentBase {
     return this;
   }
 
+  /**
+   * 中断正在运行的 onCall
+   * 会触发 AbortController，在下一个检查点（step 间或 tool 执行中）优雅停止
+   * 返回 true 表示成功触发中断，false 表示当前没有正在运行的 call
+   */
+   interrupt(): boolean {
+    const hasController = !!this._abortController;
+    const isAborted = this._abortController?.signal?.aborted ?? false;
+    const isRunning = this._currentCallInput !== undefined;
+    console.log(`[Agent.interrupt] _abortController=${hasController}, signal.aborted=${isAborted}, isRunning=${isRunning}, callInput="${this._currentCallInput?.slice(0, 50)}"`);
+    if (this._abortController && !this._abortController.signal.aborted) {
+      this._abortController.abort(new Error('Interrupted by user'));
+      console.log(`[Agent.interrupt] abort() called successfully`);
+      return true;
+    }
+    console.log(`[Agent.interrupt] returning false - cannot interrupt`);
+    return false;
+  }
+
+  /**
+   * 当前是否正在执行 onCall
+   */
+  isRunning(): boolean {
+    return this._currentCallInput !== undefined;
+  }
+
   async rollbackToCall(callIndex: number): Promise<{ draftInput: string }> {
     await this.ensureFeatureTools();
     const checkpoint = this._callCheckpoints.find(entry => entry.callIndex === callIndex);
@@ -529,6 +602,36 @@ class AgentBase {
   async saveSession(sessionId: string, store: SessionStore = getDefaultSessionStore()): Promise<string> {
     const snapshot = await this.createSessionSnapshot(sessionId);
     return store.save(sessionId, snapshot);
+  }
+
+  /**
+   * 启用 Step 级自动保存：每个 ReAct step 完成后自动将 session 快照写入磁盘。
+   * 不会替换 CallFinish 后的 saveSession 调用——后者仍作为兜底全量保存。
+   */
+  enableStepAutoSave(sessionId: string, store: SessionStore): void {
+    this._stepAutoSave = { sessionId, store };
+    // 传播到 reactRunner（如果已初始化）
+    if (this.reactRunner) {
+      (this.reactRunner as any).agent.stepSaveFn = this._createStepSaveFn();
+    }
+  }
+
+  /**
+   * 禁用 Step 级自动保存
+   */
+  disableStepAutoSave(): void {
+    this._stepAutoSave = undefined;
+    if (this.reactRunner) {
+      (this.reactRunner as any).agent.stepSaveFn = undefined;
+    }
+  }
+
+  private _createStepSaveFn(): (() => Promise<void>) | undefined {
+    if (!this._stepAutoSave) return undefined;
+    const { sessionId, store } = this._stepAutoSave;
+    return async () => {
+      await this.saveSession(sessionId, store);
+    };
   }
 
   /**
@@ -1049,6 +1152,7 @@ class AgentBase {
         hooksRegistry: this.hooksRegistry,
         recordUsage: (callIndex: number, step: number, usage: UsageInfo) => this.recordUsage(callIndex, step, usage),
         endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
+        stepSaveFn: this._createStepSaveFn(),
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (call, input, context, step, callIndex) => this.toolExecutor!.execute(call, input, context, step, callIndex),

@@ -85,10 +85,23 @@ export interface LLMCompleteData {
 }
 
 /**
- * 工具开始通知数据
+ * 工具定义
  */
-export interface ToolStartData {
-  toolName: string;
+export interface Tool {
+  name: string;
+  description: string;
+  parameters?: Record<string, any>;
+  /**
+   * 执行工具
+   *
+   * @param args 工具参数
+   * @param context 执行上下文，可能包含：
+   *   - signal?: AbortSignal - 用于中断工具执行
+   *   - ...其他上下文信息
+   */
+  execute: (args: any, context?: any) => Promise<any>;
+  /** 可选：渲染配置 */
+  render?: ToolRenderConfig;
 }
 
 /**
@@ -230,19 +243,15 @@ export interface ToolRenderConfig {
   result?: string | InlineRenderTemplate;
 }
 
-// 工具定义
-export interface Tool {
-  name: string;
-  description: string;
-  parameters?: Record<string, any>;
-  execute: (args: any, context?: any) => Promise<any>;
-  /** 可选：渲染配置 */
-  render?: ToolRenderConfig;
-}
-
 // LLM 接口 - 所有 LLM 适配器都需要实现这个
 export interface LLMClient {
-  chat(messages: Message[], tools: Tool[]): Promise<LLMResponse>;
+  chat(messages: Message[], tools: Tool[], options?: LLMChatOptions): Promise<LLMResponse>;
+}
+
+// LLM 调用选项
+export interface LLMChatOptions {
+  /** 允许中断正在进行的 LLM 调用 */
+  signal?: AbortSignal;
 }
 
 // 占位符上下文类型
@@ -381,6 +390,8 @@ export interface AgentSession {
   projectRoot?: string;
   // 通知系统扩展
   currentState: Notification | null;
+  // call 运行状态（独立于 currentState，不受 state 覆盖影响）
+  callActive?: boolean;
   events: Notification[];
   lastEventCount: number;
   logs: DebugLogEntry[];
@@ -390,6 +401,17 @@ export interface AgentSession {
   _lastMessageSig?: string;
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
+  // 运行期间排队等待的用户输入（用于输入框常驻 + 队列注入）
+  queuedInputs: QueuedInput[];
+}
+
+/**
+ * 排队的用户输入
+ */
+export interface QueuedInput {
+  id: string;
+  text: string;
+  timestamp: number;
 }
 
 /**
@@ -406,6 +428,9 @@ export type DebugHubIPCMessage =
   | UnregisterAgentMsg
   | PushNotificationMsg
   | RequestInputMsg
+  | QueueInputMsg
+  | ConsumeQueuedInputMsg
+  | InterruptAgentMsg
   | StopMsg;
 
 /**
@@ -514,6 +539,33 @@ export interface RequestInputMsg {
 }
 
 /**
+ * 排队用户输入（运行期间提交的消息）
+ */
+export interface QueueInputMsg {
+  type: 'queue-input';
+  agentId: string;
+  input: QueuedInput;
+}
+
+/**
+ * 通知 Worker 移除一条已被运行时接管/开始处理的排队输入
+ */
+export interface ConsumeQueuedInputMsg {
+  type: 'consume-queued-input';
+  agentId: string;
+  inputId: string;
+}
+
+/**
+ * 中断正在运行的 Agent
+ */
+export interface InterruptAgentMsg {
+  type: 'interrupt-agent';
+  agentId: string;
+  clearQueue?: boolean;
+}
+
+/**
  * 用户输入响应（Worker → Agent，通过 UDS）
  */
 export interface InputResponseMsg {
@@ -538,6 +590,14 @@ export interface UserInputOption {
   id: string;
   label: string;
   description?: string;
+  /** Whether this option allows supplementary free-text input */
+  allowSupplement?: boolean;
+  /** Whether the supplement text is required (only meaningful when allowSupplement is true) */
+  supplementRequired?: boolean;
+  /** Label shown above the supplement textarea */
+  supplementLabel?: string;
+  /** Placeholder for the supplement textarea */
+  supplementPlaceholder?: string;
 }
 
 export interface UserInputQuestion {
@@ -562,6 +622,8 @@ export interface UserInputChoiceAnswer {
   questionId: string;
   optionId?: string;
   customText?: string;
+  /** Supplementary free-text provided alongside the selected option */
+  supplementText?: string;
 }
 
 export interface UserInputResponse {

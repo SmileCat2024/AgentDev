@@ -26,18 +26,6 @@
     "copy-example": "node scripts/copy-example-feature.mjs",
     "server": "node dist/cli/server.js"
   },
-  "tsup": {
-    "entry": [
-      "src/index.ts",
-      "src/cli/viewer.ts",
-      "src/cli/server.ts",
-      "src/features/*/templates/*.render.ts"
-    ],
-    "format": "esm",
-    "dts": true,
-    "clean": true,
-    "sourcemap": true
-  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
@@ -50,6 +38,7 @@
     "openai": "^4.73.0",
     "sharp": "^0.33.5",
     "sound-play": "^1.1.0",
+    "undici": "^7.25.0",
     "zod": "^4.1.5"
   },
   "devDependencies": {

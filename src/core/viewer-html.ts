@@ -2398,7 +2398,8 @@ export function generateViewerHtml(port: number): string {
       display: block;
     }
 
-    .user-choice-custom textarea {
+    .user-choice-custom textarea,
+    .user-choice-supplement textarea {
       width: 100%;
       min-height: 42px;
       max-height: 140px;
@@ -2415,8 +2416,24 @@ export function generateViewerHtml(port: number): string {
       outline: none;
     }
 
-    .user-choice-custom textarea:focus {
+    .user-choice-custom textarea:focus,
+    .user-choice-supplement textarea:focus {
       border-color: var(--text-secondary);
+    }
+
+    .user-choice-supplement {
+      display: none;
+      margin-top: -2px;
+    }
+
+    .user-choice-supplement.active {
+      display: block;
+    }
+
+    .user-choice-supplement-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
     }
 
     .user-choice-footer {
@@ -5109,6 +5126,7 @@ export function generateViewerHtml(port: number): string {
           selectedIndex: 0,
           selectedIndexByQuestion: {},
           customTextByQuestion: {},
+          supplementTextByOption: {},
           collapsed: false,
         };
       }
@@ -5125,15 +5143,22 @@ export function generateViewerHtml(port: number): string {
       const options = Array.isArray(question.options) ? question.options.slice(0, 4) : [];
       const selectedIndex = state.selectedIndexByQuestion?.[question.id] ?? (questionIndex === state.questionIndex ? state.selectedIndex : 0);
       const isCustom = question.allowCustom && selectedIndex >= options.length;
-      return isCustom
-        ? {
-            questionId: question.id,
-            customText: (state.customTextByQuestion[question.id] || '').trim(),
-          }
-        : {
-            questionId: question.id,
-            optionId: options[selectedIndex]?.id,
-          };
+      if (isCustom) {
+        return {
+          questionId: question.id,
+          customText: (state.customTextByQuestion[question.id] || '').trim(),
+        };
+      }
+      const selectedOption = options[selectedIndex];
+      const supplementKey = question.id + ':' + (selectedOption?.id || '');
+      const supplementText = selectedOption?.allowSupplement
+        ? (state.supplementTextByOption?.[supplementKey] || '').trim()
+        : undefined;
+      return {
+        questionId: question.id,
+        optionId: selectedOption?.id,
+        supplementText: supplementText || undefined,
+      };
     }
 
     function rememberCurrentChoice(req, state) {
@@ -5174,15 +5199,32 @@ export function generateViewerHtml(port: number): string {
       card.tabIndex = 0;
       card.setAttribute('onkeydown', \`handleChoiceKey(event, '\${req.requestId}')\`);
 
-      const optionHtml = options.map((option, index) => \`
-        <button class="user-choice-option \${index === state.selectedIndex ? 'active' : ''}" type="button" onclick="selectChoiceOption('\${req.requestId}', \${index})">
-          <span class="user-choice-key">\${index + 1}</span>
-          <span>
-            <span class="user-choice-label">\${escapeHtml(option.label || option.id || ('选项 ' + (index + 1)))}</span>
-            \${option.description ? \`<span class="user-choice-description">\${escapeHtml(option.description)}</span>\` : ''}
-          </span>
-        </button>
-      \`).join('');
+      const optionHtml = options.map((option, index) => {
+        const isActive = index === state.selectedIndex;
+        const supplementKey = question.id + ':' + (option.id || '');
+        const supplementText = state.supplementTextByOption?.[supplementKey] || '';
+        const showSupplement = isActive && option.allowSupplement;
+        const supplementLabel = option.supplementLabel || '';
+        const supplementPlaceholder = option.supplementPlaceholder || '';
+        return \`
+          <div>
+            <button class="user-choice-option \${isActive ? 'active' : ''}" type="button" onclick="selectChoiceOption('\${req.requestId}', \${index})">
+              <span class="user-choice-key">\${index + 1}</span>
+              <span>
+                <span class="user-choice-label">\${escapeHtml(option.label || option.id || ('选项 ' + (index + 1)))}</span>
+                \${option.description ? \`<span class="user-choice-description">\${escapeHtml(option.description)}</span>\` : ''}
+              </span>
+            </button>
+            <div class="user-choice-supplement \${showSupplement ? 'active' : ''}">
+              \${supplementLabel ? \`<div class="user-choice-supplement-label">\${escapeHtml(supplementLabel)}</div>\` : ''}
+              <textarea id="choice-supplement-\${req.requestId}-\${index}" rows="2"
+                oninput="updateChoiceSupplementText('\${req.requestId}', '\${supplementKey}', this.value); autoResize(this)"
+                onkeydown="handleChoiceCustomKey(event, '\${req.requestId}')"
+                placeholder="\${escapeHtml(supplementPlaceholder || '补充说明（可选）')}">\${escapeHtml(supplementText)}</textarea>
+            </div>
+          </div>
+        \`;
+      }).join('');
 
       const customIndex = options.length;
       const customActive = hasCustom && state.selectedIndex === customIndex;
@@ -5223,12 +5265,17 @@ export function generateViewerHtml(port: number): string {
       container.appendChild(card);
       setTimeout(() => {
         const customInput = customActive ? document.getElementById(\`choice-custom-\${req.requestId}\`) : null;
-        const target = customInput || card;
+        const activeOption = options[state.selectedIndex];
+        const supplementInput = !customActive && activeOption?.allowSupplement
+          ? document.getElementById('choice-supplement-' + req.requestId + '-' + state.selectedIndex)
+          : null;
+        const target = customInput || supplementInput || card;
         target.focus();
-        if (customInput) {
-          const end = customInput.value.length;
-          customInput.setSelectionRange(end, end);
-          autoResize(customInput);
+        if (customInput || supplementInput) {
+          const el = customInput || supplementInput;
+          const end = el.value.length;
+          el.setSelectionRange(end, end);
+          autoResize(el);
         }
       }, 30);
     }
@@ -5276,6 +5323,14 @@ export function generateViewerHtml(port: number): string {
       if (question?.id) {
         state.customTextByQuestion[question.id] = value;
       }
+    };
+
+    window.updateChoiceSupplementText = function(requestId, supplementKey, value) {
+      const state = getChoiceState(requestId);
+      if (!state.supplementTextByOption) {
+        state.supplementTextByOption = {};
+      }
+      state.supplementTextByOption[supplementKey] = value;
     };
 
     window.handleChoiceKey = function(event, requestId) {
@@ -5326,6 +5381,28 @@ export function generateViewerHtml(port: number): string {
       const questions = req.questions || [];
       rememberCurrentChoice(req, state);
 
+      // Validate supplement-required for current question
+      const currentQuestion = questions[state.questionIndex];
+      if (currentQuestion) {
+        const currentAnswer = state.answers[state.questionIndex];
+        if (currentAnswer && currentAnswer.optionId) {
+          const selectedOption = (currentQuestion.options || []).find(o => o.id === currentAnswer.optionId);
+          if (selectedOption && selectedOption.allowSupplement && selectedOption.supplementRequired) {
+            const supplementKey = currentQuestion.id + ':' + currentAnswer.optionId;
+            const supplementValue = (state.supplementTextByOption?.[supplementKey] || '').trim();
+            if (!supplementValue) {
+              const supplementInput = document.getElementById('choice-supplement-' + requestId + '-' + (currentQuestion.options.indexOf(selectedOption)));
+              if (supplementInput) {
+                supplementInput.focus();
+                supplementInput.style.borderColor = '#dc3545';
+                setTimeout(() => { supplementInput.style.borderColor = ''; }, 1500);
+              }
+              return;
+            }
+          }
+        }
+      }
+
       if (state.questionIndex < questions.length - 1) {
         state.questionIndex += 1;
         state.selectedIndex = state.selectedIndexByQuestion[questions[state.questionIndex]?.id] ?? 0;
@@ -5338,7 +5415,9 @@ export function generateViewerHtml(port: number): string {
         const q = questions[index] || {};
         if (item.customText) return \`\${q.question || item.questionId}: \${item.customText}\`;
         const option = (q.options || []).find(candidate => candidate.id === item.optionId);
-        return \`\${q.question || item.questionId}: \${option?.label || item.optionId || ''}\`;
+        let line = \`\${q.question || item.questionId}: \${option?.label || item.optionId || ''}\`;
+        if (item.supplementText) line += \` (\${item.supplementText})\`;
+        return line;
       }).join('\\n');
 
       try {

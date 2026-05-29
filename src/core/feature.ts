@@ -88,7 +88,7 @@ export interface TemplateInfo {
  * Claw 等消费端可根据该契约自动渲染表单。
  */
 export interface FeatureManifestSettingProperty {
-  type: 'string' | 'number' | 'boolean' | 'select' | 'file';
+  type: 'string' | 'number' | 'boolean' | 'select' | 'file' | 'directory';
   title: string;
   description?: string;
   default?: unknown;
@@ -102,6 +102,8 @@ export interface FeatureManifestSettingProperty {
   step?: number;
   /** file 类型下的可接受文件类型，如 '.mp3,.wav' 或 'audio/*' */
   accept?: string | string[];
+  /** directory 类型下的最大条目数 */
+  maxItems?: number;
 }
 
 export interface FeatureManifestDefinition {

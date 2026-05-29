@@ -244,6 +244,9 @@ class ViewerWorker {
       case 'request-input':
         this.handleRequestInput(msg);
         break;
+      case 'consume-queued-input':
+        this.handleConsumeQueuedInput(msg.agentId, msg.inputId);
+        break;
       case 'stop':
         this.handleStop();
         break;
@@ -419,6 +422,41 @@ class ViewerWorker {
     const inputPostMatch = url.match(/^\/api\/agents\/([^/]+)\/input$/);
     if (inputPostMatch && req.method === 'POST') {
       this.handlePostInput(req, res, inputPostMatch[1]);
+      return;
+    }
+
+    // POST /api/agents/:id/queue-input - 运行期间排队用户输入
+    const queueInputMatch = url.match(/^\/api\/agents\/([^/]+)\/queue-input$/);
+    if (queueInputMatch && req.method === 'POST') {
+      this.handleQueueInput(req, res, queueInputMatch[1]);
+      return;
+    }
+
+    // GET /api/agents/:id/queued-inputs - 获取排队中的用户输入
+    const queuedInputsMatch = url.match(/^\/api\/agents\/([^/]+)\/queued-inputs$/);
+    if (queuedInputsMatch && req.method === 'GET') {
+      this.handleGetQueuedInputs(req, res, queuedInputsMatch[1]);
+      return;
+    }
+
+    // POST /api/agents/:id/dequeue-input - 消费第一条排队消息
+    const dequeueMatch = url.match(/^\/api\/agents\/([^/]+)\/dequeue-input$/);
+    if (dequeueMatch && req.method === 'POST') {
+      this.handleDequeueInput(req, res, dequeueMatch[1]);
+      return;
+    }
+
+    // POST /api/agents/:id/interrupt - 中断正在运行的 Agent
+    const interruptMatch = url.match(/^\/api\/agents\/([^/]+)\/interrupt$/);
+    if (interruptMatch && req.method === 'POST') {
+      this.handleInterrupt(req, res, interruptMatch[1]);
+      return;
+    }
+
+    // GET /api/agents/:id/running - 查询 Agent 是否正在运行
+    const runningMatch = url.match(/^\/api\/agents\/([^/]+)\/running$/);
+    if (runningMatch && req.method === 'GET') {
+      this.handleGetRunning(req, res, runningMatch[1]);
       return;
     }
 
@@ -800,6 +838,7 @@ class ViewerWorker {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       state: session.currentState,
+      callActive: session.callActive === true,
       hasNewEvents,
     }));
   }
@@ -1015,6 +1054,192 @@ class ViewerWorker {
     });
   }
 
+  /**
+   * 排队用户输入（运行期间提交的消息）
+   */
+  private handleQueueInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { text } = JSON.parse(body);
+        if (!text || typeof text !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Missing or invalid text' }));
+          return;
+        }
+
+        const session = this.agentSessions.get(agentId);
+        if (!session) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Agent not found' }));
+          return;
+        }
+
+        if (!session.queuedInputs) {
+          (session as any).queuedInputs = [];
+        }
+
+        const queuedInput = {
+          id: `q-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          text,
+          timestamp: Date.now(),
+        };
+        session.queuedInputs.push(queuedInput);
+        console.log(`[Viewer Worker] 用户输入已排队: ${agentId}, queueLength=${session.queuedInputs.length}`);
+
+        const targetClientId = session.clientId;
+        const targetSocket = targetClientId ? this.udsClients.get(targetClientId) : null;
+        (session as any).useArbiterQueue = !!targetSocket;
+        if (targetSocket) {
+          try {
+            targetSocket.write(JSON.stringify({
+              type: 'queue-input',
+              agentId,
+              input: queuedInput,
+            }) + '\n');
+          } catch (writeError) {
+            console.error('[Viewer Worker] queue-input 转发到运行时失败:', writeError);
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: true, id: queuedInput.id, queueLength: session.queuedInputs.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+    });
+  }
+
+  /**
+   * 获取排队中的用户输入
+   */
+  private handleGetQueuedInputs(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    const queued = session.queuedInputs || [];
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(queued));
+  }
+
+  /**
+   * 消费第一条排队消息
+   */
+  private handleDequeueInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    if ((session as any).useArbiterQueue) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ input: null, remaining: session.queuedInputs?.length || 0 }));
+      return;
+    }
+
+    const queued = session.queuedInputs || [];
+    if (queued.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ input: null }));
+      return;
+    }
+
+    const input = queued.shift()!;
+    console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ input, remaining: queued.length }));
+  }
+
+  private handleConsumeQueuedInput(agentId: string, inputId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session || !Array.isArray(session.queuedInputs) || !inputId) {
+      return;
+    }
+    const nextQueue = session.queuedInputs.filter((item) => item?.id !== inputId);
+    if (nextQueue.length !== session.queuedInputs.length) {
+      session.queuedInputs = nextQueue;
+      console.log(`[Viewer Worker] 已移除排队输入: ${agentId}, inputId=${inputId}, remaining=${session.queuedInputs.length}`);
+    }
+  }
+
+  /**
+   * 中断正在运行的 Agent
+   */
+  private handleInterrupt(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    console.log(`[VW.handleInterrupt] agentId=${agentId}, sessionFound=${!!session}, sessionKeys=[${[...this.agentSessions.keys()].join(',')}]`);
+    if (!session) {
+      console.log(`[VW.handleInterrupt] 404 - agent not found in sessions`);
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    // 通过 UDS 发送中断消息到 Agent 进程
+    const targetClientId = session.clientId;
+    console.log(`[VW.handleInterrupt] session.clientId=${targetClientId}, udsClientKeys=[${[...this.udsClients.keys()].join(',')}]`);
+    if (targetClientId) {
+      const targetSocket = this.udsClients.get(targetClientId);
+      console.log(`[VW.handleInterrupt] socketFound=${!!targetSocket}, socketDestroyed=${targetSocket?.destroyed}`);
+      if (targetSocket) {
+        try {
+          if (Array.isArray(session.queuedInputs) && session.queuedInputs.length > 0) {
+            session.queuedInputs = [];
+          }
+          targetSocket.write(JSON.stringify({
+            type: 'interrupt-agent',
+            agentId,
+            clearQueue: true,
+          }) + '\n');
+          console.log(`[VW.handleInterrupt] UDS message sent to ${targetClientId}: ${agentId}`);
+        } catch (writeError) {
+          console.error('[VW.handleInterrupt] UDS write failed:', writeError);
+        }
+      } else {
+        console.warn(`[VW.handleInterrupt] no UDS socket for clientId=${targetClientId}`);
+      }
+    } else {
+      console.warn(`[VW.handleInterrupt] session has no clientId`);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ success: true }));
+  }
+
+  /**
+   * 查询 Agent 是否正在运行
+   */
+  private handleGetRunning(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    // 通过 UDS 查询运行状态
+    const targetClientId = session.clientId;
+    if (targetClientId) {
+      const targetSocket = this.udsClients.get(targetClientId);
+      if (targetSocket) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ running: true }));
+        return;
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ running: false }));
+  }
+
   // ========== 会话管理 ==========
 
   /**
@@ -1032,10 +1257,12 @@ class ViewerWorker {
         lastActive: Date.now(),
         // 通知系统扩展
         currentState: null,
+        callActive: false,
         events: [],
         lastEventCount: 0,
         logs: [],
         overview: this.createEmptyOverview(),
+        queuedInputs: [],
       };
       this.agentSessions.set(agentId, session);
     }
@@ -1325,7 +1552,9 @@ class ViewerWorker {
   public handlePushNotification(msg: any): void {
     const { agentId, notification } = msg;
     const session = this.agentSessions.get(agentId);
-    if (!session) return;
+    if (!session) {
+      return;
+    }
 
     this.updateSessionActivity(agentId);
 
@@ -1335,6 +1564,13 @@ class ViewerWorker {
         session.logs.splice(0, session.logs.length - this.MAX_LOGS);
       }
       return;
+    }
+
+    // call 运行状态追踪（独立字段，不受 state 覆盖影响）
+    if (notification.type === 'call.start') {
+      session.callActive = true;
+    } else if (notification.type === 'call.finish') {
+      session.callActive = false;
     }
 
     if (notification.category === 'state') {

@@ -81,6 +81,10 @@ export type {
 export { WebSearchFeature } from './websearch/index.js';
 export type { WebSearchFeatureConfig } from './websearch/index.js';
 
+// File History Feature
+export { FileHistoryFeature } from './file-history/index.js'
+export type { FileHistoryFeatureConfig, SnapshotInfo } from './file-history/index.js'
+
 // OpencodeBasic Feature
 export { OpencodeBasicFeature } from './opencode-basic/index.js';
 

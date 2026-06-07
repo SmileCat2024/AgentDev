@@ -30,6 +30,7 @@ import {
   createLsTool,
   createGlobTool,
   createGrepTool,
+  normalizeNamedPathArg,
   resolveWorkspacePath,
 } from './tools.js';
 
@@ -127,7 +128,7 @@ export class OpencodeBasicFeature implements AgentFeature {
 
     // 记录 read 操作
     if (toolName === 'read') {
-      const filePath = ctx.call.arguments?.filePath as string;
+      const filePath = normalizeNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
       const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
       this.readFiles.add(normalizedPath);
 
@@ -144,7 +145,7 @@ export class OpencodeBasicFeature implements AgentFeature {
 
     // 验证 write 操作
     if (toolName === 'write') {
-      const filePath = ctx.call.arguments?.filePath as string;
+      const filePath = normalizeNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
       const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
 
       // 检查文件是否存在

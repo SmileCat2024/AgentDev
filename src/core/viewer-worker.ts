@@ -9,7 +9,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { createServer as createNetServer, Server, Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -818,7 +818,7 @@ class ViewerWorker {
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(session.overview || this.createEmptyOverview()));
+    res.end(JSON.stringify(this.getMergedOverview(session)));
   }
 
   /**
@@ -838,6 +838,8 @@ class ViewerWorker {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       state: session.currentState,
+      event: session.events.length > 0 ? session.events[session.events.length - 1] : null,
+      runtime: this.cloneRuntimeState(this.getSessionRuntimeState(session)),
       callActive: session.callActive === true,
       hasNewEvents,
     }));
@@ -1258,6 +1260,7 @@ class ViewerWorker {
         // 通知系统扩展
         currentState: null,
         callActive: false,
+        runtimeState: this.createEmptyRuntimeState(),
         events: [],
         lastEventCount: 0,
         logs: [],
@@ -1378,7 +1381,10 @@ class ViewerWorker {
     const { agentId, overview } = msg;
     const session = this.agentSessions.get(agentId);
     if (!session) return;
-    session.overview = overview;
+    session.overview = {
+      ...overview,
+      runtime: this.cloneRuntimeState(session.runtimeState || overview.runtime || this.createEmptyRuntimeState()),
+    };
     this.updateSessionActivity(agentId);
   }
 
@@ -1431,6 +1437,71 @@ class ViewerWorker {
         totalRequests: 0,
         totalCacheHitRequests: 0,
       },
+      runtime: this.createEmptyRuntimeState(),
+    };
+  }
+
+  private createEmptyRuntimeState(): AgentRuntimeSnapshot {
+    return {
+      stage: 'idle',
+      callActive: false,
+      charCount: 0,
+      thinkingChars: 0,
+      contentChars: 0,
+      toolCallCount: 0,
+      activeToolNames: [],
+      activeToolCount: 0,
+      callStartedAt: 0,
+      stageStartedAt: 0,
+      updatedAt: 0,
+      lastErrorType: null,
+      lastErrorMessage: null,
+    };
+  }
+
+  private cloneRuntimeState(snapshot?: AgentRuntimeSnapshot | null): AgentRuntimeSnapshot {
+    const source = snapshot || this.createEmptyRuntimeState();
+    return {
+      ...source,
+      activeToolNames: Array.isArray(source.activeToolNames) ? source.activeToolNames.slice() : [],
+    };
+  }
+
+  private getRuntimeStageFromLLMPhase(phase: string): AgentRuntimeSnapshot['stage'] {
+    if (phase === 'thinking') return 'llm_thinking';
+    if (phase === 'content') return 'llm_content';
+    if (phase === 'tool_calling') return 'llm_tool_call_building';
+    return 'awaiting_runtime';
+  }
+
+  private updateRuntimeStage(
+    runtimeState: AgentRuntimeSnapshot,
+    nextStage: AgentRuntimeSnapshot['stage'],
+    timestamp: number,
+  ): AgentRuntimeSnapshot {
+    const nextTimestamp = timestamp || Date.now();
+    return {
+      ...runtimeState,
+      stage: nextStage,
+      stageStartedAt: runtimeState.stage === nextStage
+        ? (runtimeState.stageStartedAt || nextTimestamp)
+        : nextTimestamp,
+      updatedAt: nextTimestamp,
+    };
+  }
+
+  private getSessionRuntimeState(session: AgentSession): AgentRuntimeSnapshot {
+    if (!session.runtimeState) {
+      session.runtimeState = this.createEmptyRuntimeState();
+    }
+    return session.runtimeState;
+  }
+
+  private getMergedOverview(session: AgentSession): AgentOverviewSnapshot {
+    const base = session.overview || this.createEmptyOverview();
+    return {
+      ...base,
+      runtime: this.cloneRuntimeState(this.getSessionRuntimeState(session)),
     };
   }
 
@@ -1566,11 +1637,95 @@ class ViewerWorker {
       return;
     }
 
+    const runtimeState = this.getSessionRuntimeState(session);
+
     // call 运行状态追踪（独立字段，不受 state 覆盖影响）
     if (notification.type === 'call.start') {
       session.callActive = true;
+      const nextStage = runtimeState.activeToolCount > 0 ? 'tool_executing' : 'awaiting_runtime';
+      session.runtimeState = {
+        ...this.updateRuntimeStage(runtimeState, nextStage, notification.timestamp || Date.now()),
+        callActive: true,
+        callStartedAt: runtimeState.callActive === true
+          ? (runtimeState.callStartedAt || notification.timestamp || Date.now())
+          : (notification.timestamp || Date.now()),
+        lastErrorType: null,
+        lastErrorMessage: null,
+      };
     } else if (notification.type === 'call.finish') {
+      const finishData = (notification.data && typeof notification.data === 'object')
+        ? notification.data as Record<string, unknown>
+        : {};
+      const completed = finishData.completed !== false;
       session.callActive = false;
+      session.runtimeState = {
+        ...this.updateRuntimeStage(runtimeState, completed ? 'completed' : 'failed', notification.timestamp || Date.now()),
+        callActive: false,
+        activeToolNames: [],
+        activeToolCount: 0,
+        retryAttempt: undefined,
+        maxRetries: undefined,
+        nextRetryDelayMs: undefined,
+      };
+    } else if (notification.type === 'llm.char_count') {
+      const data = (notification.data && typeof notification.data === 'object')
+        ? notification.data as Record<string, unknown>
+        : {};
+      const charCount = typeof data.charCount === 'number' ? data.charCount : runtimeState.charCount;
+      const phase = typeof data.phase === 'string' ? data.phase : '';
+      const toolCallCount = typeof data.toolCallCount === 'number' ? data.toolCallCount : runtimeState.toolCallCount;
+      const nextStage = this.getRuntimeStageFromLLMPhase(phase);
+      session.runtimeState = {
+        ...this.updateRuntimeStage(runtimeState, nextStage, notification.timestamp || Date.now()),
+        callActive: session.callActive === true,
+        charCount,
+        thinkingChars: typeof data.thinkingChars === 'number'
+          ? data.thinkingChars
+          : (phase === 'thinking' ? charCount : runtimeState.thinkingChars),
+        contentChars: typeof data.contentChars === 'number'
+          ? data.contentChars
+          : (phase === 'content' ? charCount : runtimeState.contentChars),
+        toolCallCount,
+      };
+    } else if (notification.type === 'llm.complete') {
+      const nextStage = session.callActive === true
+        ? (runtimeState.activeToolCount > 0 ? 'tool_executing' : 'awaiting_runtime')
+        : 'completed';
+      session.runtimeState = {
+        ...this.updateRuntimeStage(runtimeState, nextStage, notification.timestamp || Date.now()),
+        callActive: session.callActive === true,
+      };
+    } else if (notification.type === 'tool.start') {
+      const data = (notification.data && typeof notification.data === 'object')
+        ? notification.data as Record<string, unknown>
+        : {};
+      const toolName = typeof data.toolName === 'string' ? data.toolName.trim() : '';
+      const activeToolNames = this.cloneRuntimeState(runtimeState).activeToolNames;
+      if (toolName && !activeToolNames.includes(toolName)) {
+        activeToolNames.push(toolName);
+      }
+      session.runtimeState = {
+        ...this.updateRuntimeStage(runtimeState, 'tool_executing', notification.timestamp || Date.now()),
+        callActive: session.callActive === true,
+        activeToolNames,
+        activeToolCount: activeToolNames.length,
+      };
+    } else if (notification.type === 'tool.complete') {
+      const data = (notification.data && typeof notification.data === 'object')
+        ? notification.data as Record<string, unknown>
+        : {};
+      const toolName = typeof data.toolName === 'string' ? data.toolName.trim() : '';
+      const activeToolNames = this.cloneRuntimeState(runtimeState).activeToolNames
+        .filter((name) => name !== toolName);
+      const nextStage = session.callActive === true
+        ? (activeToolNames.length > 0 ? 'tool_executing' : 'awaiting_runtime')
+        : 'completed';
+      session.runtimeState = {
+        ...this.updateRuntimeStage(runtimeState, nextStage, notification.timestamp || Date.now()),
+        callActive: session.callActive === true,
+        activeToolNames,
+        activeToolCount: activeToolNames.length,
+      };
     }
 
     if (notification.category === 'state') {

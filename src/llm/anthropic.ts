@@ -415,6 +415,24 @@ function stringifyToolValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Find the index right after the first SSE event boundary in a text buffer.
+ * Matches the Anthropic SDK's findDoubleNewlineIndex behavior — supports
+ * \n\n, \r\r, and \r\n\r\n separators. Returns -1 if none found.
+ */
+function findDoubleNewlineIndex(buffer: string): { index: number; separatorLen: number } {
+  for (let i = 0; i < buffer.length - 1; i++) {
+    const ch = buffer[i];
+    const next = buffer[i + 1];
+    if (ch === '\n' && next === '\n') return { index: i, separatorLen: 2 };
+    if (ch === '\r' && next === '\r') return { index: i, separatorLen: 2 };
+    if (ch === '\r' && next === '\n' && i + 3 < buffer.length && buffer[i + 2] === '\r' && buffer[i + 3] === '\n') {
+      return { index: i, separatorLen: 4 };
+    }
+  }
+  return { index: -1, separatorLen: 0 };
+}
+
 async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<LLMResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -428,6 +446,10 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
 
   // 收集 usage 数据
   let usageInfo: UsageInfo | null = null;
+
+  // 流式完整性追踪
+  let receivedMessageStart = false;
+  let receivedMessageStop = false;
 
   // 创建 signal abort 监听 Promise，用于 race 中断 reader.read()
   const createAbortPromise = (): Promise<never> => new Promise<never>((_, reject) => {
@@ -443,6 +465,19 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 
+  const applyEvent = (event: AnthropicStreamEvent): void => {
+    if (event.type === 'message_start') receivedMessageStart = true;
+    if (event.type === 'message_stop') receivedMessageStop = true;
+    applyAnthropicStreamEvent(event, pendingThinkingBlocks, pendingToolUses, (delta) => {
+      content += delta.content;
+      reasoning += delta.reasoning;
+      charCount += delta.charCount;
+      currentPhase = delta.phase;
+    }, (usage) => {
+      usageInfo = usage;
+    });
+  };
+
   try {
     while (true) {
       // 用 Promise.race 让 reader.read() 可被 signal 中断
@@ -450,28 +485,21 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
         ? await Promise.race([reader.read(), createAbortPromise()])
         : await reader.read();
       if (done) break;
+
       buffer += decoder.decode(value, { stream: true });
 
-    let separatorIndex = buffer.indexOf('\n\n');
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      buffer = buffer.slice(separatorIndex + 2);
-      const event = parseSSEEvent(rawEvent);
-      if (event) {
-        applyAnthropicStreamEvent(event, pendingThinkingBlocks, pendingToolUses, (delta) => {
-          content += delta.content;
-          reasoning += delta.reasoning;
-          charCount += delta.charCount;
-          currentPhase = delta.phase;
-        }, (usage) => {
-          // 收集 usage 数据
-          usageInfo = usage;
-        });
-        await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size);
+      let sep = findDoubleNewlineIndex(buffer);
+      while (sep.index >= 0) {
+        const rawEvent = buffer.slice(0, sep.index);
+        buffer = buffer.slice(sep.index + sep.separatorLen);
+        const event = parseSSEEvent(rawEvent);
+        if (event) {
+          applyEvent(event);
+          await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size);
+        }
+        sep = findDoubleNewlineIndex(buffer);
       }
-      separatorIndex = buffer.indexOf('\n\n');
     }
-  }
   } catch (e) {
     // AbortError 直接传播
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
@@ -479,20 +507,18 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
     throw e;
   }
 
+  // 处理缓冲区中最后的残余数据
   if (buffer.trim()) {
     const event = parseSSEEvent(buffer);
     if (event) {
-      applyAnthropicStreamEvent(event, pendingThinkingBlocks, pendingToolUses, (delta) => {
-        content += delta.content;
-        reasoning += delta.reasoning;
-        charCount += delta.charCount;
-        currentPhase = delta.phase;
-      }, (usage) => {
-        // 收集 usage 数据
-        usageInfo = usage;
-      });
+      applyEvent(event);
       await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size);
     }
+  }
+
+  // 检测不完整流：收到了 message_start 但没有 message_stop，也没有任何有效内容
+  if (receivedMessageStart && !receivedMessageStop && !content && pendingToolUses.size === 0 && !reasoning) {
+    throw new Error('Anthropic stream ended incompletely: received message_start but no message_stop or content');
   }
 
   const toolCalls = finalizeToolCalls(pendingToolUses);
@@ -517,7 +543,13 @@ function parseSSEEvent(rawEvent: string): AnthropicStreamEvent | null {
   const data = dataLines.join('\n');
   if (data === '[DONE]') return null;
 
-  return JSON.parse(data) as AnthropicStreamEvent;
+  try {
+    return JSON.parse(data) as AnthropicStreamEvent;
+  } catch {
+    // Skip malformed SSE events instead of crashing the entire stream.
+    console.warn(`[Anthropic] Skipping malformed SSE event: ${data.slice(0, 200)}`);
+    return null;
+  }
 }
 
 function applyAnthropicStreamEvent(
@@ -539,7 +571,12 @@ function applyAnthropicStreamEvent(
         pendingToolUses.set(event.index, {
           id: event.content_block.id,
           name: event.content_block.name,
-          inputJson: stringifyInitialInput(event.content_block.input),
+          // Always start with empty string — the API sends input: {} at
+          // content_block_start but actual content arrives via
+          // input_json_delta events.  Initializing with a stringified
+          // non-empty object would corrupt the accumulated JSON when
+          // deltas are appended.  (Matches Claude Code's approach.)
+          inputJson: '',
         });
       }
       break;
@@ -567,6 +604,8 @@ function applyAnthropicStreamEvent(
           const partial = event.delta?.partial_json ?? '';
           toolUse.inputJson = mergeToolInputJson(toolUse.inputJson, partial);
           append({ content: '', reasoning: '', charCount: 0, phase: 'tool_calling' });
+        } else {
+          console.warn(`[Anthropic] input_json_delta for unknown content block index ${event.index}, skipping`);
         }
       }
       break;
@@ -625,15 +664,6 @@ async function emitAnthropicComplete(charCount: number): Promise<void> {
   }
 }
 
-function stringifyInitialInput(input: unknown): string {
-  if (input === undefined) return '';
-  if (typeof input === 'string') return input;
-  if (input && typeof input === 'object' && !Array.isArray(input) && Object.keys(input as Record<string, unknown>).length === 0) {
-    return '';
-  }
-  return JSON.stringify(input);
-}
-
 function mergeToolInputJson(current: string, partial: string): string {
   if (!current.trim()) return partial;
   return current + partial;
@@ -655,38 +685,71 @@ function finalizeToolCalls(pendingToolUses: Map<number, PendingToolUse>): ToolCa
     .map(([, toolUse]) => ({
       id: toolUse.id,
       name: toolUse.name,
-      arguments: parseToolInput(toolUse.inputJson),
+      arguments: parseToolInput(toolUse.inputJson, toolUse.name),
     }));
 }
 
-function parseToolInput(inputJson: string): Record<string, any> {
+function stripBOM(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/^﻿/, '');
+}
+
+function safeParseJSON(json: string): unknown {
+  if (!json) return null;
+  try {
+    return JSON.parse(stripBOM(json));
+  } catch {
+    return null;
+  }
+}
+
+function parseToolInput(inputJson: string, toolName?: string): Record<string, any> {
   const trimmed = inputJson.trim();
   if (!trimmed) return {};
-  try {
-    return JSON.parse(trimmed) as Record<string, any>;
-  } catch {
-    // Fallback: extract the first valid JSON object from the string.
-    // Some Anthropic-compatible endpoints (e.g. DeepSeek) may produce
-    // tool-call input JSON with trailing non-JSON content in streaming deltas.
-    const braceStart = trimmed.indexOf('{');
-    if (braceStart < 0) return {};
+
+  const parsed = safeParseJSON(trimmed);
+  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return parsed as Record<string, any>;
+  }
+
+  // Fallback: some Anthropic-compatible endpoints produce tool-call input JSON
+  // with trailing non-JSON content in streaming deltas. Try extracting the
+  // first valid JSON object from the string.
+  const braceStart = trimmed.indexOf('{');
+  if (braceStart >= 0) {
     let depth = 0;
+    let inString = false;
+    let escape = false;
     for (let i = braceStart; i < trimmed.length; i++) {
-      if (trimmed[i] === '{') depth++;
-      else if (trimmed[i] === '}') {
+      const ch = trimmed[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\') { if (inString) escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{' || ch === '[') depth++;
+      else if (ch === '}' || ch === ']') {
         depth--;
         if (depth === 0) {
           const candidate = trimmed.slice(braceStart, i + 1);
-          try {
-            return JSON.parse(candidate) as Record<string, any>;
-          } catch {
-            break;
+          const recovered = safeParseJSON(candidate);
+          if (recovered !== null && typeof recovered === 'object' && !Array.isArray(recovered)) {
+            return recovered as Record<string, any>;
           }
+          break;
         }
       }
     }
-    throw new SyntaxError(`Failed to parse tool input JSON: ${trimmed.slice(0, 200)}`);
   }
+
+  // Graceful degradation: never throw — return empty object and let the
+  // downstream tool execution deal with missing arguments. This mirrors
+  // Claude Code's approach where a parse failure falls back to `{}` so the
+  // ReAct loop keeps running instead of crashing entirely.
+  console.warn(
+    `[Anthropic] Failed to parse tool input JSON${toolName ? ` for tool "${toolName}"` : ''}. ` +
+    `Input length: ${trimmed.length}, preview: ${trimmed.slice(0, 200)}`,
+  );
+  return {};
 }
 
 export function createAnthropicLLM(config: AgentConfigFile): AnthropicLLM;

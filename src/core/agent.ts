@@ -847,6 +847,68 @@ class AgentBase {
   }
 
   /**
+   * 彻底移除一个 Feature：移除其工具并从 features Map 中删除
+   *
+   * @example
+   * agent.removeFeature('subagent')  // 移除 SubAgentFeature
+   */
+  removeFeature(featureName: string): this {
+    const feature = this.features.get(featureName);
+    if (!feature) {
+      console.warn(`[Agent] Feature '${featureName}' 不存在`);
+      return this;
+    }
+
+    // 移除工具
+    const tools = feature.getTools?.() ?? [];
+    let count = 0;
+    for (const tool of tools) {
+      if (this.tools.remove(tool.name)) {
+        count++;
+      }
+    }
+
+    // 清理 contextInjectors
+    if (feature.getContextInjectors) {
+      const injectors = feature.getContextInjectors();
+      for (const [pattern] of injectors) {
+        const idx = this.contextInjectors.findIndex(ci => ci.pattern === pattern && ci.injector);
+        if (idx !== -1) {
+          this.contextInjectors.splice(idx, 1);
+        }
+      }
+    }
+
+    // 从 features Map 中移除
+    this.features.delete(featureName);
+
+    // 调用 onDestroy 清理资源
+    if (typeof feature.onDestroy === 'function') {
+      try {
+        feature.onDestroy({
+          agentId: this.agentId || '',
+          config: this.config,
+          getFeature: <T extends AgentFeature>(name: string): T | undefined => {
+            return this.features.get(name) as T | undefined;
+          },
+        });
+      } catch (err) {
+        console.warn(`[Agent] Feature '${featureName}' onDestroy error:`, err);
+      }
+    }
+
+    if (count > 0) {
+      console.log(`[Agent] 已移除 Feature '${featureName}'（${count} 个工具 + feature 实例）`);
+      this.syncRegisteredToolsToDebug();
+      this.pushInspectorSnapshot();
+    } else {
+      console.log(`[Agent] 已移除 Feature '${featureName}'（无工具，仅 feature 实例）`);
+    }
+
+    return this;
+  }
+
+  /**
    * 启用 Feature 的所有工具
    *
    * @example

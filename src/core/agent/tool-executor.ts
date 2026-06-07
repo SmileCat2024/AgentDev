@@ -218,6 +218,13 @@ export class ToolExecutor {
           toolContext = { ...toolContext, signal };
         }
 
+        try {
+          const { emitNotification, createToolStart } = await import('../notification.js');
+          emitNotification(createToolStart(call.name));
+        } catch {
+          // Ignore notification failures.
+        }
+
         const data = await tool.execute(call.arguments, toolContext);
         console.log(`[ToolExecutor] tool="${call.name}" completed, signal.aborted=${signal?.aborted}`);
         result.success = true;
@@ -242,6 +249,13 @@ export class ToolExecutor {
       }
 
       result.duration = Date.now() - startTime;
+
+      try {
+        const { emitNotification, createToolComplete } = await import('../notification.js');
+        emitNotification(createToolComplete(call.name, result.success, result.duration));
+      } catch {
+        // Ignore notification failures.
+      }
 
       // ========== ToolFinished 正向钩子 ==========
       await this.executeHookFn(

@@ -75,6 +75,9 @@ export interface DebugLogEntry {
 export interface LLMCharCountData {
   charCount: number;
   phase: LLMPhase;
+  thinkingChars?: number;
+  contentChars?: number;
+  toolCallCount?: number;
 }
 
 /**
@@ -82,6 +85,41 @@ export interface LLMCharCountData {
  */
 export interface LLMCompleteData {
   totalChars: number;
+}
+
+export interface ToolStartData {
+  toolName: string;
+}
+
+export type RuntimeStage =
+  | 'idle'
+  | 'llm_thinking'
+  | 'llm_content'
+  | 'llm_tool_call_building'
+  | 'awaiting_runtime'
+  | 'tool_executing'
+  | 'retry_waiting'
+  | 'retry_requesting'
+  | 'completed'
+  | 'failed';
+
+export interface AgentRuntimeSnapshot {
+  stage: RuntimeStage;
+  callActive: boolean;
+  charCount: number;
+  thinkingChars: number;
+  contentChars: number;
+  toolCallCount: number;
+  activeToolNames: string[];
+  activeToolCount: number;
+  callStartedAt?: number;
+  stageStartedAt?: number;
+  retryAttempt?: number;
+  maxRetries?: number;
+  nextRetryDelayMs?: number;
+  lastErrorType?: string | null;
+  lastErrorMessage?: string | null;
+  updatedAt: number;
 }
 
 /**
@@ -118,6 +156,9 @@ export interface ToolCompleteData {
  */
 export interface NotificationStateResponse {
   state: Notification | null;
+  event: Notification | null;
+  runtime: AgentRuntimeSnapshot;
+  callActive: boolean;
   hasNewEvents: boolean;
 }
 
@@ -374,6 +415,7 @@ export interface AgentOverviewSnapshot {
   updatedAt: number;
   context: AgentContextMetrics;
   usageStats: UsageStatsSnapshot;
+  runtime?: AgentRuntimeSnapshot;
 }
 
 /**
@@ -392,6 +434,7 @@ export interface AgentSession {
   currentState: Notification | null;
   // call 运行状态（独立于 currentState，不受 state 覆盖影响）
   callActive?: boolean;
+  runtimeState?: AgentRuntimeSnapshot;
   events: Notification[];
   lastEventCount: number;
   logs: DebugLogEntry[];

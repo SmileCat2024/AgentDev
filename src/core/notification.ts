@@ -94,7 +94,12 @@ export function emitNotification(notification: Notification): void {
  */
 export function createLLMCharCount(
   charCount: number,
-  phase: LLMPhase
+  phase: LLMPhase,
+  extras?: {
+    thinkingChars?: number;
+    contentChars?: number;
+    toolCallCount?: number;
+  },
 ): Notification {
   return {
     type: 'llm.char_count',
@@ -103,6 +108,9 @@ export function createLLMCharCount(
     data: {
       charCount,
       phase,
+      ...(typeof extras?.thinkingChars === 'number' ? { thinkingChars: extras.thinkingChars } : {}),
+      ...(typeof extras?.contentChars === 'number' ? { contentChars: extras.contentChars } : {}),
+      ...(typeof extras?.toolCallCount === 'number' ? { toolCallCount: extras.toolCallCount } : {}),
     },
   };
 }

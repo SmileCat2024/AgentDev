@@ -47,6 +47,19 @@ const IGNORE_PATTERNS = [
   'env/**'
 ];
 
+function normalizeNamedPathArg(args: unknown, ...keys: string[]): string {
+  if (!args || typeof args !== 'object') {
+    throw new Error(`Missing required path parameter. Expected one of: ${keys.join(', ')}`);
+  }
+  for (const key of keys) {
+    const value = (args as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  throw new Error(`Missing required path parameter. Expected one of: ${keys.join(', ')}`);
+}
+
 function resolveWorkspacePath(filePath: string, workspaceDir: string = DEFAULT_WORKSPACE_DIR): string {
   if (path.isAbsolute(filePath)) {
     return path.normalize(filePath);
@@ -129,7 +142,10 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     },
     required: ['filePath']
   },
-  execute: async ({ filePath, offset: offsetParam, limit: limitParam }) => {
+  execute: async (args = {}) => {
+    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
+    const offsetParam = (args as Record<string, unknown>).offset;
+    const limitParam = (args as Record<string, unknown>).limit;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
     console.log(`[read] ${resolvedFilePath}`);
 
@@ -271,7 +287,9 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     },
     required: ['filePath', 'content']
   },
-  execute: async ({ filePath, content }) => {
+  execute: async (args = {}) => {
+    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
+    const content = (args as Record<string, unknown>).content as string;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
     console.log(`[write] ${resolvedFilePath}`);
 
@@ -758,7 +776,11 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     },
     required: ['filePath', 'oldString', 'newString']
   },
-  execute: async ({ filePath, oldString, newString, replaceAll = false }) => {
+  execute: async (args = {}) => {
+    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
+    const oldString = (args as Record<string, unknown>).oldString as string;
+    const newString = (args as Record<string, unknown>).newString as string;
+    const replaceAll = (args as Record<string, unknown>).replaceAll as boolean | undefined;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
     console.log(`[edit] ${resolvedFilePath}`);
 
@@ -1129,5 +1151,7 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
 }
 
 export const grepTool = createGrepTool();
+
+export { normalizeNamedPathArg };
 
 export { resolveWorkspacePath };

@@ -5,6 +5,8 @@
 
 import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
+import type { CustomHeaderEntry } from '../core/config.js';
+import { resolveCustomHeaders } from './custom-headers.js';
 import OpenAI from 'openai';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
 import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
@@ -26,10 +28,14 @@ interface ExtendedChatCompletionMessage extends OpenAI.Chat.ChatCompletionMessag
 
 export class OpenAILLM implements LLMClient {
   private client: OpenAI;
-  private modelName: string;
+  private _modelName: string;
   private maxTokens?: number;
   private providerOptions?: Record<string, unknown>;
+  private customHeaders?: CustomHeaderEntry[];
   private initPromise: Promise<void>;
+
+  /** 返回当前 LLM 实例使用的模型名 */
+  get modelName(): string { return this._modelName; }
 
   constructor(
     apiKey: string,
@@ -37,14 +43,30 @@ export class OpenAILLM implements LLMClient {
     baseUrl?: string,
     maxTokens?: number,
     providerOptions?: Record<string, unknown>,
+    customHeaders?: CustomHeaderEntry[],
   ) {
     this.client = new OpenAI({
       apiKey,
       baseURL: baseUrl,
+      // 通过自定义 fetch 注入动态请求头，使 uuid / random 模式在每次请求时重新生成
+      ...(customHeaders && customHeaders.length > 0
+        ? {
+            fetch: (input: any, init: any) => {
+              init = init || {};
+              const headers = new Headers(init.headers);
+              for (const [k, v] of Object.entries(resolveCustomHeaders(customHeaders))) {
+                headers.set(k, v);
+              }
+              init.headers = headers;
+              return globalThis.fetch(input, init);
+            },
+          }
+        : {}),
     });
-    this.modelName = modelName;
+    this._modelName = modelName;
     this.maxTokens = maxTokens;
     this.providerOptions = providerOptions;
+    this.customHeaders = customHeaders;
     this.initPromise = ensureHttpClientInitialized();
   }
 
@@ -74,7 +96,7 @@ export class OpenAILLM implements LLMClient {
     }));
 
     const requestBody = {
-      model: this.modelName,
+      model: this._modelName,
       messages: chatMessages,
       tools: chatTools.length > 0 ? chatTools : undefined,
       stream: true,
@@ -112,6 +134,9 @@ export class OpenAILLM implements LLMClient {
 
         // 收集 usage 数据
         let usageInfo: UsageInfo | null = null;
+
+        // 收集 finish_reason
+        let finishReason: string | null = null;
 
         // 迭代流式响应
         for await (const chunk of stream) {
@@ -186,6 +211,7 @@ export class OpenAILLM implements LLMClient {
           }
 
           if (chunk.choices[0]?.finish_reason) {
+            finishReason = chunk.choices[0].finish_reason;
             break;
           }
         }
@@ -205,6 +231,7 @@ export class OpenAILLM implements LLMClient {
           toolCalls,
           reasoning,
           ...(usageInfo ? { usage: usageInfo } : {}),
+          stopReason: finishReason,
         };
       } catch (error) {
         // 中断错误不重试，直接传播
@@ -275,6 +302,7 @@ export function createOpenAILLM(
       configOrApiKey.defaultModel.baseUrl,
       configOrApiKey.defaultModel.maxTokens,
       configOrApiKey.defaultModel.providerOptions,
+      configOrApiKey.defaultModel.customHeaders,
     );
   }
   // 处理 ModelConfig
@@ -285,6 +313,7 @@ export function createOpenAILLM(
       configOrApiKey.baseUrl,
       configOrApiKey.maxTokens,
       configOrApiKey.providerOptions,
+      configOrApiKey.customHeaders,
     );
   }
   // 处理单独传参

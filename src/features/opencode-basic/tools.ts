@@ -60,6 +60,21 @@ function normalizeNamedPathArg(args: unknown, ...keys: string[]): string {
   throw new Error(`Missing required path parameter. Expected one of: ${keys.join(', ')}`);
 }
 
+/**
+ * 与 normalizeNamedPathArg 类似，但找不到时返回 undefined 而非抛错。
+ * 用于可选路径参数（如 glob/grep 的 searchPath）。
+ */
+function tryNamedPathArg(args: unknown, ...keys: string[]): string | undefined {
+  if (!args || typeof args !== 'object') return undefined;
+  for (const key of keys) {
+    const value = (args as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function resolveWorkspacePath(filePath: string, workspaceDir: string = DEFAULT_WORKSPACE_DIR): string {
   if (path.isAbsolute(filePath)) {
     return path.normalize(filePath);
@@ -140,6 +155,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         description: 'The maximum number of lines to read (defaults to 2000)'
       }
     },
+    additionalProperties: false,
     required: ['filePath']
   },
   execute: async (args = {}) => {
@@ -285,6 +301,7 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         description: 'The content to write to the file'
       }
     },
+    additionalProperties: false,
     required: ['filePath', 'content']
   },
   execute: async (args = {}) => {
@@ -771,9 +788,11 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       },
       replaceAll: {
         type: 'boolean',
+        default: false,
         description: 'Replace all occurrences of oldString (default false)'
       }
     },
+    additionalProperties: false,
     required: ['filePath', 'oldString', 'newString']
   },
   execute: async (args = {}) => {
@@ -849,9 +868,12 @@ export function createLsTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         description: 'List of glob patterns to ignore'
       }
     },
+    additionalProperties: false,
     required: ['dirPath']
   },
-  execute: async ({ dirPath, ignore = [] }) => {
+  execute: async (args = {}) => {
+    const dirPath = normalizeNamedPathArg(args, 'dirPath', 'dirpath', 'path', 'filePath', 'filepath');
+    const ignore = ((args as Record<string, unknown>).ignore as string[]) ?? [];
     const resolvedDirPath = resolveWorkspacePath(dirPath, workspaceDir);
     console.log(`[ls] ${resolvedDirPath}`);
 
@@ -958,9 +980,12 @@ export function createGlobTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         description: 'The directory to search in (defaults to current working directory)'
       }
     },
+    additionalProperties: false,
     required: ['pattern']
   },
-  execute: async ({ pattern, searchPath }) => {
+  execute: async (args = {}) => {
+    const pattern = (args as Record<string, unknown>).pattern as string;
+    const searchPath = tryNamedPathArg(args, 'searchPath', 'searchpath', 'path', 'filePath', 'filepath');
     const resolvedSearchPath = resolveWorkspaceSearchPath(searchPath, workspaceDir);
     console.log(`[glob] ${pattern} in ${resolvedSearchPath}`);
 
@@ -1055,25 +1080,29 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         description: 'File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")'
       }
     },
+    additionalProperties: false,
     required: ['pattern']
   },
-  execute: async ({ pattern, searchPath, include }, context) => {
+  execute: async (args = {}, context) => {
+    const pattern = (args as Record<string, unknown>).pattern as string;
+    const searchPath = tryNamedPathArg(args, 'searchPath', 'searchpath', 'path', 'filePath', 'filepath');
+    const include = (args as Record<string, unknown>).include as string | undefined;
     const resolvedSearchPath = resolveWorkspaceSearchPath(searchPath, workspaceDir);
     console.log(`[grep] ${pattern} in ${resolvedSearchPath}`);
 
     const rgPath = await getRipgrepPath();
-    const args = ['-nH', '--hidden', '--no-messages', '--field-match-separator=|', '--regexp', pattern];
+    const rgArgs = ['-nH', '--hidden', '--no-messages', '--field-match-separator=|', '--regexp', pattern];
 
     if (include) {
-      args.push('--glob', include);
+      rgArgs.push('--glob', include);
     }
-    args.push(resolvedSearchPath);
+    rgArgs.push(resolvedSearchPath);
 
     try {
       // 使用 spawn 避免在 Windows 上 shell 解析特殊字符（如 |）的问题
       const stdout = await new Promise<string>((resolve, reject) => {
         const chunks: Buffer[] = [];
-        const child = spawn(rgPath, args, {
+        const child = spawn(rgPath, rgArgs, {
           windowsHide: true
         });
 
@@ -1153,5 +1182,7 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
 export const grepTool = createGrepTool();
 
 export { normalizeNamedPathArg };
+
+export { tryNamedPathArg };
 
 export { resolveWorkspacePath };

@@ -95,3 +95,7 @@ export type {
   ExampleFeatureRuntimeState,
   ExampleFeatureSnapshot,
 } from './example-feature/types.js';
+
+// LSP Feature
+export { LspFeature } from './lsp/index.js';
+export type { LspFeatureConfig } from './lsp/index.js';

@@ -116,44 +116,89 @@ export class ReActLoopRunner {
           // 执行反向钩子 @StepStart（void 返回，仅做处理）
           await this.hooksRegistry.executeVoid(CoreLifecycle.StepStart, { step, callIndex, context, input, agent: this.agent });
 
-          // 执行 LLM 调用
-          const llmStartTime = Date.now();
-          const response = await runWithLogScope({
-            lifecycle: 'LLM',
-            namespace: 'agent.llm',
-            tags: ['llm'],
-          }, async () => await this.agent.llm.chat(
-            context.getAll(),
-            this.agent.tools.getAll(),
-            signal ? { signal } : undefined
-          ));
-          const llmDuration = Date.now() - llmStartTime;
+          // 执行 LLM 调用（空响应时 step 内重试）
+          const MAX_EMPTY_RETRIES = 2;
+          let response: LLMResponse;
+          let hasToolCalls = false;
+          for (let emptyAttempt = 0; emptyAttempt <= MAX_EMPTY_RETRIES; emptyAttempt++) {
+            const llmStartTime = Date.now();
+            response = await runWithLogScope({
+              lifecycle: 'LLM',
+              namespace: 'agent.llm',
+              tags: ['llm'],
+            }, async () => await this.agent.llm.chat(
+              context.getAll(),
+              this.agent.tools.getAll(),
+              signal ? { signal } : undefined
+            ));
+            const llmDuration = Date.now() - llmStartTime;
 
-          logger.debug('LLM response received', {
-            step,
-            durationMs: llmDuration,
-            toolCallsCount: response.toolCalls?.length ?? 0,
-            hasContent: !!response.content,
-          });
+            logger.debug('LLM response received', {
+              step,
+              durationMs: llmDuration,
+              toolCallsCount: response.toolCalls?.length ?? 0,
+              hasContent: !!response.content,
+              stopReason: response.stopReason,
+            });
 
-          // 收集用量数据
-          if (response.usage) {
-            this.agent.recordUsage(callIndex, step, response.usage);
-          }
+            // 收集用量数据
+            if (response.usage) {
+              this.agent.recordUsage(callIndex, step, response.usage);
+            }
 
-          const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
+            hasToolCalls = !!(response.toolCalls && response.toolCalls.length > 0);
 
-          // 如果LLM返回空内容且没有toolCalls，只推送错误消息到debugger hub（不进入context）
-          if (!response.content && !hasToolCalls) {
-            this.pushToDebug([
-              ...context.getAll(),
-              { role: 'assistant', content: '[Error: LLM returned empty response]', turn: callIndex },
-            ]);
-          } else {
-            // 添加助手响应
-            context.addAssistantMessage(response, callIndex);
-            // 推送消息到 DebugHub
-            this.pushToDebug(context.getAll());
+            // 空响应重试逻辑：无 content 且无 toolCalls
+            if (!response.content && !hasToolCalls) {
+              const stopReason = response.stopReason;
+              const isLegitimateEmpty = stopReason === 'end_turn' || stopReason === 'stop';
+
+              if (isLegitimateEmpty) {
+                // 合法空响应（模型主动结束但无内容），不重试
+                this.pushToDebug([
+                  ...context.getAll(),
+                  { role: 'assistant', content: '[Info: LLM returned empty response with end_turn]', turn: callIndex },
+                ]);
+                break; // 跳出重试循环，进入正常完成流程
+              }
+
+              // 异常空响应，尝试重试
+              if (emptyAttempt < MAX_EMPTY_RETRIES) {
+                logger.info('LLM returned empty response, retrying in step', {
+                  step,
+                  callIndex,
+                  attempt: emptyAttempt + 1,
+                  stopReason,
+                });
+                this.pushToDebug([
+                  ...context.getAll(),
+                  { role: 'assistant', content: `[Info: LLM returned empty response (attempt ${emptyAttempt + 1}/${MAX_EMPTY_RETRIES}), retrying...]`, turn: callIndex },
+                ]);
+                // 检查中断信号
+                if (signal?.aborted) {
+                  logger.info('Empty response retry skipped due to interrupt', { step });
+                  break;
+                }
+                continue; // 重试 LLM 调用
+              }
+
+              // 重试耗尽
+              logger.warn('LLM returned empty response after retries', {
+                step,
+                callIndex,
+                attempts: MAX_EMPTY_RETRIES + 1,
+                stopReason,
+              });
+              this.pushToDebug([
+                ...context.getAll(),
+                { role: 'assistant', content: '[Error: LLM returned empty response]', turn: callIndex },
+              ]);
+            } else {
+              // 正常响应（有 content 或有 toolCalls），添加到 context
+              context.addAssistantMessage(response, callIndex);
+              this.pushToDebug(context.getAll());
+            }
+            break; // 正常响应或重试结束，跳出重试循环
           }
 
           if (!hasToolCalls) {
@@ -339,7 +384,9 @@ export class ReActLoopRunner {
           context.addAssistantMessage({ content: `${errorTag} ${errorMsg}` }, callIndex);
           this.pushToDebug(context.getAll());
           logger.warn('Step rolled back after failure', { step, errorType: error instanceof ClassifiedAPIError ? error.errorType : 'unknown', error: errorMsg });
-          throw error;
+
+          // 返回错误消息而非抛出，确保前端能在对话中看到错误说明
+          return { completed: false, finalResponse: `${errorTag} ${errorMsg}`, turns: step + 1 };
         }
       });
 

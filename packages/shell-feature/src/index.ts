@@ -107,7 +107,17 @@ export class ShellFeature implements AgentFeature {
 }
 
 // 导出工具创建函数（供高级用户使用）
-export { createShellCommandTool } from './tools.js';
+export { createShellCommandTool, runShellCommand } from './tools.js';
+export type { ShellCommandToolOptions, ShellExecutionResult } from './tools.js';
+
+// 导出命令引用工具（供高级用户使用）
+export {
+  quoteShellCommand,
+  shouldAddStdinRedirect,
+  rewriteWindowsNullRedirect,
+  containsHeredoc,
+  hasStdinRedirect,
+} from './shellQuoting.js';
 export {
   safeTrashDeleteTool,
   safeTrashListTool,

@@ -69,11 +69,23 @@ export class ToolRegistry {
   private pendingDisabled = new Set<string>(); // 工具注册前的预禁用状态
   private pendingRemoved = new Set<string>();  // 工具注册前的预移除状态
   private sources = new Map<string, string>(); // 工具来源追踪
+  private superseded = new Map<string, Array<{ tool: Tool; source?: string }>>(); // 被同名覆盖的旧条目
 
   /**
    * 注册工具（默认启用，记录来源）
    */
   register(tool: Tool, source?: string): this {
+    // 追踪被覆盖的旧条目
+    if (this.tools.has(tool.name)) {
+      if (!this.superseded.has(tool.name)) {
+        this.superseded.set(tool.name, []);
+      }
+      this.superseded.get(tool.name)!.push({
+        tool: this.tools.get(tool.name)!,
+        source: this.sources.get(tool.name),
+      });
+    }
+
     this.tools.set(tool.name, tool);
     if (this.pendingRemoved.has(tool.name)) {
       this.enabled.delete(tool.name);
@@ -171,13 +183,23 @@ export class ToolRegistry {
   /**
    * 获取工具条目（调试快照用）
    */
-  getEntries(): Array<{ tool: Tool; state: 'enabled' | 'disabled' | 'removed'; enabled: boolean; source?: string }> {
-    return Array.from(this.tools.entries()).map(([name, tool]) => ({
-      tool,
-      state: this.enabled.has(name) ? 'enabled' : this.disabled.has(name) ? 'disabled' : 'removed',
-      enabled: this.enabled.has(name),
-      source: this.sources.get(name),
-    }));
+  getEntries(): Array<{ tool: Tool; state: 'enabled' | 'disabled' | 'removed' | 'superseded'; enabled: boolean; source?: string }> {
+    const entries: Array<{ tool: Tool; state: 'enabled' | 'disabled' | 'removed' | 'superseded'; enabled: boolean; source?: string }> =
+      Array.from(this.tools.entries()).map(([name, tool]) => ({
+        tool,
+        state: this.enabled.has(name) ? 'enabled' : this.disabled.has(name) ? 'disabled' : 'removed',
+        enabled: this.enabled.has(name),
+        source: this.sources.get(name),
+      }));
+
+    // 追加被同名覆盖的旧条目
+    for (const [, list] of this.superseded) {
+      for (const { tool, source } of list) {
+        entries.push({ tool, state: 'superseded', enabled: false, source });
+      }
+    }
+
+    return entries;
   }
 
   /**

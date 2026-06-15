@@ -1,4 +1,5 @@
-import type { AgentConfigFile, ModelConfig } from '../core/config.js';
+import type { AgentConfigFile, ModelConfig, CustomHeaderEntry } from '../core/config.js';
+import { resolveCustomHeaders } from './custom-headers.js';
 import type { LLMClient, LLMResponse, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
@@ -126,13 +127,17 @@ const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
 export class AnthropicLLM implements LLMClient {
   private initPromise: Promise<void>;
 
+  /** 返回当前 LLM 实例使用的模型名 */
+  get modelName(): string { return this._modelName; }
+
   constructor(
     private readonly apiKey: string,
-    private readonly modelName: string = 'claude-sonnet-4-5-20250929',
+    private readonly _modelName: string = 'claude-sonnet-4-5-20250929',
     private readonly baseUrl: string = DEFAULT_BASE_URL,
     private readonly maxTokens: number = DEFAULT_MAX_TOKENS,
     private readonly thinkingBudgetTokens?: number,
     private readonly thinkingKeepTurns: number = DEFAULT_THINKING_KEEP_TURNS,
+    private readonly customHeaders?: CustomHeaderEntry[],
   ) {
     this.initPromise = ensureHttpClientInitialized();
   }
@@ -159,9 +164,10 @@ export class AnthropicLLM implements LLMClient {
             ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
               ? { 'anthropic-beta': CONTEXT_MANAGEMENT_BETA }
               : {}),
+            ...resolveCustomHeaders(this.customHeaders),
           },
           body: JSON.stringify({
-            model: this.modelName,
+            model: this._modelName,
             max_tokens: this.maxTokens,
             stream: true,
             ...(this.thinkingBudgetTokens && this.thinkingBudgetTokens >= 1024
@@ -447,6 +453,9 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
   // 收集 usage 数据
   let usageInfo: UsageInfo | null = null;
 
+  // 收集 stop_reason
+  let stopReason: string | null = null;
+
   // 流式完整性追踪
   let receivedMessageStart = false;
   let receivedMessageStop = false;
@@ -475,6 +484,8 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
       currentPhase = delta.phase;
     }, (usage) => {
       usageInfo = usage;
+    }, (reason) => {
+      stopReason = reason;
     });
   };
 
@@ -530,6 +541,7 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
     ...(reasoning ? { reasoning } : {}),
     ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
     ...(usageInfo ? { usage: usageInfo } : {}),
+    stopReason,
   };
 }
 
@@ -558,6 +570,7 @@ function applyAnthropicStreamEvent(
   pendingToolUses: Map<number, PendingToolUse>,
   append: (delta: { content: string; reasoning: string; charCount: number; phase: LLMPhase }) => void,
   onUsage: (usage: UsageInfo) => void,
+  onStopReason?: (stopReason: string) => void,
 ): void {
   switch (event.type) {
     case 'content_block_start': {
@@ -626,6 +639,9 @@ function applyAnthropicStreamEvent(
     }
     case 'message_delta': {
       // Anthropic 的 message_delta usage 在事件顶层，不在 delta 里
+      if (event.delta?.stop_reason && onStopReason) {
+        onStopReason(event.delta.stop_reason);
+      }
       const usage = event.usage;
       if (usage && (usage.input_tokens !== undefined || usage.output_tokens !== undefined)) {
         const realInput = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
@@ -772,6 +788,7 @@ export function createAnthropicLLM(
       configOrApiKey.defaultModel.maxTokens ?? DEFAULT_MAX_TOKENS,
       configOrApiKey.defaultModel.thinkingBudgetTokens,
       configOrApiKey.defaultModel.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
+      configOrApiKey.defaultModel.customHeaders,
     );
   }
 
@@ -783,6 +800,7 @@ export function createAnthropicLLM(
       configOrApiKey.maxTokens ?? DEFAULT_MAX_TOKENS,
       configOrApiKey.thinkingBudgetTokens,
       configOrApiKey.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
+      configOrApiKey.customHeaders,
     );
   }
 

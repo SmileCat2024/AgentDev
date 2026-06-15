@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/qqbot-feature",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "QQ Bot feature for AgentDev - enables QQ bot integration",
   "type": "module",
   "main": "dist/index.js",

@@ -868,6 +868,9 @@ class AgentBase {
       }
     }
 
+    // 移除反向钩子
+    this.hooksRegistry.removeFromFeature(feature);
+
     // 清理 contextInjectors
     if (feature.getContextInjectors) {
       const injectors = feature.getContextInjectors();
@@ -898,12 +901,10 @@ class AgentBase {
     }
 
     if (count > 0) {
-      console.log(`[Agent] 已移除 Feature '${featureName}'（${count} 个工具 + feature 实例）`);
       this.syncRegisteredToolsToDebug();
-      this.pushInspectorSnapshot();
-    } else {
-      console.log(`[Agent] 已移除 Feature '${featureName}'（无工具，仅 feature 实例）`);
     }
+    console.log(`[Agent] 已移除 Feature '${featureName}'（${count} 个工具 + hooks + feature 实例）`);
+    this.pushInspectorSnapshot();
 
     return this;
   }
@@ -1037,67 +1038,112 @@ class AgentBase {
     }
 
     for (const [name, feature] of this.features) {
-      const featureLogger = createLogger(`feature.${name}`, {
-        agentId: this.agentId,
-        agentName: this.config.name || this.constructor.name,
-        feature: name,
-        tags: [`feature:${name}`],
-      });
-
-      // 为每个 Feature 创建独立的 initContext
-      const initContext: FeatureInitContext = {
-        agentId: this.agentId || '',
-        config: this.config,
-        logger: featureLogger,
-        featureConfig: this.config.features?.[name],
-        getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
-          return this.features.get(featureName) as T | undefined;
-        },
-        registerTool: (tool) => this.tools.register(tool, name),
-      };
-
-      if (feature.getTools) {
-        for (const tool of runWithLogScope({ feature: name, namespace: `feature.${name}`, tags: [`feature:${name}`] }, () => feature.getTools!()) || []) {
-          this.tools.register(tool, name);  // 传递来源
-        }
-      }
-
-      if (feature.getAsyncTools) {
-        try {
-          const tools = await runWithLogScope({
-            feature: name,
-            namespace: `feature.${name}`,
-            tags: [`feature:${name}`],
-          }, () => feature.getAsyncTools!(initContext));
-          for (const tool of tools) {
-            this.tools.register(tool, name);  // 传递来源
-          }
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          console.warn(`[Agent] Feature ${name} failed to load tools: ${errorMsg}`);
-        }
-      }
-
-      if (feature.onInitiate) {
-        try {
-          await runWithLogScope({
-            feature: name,
-            namespace: `feature.${name}`,
-            tags: [`feature:${name}`],
-          }, () => feature.onInitiate!(initContext));
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          console.warn(`[Agent] Feature ${name} onInitiate failed: ${errorMsg}`);
-        }
-      }
-
-      // 收集反向钩子
-      this.hooksRegistry.collectFromFeature(feature);
+      await this.initSingleFeature(name, feature);
     }
+
+    // 子类可在此 hook 中注册额外工具（如统一代理工具）
+    await this.onFeatureToolsReady();
 
     this.featureToolsReady = true;
     this.pushInspectorSnapshot();
   }
+
+  /**
+   * 为单个 Feature 执行工具注册、onInitiate 和 hooks 收集。
+   *
+   * 被 ensureFeatureTools() 和 mountFeature() 共用。
+   */
+  private async initSingleFeature(name: string, feature: AgentFeature): Promise<void> {
+    const featureLogger = createLogger(`feature.${name}`, {
+      agentId: this.agentId,
+      agentName: this.config.name || this.constructor.name,
+      feature: name,
+      tags: [`feature:${name}`],
+    });
+
+    // 为每个 Feature 创建独立的 initContext
+    const initContext: FeatureInitContext = {
+      agentId: this.agentId || '',
+      config: this.config,
+      logger: featureLogger,
+      featureConfig: this.config.features?.[name],
+      getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
+        return this.features.get(featureName) as T | undefined;
+      },
+      registerTool: (tool) => this.tools.register(tool, name),
+    };
+
+    if (feature.getTools) {
+      for (const tool of runWithLogScope({ feature: name, namespace: `feature.${name}`, tags: [`feature:${name}`] }, () => feature.getTools!()) || []) {
+        this.tools.register(tool, name);  // 传递来源
+      }
+    }
+
+    if (feature.getAsyncTools) {
+      try {
+        const tools = await runWithLogScope({
+          feature: name,
+          namespace: `feature.${name}`,
+          tags: [`feature:${name}`],
+        }, () => feature.getAsyncTools!(initContext));
+        for (const tool of tools) {
+          this.tools.register(tool, name);  // 传递来源
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.warn(`[Agent] Feature ${name} failed to load tools: ${errorMsg}`);
+      }
+    }
+
+    if (feature.onInitiate) {
+      try {
+        await runWithLogScope({
+          feature: name,
+          namespace: `feature.${name}`,
+          tags: [`feature:${name}`],
+        }, () => feature.onInitiate!(initContext));
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.warn(`[Agent] Feature ${name} onInitiate failed: ${errorMsg}`);
+      }
+    }
+
+    // 收集反向钩子
+    this.hooksRegistry.collectFromFeature(feature);
+  }
+
+  /**
+   * 动态挂载 Feature（运行时）
+   *
+   * 与 use() 不同，mountFeature 会在 agent 已初始化的情况下
+   * 立即对新 feature 执行工具注册、onInitiate 和 hooks 收集。
+   *
+   * 如果 agent 尚未初始化（未发生首次 onCall），feature 会被加入 Map，
+   * 后续由 ensureFeatureTools() 统一处理。
+   *
+   * @example
+   * await agent.mountFeature(new SomeFeature());
+   */
+  async mountFeature(feature: AgentFeature): Promise<this> {
+    this.use(feature);
+
+    // agent 尚未初始化，feature 会在首次 ensureFeatureTools 时统一处理
+    if (!this.featureToolsReady) {
+      return this;
+    }
+
+    // agent 已初始化，立即对新 feature 执行完整初始化
+    await this.initSingleFeature(feature.name, feature);
+    this.pushInspectorSnapshot();
+    console.log(`[Agent] Dynamically mounted feature '${feature.name}' (tools + hooks initialized)`);
+    return this;
+  }
+
+  /**
+   * 在所有 Feature 工具注册完毕后、inspector snapshot 推送之前调用。
+   * 子类可重写此方法注册额外工具（如统一代理工具覆盖同名 feature 工具）。
+   */
+  protected async onFeatureToolsReady(): Promise<void> {}
 
   /**
    * 收集所有 Feature 自带的 skills
@@ -1336,19 +1382,23 @@ class AgentBase {
         turnCount,
       },
       usageStats: this.usageStats.toSnapshot(),
+      ...(typeof (this.llm as any)?.modelName === 'string'
+        ? { modelName: (this.llm as any).modelName }
+        : {}),
     };
   }
 
   private buildHookInspectorSnapshot(): HookInspectorSnapshot {
     const hookGroups = this.hooksRegistry.getSnapshot();
     const hookCountByFeature = new Map<string, number>();
-    const toolEntriesByFeature = new Map<string, Array<{
+    const toolEntriesBySource = new Map<string, Array<{
       name: string;
       description: string;
-      state: 'enabled' | 'disabled' | 'removed';
+      state: 'enabled' | 'disabled' | 'removed' | 'superseded';
       enabled: boolean;
       renderCall?: string;
       renderResult?: string;
+      source?: string;
     }>>();
 
     const summarizeToolDescription = (description: string | undefined): string => {
@@ -1368,9 +1418,9 @@ class AgentBase {
     }
 
     for (const entry of this.tools.getEntries()) {
-      if (!entry.source) continue;
-      if (!toolEntriesByFeature.has(entry.source)) {
-        toolEntriesByFeature.set(entry.source, []);
+      const sourceKey = entry.source || '__no_source__';
+      if (!toolEntriesBySource.has(sourceKey)) {
+        toolEntriesBySource.set(sourceKey, []);
       }
 
       const renderCall = typeof entry.tool.render?.call === 'string'
@@ -1384,30 +1434,36 @@ class AgentBase {
           ? 'inline'
           : undefined;
 
-      toolEntriesByFeature.get(entry.source)!.push({
+      toolEntriesBySource.get(sourceKey)!.push({
         name: entry.tool.name,
         description: summarizeToolDescription(entry.tool.description),
         state: entry.state,
         enabled: entry.state === 'enabled',
         renderCall,
         renderResult,
+        source: entry.source,
       });
     }
 
+    // 已知的 feature name 集合
+    const featureNames = new Set(this.features.keys());
+
     const features = Array.from(this.features.values()).map(feature => {
-      const tools = toolEntriesByFeature.get(feature.name) || [];
+      const tools = toolEntriesBySource.get(feature.name) || [];
       const enabledToolCount = tools.filter(tool => tool.state === 'enabled').length;
       const disabledToolCount = tools.filter(tool => tool.state === 'disabled').length;
       const removedToolCount = tools.filter(tool => tool.state === 'removed').length;
-      const status: 'enabled' | 'disabled' | 'removed' | 'partial' = tools.length === 0
+      const supersededToolCount = tools.filter(tool => tool.state === 'superseded').length;
+      const activeToolCount = tools.length - supersededToolCount;
+      const status: 'enabled' | 'disabled' | 'removed' | 'partial' = activeToolCount === 0
         ? 'enabled'
-        : removedToolCount === tools.length
+        : removedToolCount === activeToolCount
           ? 'removed'
-          : disabledToolCount === tools.length
-          ? 'disabled'
-          : enabledToolCount === tools.length
-            ? 'enabled'
-            : 'partial';
+          : disabledToolCount === activeToolCount
+            ? 'disabled'
+            : enabledToolCount === activeToolCount
+              ? 'enabled'
+              : 'partial';
 
       return {
         name: feature.name,
@@ -1427,10 +1483,29 @@ class AgentBase {
       };
     });
 
+    // 收集不属于任何 feature 的工具（游离工具）
+    const standaloneTools: Array<{
+      name: string;
+      description: string;
+      state: 'enabled' | 'disabled' | 'removed' | 'superseded';
+      enabled?: boolean;
+      source?: string;
+      renderCall?: string;
+      renderResult?: string;
+    }> = [];
+    for (const [sourceKey, tools] of toolEntriesBySource) {
+      if (!featureNames.has(sourceKey)) {
+        for (const tool of tools) {
+          standaloneTools.push(tool);
+        }
+      }
+    }
+
     return {
       lifecycleOrder: hookGroups.map(group => group.lifecycle),
       features,
       hooks: hookGroups,
+      standaloneTools: standaloneTools.length > 0 ? standaloneTools : undefined,
     };
   }
 

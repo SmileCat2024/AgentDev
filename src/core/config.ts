@@ -13,6 +13,18 @@ import { resolve, join } from 'path';
 import { cwd } from 'process';
 
 /**
+ * 自定义请求头条目
+ * - valueMode 'static': 使用 value 原样
+ * - valueMode 'uuid':    每次请求生成新的 UUID v4
+ * - valueMode 'random':  每次请求生成新的随机数
+ */
+export interface CustomHeaderEntry {
+  key: string;
+  value: string;
+  valueMode?: 'static' | 'uuid' | 'random';
+}
+
+/**
  * 统一配置类型
  * 字段允许冗余，各 LLM 实现只取自己需要的
  */
@@ -25,6 +37,8 @@ export interface ModelConfig {
   thinkingBudgetTokens?: number;
   thinkingKeepTurns?: number;
   providerOptions?: Record<string, unknown>;
+  /** 追加到每次 LLM API 请求的自定义请求头 */
+  customHeaders?: CustomHeaderEntry[];
   // 未来可扩展
   region?: string;
   projectId?: string;

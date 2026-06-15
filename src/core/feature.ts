@@ -88,7 +88,7 @@ export interface TemplateInfo {
  * Claw 等消费端可根据该契约自动渲染表单。
  */
 export interface FeatureManifestSettingProperty {
-  type: 'string' | 'number' | 'boolean' | 'select' | 'file' | 'directory';
+  type: 'string' | 'number' | 'boolean' | 'select' | 'file' | 'directory' | 'group';
   title: string;
   description?: string;
   default?: unknown;
@@ -104,12 +104,24 @@ export interface FeatureManifestSettingProperty {
   accept?: string | string[];
   /** directory 类型下的最大条目数 */
   maxItems?: number;
+  /** type: 'group' 时的嵌套子属性 */
+  properties?: Record<string, FeatureManifestSettingProperty>;
+  /** 条件可见性：仅当同级指定属性值在 values 中时渲染此字段 */
+  showWhen?: { property: string; values: (string | number | boolean)[] };
 }
 
 export interface FeatureManifestDefinition {
   schemaVersion: 1;
   settings?: {
     properties: Record<string, FeatureManifestSettingProperty>;
+    /** 有序分区，用于 UI 分组渲染。省略则平铺全部属性 */
+    sections?: Array<{
+      id: string;
+      title: string;
+      description?: string;
+      /** 分区内属性 key 的显示顺序 */
+      properties: string[];
+    }>;
   };
 }
 

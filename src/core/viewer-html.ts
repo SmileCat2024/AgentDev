@@ -888,6 +888,13 @@ export function generateViewerHtml(port: number): string {
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
     }
 
+    .feature-badge.status-superseded {
+      color: #f5f5f4;
+      background: rgba(120, 113, 108, 0.72);
+      border-color: rgba(168, 162, 158, 0.75);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
+
     body[data-theme="light"] .feature-badge.status-enabled {
       color: #166534;
       background: rgba(220, 252, 231, 1);
@@ -906,6 +913,11 @@ export function generateViewerHtml(port: number): string {
     body[data-theme="light"] .feature-badge.status-removed {
       color: #881337;
       background: rgba(255, 228, 230, 1);
+    }
+
+    body[data-theme="light"] .feature-badge.status-superseded {
+      color: #57534e;
+      background: rgba(231, 229, 228, 1);
     }
 
     .feature-card-detail {
@@ -2779,9 +2791,12 @@ export function generateViewerHtml(port: number): string {
         feature_tool_enabled: 'enabled',
         feature_tool_disabled: 'disabled',
         feature_tool_removed: 'removed',
+        feature_tool_superseded: '已替代',
         feature_tool_render: 'render',
         feature_open_details: '查看详情',
         feature_status_label: '状态',
+        standalone_tools_title: '直接注册的工具',
+        standalone_tools_desc: '非 Feature 注册的工具',
         mcp_section_kicker: 'MCP 服务器',
         mcp_hero_title: 'Debugger Hub MCP 服务',
         structure_kicker: 'ReAct 循环拓扑',
@@ -2941,9 +2956,12 @@ export function generateViewerHtml(port: number): string {
         feature_tool_enabled: 'enabled',
         feature_tool_disabled: 'disabled',
         feature_tool_removed: 'removed',
+        feature_tool_superseded: 'superseded',
         feature_tool_render: 'render',
         feature_open_details: 'Open details',
         feature_status_label: 'Status',
+        standalone_tools_title: 'Direct Registered Tools',
+        standalone_tools_desc: 'Tools registered outside of Features',
         mcp_section_kicker: 'Model Context Protocol',
         mcp_hero_title: 'Debugger MCP Server',
         structure_kicker: 'ReAct Loop Topology',
@@ -3252,6 +3270,7 @@ export function generateViewerHtml(port: number): string {
             entries: [],
           };
         }),
+        standaloneTools: raw.standaloneTools || undefined,
       };
     }
 
@@ -4048,7 +4067,7 @@ export function generateViewerHtml(port: number): string {
               '<div class="feature-tool-card">',
               '<div class="feature-tool-top">',
               '<div class="feature-tool-name">' + escapeHtml(tool.name) + '</div>',
-              '<div class="' + getStatusBadgeClass(tool.state || (tool.enabled ? 'enabled' : 'disabled')) + '">' + escapeHtml(tool.state === 'removed' ? t('feature_tool_removed') : tool.state === 'disabled' || tool.enabled === false ? t('feature_tool_disabled') : t('feature_tool_enabled')) + '</div>',
+              '<div class="' + getStatusBadgeClass(tool.state || (tool.enabled ? 'enabled' : 'disabled')) + '">' + escapeHtml(tool.state === 'superseded' ? t('feature_tool_superseded') : tool.state === 'removed' ? t('feature_tool_removed') : tool.state === 'disabled' || tool.enabled === false ? t('feature_tool_disabled') : t('feature_tool_enabled')) + '</div>',
               '</div>',
               '<div class="feature-tool-desc">' + escapeHtml(tool.description || '') + '</div>',
               '<div class="feature-tool-meta">',
@@ -4063,12 +4082,31 @@ export function generateViewerHtml(port: number): string {
         '</div>',
       ].join('') : '';
 
+      const standaloneSection = (currentHookInspector.standaloneTools && currentHookInspector.standaloneTools.length > 0)
+        ? [
+          '<section class="hooks-section">',
+          '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('standalone_tools_title')) + '</div><div class="hooks-section-meta">' + String(currentHookInspector.standaloneTools.length) + '</div></div>',
+          '<div class="feature-tool-list">' + currentHookInspector.standaloneTools.map(tool => [
+            '<div class="feature-tool-card">',
+            '<div class="feature-tool-top">',
+            '<div class="feature-tool-name">' + escapeHtml(tool.name) + '</div>',
+            '<div class="' + getStatusBadgeClass(tool.state || 'enabled') + '">' + escapeHtml(tool.state === 'superseded' ? t('feature_tool_superseded') : tool.state === 'removed' ? t('feature_tool_removed') : tool.state === 'disabled' ? t('feature_tool_disabled') : t('feature_tool_enabled')) + '</div>',
+            '</div>',
+            '<div class="feature-tool-desc">' + escapeHtml(tool.description || '') + '</div>',
+            tool.source ? '<div class="feature-tool-meta"><span class="feature-tool-pill">source: ' + escapeHtml(tool.source) + '</span></div>' : '',
+            '</div>',
+          ].join('')).join('') + '</div>',
+          '</section>',
+        ].join('')
+        : '';
+
       return [
         '<div class="hooks-panel feature-detail-shell">',
         '<section class="hooks-section">',
         '<div class="hooks-section-header"><div class="hooks-section-title">' + escapeHtml(t('panel_all_features')) + '</div><div class="hooks-section-meta">' + String(currentHookInspector.features.length) + ' ' + escapeHtml(t('panel_registered')) + '</div></div>',
         '<div class="feature-grid">' + featureCards + '</div>',
         '</section>',
+        standaloneSection,
         detailOverlay,
         '</div>',
       ].join('');
@@ -5668,7 +5706,7 @@ export function generateViewerHtml(port: number): string {
                 </div>
               </div>
           \`;
-        } else if (msg.content.startsWith('[Error:')) {
+        } else if (msg.content.startsWith('[Error:') || msg.content.startsWith('[API Error:')) {
           // 错误消息使用红色样式
           innerContent += \`<div class="tool-error">\${escapeHtml(msg.content)}</div>\`;
         } else {

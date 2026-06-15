@@ -251,6 +251,8 @@ export interface LLMResponse {
   thinkingBlocks?: ThinkingBlock[];
   /** 用量统计（可选） */
   usage?: UsageInfo;
+  /** 停止原因，由 LLM API 返回（如 end_turn, tool_use, stop 等） */
+  stopReason?: string | null;
 }
 
 // ============= 渲染模板类型 =============
@@ -287,6 +289,8 @@ export interface ToolRenderConfig {
 // LLM 接口 - 所有 LLM 适配器都需要实现这个
 export interface LLMClient {
   chat(messages: Message[], tools: Tool[], options?: LLMChatOptions): Promise<LLMResponse>;
+  /** 可选：返回当前 LLM 实例使用的模型名（用于调试显示） */
+  readonly modelName?: string;
 }
 
 // LLM 调用选项
@@ -391,7 +395,7 @@ export interface FeatureInspectorSnapshot {
   tools: Array<{
     name: string;
     description: string;
-    state: 'enabled' | 'disabled' | 'removed';
+    state: 'enabled' | 'disabled' | 'removed' | 'superseded';
     enabled?: boolean;
     renderCall?: string;
     renderResult?: string;
@@ -402,6 +406,15 @@ export interface HookInspectorSnapshot {
   lifecycleOrder: string[];
   features: FeatureInspectorSnapshot[];
   hooks: HookLifecycleSnapshot[];
+  standaloneTools?: Array<{
+    name: string;
+    description: string;
+    state: 'enabled' | 'disabled' | 'removed' | 'superseded';
+    enabled?: boolean;
+    source?: string;
+    renderCall?: string;
+    renderResult?: string;
+  }>;
 }
 
 export interface AgentContextMetrics {
@@ -416,6 +429,8 @@ export interface AgentOverviewSnapshot {
   context: AgentContextMetrics;
   usageStats: UsageStatsSnapshot;
   runtime?: AgentRuntimeSnapshot;
+  /** 可选：当前使用的模型名（由 agent 实例注入） */
+  modelName?: string;
 }
 
 /**

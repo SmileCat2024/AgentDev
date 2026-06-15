@@ -18,7 +18,8 @@ import { Context, ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
-import { getDefaultSessionStore, type AgentRuntimeSnapshot, type AgentSessionSnapshot, type SessionStore, type CallRollbackSnapshot } from './session-store.js';
+import type { CallContinuationRequest } from './continuation.js';
+import { getDefaultSessionStore, type AgentRuntimeSnapshot, type AgentSessionSnapshot, type SessionStore, type CallRollbackSnapshot, type NamedCheckpoint } from './session-store.js';
 import { UsageStats, type UsageStatsSnapshot } from './usage.js';
 import type {
   ToolContext,
@@ -104,9 +105,13 @@ class AgentBase {
   protected _callIndex: number = -1;     // 用户交互序号（onCall 次数）
   protected _callStartTimes: Map<number, number> = new Map();
   protected _callCheckpoints: CallRollbackCheckpoint[] = [];
+  protected _namedCheckpoints: NamedCheckpoint[] = [];
 
   // 用量统计
   protected usageStats: UsageStats = new UsageStats();
+
+  // Continuation request（控制工具通过 registerContinuationRequest 登记）
+  private _continuationRequest: CallContinuationRequest | null = null;
 
   // 用户输入缓存（用于 Feature 修改待注入的输入内容）
   private _pendingInput: string | null = null;
@@ -198,11 +203,50 @@ class AgentBase {
   }
 
   /**
+   * 登记一个 continuation request
+   *
+   * 控制工具（如 checkpoint、rollback）在正常完成执行后调用此方法，
+   * 使当前 onCall 在工具结果闭合后停止，并将请求传递给宿主。
+   *
+   * 该方法仅在 onCall 执行期间有效。onCall 开始时会清理上一次的遗留请求。
+   */
+  registerContinuationRequest(request: CallContinuationRequest): void {
+    if (this._continuationRequest) {
+      throw new Error(
+        `Continuation request already registered: kind=${this._continuationRequest.kind}. ` +
+        `Only one continuation request per onCall is allowed.`
+      );
+    }
+    this._continuationRequest = request;
+    this.logger.info('Continuation request registered', { kind: request.kind });
+  }
+
+  /**
+   * 消费当前 continuation request（一次性）
+   *
+   * 宿主（如 CallArbiter）在 onCall 返回后调用此方法，
+   * 判断是否需要在同一逻辑 envelope 内启动下一个 segment。
+   *
+   * - 请求只能消费一次，消费后自动清除。
+   * - onCall 开始时也会清理上次未消费的请求。
+   *
+   * @returns 当前 continuation request，如果没有则返回 null
+   */
+  consumeContinuationRequest(): CallContinuationRequest | null {
+    const request = this._continuationRequest;
+    this._continuationRequest = null;
+    return request;
+  }
+
+  /**
    * 唯一的公开入口 - 执行 Agent
    */
   async onCall(input: string): Promise<string> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
+
+    // 清理上次 onCall 遗留的 continuation request
+    this._continuationRequest = null;
 
     // 设置通知上下文
     try {
@@ -536,6 +580,9 @@ class AgentBase {
         draftInput: entry.draftInput,
         runtime: { ...entry.runtime },
       })),
+      ...(this._namedCheckpoints.length > 0
+        ? { namedCheckpoints: this._namedCheckpoints.map(cp => ({ ...cp, runtime: { ...cp.runtime } })) }
+        : {}),
     };
   }
 
@@ -551,6 +598,11 @@ class AgentBase {
       draftInput: entry.draftInput,
       runtime: entry.runtime,
     }));
+
+    // 恢复命名检查点（如果快照中包含）
+    this._namedCheckpoints = (snapshot as AgentSessionSnapshot).namedCheckpoints
+      ? [...(snapshot as AgentSessionSnapshot).namedCheckpoints!]
+      : [];
 
     return this;
   }
@@ -594,6 +646,79 @@ class AgentBase {
     this.pushInspectorSnapshot();
 
     return { draftInput: checkpoint.draftInput };
+  }
+
+  /**
+   * 创建一个命名检查点
+   *
+   * 捕获当前完整 runtime snapshot 并将其与 checkpointId 关联。
+   * 应在 onCall 完全退出后、由宿主（CallArbiter）的 checkpoint barrier 调用。
+   *
+   * @param id 全局唯一的 checkpoint ID
+   * @returns 创建的 NamedCheckpoint
+   */
+  async createNamedCheckpoint(id: string): Promise<NamedCheckpoint> {
+    await this.ensureFeatureTools();
+
+    if (this._namedCheckpoints.some(cp => cp.id === id)) {
+      throw new Error(`Named checkpoint "${id}" already exists`);
+    }
+
+    const runtime = await this.captureRuntimeSnapshot(this.persistentContext, this._callIndex);
+    const checkpoint: NamedCheckpoint = {
+      id,
+      createdAt: Date.now(),
+      sourceCallIndex: this._callIndex,
+      runtime,
+    };
+    this._namedCheckpoints.push(checkpoint);
+    this.logger.info('Named checkpoint created', { id, callIndex: this._callIndex });
+    return checkpoint;
+  }
+
+  /**
+   * 回退到命名检查点
+   *
+   * 恢复到指定 checkpoint 的 runtime snapshot，
+   * 并剪除该 checkpoint 之后创建的所有命名检查点。
+   * 应在 onCall 完全退出后、由宿主（CallArbiter）的 rollback barrier 调用。
+   *
+   * @param id 目标 checkpoint ID
+   * @throws 如果 checkpoint 不存在
+   */
+  async rollbackToNamedCheckpoint(id: string): Promise<void> {
+    await this.ensureFeatureTools();
+
+    const targetIndex = this._namedCheckpoints.findIndex(cp => cp.id === id);
+    if (targetIndex === -1) {
+      throw new Error(`Named checkpoint "${id}" not found`);
+    }
+
+    const checkpoint = this._namedCheckpoints[targetIndex];
+    await this.restoreRuntimeSnapshot(checkpoint.runtime);
+
+    // 剪除该 checkpoint 之后创建的所有命名检查点（基于位置，避免时间戳精度问题）
+    this._namedCheckpoints = this._namedCheckpoints.slice(0, targetIndex + 1);
+
+    this.pushToDebug(this.getContext().getAll());
+    this.pushInspectorSnapshot();
+    this.logger.info('Rolled back to named checkpoint', { id, callIndex: checkpoint.sourceCallIndex });
+  }
+
+  /**
+   * 获取所有命名检查点（只读视图）
+   */
+  getNamedCheckpoints(): readonly NamedCheckpoint[] {
+    return this._namedCheckpoints;
+  }
+
+  /**
+   * 清除所有命名检查点
+   *
+   * 用于单 checkpoint 模式：创建新 checkpoint 前清除旧的。
+   */
+  clearNamedCheckpoints(): void {
+    this._namedCheckpoints = [];
   }
 
   /**
@@ -648,6 +773,7 @@ class AgentBase {
   reset(): this {
     this.persistentContext = undefined;
     this._callCheckpoints = [];
+    this._namedCheckpoints = [];
     this._callIndex = -1;
     this._currentStep = 0;
     this._initialized = false;
@@ -1261,6 +1387,7 @@ class AgentBase {
         recordUsage: (callIndex: number, step: number, usage: UsageInfo) => this.recordUsage(callIndex, step, usage),
         endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
         stepSaveFn: this._createStepSaveFn(),
+        peekContinuationRequest: () => this._continuationRequest,
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (call, input, context, step, callIndex) => this.toolExecutor!.execute(call, input, context, step, callIndex),

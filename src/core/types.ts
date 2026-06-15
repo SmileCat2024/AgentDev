@@ -140,6 +140,15 @@ export interface Tool {
   execute: (args: any, context?: any) => Promise<any>;
   /** 可选：渲染配置 */
   render?: ToolRenderConfig;
+  /**
+   * 工具执行模式
+   * - 'normal'（默认）：普通工具，可与其他工具在同一次 assistant turn 中并行调用
+   * - 'exclusive'：独占工具，必须是 assistant turn 中唯一的工具调用
+   *
+   * exclusive 工具适用于控制流工具（如 checkpoint、rollback），
+   * 它们不应与其他工具产生副作用交织。
+   */
+  executionMode?: 'normal' | 'exclusive';
 }
 
 /**

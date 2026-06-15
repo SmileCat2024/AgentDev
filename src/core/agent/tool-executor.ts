@@ -218,6 +218,14 @@ export class ToolExecutor {
           toolContext = { ...toolContext, signal };
         }
 
+        // 注入 continuation request sink（供控制工具使用）
+        toolContext = {
+          ...toolContext,
+          registerContinuationRequest: (request: import('../continuation.js').CallContinuationRequest) => {
+            this.parentAgent.registerContinuationRequest(request);
+          },
+        };
+
         try {
           const { emitNotification, createToolStart } = await import('../notification.js');
           emitNotification(createToolStart(call.name));

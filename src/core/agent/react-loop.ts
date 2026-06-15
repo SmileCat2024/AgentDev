@@ -9,12 +9,14 @@
  */
 
 import type { Context } from '../context.js';
+import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
 import type { ToolCall, LLMResponse, Message, UsageInfo } from '../types.js';
 import type { ToolResult, HookResult, StepFinishDecisionContext } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
 import type { HooksRegistry } from '../hooks-registry.js';
+import type { CallContinuationRequest } from '../continuation.js';
 import { CoreLifecycle, Decision, normalizeDecision } from '../lifecycle.js';
 import { createStepCheckpoint, rollbackToStepCheckpoint } from '../checkpoint.js';
 import { createLogger, runWithLogScope } from '../logging.js';
@@ -44,6 +46,7 @@ export class ReActLoopRunner {
       recordUsage(callIndex: number, step: number, usage: UsageInfo): void;
       endCallUsage(callIndex: number): void;
       stepSaveFn?: () => Promise<void>;
+      peekContinuationRequest?: () => CallContinuationRequest | null;
     },
     private executeHookFn: (
       hookName: string,
@@ -263,7 +266,36 @@ export class ReActLoopRunner {
         // 执行工具
           let waitCalled = false;
           let interrupted = false;
+          let batchRejected = false;
           console.log(`[ReactLoop] step=${step} executing ${response.toolCalls.length} toolCalls, signal.aborted=${signal?.aborted}`);
+
+          // ========== Exclusive batch pre-check ==========
+          // 如果批次中包含 exclusive 工具且不止一个工具调用，整批拒绝执行
+          if (response.toolCalls.length > 1) {
+            const exclusiveNames = response.toolCalls
+              .filter(call => this.agent.tools.isExclusive(call.name))
+              .map(call => call.name);
+
+            if (exclusiveNames.length > 0) {
+              batchRejected = true;
+              const namesStr = exclusiveNames.join(', ');
+              const errorMsg = exclusiveNames.length === 1
+                ? `The exclusive tool [${namesStr}] must be the only tool call in this assistant turn. No tool in this batch was executed. Retry with only ${namesStr}.`
+                : `Multiple exclusive tools [${namesStr}] were called together. Each exclusive tool must be the only tool call in its turn. No tool in this batch was executed. Retry with a single exclusive tool.`;
+
+              for (const call of response.toolCalls) {
+                const failResult: ToolExecResult = {
+                  success: false,
+                  result: { error: errorMsg },
+                };
+                context.addToolMessage(call, failResult, callIndex);
+              }
+              this.pushToDebug(context.getAll());
+              logger.info('Exclusive batch violation, all tools rejected', { step, exclusiveNames, batchSize: response.toolCalls.length });
+            }
+          }
+
+          if (!batchRejected) {
           for (let i = 0; i < response.toolCalls.length; i++) {
             const call = response.toolCalls[i];
 
@@ -289,6 +321,7 @@ export class ReActLoopRunner {
             await this.executeToolFn(call, input, context, step, callIndex);
             console.log(`[ReactLoop] step=${step} tool[${i}]="${call.name}" post-execute done, signal.aborted=${signal?.aborted}`);
           }
+          } // end if (!batchRejected)
 
           // 如果在 tool 执行中被中断，结束当前 call
           if (interrupted) {
@@ -298,6 +331,20 @@ export class ReActLoopRunner {
             completed = false;
             logger.info('Call interrupted during tool execution', { step });
             return 'interrupted' as const;
+          }
+
+          // ========== Continuation request check ==========
+          // 控制工具（checkpoint/rollback）在执行期间可能登记了 continuation request。
+          // 此时 tool result 已写入 Context，协议完整，可以安全结束当前 onCall segment。
+          // 宿主将在 onCall 返回后通过 consumeContinuationRequest() 获取请求。
+          const continuationRequest = this.agent.peekContinuationRequest?.();
+          if (continuationRequest) {
+            this.pushToDebug(context.getAll());
+            const lastContent = context.getAll().filter(m => m.role === 'assistant' && m.content).pop();
+            finalResponse = lastContent?.content ?? response.content ?? '';
+            completed = false;
+            logger.info('Call ending for continuation request', { step, kind: continuationRequest.kind });
+            return { completed: false, finalResponse, turns: step + 1, continuationRequest };
           }
 
           // 推送消息到 DebugHub

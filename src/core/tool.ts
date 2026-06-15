@@ -23,6 +23,7 @@ export function createTool(
     parameters?: Record<string, any>;
     execute: (args: any, context?: any) => Promise<any>;
     render?: ToolRenderInput;
+    executionMode?: 'normal' | 'exclusive';
   },
   sourceFile?: string
 ): Tool {
@@ -56,6 +57,7 @@ export function createTool(
     parameters: config.parameters,
     execute: config.execute,
     render: finalRender,
+    ...(config.executionMode ? { executionMode: config.executionMode } : {}),
   };
 }
 
@@ -171,6 +173,14 @@ export class ToolRegistry {
    */
   isRemoved(name: string): boolean {
     return this.tools.has(name) && !this.enabled.has(name) && !this.disabled.has(name);
+  }
+
+  /**
+   * 检查工具是否为 exclusive 模式
+   */
+  isExclusive(name: string): boolean {
+    const tool = this.tools.get(name);
+    return tool?.executionMode === 'exclusive';
   }
 
   /**

@@ -79,7 +79,14 @@ export type {
   DebugHubIPCMessage,
 } from './core/types.js';
 export type { DebugCapabilities } from './core/debug-capabilities.js';
-export type { AgentSessionSnapshot, SessionStore } from './core/session-store.js';
+export type { AgentSessionSnapshot, SessionStore, NamedCheckpoint } from './core/session-store.js';
+
+// Continuation request 类型
+export type {
+  CallContinuationRequest,
+  CheckpointContinuationRequest,
+  RollbackContinuationRequest,
+} from './core/continuation.js';
 
 // Feature 类型
 export type {

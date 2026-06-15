@@ -19,6 +19,27 @@ export interface CallRollbackSnapshot {
   runtime: AgentRuntimeSnapshot;
 }
 
+/**
+ * 命名检查点 — 由 Agent 自主建立的可恢复快照
+ *
+ * 与 CallRollbackSnapshot 的区别：
+ * - CallRollbackSnapshot 面向"回到某个用户 call 之前"，是 onCall 的副产品
+ * - NamedCheckpoint 面向"Agent 主动建立的恢复点"，有稳定 ID，可跨 segment 引用
+ *
+ * checkpoint 表示控制工具执行完成、tool result 已写入、
+ * 当前 segment 已完全结束之后的 runtime 状态（协议完整）。
+ */
+export interface NamedCheckpoint {
+  /** 全局唯一的 checkpoint ID（由 Agent 提供） */
+  id: string;
+  /** 创建时间戳 */
+  createdAt: number;
+  /** 创建时的 callIndex */
+  sourceCallIndex: number;
+  /** 完整的 runtime snapshot */
+  runtime: AgentRuntimeSnapshot;
+}
+
 export interface AgentSessionSnapshot {
   version: number;
   sessionId: string;
@@ -26,6 +47,8 @@ export interface AgentSessionSnapshot {
   agentType: string;
   runtime: AgentRuntimeSnapshot;
   rollbackHistory: CallRollbackSnapshot[];
+  /** 命名检查点列表（可选，用于 checkpoint/rollback 能力） */
+  namedCheckpoints?: NamedCheckpoint[];
 }
 
 export interface SessionStore {

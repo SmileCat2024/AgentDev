@@ -81,7 +81,7 @@ export class ReActLoopRunner {
     signal?: AbortSignal;
   }): Promise<ReActResult> {
     const { isFirstCall, callIndex, signal } = options;
-    console.log(`[ReactLoop.run] START callIndex=${callIndex}, signal=${!!signal}, signal.aborted=${signal?.aborted}`);
+    logger.debug('ReAct loop started', { callIndex, hasSignal: !!signal, signalAborted: signal?.aborted });
 
     // ========== ReAct 循环 ==========
     let completed = false;
@@ -100,7 +100,6 @@ export class ReActLoopRunner {
 
         try {
           // 检查中断信号
-          console.log(`[ReactLoop] step=${step} signal.aborted=${signal?.aborted}`);
           if (signal?.aborted) {
             logger.info('Step skipped due to interrupt', { step });
             return 'interrupted' as const;
@@ -156,6 +155,11 @@ export class ReActLoopRunner {
               const stopReason = response.stopReason;
               const isLegitimateEmpty = stopReason === 'end_turn' || stopReason === 'stop';
 
+              // stop_reason=max_tokens: 模型输出被 max_tokens 截断（通常是思考内容耗尽了全部预算）。
+              // 重试不会改善结果，直接作为截断事件处理。
+              // (参考 Claude Code claude.ts:2266 的 max_tokens 显式处理)
+              const isMaxTokensTruncation = stopReason === 'max_tokens';
+
               if (isLegitimateEmpty) {
                 // 合法空响应（模型主动结束但无内容），不重试
                 this.pushToDebug([
@@ -163,6 +167,20 @@ export class ReActLoopRunner {
                   { role: 'assistant', content: '[Info: LLM returned empty response with end_turn]', turn: callIndex },
                 ]);
                 break; // 跳出重试循环，进入正常完成流程
+              }
+
+              if (isMaxTokensTruncation) {
+                logger.warn('LLM response truncated by max_tokens (empty content)', {
+                  step,
+                  callIndex,
+                  stopReason,
+                  hasReasoning: !!response.reasoning,
+                });
+                this.pushToDebug([
+                  ...context.getAll(),
+                  { role: 'assistant', content: '[Warning: LLM output was truncated by max_tokens — thinking consumed the entire token budget and no content was produced]', turn: callIndex },
+                ]);
+                break; // 不重试，直接结束本轮
               }
 
               // 异常空响应，尝试重试
@@ -267,7 +285,6 @@ export class ReActLoopRunner {
           let waitCalled = false;
           let interrupted = false;
           let batchRejected = false;
-          console.log(`[ReactLoop] step=${step} executing ${response.toolCalls.length} toolCalls, signal.aborted=${signal?.aborted}`);
 
           // ========== Exclusive batch pre-check ==========
           // 如果批次中包含 exclusive 工具且不止一个工具调用，整批拒绝执行
@@ -300,7 +317,6 @@ export class ReActLoopRunner {
             const call = response.toolCalls[i];
 
             // 在执行每个工具前检查中断信号
-            console.log(`[ReactLoop] step=${step} tool[${i}]="${call.name}" pre-execute signal.aborted=${signal?.aborted}`);
             if (signal?.aborted) {
               interrupted = true;
               // 为当前及剩余的 tool calls 补齐 interrupted result
@@ -319,7 +335,6 @@ export class ReActLoopRunner {
               waitCalled = true;
             }
             await this.executeToolFn(call, input, context, step, callIndex);
-            console.log(`[ReactLoop] step=${step} tool[${i}]="${call.name}" post-execute done, signal.aborted=${signal?.aborted}`);
           }
           } // end if (!batchRejected)
 

@@ -4,11 +4,12 @@
  */
 
 import { createTool } from '../../core/tool.js';
-import { readFile, writeFile, readdir, stat } from 'fs/promises';
+import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
 import { glob } from 'glob';
 import { spawn } from 'child_process';
 import { createTwoFilesPatch, diffLines } from 'diff';
 import path from 'path';
+import { homedir } from 'os';
 
 // ============================================================================
 // Constants
@@ -47,9 +48,23 @@ const IGNORE_PATTERNS = [
   'env/**'
 ];
 
+/**
+ * Read 去重状态：记录已读文件的 { mtime, offset, limit }。
+ * 同一文件同一范围已读过且 mtime 没变时，返回 stub 而非重新读取全文。
+ */
+interface ReadDedupEntry {
+  mtimeMs: number;
+  offset: number;
+  limit: number | undefined;
+}
+const readDedupState = new Map<string, ReadDedupEntry>();
+
+const FILE_UNCHANGED_STUB =
+  'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.';
+
 function normalizeNamedPathArg(args: unknown, ...keys: string[]): string {
   if (!args || typeof args !== 'object') {
-    throw new Error(`Missing required path parameter. Expected one of: ${keys.join(', ')}`);
+    throw new Error(`Missing required parameter: "${keys[0]}"`);
   }
   for (const key of keys) {
     const value = (args as Record<string, unknown>)[key];
@@ -57,7 +72,11 @@ function normalizeNamedPathArg(args: unknown, ...keys: string[]): string {
       return value;
     }
   }
-  throw new Error(`Missing required path parameter. Expected one of: ${keys.join(', ')}`);
+  const receivedKeys = Object.keys(args as Record<string, unknown>);
+  const hint = receivedKeys.length > 0
+    ? ` Received keys: [${receivedKeys.join(', ')}]`
+    : ' Received an empty object.';
+  throw new Error(`Missing required parameter: "${keys[0]}".${hint}`);
 }
 
 /**
@@ -76,10 +95,7 @@ function tryNamedPathArg(args: unknown, ...keys: string[]): string | undefined {
 }
 
 function resolveWorkspacePath(filePath: string, workspaceDir: string = DEFAULT_WORKSPACE_DIR): string {
-  if (path.isAbsolute(filePath)) {
-    return path.normalize(filePath);
-  }
-  return path.resolve(workspaceDir, filePath);
+  return expandPath(filePath, workspaceDir);
 }
 
 function resolveWorkspaceSearchPath(searchPath: string | undefined, workspaceDir: string = DEFAULT_WORKSPACE_DIR): string {
@@ -87,6 +103,166 @@ function resolveWorkspaceSearchPath(searchPath: string | undefined, workspaceDir
     return workspaceDir;
   }
   return resolveWorkspacePath(searchPath, workspaceDir);
+}
+
+/**
+ * 增强版路径解析：~ 展开、空白 trim、null byte 安全检查、NFC 标准化。
+ * 参考 Claude Code 的 expandPath 实现。
+ */
+function expandPath(inputPath: string, baseDir: string = DEFAULT_WORKSPACE_DIR): string {
+  if (typeof inputPath !== 'string') {
+    throw new TypeError(`Path must be a string, received ${typeof inputPath}`);
+  }
+
+  // Null byte 安全检查
+  if (inputPath.includes('\0')) {
+    throw new Error('Path contains null bytes');
+  }
+
+  const trimmed = inputPath.trim();
+  if (!trimmed) {
+    return path.normalize(baseDir).normalize('NFC');
+  }
+
+  // ~ 展开
+  let resolved: string;
+  if (trimmed === '~') {
+    resolved = homedir();
+  } else if (trimmed.startsWith('~/')) {
+    resolved = path.join(homedir(), trimmed.slice(2));
+  } else if (path.isAbsolute(trimmed)) {
+    resolved = path.normalize(trimmed);
+  } else {
+    resolved = path.resolve(baseDir, trimmed);
+  }
+
+  return resolved.normalize('NFC');
+}
+
+/**
+ * 检查是否为 UNC 路径（Windows 网络路径）。
+ * 访问 UNC 路径会触发 SMB 认证，可能泄露 NTLM 凭据。
+ */
+function isUncPath(filePath: string): boolean {
+  return filePath.startsWith('\\\\') || filePath.startsWith('//');
+}
+
+// ============================================================================
+// 设备文件阻断 — 防止读取无限输出或阻塞输入的设备文件
+// ============================================================================
+
+const BLOCKED_DEVICE_PATHS = new Set([
+  '/dev/zero',
+  '/dev/random',
+  '/dev/urandom',
+  '/dev/full',
+  '/dev/stdin',
+  '/dev/tty',
+  '/dev/console',
+  '/dev/stdout',
+  '/dev/stderr',
+  '/dev/fd/0',
+  '/dev/fd/1',
+  '/dev/fd/2',
+]);
+
+function isBlockedDevicePath(filePath: string): boolean {
+  if (BLOCKED_DEVICE_PATHS.has(filePath)) return true;
+  if (
+    filePath.startsWith('/proc/') &&
+    (filePath.endsWith('/fd/0') || filePath.endsWith('/fd/1') || filePath.endsWith('/fd/2'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
+// 编码与行尾符检测
+// ============================================================================
+
+type FileEncoding = 'utf8' | 'utf16le';
+type LineEndingType = 'LF' | 'CRLF';
+
+interface FileMetadata {
+  content: string;
+  encoding: FileEncoding;
+  lineEndings: LineEndingType;
+}
+
+/**
+ * 从 Buffer 检测编码（UTF-16LE BOM 检测）
+ */
+function detectEncoding(buffer: Buffer): FileEncoding {
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return 'utf16le';
+  }
+  return 'utf8';
+}
+
+/**
+ * 从内容检测行尾符
+ */
+function detectLineEndings(content: string): LineEndingType {
+  const sample = content.slice(0, 4096);
+  return sample.includes('\r\n') ? 'CRLF' : 'LF';
+}
+
+/**
+ * 写入文件时保留行尾符。
+ * 如果目标文件使用 CRLF，将 content 中的 LF 转换为 CRLF。
+ */
+function writeTextContent(
+  filePath: string,
+  content: string,
+  encoding: FileEncoding = 'utf8',
+  lineEndings: LineEndingType = 'LF',
+): Promise<void> {
+  let toWrite = content;
+  if (lineEndings === 'CRLF') {
+    toWrite = content.replaceAll('\r\n', '\n').split('\n').join('\r\n');
+  }
+  return writeFile(filePath, toWrite, encoding);
+}
+
+// ============================================================================
+// 引号标准化（curly quotes ↔ straight quotes）
+// 参考 Claude Code 的 findActualString / normalizeQuotes
+// ============================================================================
+
+const CURLY_QUOTES: Array<[string, string]> = [
+  ['\u2018', "'"],  // LEFT SINGLE
+  ['\u2019', "'"],  // RIGHT SINGLE
+  ['\u201C', '"'],  // LEFT DOUBLE
+  ['\u201D', '"'],  // RIGHT DOUBLE
+];
+
+function normalizeQuotes(str: string): string {
+  let result = str;
+  for (const [curly, straight] of CURLY_QUOTES) {
+    result = result.replaceAll(curly, straight);
+  }
+  return result;
+}
+
+/**
+ * 在文件内容中查找匹配字符串。
+ * 先精确匹配，失败后做引号标准化再匹配。
+ * 返回文件中实际存在的字符串（可能带 curly quotes），或 null。
+ */
+function findActualString(fileContent: string, searchString: string): string | null {
+  if (fileContent.includes(searchString)) {
+    return searchString;
+  }
+
+  const normalizedSearch = normalizeQuotes(searchString);
+  const normalizedFile = normalizeQuotes(fileContent);
+  const index = normalizedFile.indexOf(normalizedSearch);
+  if (index !== -1) {
+    return fileContent.substring(index, index + searchString.length);
+  }
+
+  return null;
 }
 
 // ============================================================================
@@ -160,13 +336,22 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   },
   execute: async (args = {}) => {
     const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
-    const offsetParam = (args as Record<string, unknown>).offset;
-    const limitParam = (args as Record<string, unknown>).limit;
+    const offsetParam = typeof (args as Record<string, unknown>).offset === 'number'
+      ? (args as Record<string, unknown>).offset as number
+      : undefined;
+    const limitParam = typeof (args as Record<string, unknown>).limit === 'number'
+      ? (args as Record<string, unknown>).limit as number
+      : undefined;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
     console.log(`[read] ${resolvedFilePath}`);
 
     if (offsetParam !== undefined && offsetParam < 1) {
       throw new Error('offset must be greater than or equal to 1');
+    }
+
+    // 设备文件阻断 — 防止进程挂死
+    if (isBlockedDevicePath(resolvedFilePath)) {
+      throw new Error(`Cannot read '${filePath}': this device file would block or produce infinite output.`);
     }
 
     const stats = await stat(resolvedFilePath).catch(() => null);
@@ -219,6 +404,28 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       throw new Error(`Cannot read binary file: ${resolvedFilePath}`);
     }
 
+    // 去重：如果同一文件同一范围已读过且 mtime 没变，返回 stub
+    const dedupEntry = readDedupState.get(resolvedFilePath);
+    if (dedupEntry) {
+      const rangeMatch =
+        dedupEntry.offset === (offsetParam ?? 1) &&
+        dedupEntry.limit === limitParam;
+      if (rangeMatch) {
+        try {
+          const currentMtime = (await stat(resolvedFilePath)).mtimeMs;
+          if (currentMtime === dedupEntry.mtimeMs) {
+            return {
+              type: 'file_unchanged',
+              path: resolvedFilePath,
+              content: FILE_UNCHANGED_STUB,
+            };
+          }
+        } catch {
+          // stat 失败，继续正常读取
+        }
+      }
+    }
+
     const content = await readFile(resolvedFilePath, 'utf-8');
     const lines = content.split('\n');
 
@@ -259,6 +466,14 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const lastReadLine = offset + raw.length - 1;
     const hasMoreLines = totalLines > lastReadLine;
     const truncated = hasMoreLines || truncatedByBytes;
+
+    // 更新去重状态
+    try {
+      const mtimeMs = (await stat(resolvedFilePath)).mtimeMs;
+      readDedupState.set(resolvedFilePath, { mtimeMs, offset, limit: limitParam });
+    } catch {
+      // stat 失败，跳过去重状态更新
+    }
 
     return {
       type: 'file',
@@ -310,14 +525,36 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
     console.log(`[write] ${resolvedFilePath}`);
 
+    // 检测现有文件的编码和行尾符
+    let encoding: FileEncoding = 'utf8';
+    let lineEndings: LineEndingType = 'LF';
     const exists = await stat(resolvedFilePath).then(() => true).catch(() => false);
-    const contentOld = exists ? await readFile(resolvedFilePath, 'utf-8') : '';
+    let contentOld = '';
+    if (exists) {
+      const buffer = await readFile(resolvedFilePath, { encoding: null });
+      encoding = detectEncoding(buffer);
+      const rawContent = buffer.toString(encoding);
+      lineEndings = detectLineEndings(rawContent);
+      contentOld = rawContent.replaceAll('\r\n', '\n');
+    }
 
     // 生成 diff
     const diff = createTwoFilesPatch(resolvedFilePath, resolvedFilePath, contentOld, content);
 
-    // 写入文件
-    await writeFile(resolvedFilePath, content, 'utf-8');
+    // 确保父目录存在
+    const dir = path.dirname(resolvedFilePath);
+    await mkdir(dir, { recursive: true });
+
+    // 写入文件（保留编码和行尾符）
+    await writeTextContent(resolvedFilePath, content, encoding, lineEndings);
+
+    // 更新 read 去重状态（写入后使旧的去重条目失效）
+    try {
+      const mtimeMs = (await stat(resolvedFilePath)).mtimeMs;
+      readDedupState.set(resolvedFilePath, { mtimeMs, offset: 1, limit: undefined });
+    } catch {
+      // ignore
+    }
 
     return {
       filePath: resolvedFilePath,
@@ -813,8 +1050,17 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       throw new Error(`File not found: ${resolvedFilePath}`);
     }
 
-    const contentOld = await readFile(resolvedFilePath, 'utf-8');
-    const contentNew = replace(contentOld, oldString, newString, replaceAll);
+    // 读取文件，检测编码和行尾符
+    const buffer = await readFile(resolvedFilePath, { encoding: null });
+    const encoding = detectEncoding(buffer);
+    const lineEndings = detectLineEndings(buffer.toString(encoding));
+    const contentOld = buffer.toString(encoding).replaceAll('\r\n', '\n');
+
+    // 引号标准化：尝试将 oldString 匹配到文件中的实际字符串（可能含 curly quotes）
+    const actualOldString = findActualString(contentOld, oldString);
+    const effectiveOldString = actualOldString ?? oldString;
+
+    const contentNew = replace(contentOld, effectiveOldString, newString, replaceAll);
 
     // 生成 diff
     const diff = createTwoFilesPatch(resolvedFilePath, resolvedFilePath, contentOld, contentNew);
@@ -827,8 +1073,16 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       if (change.removed) deletions += change.count || 0;
     }
 
-    // 写入文件
-    await writeFile(resolvedFilePath, contentNew, 'utf-8');
+    // 写入文件（保留编码和行尾符）
+    await writeTextContent(resolvedFilePath, contentNew, encoding, lineEndings);
+
+    // 更新 read 去重状态
+    try {
+      const mtimeMs = (await stat(resolvedFilePath)).mtimeMs;
+      readDedupState.set(resolvedFilePath, { mtimeMs, offset: 1, limit: undefined });
+    } catch {
+      // ignore
+    }
 
     return {
       filePath: resolvedFilePath,

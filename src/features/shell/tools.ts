@@ -14,6 +14,7 @@
 
 import { spawn, execSync } from 'child_process';
 import { existsSync } from 'fs';
+import { mkdir, writeFile } from 'fs/promises';
 import * as path from 'path';
 import type { Tool } from '../../core/types.js';
 import { createTool } from '../../core/tool.js';
@@ -36,16 +37,25 @@ export interface ShellExecutionResult {
 }
 
 // ---------------------------------------------------------------------------
-// 输出截断（照搬 Claude Code 的 outputLimits 策略）
+// 输出截断 + 落盘持久化（参考 Claude Code 的 toolResultStorage 策略）
 // ---------------------------------------------------------------------------
 
 const MAX_OUTPUT_LENGTH = 30_000;
 
 /**
- * 截断输出：保留头部 + 尾部，中间插入截断提示。
- * 这与 Claude Code 的 EndTruncatingAccumulator 策略一致。
+ * 截断输出并持久化完整内容到磁盘。
+ *
+ * 当输出超过 limit 时：
+ * 1. 将完整输出写入 workdir/.agentdev/temp/bash-output-<timestamp>-<random>.log
+ * 2. 返回截断版本（头 60% + 尾 40%），中间插入截断提示和文件路径引用
+ *
+ * 如果写盘失败，fallback 到纯截断（不丢失截断提示，但完整内容不可恢复）。
  */
-function truncateOutput(output: string, limit: number = MAX_OUTPUT_LENGTH): string {
+async function processOutputWithPersistence(
+  output: string,
+  workdir: string,
+  limit: number = MAX_OUTPUT_LENGTH,
+): Promise<string> {
   if (output.length <= limit) return output;
 
   const headSize = Math.floor(limit * 0.6);
@@ -53,10 +63,38 @@ function truncateOutput(output: string, limit: number = MAX_OUTPUT_LENGTH): stri
   const head = output.slice(0, headSize);
   const tail = output.slice(-tailSize);
   const omitted = output.length - limit;
+  const totalKB = Math.round(output.length / 1024);
+
+  // 尝试将完整输出持久化到磁盘
+  let filePath: string | null = null;
+  try {
+    const tempDir = path.join(workdir, '.agentdev', 'temp');
+    const now = new Date();
+    const ts = now.getFullYear().toString() +
+      String(now.getMonth() + 1).padStart(2, '0') +
+      String(now.getDate()).padStart(2, '0') + '-' +
+      String(now.getHours()).padStart(2, '0') +
+      String(now.getMinutes()).padStart(2, '0') +
+      String(now.getSeconds()).padStart(2, '0');
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const fileName = `bash-output-${ts}-${suffix}.log`;
+    filePath = path.join(tempDir, fileName);
+
+    await mkdir(tempDir, { recursive: true });
+    await writeFile(filePath, output, 'utf-8');
+  } catch (err) {
+    console.error(`[shell] Failed to persist output: ${err}`);
+    filePath = null;
+  }
+
+  // 构建截断提示
+  const persistNotice = filePath
+    ? `[Full output (${totalKB}KB) saved to: ${filePath}]\nUse the read tool to access the full output if needed.\n`
+    : '';
 
   return (
     head +
-    `\n\n... [truncated: omitted ${omitted} characters in the middle] ...\n\n` +
+    `\n\n... [truncated: omitted ${omitted} characters (${totalKB}KB total)] ...\n${persistNotice}\n` +
     tail
   );
 }
@@ -229,18 +267,22 @@ export async function runShellCommand(
         return;
       }
 
-      const truncatedStdout = truncateOutput(stdout || '');
-
-      if (code === 0) {
-        resolve({
-          stdout: truncatedStdout,
-          stderr: cleanStderr,
-          output: truncatedStdout || cleanStderr,
-        });
-      } else {
-        const output = truncatedStdout || cleanStderr;
-        reject(new Error(output || `Command failed with exit code ${code}`));
-      }
+      // 截断输出并持久化完整内容到磁盘
+      processOutputWithPersistence(stdout || '', workdir).then(truncatedStdout => {
+        if (code === 0) {
+          resolve({
+            stdout: truncatedStdout,
+            stderr: cleanStderr,
+            output: truncatedStdout || cleanStderr,
+          });
+        } else {
+          // 命令执行失败（非零退出码）
+          const output = truncatedStdout || cleanStderr;
+          reject(new Error(output || `Command failed with exit code ${code}`));
+        }
+      }).catch(err => {
+        reject(err);
+      });
     });
 
     child.on('error', (err) => {

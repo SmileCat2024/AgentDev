@@ -269,7 +269,6 @@ class AgentBase {
 
     // 创建 AbortController 用于本次 call 的中断控制
     this._abortController = new AbortController();
-    console.log(`[Agent.onCall] Created _abortController for input="${input.slice(0, 50)}", callIndex=${nextCallIndex}`);
 
     // 递增 callIndex（用户交互序号）
     this._callIndex = nextCallIndex;
@@ -457,7 +456,6 @@ class AgentBase {
         throw error;
 
       } finally {
-         console.log(`[Agent.onCall FINALLY] _abortController=${!!this._abortController}, signal.aborted=${this._abortController?.signal?.aborted}`);
          this._callStartTimes.delete(callId);
          this._currentCallInput = undefined;
          this._currentStep = 0;
@@ -613,16 +611,11 @@ class AgentBase {
    * 返回 true 表示成功触发中断，false 表示当前没有正在运行的 call
    */
    interrupt(): boolean {
-    const hasController = !!this._abortController;
-    const isAborted = this._abortController?.signal?.aborted ?? false;
-    const isRunning = this._currentCallInput !== undefined;
-    console.log(`[Agent.interrupt] _abortController=${hasController}, signal.aborted=${isAborted}, isRunning=${isRunning}, callInput="${this._currentCallInput?.slice(0, 50)}"`);
     if (this._abortController && !this._abortController.signal.aborted) {
       this._abortController.abort(new Error('Interrupted by user'));
-      console.log(`[Agent.interrupt] abort() called successfully`);
+      this.logger.info('Interrupt triggered', { callIndex: this._callIndex });
       return true;
     }
-    console.log(`[Agent.interrupt] returning false - cannot interrupt`);
     return false;
   }
 

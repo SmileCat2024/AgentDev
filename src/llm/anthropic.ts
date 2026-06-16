@@ -124,6 +124,13 @@ const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_THINKING_KEEP_TURNS = 5;
 const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
 
+/**
+ * Minimum output tokens reserved for actual response content (text + tool calls)
+ * when thinking is enabled. Without this, the model could consume the entire
+ * max_tokens budget on thinking alone and produce empty content.
+ */
+const MIN_OUTPUT_TOKENS_WHEN_THINKING = 4096;
+
 export class AnthropicLLM implements LLMClient {
   private initPromise: Promise<void>;
 
@@ -155,6 +162,21 @@ export class AnthropicLLM implements LLMClient {
           throw new DOMException('Aborted', 'AbortError');
         }
 
+        // Compute effective token budgets to satisfy the Anthropic API constraint:
+        // budget_tokens must be strictly less than max_tokens.
+        // When thinking is enabled, also ensure max_tokens has room for actual output.
+        // (Matches Claude Code's approach in services/api/claude.ts:1624)
+        const thinkingEnabled = !!(this.thinkingBudgetTokens && this.thinkingBudgetTokens >= 1024);
+        let effectiveMaxTokens = this.maxTokens;
+        let effectiveBudgetTokens: number | undefined;
+        if (thinkingEnabled) {
+          effectiveBudgetTokens = this.thinkingBudgetTokens!;
+          if (effectiveMaxTokens < effectiveBudgetTokens + MIN_OUTPUT_TOKENS_WHEN_THINKING) {
+            effectiveMaxTokens = effectiveBudgetTokens + MIN_OUTPUT_TOKENS_WHEN_THINKING;
+          }
+          effectiveBudgetTokens = Math.min(effectiveBudgetTokens, effectiveMaxTokens - 1);
+        }
+
         response = await fetch(resolveAnthropicMessagesUrl(this.baseUrl), {
           method: 'POST',
           headers: {
@@ -168,10 +190,10 @@ export class AnthropicLLM implements LLMClient {
           },
           body: JSON.stringify({
             model: this._modelName,
-            max_tokens: this.maxTokens,
+            max_tokens: effectiveMaxTokens,
             stream: true,
-            ...(this.thinkingBudgetTokens && this.thinkingBudgetTokens >= 1024
-              ? { thinking: { type: 'enabled', budget_tokens: this.thinkingBudgetTokens } }
+            ...(thinkingEnabled
+              ? { thinking: { type: 'enabled', budget_tokens: effectiveBudgetTokens } }
               : {}),
             ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
               ? { context_management: createContextManagementConfig(this.thinkingKeepTurns) }

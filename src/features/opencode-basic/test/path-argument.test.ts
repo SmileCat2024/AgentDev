@@ -34,7 +34,7 @@ async function main(): Promise<void> {
       missingPathError = error instanceof Error ? error.message : String(error);
     }
     assert(
-      missingPathError === 'Missing required path parameter. Expected one of: filePath, filepath, path',
+      missingPathError === 'Missing required parameter: "filePath". Received an empty object.',
       'write should fail with a clear missing path message'
     );
 

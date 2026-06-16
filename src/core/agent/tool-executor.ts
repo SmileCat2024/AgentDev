@@ -17,6 +17,19 @@ import { createLogger, runWithLogScope } from '../logging.js';
 const logger = createLogger('agent.tool');
 
 /**
+ * 工具中断错误
+ *
+ * 当 AbortSignal 触发时，Promise.race 中此错误被抛出，
+ * 使工具执行立即结束，不等实际工具完成。
+ */
+class ToolInterruptError extends Error {
+  constructor() {
+    super('Interrupted by user');
+    this.name = 'AbortError';
+  }
+}
+
+/**
  * 工具执行器类
  */
 export class ToolExecutor {
@@ -213,7 +226,6 @@ export class ToolExecutor {
 
         // 传递 AbortSignal 给工具（支持中断）
         const signal = this.parentAgent._abortController?.signal;
-        console.log(`[ToolExecutor] executing tool="${call.name}", signal=${!!signal}, signal.aborted=${signal?.aborted}`);
         if (signal) {
           toolContext = { ...toolContext, signal };
         }
@@ -233,8 +245,33 @@ export class ToolExecutor {
           // Ignore notification failures.
         }
 
-        const data = await tool.execute(call.arguments, toolContext);
-        console.log(`[ToolExecutor] tool="${call.name}" completed, signal.aborted=${signal?.aborted}`);
+        // ========== 框架级中断 ==========
+        // 将工具执行与 abort signal 竞争。
+        // 当 signal abort 时立即返回，不等待工具完成。
+        // 工具的实际执行在后台 fire-and-forget，其结果被丢弃。
+        let data: unknown;
+        if (signal) {
+          // 已中断则直接跳过
+          if (signal.aborted) {
+            throw new ToolInterruptError();
+          }
+          // 创建 abort 监听 Promise
+          const abortPromise = new Promise<never>((_, reject) => {
+            signal.addEventListener('abort', () => reject(new ToolInterruptError()), { once: true });
+          });
+          data = await Promise.race([
+            tool.execute(call.arguments, toolContext),
+            abortPromise,
+          ]);
+        } else {
+          data = await tool.execute(call.arguments, toolContext);
+        }
+
+        // 如果工具完成后发现已被中断，仍然标记为 interrupted
+        if (signal?.aborted) {
+          throw new ToolInterruptError();
+        }
+
         result.success = true;
         result.data = data;
 
@@ -246,7 +283,11 @@ export class ToolExecutor {
         context.addToolMessage(call, successResult, callIndex);
 
       } catch (error) {
-        result.error = error instanceof Error ? error.message : String(error);
+        const isInterrupt = error instanceof ToolInterruptError
+          || (error instanceof Error && error.name === 'AbortError');
+        result.error = isInterrupt
+          ? 'Interrupted by user'
+          : (error instanceof Error ? error.message : String(error));
 
         // 添加错误结果到上下文
         const failResult: ToolExecResult = {

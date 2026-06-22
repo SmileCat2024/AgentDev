@@ -346,6 +346,15 @@ class AgentBase {
       context.addUserMessage(finalInput, this._callIndex);
       this.pushToDebug(context.getAll());
 
+      // 提前提交 rollback checkpoint：确保在 ReAct 循环中的 step auto-save
+      // 持久化时，当前 call 的 checkpoint 已存在。这消除了"消息已持久化但
+      // checkpoint 缺失"的竞态窗口。
+      this.commitCallCheckpoint({
+        callIndex: this._callIndex,
+        draftInput: finalInput,
+        runtime: preCallRuntime,
+      });
+
       // ========== 初始化执行器（延迟初始化）==========
       this.ensureExecutorsInitialized();
 
@@ -354,11 +363,6 @@ class AgentBase {
 
       // 保存上下文
       this.persistentContext = context;
-      this.commitCallCheckpoint({
-        callIndex: this._callIndex,
-        draftInput: finalInput,
-        runtime: preCallRuntime,
-      });
 
       // ========== Call Finish（成功）==========
       await executeHook(
@@ -369,6 +373,7 @@ class AgentBase {
           response: result.finalResponse,
           turns: result.turns,
           completed: result.completed,
+          finishReason: result.finishReason,
         }),
         { hookName: 'onCallFinish', input }
       );
@@ -380,12 +385,13 @@ class AgentBase {
         response: result.finalResponse,
         steps: result.turns,
         completed: result.completed,
+        finishReason: result.finishReason,
       });
 
       // 发送 call.finish 通知（成功）
       try {
         const { emitNotification, createCallFinish } = await import('./notification.js');
-        emitNotification(createCallFinish(result.completed));
+        emitNotification(createCallFinish(result.completed, result.finishReason));
       } catch { /* notification 模块不可用 */ }
 
         this.logger.info('Call completed', {
@@ -430,6 +436,7 @@ class AgentBase {
           response: errorMsg,
           turns: this._currentStep + 1,
           completed: false,
+          finishReason: 'exception',
         }),
         { hookName: 'onCallFinish', input }
       );
@@ -441,12 +448,13 @@ class AgentBase {
         response: errorMsg,
         steps: this._currentStep + 1,
         completed: false,
+        finishReason: 'exception',
       });
 
       // 发送 call.finish 通知（异常）
       try {
         const { emitNotification, createCallFinish } = await import('./notification.js');
-        emitNotification(createCallFinish(false));
+        emitNotification(createCallFinish(false, 'exception'));
       } catch { /* notification 模块不可用 */ }
 
         this.logger.error('Call failed', {

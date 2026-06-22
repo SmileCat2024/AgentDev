@@ -21,6 +21,8 @@
   "scripts": {
     "build": "tsup && node scripts/copy-feature-skills.mjs && node scripts/generate-bin-cmds.mjs",
     "dev": "tsup --watch",
+    "test": "tsx src/test/test-runner.ts",
+    "test:openai-responses": "tsx src/test/openai-responses.test.ts",
     "prepublishOnly": "npm run build",
     "create-feature": "node dist/create-feature-cli.js",
     "copy-example": "node scripts/copy-example-feature.mjs",

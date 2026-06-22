@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type {
   AgentFeature,
   FeatureContext,
@@ -13,8 +15,8 @@ import type {
   AudioFeedbackRuntimeState,
   AudioFeedbackSnapshot,
 } from './types.js';
-import soundPlay from 'sound-play';
 
+const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -34,6 +36,7 @@ export class AudioFeedbackFeature implements AgentFeature {
     enabled: true,
     volume: 0.5,
     audioPath: '',
+    errorAudioPath: '',
     playCount: 0,
     activeMode: null,
   };
@@ -42,27 +45,29 @@ export class AudioFeedbackFeature implements AgentFeature {
   constructor(config: AudioFeedbackConfig = {}) {
     this.config = {
       audioPath: config.audioPath ?? join(__dirname, 'media', 'success.mp3'),
+      errorAudioPath: config.errorAudioPath ?? join(__dirname, 'media', 'error.mp3'),
       enabled: config.enabled ?? true,
       volume: config.volume ?? 0.5,
     };
     this.runtime.enabled = this.config.enabled;
     this.runtime.volume = this.config.volume;
     this.runtime.audioPath = this.config.audioPath;
+    this.runtime.errorAudioPath = this.config.errorAudioPath;
   }
 
   getFeatureManifest() {
     return {
-      schemaVersion: 1,
+      schemaVersion: 1 as const,
       settings: {
         properties: {
           enabled: {
-            type: 'boolean',
+            type: 'boolean' as const,
             title: '默认启用',
             description: 'Agent 启动后是否默认播放提醒音频。',
             default: this.config.enabled,
           },
           volume: {
-            type: 'number',
+            type: 'number' as const,
             title: '音量',
             description: '播放音量，范围 0 到 1。',
             default: this.config.volume,
@@ -71,12 +76,20 @@ export class AudioFeedbackFeature implements AgentFeature {
             step: 0.05,
           },
           audioPath: {
-            type: 'file',
+            type: 'file' as const,
             title: '音频文件路径',
             description: '可选自定义提醒音频文件路径；留空时使用 Feature 内置音频。',
-            default: this.config.audioPath,
+            default: '',
             accept: 'audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac',
             placeholder: '选择自定义提醒音频文件',
+          },
+          errorAudioPath: {
+            type: 'file' as const,
+            title: '失败音频文件路径',
+            description: '可选自定义失败提醒音频文件路径；留空时使用 Feature 内置 error.mp3。',
+            default: '',
+            accept: 'audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac',
+            placeholder: '选择自定义失败提醒音频文件',
           },
         },
       },
@@ -175,6 +188,7 @@ export class AudioFeedbackFeature implements AgentFeature {
       enabled: this.runtime.enabled,
       volume: this.runtime.volume,
       audioPath: this.runtime.audioPath,
+      errorAudioPath: this.runtime.errorAudioPath,
       playCount: this.runtime.playCount,
       activeMode: this.runtime.activeMode,
     };
@@ -187,6 +201,7 @@ export class AudioFeedbackFeature implements AgentFeature {
     this.runtime.enabled = Boolean(state.enabled);
     this.runtime.volume = typeof state.volume === 'number' ? state.volume : 0.5;
     this.runtime.audioPath = typeof state.audioPath === 'string' ? state.audioPath : this.config.audioPath;
+    this.runtime.errorAudioPath = typeof state.errorAudioPath === 'string' ? state.errorAudioPath : this.config.errorAudioPath;
     this.runtime.playCount = typeof state.playCount === 'number' ? state.playCount : 0;
     this.runtime.activeMode = state.activeMode === 'mute-feedback' || state.activeMode === 'play-feedback'
       ? state.activeMode
@@ -195,6 +210,11 @@ export class AudioFeedbackFeature implements AgentFeature {
 
   /**
    * 核心功能：在 call 完成时播放音频
+   *
+   * 根据 finishReason 区分成功 / 失败，播放不同音效：
+   * - completed → 成功音
+   * - interrupted / api_error / error / exception / max_steps → 失败音
+   * - continuation → 不播放（call 暂停续接，非真正结束）
    */
   @CallFinish
   async playAudioOnCallFinish(ctx: CallFinishContext): Promise<void> {
@@ -202,20 +222,80 @@ export class AudioFeedbackFeature implements AgentFeature {
       return;
     }
 
+    if (ctx.finishReason === 'continuation') {
+      return;
+    }
+
+    const isError = ctx.finishReason !== 'completed';
+    const audioPath = isError ? this.runtime.errorAudioPath : this.runtime.audioPath;
+
     try {
       this.runtime.playCount++;
       this.logger?.info('Playing audio feedback', {
         playCount: this.runtime.playCount,
-        audioPath: this.runtime.audioPath,
+        audioPath,
+        finishReason: ctx.finishReason,
+        isError,
       });
 
-      // 使用 sound-play 播放音频
-      await soundPlay.play(this.runtime.audioPath, this.runtime.volume);
+      await this._playSound(audioPath);
     } catch (error) {
       this.logger?.error('Failed to play audio feedback', {
         error: error instanceof Error ? error.message : String(error),
-        audioPath: this.runtime.audioPath,
+        audioPath,
       });
     }
+  }
+
+  /**
+   * 稳健的跨平台音频播放
+   *
+   * 替代第三方 sound-play 库。sound-play 在 Windows 上使用
+   * `Start-Sleep -s $player.NaturalDuration.TimeSpan.TotalSeconds` 来
+   * 等待播放结束，但 NaturalDuration 在 MediaPlayer.Open() 的异步加载
+   * 完成前会抛出 InvalidOperationException，导致 PowerShell 进程提前
+   * 退出、声音被截断——表现为"有时有声音有时没有"。
+   *
+   * 本方法在 Windows 上使用 Dispatcher.PushFrame 消息循环正确等待
+   * MediaOpened 事件，确保媒体加载完毕后再读取时长。
+   */
+  private async _playSound(audioPath: string): Promise<void> {
+    const volume = this.runtime.volume;
+
+    if (process.platform === 'darwin') {
+      // macOS: afplay 同步阻塞直到播放结束，本身可靠
+      const macVolume = Math.min(2, volume * 2);
+      await execFileAsync('afplay', ['-v', String(macVolume), audioPath]);
+      return;
+    }
+
+    // Windows: 使用 WPF MediaPlayer + Dispatcher 消息泵
+    const escapedPath = audioPath.replace(/'/g, "''");
+    const psScript = [
+      'Add-Type -AssemblyName PresentationCore',
+      'Add-Type -AssemblyName WindowsBase',
+      '$p = New-Object System.Windows.Media.MediaPlayer',
+      '$frame = New-Object System.Windows.Threading.DispatcherFrame',
+      '$timer = New-Object System.Windows.Threading.DispatcherTimer',
+      '$timer.Interval = [TimeSpan]::FromMilliseconds(5000)',
+      '$timer.Add_Tick({ $frame.Continue = $false })',
+      '$p.Add_MediaOpened({ $frame.Continue = $false })',
+      "$p.Open('" + escapedPath + "')",
+      '$timer.Start()',
+      '[System.Windows.Threading.Dispatcher]::PushFrame($frame)',
+      '$timer.Stop()',
+      '$p.Volume = ' + volume,
+      '$p.Play()',
+      '$dur = 2',
+      'try { if ($p.NaturalDuration.HasTimeSpan) { $dur = $p.NaturalDuration.TimeSpan.TotalSeconds } } catch {}',
+      'Start-Sleep -Seconds ([math]::Ceiling([math]::Max($dur, 0.5)))',
+      '$p.Stop()',
+      '$p.Close()',
+    ].join('; ');
+
+    await execFileAsync('powershell', ['-NoProfile', '-Command', psScript], {
+      timeout: 15000,
+      windowsHide: true,
+    });
   }
 }

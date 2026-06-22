@@ -24,6 +24,7 @@ export function createTool(
     execute: (args: any, context?: any) => Promise<any>;
     render?: ToolRenderInput;
     executionMode?: 'normal' | 'exclusive';
+    parallelizable?: boolean;
   },
   sourceFile?: string
 ): Tool {
@@ -58,6 +59,7 @@ export function createTool(
     execute: config.execute,
     render: finalRender,
     ...(config.executionMode ? { executionMode: config.executionMode } : {}),
+    ...(config.parallelizable ? { parallelizable: config.parallelizable } : {}),
   };
 }
 
@@ -181,6 +183,14 @@ export class ToolRegistry {
   isExclusive(name: string): boolean {
     const tool = this.tools.get(name);
     return tool?.executionMode === 'exclusive';
+  }
+
+  /**
+   * 检查工具是否可并行执行
+   */
+  isParallelizable(name: string): boolean {
+    const tool = this.tools.get(name);
+    return tool?.parallelizable === true && tool?.executionMode !== 'exclusive';
   }
 
   /**

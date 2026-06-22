@@ -38,6 +38,7 @@ function createLspTools(feature: LspFeature): Tool[] {
   return operations.map(({ name, op, desc }) => ({
     name,
     description: desc,
+    parallelizable: true,
     parameters: {
       type: 'object',
       properties: {

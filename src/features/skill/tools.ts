@@ -18,6 +18,7 @@ import { createTool } from '../../core/tool.js';
 export const invokeSkillTool: Tool = createTool({
   name: 'invoke_skill',
   description: '调用并展开指定技能的详细文档。技能提供专门的能力和领域知识。',
+  parallelizable: true,
   parameters: {
     type: 'object',
     properties: {

@@ -14,6 +14,7 @@ export function createWebFetchTool(): Tool {
   return createTool({
     name: 'web_fetch',
     description: '获取网页内容',
+    parallelizable: true,
     parameters: {
       type: 'object',
       properties: {

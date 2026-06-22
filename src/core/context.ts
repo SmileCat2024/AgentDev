@@ -200,6 +200,11 @@ export class Context {
    * 添加助手响应
    */
   addAssistantMessage(response: LLMResponse, turn: number): void {
+    // 从 LLM 响应中提取用量信息，盖戳到 assistant 消息上
+    const usage = response.usage
+      ? { inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens }
+      : undefined;
+
     this.addMessage(
       {
         role: 'assistant',
@@ -208,6 +213,7 @@ export class Context {
         toolCalls: response.toolCalls,
         reasoning: response.reasoning,
         thinkingBlocks: response.thinkingBlocks,
+        usage,
       },
       { turn }
     );
@@ -219,6 +225,7 @@ export class Context {
       toolCalls: response.toolCalls,
       reasoning: response.reasoning,
       thinkingBlocks: response.thinkingBlocks,
+      usage,
     });
   }
 

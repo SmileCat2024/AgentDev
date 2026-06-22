@@ -37,10 +37,13 @@ export { system, user, assistant, toolResult, createMessage } from './core/messa
 export {
   AnthropicLLM,
   OpenAILLM,
+  OpenAIResponsesLLM,
   compileContextForAnthropic,
+  compileContextForOpenAIResponses,
   createAnthropicLLM,
   createLLM,
   createOpenAILLM,
+  createOpenAIResponsesLLM,
 } from './llm/index.js';
 
 // 配置
@@ -65,6 +68,7 @@ export * from './mcp/index.js';
 export type {
   Message,
   MessageRole,
+  MessageUsage,
   Tool,
   ToolCall,
   LLMResponse,
@@ -101,8 +105,10 @@ export type {
 
 // 重新导出核心功能模块
 export { getPackageInfoFromSource } from './core/feature.js';
+export type { FeatureManifestDefinition, FeatureManifestSettingProperty } from './core/feature.js';
 export { CallStart, CallFinish, StepStart, StepFinish, ToolUse, ToolFinished } from './core/hooks-decorator.js';
 export type { CallStartContext, CallFinishContext, StepStartContext, StepFinishedContext } from './core/lifecycle.js';
+export type { CallFinishReason } from './core/lifecycle.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';
 

@@ -28,6 +28,10 @@ export interface ShellCommandToolOptions {
   workspaceDir?: string;
   workdir?: string;
   resourceRoot?: string;
+  /** Override bash path detection (used when ShellFeature pre-detects the path) */
+  bashPath?: string;
+  /** Timeout in milliseconds (default: 120000 = 2 min) */
+  timeoutMs?: number;
 }
 
 export interface ShellExecutionResult {
@@ -51,7 +55,7 @@ const MAX_OUTPUT_LENGTH = 30_000;
  *
  * 如果写盘失败，fallback 到纯截断（不丢失截断提示，但完整内容不可恢复）。
  */
-async function processOutputWithPersistence(
+export async function processOutputWithPersistence(
   output: string,
   workdir: string,
   limit: number = MAX_OUTPUT_LENGTH,
@@ -114,8 +118,26 @@ let cachedBashPath: string | null = null;
  * 3. where bash（Windows）
  * 4. 常见安装位置
  */
-function findGitBashPath(): string {
+/**
+ * 动态查找 Git Bash 的 bash.exe 路径。
+ *
+ * 查找顺序：
+ * 1. configuredPath 参数（来自 manifest 配置）
+ * 2. 环境变量 AGENTDEV_GIT_BASH_PATH
+ * 3. 环境变量 SHELL（如果包含 bash）
+ * 4. where bash（Windows）
+ * 5. 常见安装位置
+ *
+ * 返回 null 表示未找到（调用方应据此决定是否注册工具）。
+ */
+export function findGitBashPath(configuredPath?: string): string | null {
   if (cachedBashPath) return cachedBashPath;
+
+  // 0. 用户在 manifest 中配置的路径
+  if (configuredPath && existsSync(configuredPath)) {
+    cachedBashPath = configuredPath;
+    return cachedBashPath;
+  }
 
   if (process.platform !== 'win32') {
     cachedBashPath = process.env.SHELL || '/bin/bash';
@@ -159,13 +181,16 @@ function findGitBashPath(): string {
     }
   }
 
-  cachedBashPath = 'C:/Program Files/Git/bin/bash.exe';
-  return cachedBashPath;
+  cachedBashPath = null;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
 // 核心：运行 Shell 命令
 // ---------------------------------------------------------------------------
+
+const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
+const MAX_TIMEOUT_MS = 600_000;     // 10 minutes
 
 /**
  * 运行 Shell 命令（支持 AbortSignal 中断）
@@ -200,13 +225,19 @@ export async function runShellCommand(
   const commandString = `source ${quotedBashrc} 2>/dev/null || true; eval ${quotedCommand}`;
 
   // 4. 确定 bash 路径和参数
-  const bashPath = findGitBashPath();
+  const bashPath = options.bashPath || findGitBashPath();
+  if (!bashPath) {
+    throw new Error('Git Bash not found. Please install Git for Windows or configure the path in settings.');
+  }
   const bashArgs = ['-c', commandString];
 
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timedOut = false;
+
+    const timeoutMs = Math.min(options.timeoutMs || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
     const child = spawn(bashPath, bashArgs, {
       cwd: workdir,
@@ -218,8 +249,7 @@ export async function runShellCommand(
       windowsHide: true,
     });
 
-    const onAbort = () => {
-      console.log(`[shell] signal abort detected, killing child PID=${child.pid}`);
+    const killChild = () => {
       try {
         if (process.platform === 'win32') {
           spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
@@ -231,8 +261,22 @@ export async function runShellCommand(
       }
     };
 
+    const onAbort = () => {
+      console.log(`[shell] signal abort detected, killing child PID=${child.pid}`);
+      killChild();
+    };
+
+    // Timeout timer
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      console.log(`[shell] command timed out after ${timeoutMs}ms, killing PID=${child.pid}`);
+      killChild();
+    }, timeoutMs);
+
     if (signal) {
       if (signal.aborted) {
+        clearTimeout(timeoutId);
         const err: any = new Error('Command interrupted before execution');
         err.name = 'AbortError';
         reject(err);
@@ -252,13 +296,17 @@ export async function runShellCommand(
     child.on('close', (code) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeoutId);
       signal?.removeEventListener('abort', onAbort);
 
-      const cleanStderr = stderr
-        .split('\n')
-        .filter(line => !line.includes('process group') && !line.includes('job control'))
-        .join('\n')
-        .trim();
+      if (timedOut) {
+        processOutputWithPersistence(stdout || '', workdir).then(truncatedStdout => {
+          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s\n\n${truncatedStdout || stderr}`));
+        }).catch(() => {
+          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`));
+        });
+        return;
+      }
 
       if (signal?.aborted) {
         const err: any = new Error('Command interrupted');
@@ -266,6 +314,12 @@ export async function runShellCommand(
         reject(err);
         return;
       }
+
+      const cleanStderr = stderr
+        .split('\n')
+        .filter(line => !line.includes('process group') && !line.includes('job control'))
+        .join('\n')
+        .trim();
 
       // 截断输出并持久化完整内容到磁盘
       processOutputWithPersistence(stdout || '', workdir).then(truncatedStdout => {
@@ -288,6 +342,7 @@ export async function runShellCommand(
     child.on('error', (err) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeoutId);
       signal?.removeEventListener('abort', onAbort);
       reject(err);
     });
@@ -305,12 +360,13 @@ export function createShellCommandTool(
       type: 'object',
       properties: {
         command: { type: 'string' },
+        timeout: { type: 'number', description: 'Optional timeout in milliseconds (max 600000). Defaults to 120000 (2 minutes).' },
       },
       required: ['command'],
     },
     render: { call: 'bash', result: 'bash' },
-    execute: async ({ command }, context?: { signal?: AbortSignal }) => {
-      const result = await runShellCommand(command, options, context?.signal);
+    execute: async ({ command, timeout }, context?: { signal?: AbortSignal }) => {
+      const result = await runShellCommand(command, { ...options, timeoutMs: timeout }, context?.signal);
       return result.output;
     },
   });

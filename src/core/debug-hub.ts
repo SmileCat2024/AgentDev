@@ -75,6 +75,7 @@ export class DebugHub {
   private udsPath: string;
   private workerPort: number | null = null;
   private clientReady: boolean = false;
+  private stopped: boolean = false;
 
   // 注册锁（防止并发竞争）
   private registrationLock: boolean = false;
@@ -120,6 +121,7 @@ export class DebugHub {
    * @param openBrowser 是否自动打开浏览器（默认 true，已废弃参数）
    */
   async start(port: number = 2026, openBrowser: boolean = true): Promise<void> {
+    this.stopped = false;
     if (this.transportMode === 'claw') {
       this.workerPort = port;
       try {
@@ -261,6 +263,7 @@ export class DebugHub {
    * 停止调试服务器
    */
   stop(): void {
+    this.stopped = true;
     if (this.transportMode === 'claw') {
       this.clientReady = false;
       return;
@@ -742,8 +745,9 @@ export class DebugHub {
         this.clientReady = false;
         console.warn('[DebugHub] 与 ViewerWorker 的连接已断开');
 
-        // 自动重连
-        this.scheduleReconnect();
+        if (!this.stopped) {
+          this.scheduleReconnect();
+        }
       });
     });
   }
@@ -911,6 +915,10 @@ export class DebugHub {
    * 安排重连（指数退避）
    */
   private scheduleReconnect(): void {
+    if (this.stopped) {
+      return;
+    }
+
     // 清除现有的定时器
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -939,7 +947,9 @@ export class DebugHub {
       } catch (error) {
         console.error(`[DebugHub] 重连失败: ${(error as Error).message}`);
         // 继续尝试重连
-        this.scheduleReconnect();
+        if (!this.stopped) {
+          this.scheduleReconnect();
+        }
       }
     }, delay);
   }

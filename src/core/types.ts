@@ -149,6 +149,18 @@ export interface Tool {
    * 它们不应与其他工具产生副作用交织。
    */
   executionMode?: 'normal' | 'exclusive';
+  /**
+   * 工具是否可并行执行。
+   *
+   * - true: 该工具可以与同批次中其他 parallelizable 工具并发执行
+   * - false/undefined: 串行执行（默认，向后兼容）
+   *
+   * 约束：
+   * - exclusive 工具忽略此属性（exclusive 总是独占批次）
+   * - 标记为 parallelizable 的工具应是无副作用的只读操作，
+   *   或其副作用不会与同批次其他工具冲突
+   */
+  parallelizable?: boolean;
 }
 
 /**
@@ -214,6 +226,24 @@ export interface Message {
   toolCalls?: ToolCall[];
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
   thinkingBlocks?: ThinkingBlock[];
+  /**
+   * LLM 用量信息（仅 assistant 消息有值）。
+   *
+   * 由 LLM provider 在生成响应时返回，表示生成此消息时的上下文 token 开销。
+   * inputTokens 是发送给 LLM 的完整上下文大小（包含所有历史消息），
+   * 不是单条消息的 token 数。
+   */
+  usage?: MessageUsage;
+}
+
+/**
+ * 消息级用量记录（盖戳在 assistant 消息上）
+ */
+export interface MessageUsage {
+  /** 生成此消息时，发送给 LLM 的总输入 token（即当时的完整上下文大小） */
+  inputTokens: number;
+  /** LLM 生成的输出 token */
+  outputTokens: number;
 }
 
 export interface ThinkingBlock {
@@ -809,6 +839,7 @@ export type {
   AgentDestroyContext,
   CallStartContext,
   CallFinishContext,
+  CallFinishReason,
   StepStartContext,
   StepFinishedContext,
   HookResult,

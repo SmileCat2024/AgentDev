@@ -184,11 +184,11 @@ export function createCallStart(): Notification {
  * 创建 Call 结束通知
  * @param completed 是否正常完成（false 表示被中断或出错）
  */
-export function createCallFinish(completed: boolean): Notification {
+export function createCallFinish(completed: boolean, finishReason?: string): Notification {
   return {
     type: 'call.finish',
     category: 'state',
     timestamp: Date.now(),
-    data: { completed },
+    data: { completed, ...(finishReason ? { finishReason } : {}) },
   };
 }

@@ -47,6 +47,7 @@ export function createSafeTrashListTool(workspaceDir: string = process.cwd()): T
   return createTool({
     name: 'safe_trash_list',
     description: '列出垃圾目录中的所有可恢复文件。',
+    parallelizable: true,
     parameters: {
       type: 'object',
       properties: {

@@ -138,6 +138,21 @@ export interface CallStartContext {
 }
 
 /**
+ * Call 结束原因
+ *
+ * 让 @CallFinish 钩子能结构化地判断 call 为什么结束，
+ * 不再需要解析 response 字符串前缀。
+ */
+export type CallFinishReason =
+  | 'completed'
+  | 'interrupted'
+  | 'api_error'
+  | 'error'
+  | 'max_steps'
+  | 'continuation'
+  | 'exception';
+
+/**
  * Call 结束上下文
  */
 export interface CallFinishContext {
@@ -151,6 +166,8 @@ export interface CallFinishContext {
   steps: number;
   /** 是否成功完成 */
   completed: boolean;
+  /** 结束原因 */
+  finishReason: CallFinishReason;
 }
 
 // ========== Step 级别 ==========

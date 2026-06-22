@@ -164,18 +164,21 @@ export class AnthropicLLM implements LLMClient {
 
         // Compute effective token budgets to satisfy the Anthropic API constraint:
         // budget_tokens must be strictly less than max_tokens.
-        // When thinking is enabled, also ensure max_tokens has room for actual output.
-        // (Matches Claude Code's approach in services/api/claude.ts:1624)
-        const thinkingEnabled = !!(this.thinkingBudgetTokens && this.thinkingBudgetTokens >= 1024);
-        let effectiveMaxTokens = this.maxTokens;
+        // When thinking is enabled, ensure max_tokens has room for actual output
+        // by scaling the thinking budget DOWN to fit, never inflating max_tokens
+        // beyond the user-configured value (which could exceed API limits).
+        const originalBudget = this.thinkingBudgetTokens;
         let effectiveBudgetTokens: number | undefined;
-        if (thinkingEnabled) {
-          effectiveBudgetTokens = this.thinkingBudgetTokens!;
-          if (effectiveMaxTokens < effectiveBudgetTokens + MIN_OUTPUT_TOKENS_WHEN_THINKING) {
-            effectiveMaxTokens = effectiveBudgetTokens + MIN_OUTPUT_TOKENS_WHEN_THINKING;
+        if (originalBudget && originalBudget >= 1024) {
+          const roomForThinking = this.maxTokens - MIN_OUTPUT_TOKENS_WHEN_THINKING;
+          if (roomForThinking >= 1024) {
+            effectiveBudgetTokens = Math.min(originalBudget, roomForThinking);
           }
-          effectiveBudgetTokens = Math.min(effectiveBudgetTokens, effectiveMaxTokens - 1);
+          // If maxTokens is too small to accommodate both thinking and output,
+          // thinking is silently disabled — the user's maxTokens takes priority.
         }
+        const thinkingEnabled = effectiveBudgetTokens !== undefined;
+        const effectiveMaxTokens = this.maxTokens;
 
         response = await fetch(resolveAnthropicMessagesUrl(this.baseUrl), {
           method: 'POST',
@@ -807,7 +810,7 @@ export function createAnthropicLLM(
       configOrApiKey.defaultModel.apiKey,
       configOrApiKey.defaultModel.model,
       configOrApiKey.defaultModel.baseUrl,
-      configOrApiKey.defaultModel.maxTokens ?? DEFAULT_MAX_TOKENS,
+      (configOrApiKey.defaultModel.maxTokens && configOrApiKey.defaultModel.maxTokens > 0) ? configOrApiKey.defaultModel.maxTokens : DEFAULT_MAX_TOKENS,
       configOrApiKey.defaultModel.thinkingBudgetTokens,
       configOrApiKey.defaultModel.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
       configOrApiKey.defaultModel.customHeaders,
@@ -819,7 +822,7 @@ export function createAnthropicLLM(
       configOrApiKey.apiKey,
       configOrApiKey.model,
       configOrApiKey.baseUrl,
-      configOrApiKey.maxTokens ?? DEFAULT_MAX_TOKENS,
+      (configOrApiKey.maxTokens && configOrApiKey.maxTokens > 0) ? configOrApiKey.maxTokens : DEFAULT_MAX_TOKENS,
       configOrApiKey.thinkingBudgetTokens,
       configOrApiKey.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
       configOrApiKey.customHeaders,

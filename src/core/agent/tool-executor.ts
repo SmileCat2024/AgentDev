@@ -59,7 +59,7 @@ export class ToolExecutor {
     context: Context,
     step: number,
     callIndex: number  // 用户交互序号
-  ): Promise<void> {
+  ): Promise<ToolExecResult> {
     return await runWithLogScope({
       step,
       toolName: call.name,
@@ -117,7 +117,6 @@ export class ToolExecutor {
           success: false,
           result: { error: result.error },
         };
-        context.addToolMessage(call, errorResult, callIndex);
 
         await this.executeHookFn(
           'onToolFinished',
@@ -131,7 +130,7 @@ export class ToolExecutor {
         };
         await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
 
-        return;
+        return errorResult;
       }
 
       // ========== ToolUse 正向钩子 ==========
@@ -192,7 +191,6 @@ export class ToolExecutor {
           success: false,
           result: { error: result.error || 'Tool not found' },
         };
-        context.addToolMessage(call, errorResult, callIndex);
 
         // ========== ToolFinished 正向钩子 ==========
         await this.executeHookFn(
@@ -208,8 +206,10 @@ export class ToolExecutor {
         };
         await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
 
-        return;
+        return errorResult;
       }
+
+      let execResult: ToolExecResult;
 
       try {
         // 执行工具
@@ -275,12 +275,10 @@ export class ToolExecutor {
         result.success = true;
         result.data = data;
 
-        // 添加工具结果到上下文
-        const successResult: ToolExecResult = {
+        execResult = {
           success: true,
           result: typeof data === 'string' ? data : JSON.stringify(data),
         };
-        context.addToolMessage(call, successResult, callIndex);
 
       } catch (error) {
         const isInterrupt = error instanceof ToolInterruptError
@@ -289,12 +287,10 @@ export class ToolExecutor {
           ? 'Interrupted by user'
           : (error instanceof Error ? error.message : String(error));
 
-        // 添加错误结果到上下文
-        const failResult: ToolExecResult = {
+        execResult = {
           success: false,
           result: { error: result.error },
         };
-        context.addToolMessage(call, failResult, callIndex);
       }
 
       result.duration = Date.now() - startTime;
@@ -332,6 +328,8 @@ export class ToolExecutor {
           error: result.error,
         });
       }
+
+      return execResult;
     });
   }
 }

@@ -28,6 +28,10 @@ export interface ShellCommandToolOptions {
   workspaceDir?: string;
   workdir?: string;
   resourceRoot?: string;
+  /** Override bash path detection (used when ShellFeature pre-detects the path) */
+  bashPath?: string;
+  /** Timeout in milliseconds (default: 120000 = 2 min) */
+  timeoutMs?: number;
 }
 
 export interface ShellExecutionResult {
@@ -51,7 +55,7 @@ const MAX_OUTPUT_LENGTH = 30_000;
  *
  * 如果写盘失败，fallback 到纯截断（不丢失截断提示，但完整内容不可恢复）。
  */
-async function processOutputWithPersistence(
+export async function processOutputWithPersistence(
   output: string,
   workdir: string,
   limit: number = MAX_OUTPUT_LENGTH,
@@ -114,28 +118,41 @@ let cachedBashPath: string | null = null;
  * 3. where bash（Windows）
  * 4. 常见安装位置
  */
-function findGitBashPath(): string {
+/**
+ * 动态查找 Git Bash 的 bash.exe 路径。
+ *
+ * 查找顺序：
+ * 1. configuredPath 参数（来自 manifest 配置）
+ * 2. 环境变量 AGENTDEV_GIT_BASH_PATH
+ * 3. 环境变量 SHELL（如果包含 bash）
+ * 4. where bash（Windows）
+ * 5. 常见安装位置
+ *
+ * 返回 null 表示未找到（调用方应据此决定是否注册工具）。
+ */
+export function findGitBashPath(configuredPath?: string): string | null {
   if (cachedBashPath) return cachedBashPath;
 
+  // 0. 用户在 manifest 中配置的路径
+  if (configuredPath && existsSync(configuredPath)) {
+    cachedBashPath = configuredPath;
+    return cachedBashPath;
+  }
+
   if (process.platform !== 'win32') {
-    // Unix: 直接用 SHELL 或 /bin/bash
     cachedBashPath = process.env.SHELL || '/bin/bash';
     return cachedBashPath;
   }
 
-  // Windows: 按优先级查找
   const candidates: string[] = [];
 
-  // 1. 环境变量覆盖
   if (process.env.AGENTDEV_GIT_BASH_PATH) {
     candidates.push(process.env.AGENTDEV_GIT_BASH_PATH);
   }
 
-  // 2. 常见安装位置（64-bit 优先于 32-bit）
   candidates.push('C:\\Program Files\\Git\\bin\\bash.exe');
   candidates.push('C:\\Program Files (x86)\\Git\\bin\\bash.exe');
 
-  // 3. 通过 where bash 查找
   try {
     const result = execSync('where bash', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     for (const line of result.split('\n').map(l => l.trim()).filter(Boolean)) {
@@ -147,7 +164,6 @@ function findGitBashPath(): string {
     // where 命令可能不可用
   }
 
-  // 4. 通过 git 路径推导
   try {
     const gitPath = execSync('where git', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n')[0]?.trim();
     if (gitPath) {
@@ -165,14 +181,16 @@ function findGitBashPath(): string {
     }
   }
 
-  // 回退到硬编码默认值（保持向后兼容）
-  cachedBashPath = 'C:/Program Files/Git/bin/bash.exe';
-  return cachedBashPath;
+  cachedBashPath = null;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
 // 核心：运行 Shell 命令
 // ---------------------------------------------------------------------------
+
+const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
+const MAX_TIMEOUT_MS = 600_000;     // 10 minutes
 
 /**
  * 运行 Shell 命令（支持 AbortSignal 中断）
@@ -182,10 +200,6 @@ function findGitBashPath(): string {
  * - 去掉 -i（interactive）flag
  * - 添加 stdin redirect
  * - 重写 Windows null redirect
- *
- * @param command 要执行的命令
- * @param options 执行选项
- * @param signal AbortSignal 用于中断命令执行
  */
 export async function runShellCommand(
   command: string,
@@ -207,42 +221,39 @@ export async function runShellCommand(
   const quotedCommand = quoteShellCommand(normalizedCommand, addStdinRedirect);
 
   // 3. 构建 eval 命令字符串
-  //    source bashrc 以保持 PATH、rm 拦截等配置
-  //    用 || true 保证 bashrc 缺失时不阻断
   const quotedBashrc = `'${bashrcPath.replace(/'/g, `'\"'\"'`)}'`;
   const commandString = `source ${quotedBashrc} 2>/dev/null || true; eval ${quotedCommand}`;
 
   // 4. 确定 bash 路径和参数
-  const bashPath = findGitBashPath();
-  // 不使用 -i（interactive），消除 job control 警告
+  const bashPath = options.bashPath || findGitBashPath();
+  if (!bashPath) {
+    throw new Error('Git Bash not found. Please install Git for Windows or configure the path in settings.');
+  }
   const bashArgs = ['-c', commandString];
 
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timedOut = false;
+
+    const timeoutMs = Math.min(options.timeoutMs || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
     const child = spawn(bashPath, bashArgs, {
       cwd: workdir,
       env: {
         ...process.env,
-        // 设置 MSYS 相关环境以改善 Windows 兼容性
         MSYSTEM: process.env.MSYSTEM || 'MINGW64',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
 
-    // 手动监听 signal abort——在 Windows 上 Git Bash 的子进程树
-    // 不会被 spawn 的 signal 选项杀死，所以必须手动 kill
-    const onAbort = () => {
-      console.log(`[shell] signal abort detected, killing child PID=${child.pid}`);
+    const killChild = () => {
       try {
         if (process.platform === 'win32') {
-          // Windows: 用 taskkill /T 杀死整个进程树
           spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
         } else {
-          // Unix: kill 整个进程组
           process.kill(-child.pid!, 'SIGKILL');
         }
       } catch {
@@ -250,8 +261,22 @@ export async function runShellCommand(
       }
     };
 
+    const onAbort = () => {
+      console.log(`[shell] signal abort detected, killing child PID=${child.pid}`);
+      killChild();
+    };
+
+    // Timeout timer
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      console.log(`[shell] command timed out after ${timeoutMs}ms, killing PID=${child.pid}`);
+      killChild();
+    }, timeoutMs);
+
     if (signal) {
       if (signal.aborted) {
+        clearTimeout(timeoutId);
         const err: any = new Error('Command interrupted before execution');
         err.name = 'AbortError';
         reject(err);
@@ -260,29 +285,28 @@ export async function runShellCommand(
       signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    // 收集 stdout
     child.stdout?.on('data', (data) => {
       stdout += data.toString();
     });
 
-    // 收集 stderr
     child.stderr?.on('data', (data) => {
       stderr += data.toString();
     });
 
-    // 处理进程退出
     child.on('close', (code) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeoutId);
       signal?.removeEventListener('abort', onAbort);
 
-      // 过滤掉 bash 在非 TTY 环境下的作业控制警告（保险措施，
-      // 去掉 -i 后理论上不再出现，但保留以防万一）
-      const cleanStderr = stderr
-        .split('\n')
-        .filter(line => !line.includes('process group') && !line.includes('job control'))
-        .join('\n')
-        .trim();
+      if (timedOut) {
+        processOutputWithPersistence(stdout || '', workdir).then(truncatedStdout => {
+          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s\n\n${truncatedStdout || stderr}`));
+        }).catch(() => {
+          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`));
+        });
+        return;
+      }
 
       if (signal?.aborted) {
         const err: any = new Error('Command interrupted');
@@ -290,6 +314,12 @@ export async function runShellCommand(
         reject(err);
         return;
       }
+
+      const cleanStderr = stderr
+        .split('\n')
+        .filter(line => !line.includes('process group') && !line.includes('job control'))
+        .join('\n')
+        .trim();
 
       // 截断输出并持久化完整内容到磁盘
       processOutputWithPersistence(stdout || '', workdir).then(truncatedStdout => {
@@ -309,10 +339,10 @@ export async function runShellCommand(
       });
     });
 
-    // 处理错误（如 bash 找不到）
     child.on('error', (err) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeoutId);
       signal?.removeEventListener('abort', onAbort);
       reject(err);
     });
@@ -330,12 +360,13 @@ export function createShellCommandTool(
       type: 'object',
       properties: {
         command: { type: 'string' },
+        timeout: { type: 'number', description: 'Optional timeout in milliseconds (max 600000). Defaults to 120000 (2 minutes).' },
       },
       required: ['command'],
     },
     render: { call: 'bash', result: 'bash' },
-    execute: async ({ command }, context?: { signal?: AbortSignal }) => {
-      const result = await runShellCommand(command, options, context?.signal);
+    execute: async ({ command, timeout }, context?: { signal?: AbortSignal }) => {
+      const result = await runShellCommand(command, { ...options, timeoutMs: timeout }, context?.signal);
       return result.output;
     },
   });

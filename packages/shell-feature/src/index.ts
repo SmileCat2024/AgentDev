@@ -1,7 +1,8 @@
 /**
  * Shell Feature - 独立 npm 包
  *
- * 提供 Bash 执行和安全删除/恢复功能
+ * 支持 Git Bash 和 PowerShell 两种 Shell 环境。
+ * 根据用户配置和运行时探测结果，条件注册 Bash 和/或 PowerShell 工具。
  *
  * @example
  * ```typescript
@@ -15,10 +16,11 @@
 import { readFile } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { resolve } from 'path';
-import type { AgentFeature, FeatureInitContext, PackageInfo } from 'agentdev';
+import type { AgentFeature, FeatureInitContext, FeatureManifestDefinition, PackageInfo } from 'agentdev';
 import type { Tool } from 'agentdev';
 import { getPackageInfoFromSource } from 'agentdev';
-import { createShellCommandTool } from './tools.js';
+import { createShellCommandTool, findGitBashPath } from './tools.js';
+import { createPowerShellTool, findPowerShellPath } from './powershell.js';
 import { createSafeTrashDeleteTool, createSafeTrashListTool, createSafeTrashRestoreTool } from './tools-trash.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,6 +31,13 @@ export interface ShellFeatureConfig {
   resourceRoot?: string;
 }
 
+interface ResolvedShellConfig {
+  bashEnabled: boolean;
+  bashPath?: string;
+  powershellEnabled: boolean;
+  powershellPath?: string;
+}
+
 /**
  * Shell Feature 实现
  */
@@ -36,9 +45,10 @@ export class ShellFeature implements AgentFeature {
   readonly name = 'shell';
   readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
-  readonly description = '提供 bash 执行能力，以及安全删除、恢复和查看垃圾桶工具。';
+  readonly description = '提供 Bash/PowerShell 命令执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 
   private bashDescription?: string;
+  private powershellDescription?: string;
   private _packageInfo: PackageInfo | null = null;
   private readonly workspaceDir: string;
   private readonly workdir: string;
@@ -61,23 +71,107 @@ export class ShellFeature implements AgentFeature {
     ];
   }
 
+  getFeatureManifest(): FeatureManifestDefinition {
+    return {
+      schemaVersion: 1 as const,
+      settings: {
+        properties: {
+          bashEnabled: {
+            type: 'boolean',
+            title: '启用 Bash (Git Bash)',
+            description: '启用后，Agent 将获得 Bash 工具。需要系统已安装 Git for Windows。',
+            default: true,
+          },
+          bashPath: {
+            type: 'file',
+            title: 'Bash 路径',
+            description: 'bash.exe 的路径。留空时自动检测。',
+            placeholder: '自动检测',
+          },
+          powershellEnabled: {
+            type: 'boolean',
+            title: '启用 PowerShell',
+            description: '启用后，Agent 将获得 PowerShell 工具。Windows 系统自带 PowerShell 5.1。',
+            default: false,
+          },
+          powershellPath: {
+            type: 'file',
+            title: 'PowerShell 路径',
+            description: 'powershell.exe 或 pwsh.exe 的路径。留空时自动检测。',
+            placeholder: '自动检测',
+          },
+        },
+      },
+    };
+  }
+
+  private resolveShellConfig(featureConfig: unknown): ResolvedShellConfig {
+    if (!featureConfig || typeof featureConfig !== 'object') {
+      return { bashEnabled: true, powershellEnabled: false };
+    }
+    const c = featureConfig as Record<string, unknown>;
+    return {
+      bashEnabled: c.bashEnabled !== false,
+      bashPath: typeof c.bashPath === 'string' && c.bashPath.trim() ? c.bashPath.trim() : undefined,
+      powershellEnabled: c.powershellEnabled === true,
+      powershellPath: typeof c.powershellPath === 'string' && c.powershellPath.trim() ? c.powershellPath.trim() : undefined,
+    };
+  }
+
   /**
-   * 获取异步工具（bash 工具，加载 description）
+   * 获取异步工具（bash/powershell 工具，条件注册）
    */
-  async getAsyncTools(_ctx: FeatureInitContext): Promise<Tool[]> {
-    if (!this.bashDescription) {
-      try {
-        const descriptionPath = resolve(this.resourceRoot, '.agentdev/prompts/tool-bash.md');
-        this.bashDescription = await readFile(descriptionPath, 'utf-8');
-      } catch {
-        this.bashDescription = '执行 Shell 命令（通过 Git Bash）';
+  async getAsyncTools(ctx: FeatureInitContext): Promise<Tool[]> {
+    const config = this.resolveShellConfig(ctx.featureConfig);
+    const tools: Tool[] = [];
+
+    // ── Bash 工具 ──
+    if (config.bashEnabled) {
+      const bashPath = findGitBashPath(config.bashPath);
+      if (bashPath) {
+        if (!this.bashDescription) {
+          try {
+            const descriptionPath = resolve(this.resourceRoot, '.agentdev/prompts/tool-bash.md');
+            this.bashDescription = await readFile(descriptionPath, 'utf-8');
+          } catch {
+            this.bashDescription = '执行 Shell 命令（通过 Git Bash）';
+          }
+        }
+        tools.push(createShellCommandTool(this.bashDescription, {
+          workspaceDir: this.workspaceDir,
+          workdir: this.workdir,
+          resourceRoot: this.resourceRoot,
+          bashPath,
+        }));
+      } else {
+        console.warn('[shell] Bash is enabled but was not found on this system. Skipping Bash tool.');
       }
     }
-    return [createShellCommandTool(this.bashDescription, {
-      workspaceDir: this.workspaceDir,
-      workdir: this.workdir,
-      resourceRoot: this.resourceRoot,
-    })];
+
+    // ── PowerShell 工具 ──
+    if (config.powershellEnabled) {
+      const psPath = findPowerShellPath(config.powershellPath);
+      if (psPath) {
+        if (!this.powershellDescription) {
+          try {
+            const descriptionPath = resolve(this.resourceRoot, '.agentdev/prompts/tool-powershell.md');
+            this.powershellDescription = await readFile(descriptionPath, 'utf-8');
+          } catch {
+            this.powershellDescription = '执行 PowerShell 命令';
+          }
+        }
+        tools.push(createPowerShellTool(this.powershellDescription, {
+          workspaceDir: this.workspaceDir,
+          workdir: this.workdir,
+          resourceRoot: this.resourceRoot,
+          psPath,
+        }));
+      } else {
+        console.warn('[shell] PowerShell is enabled but was not found on this system. Skipping PowerShell tool.');
+      }
+    }
+
+    return tools;
   }
 
   /**
@@ -107,8 +201,9 @@ export class ShellFeature implements AgentFeature {
 }
 
 // 导出工具创建函数（供高级用户使用）
-export { createShellCommandTool, runShellCommand } from './tools.js';
+export { createShellCommandTool, runShellCommand, findGitBashPath } from './tools.js';
 export type { ShellCommandToolOptions, ShellExecutionResult } from './tools.js';
+export { createPowerShellTool, runPowerShellCommand, findPowerShellPath } from './powershell.js';
 
 // 导出命令引用工具（供高级用户使用）
 export {

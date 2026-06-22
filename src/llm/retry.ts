@@ -56,17 +56,42 @@ const RETRYABLE_ERROR_CODES: ReadonlySet<string> = new Set([
   'EPIPE',
 ]);
 
+type HeaderMap = Record<string, string | number | string[] | undefined>;
+type HeadersLike = Headers | HeaderMap | undefined;
+
 /**
  * 从 Response Headers 解析 Retry-After（秒），返回毫秒
+ *
+ * OpenAI SDK 的错误对象会把 headers 暴露成普通对象，而 fetch response
+ * 暴露的是 Headers 实例。这里同时兼容两种形态，避免错误处理本身盖住真实 API 错误。
  */
-export function parseRetryAfter(headers: Headers | undefined): number | undefined {
-  const retryAfter = headers?.get('retry-after');
+export function parseRetryAfter(headers: HeadersLike): number | undefined {
+  const retryAfter = getHeaderValue(headers, 'retry-after');
   if (retryAfter) {
     const seconds = parseInt(retryAfter, 10);
     if (!isNaN(seconds) && seconds > 0) {
       return seconds * 1000;
     }
   }
+  return undefined;
+}
+
+function getHeaderValue(headers: HeadersLike, name: string): string | undefined {
+  if (!headers) return undefined;
+
+  if (typeof (headers as Headers).get === 'function') {
+    return (headers as Headers).get(name) || undefined;
+  }
+
+  const lowerName = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers as HeaderMap)) {
+    if (key.toLowerCase() !== lowerName || value === undefined) continue;
+    if (Array.isArray(value)) {
+      return value.join(', ');
+    }
+    return String(value);
+  }
+
   return undefined;
 }
 

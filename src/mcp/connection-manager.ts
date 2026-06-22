@@ -286,7 +286,7 @@ export class MCPConnectionManager {
     }
 
     if (connection.process) {
-      connection.process.kill();
+      await this.stopProcess(connection.process);
     }
 
     this.rejectAllPendingRequests(connection, new Error(`MCP server ${name} disconnected`));
@@ -580,6 +580,39 @@ export class MCPConnectionManager {
       pending.reject(error);
       connection.pendingRequests.delete(requestId);
     }
+  }
+
+  private async stopProcess(process: ChildProcess): Promise<void> {
+    try {
+      process.stdin?.end();
+    } catch {
+      // best effort shutdown
+    }
+
+    try {
+      process.stdout?.destroy();
+    } catch {
+      // best effort shutdown
+    }
+
+    if (process.exitCode !== null || process.signalCode !== null) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 1500);
+      process.once('exit', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+
+      try {
+        process.kill();
+      } catch {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
   }
 
   async dispose(): Promise<void> {

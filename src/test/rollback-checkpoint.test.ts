@@ -96,25 +96,22 @@ async function testStepCheckpointRollback(): Promise<void> {
   const feature = new RollbackFeature();
   const agent = new RollbackAgent(feature);
 
-  let errorMessage = '';
-  try {
-    await agent.onCall('请测试 step rollback');
-  } catch (error) {
-    errorMessage = error instanceof Error ? error.message : String(error);
-  }
+  const result = await agent.onCall('请测试 step rollback');
 
-  assert(errorMessage.includes('forced failure after tool execution'), 'agent should surface the forced failure');
+  assert(result.includes('forced failure after tool execution'), 'agent should surface the forced failure');
   assert(feature.counter === 0, 'feature state should be restored after rollback');
   assert(feature.beforeRollbackCount === 0, 'beforeRollback state mutations should not leak after restore');
   assert(feature.afterRollbackCount === 1, 'afterRollback should run after restore');
 
   const messages = agent.getContext().getAll();
-  assert(messages.length === 1, 'rollback should remove assistant and tool messages created inside the failed step');
+  assert(messages.length === 2, 'rollback should remove step messages and keep the surfaced error response');
   assert(messages[0]?.role === 'user', 'the pre-step user message should be preserved');
+  assert(messages[1]?.role === 'assistant', 'the surfaced error response should be recorded');
+  assert(messages[1]?.content.includes('forced failure after tool execution'), 'the recorded error should mention the failure');
 
   const query = agent.getContext().query();
   assert(query.byRole('user').count() === 1, 'context query should remain usable after rollback restore');
-  assert(agent.getContext().query().byRole('assistant').count() === 0, 'no assistant message should remain after rollback');
+  assert(agent.getContext().query().byRole('assistant').count() === 1, 'only the surfaced error assistant message should remain after rollback');
 }
 
 await testStepCheckpointRollback();

@@ -21,14 +21,12 @@
     "dts": true,
     "clean": true,
     "sourcemap": true,
-    "external": ["sound-play"]
+    "external": []
   },
   "peerDependencies": {
     "agentdev": ">=0.1.0"
   },
-  "dependencies": {
-    "sound-play": "^1.0.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.11.0",
     "tsup": "^8.3.5",

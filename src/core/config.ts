@@ -39,6 +39,8 @@ export interface ModelConfig {
   providerOptions?: Record<string, unknown>;
   /** 追加到每次 LLM API 请求的自定义请求头 */
   customHeaders?: CustomHeaderEntry[];
+  /** OpenAI 专用接口面：chat / responses */
+  apiSurface?: 'chat' | 'responses';
   // 未来可扩展
   region?: string;
   projectId?: string;

@@ -1,125 +1,112 @@
 /**
  * 反向钩子约束验证
- *
- * 运行方式：编译后执行 node dist/test/hook-constraint-verify.js
  */
 
-import { StepFinish, ToolFinished, StepStart, ToolUse, Decision, getDecoratorMetadata } from '../core/hooks-decorator.js';
+import { StepFinish, StepStart, Decision, getDecoratorMetadata } from '../core/hooks-decorator.js';
 import { HooksRegistry } from '../core/hooks-registry.js';
 import { CoreLifecycle } from '../core/lifecycle.js';
 import type { AgentFeature } from '../core/feature.js';
 import type {
   StepFinishDecisionContext,
-  ToolFinishedDecisionContext,
   StepStartContext,
-  ToolContext
 } from '../core/lifecycle.js';
 
-console.log('=== 测试 1: 流程控制型钩子（StepFinish）单例约束 ===\n');
+function assert(condition: unknown, message: string): void {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
 
-// 测试单例约束
-try {
-  class InvalidFeature1 implements AgentFeature {
-    name = 'InvalidFeature1';
+function applyMethodDecorator(
+  decorator: (target: any, propertyKey: string, descriptor: PropertyDescriptor) => PropertyDescriptor,
+  target: any,
+  propertyKey: string
+): void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, propertyKey);
+  assert(descriptor, `missing descriptor for ${propertyKey}`);
+  Object.defineProperty(target, propertyKey, decorator(target, propertyKey, descriptor!));
+}
 
-    @StepFinish
-    async handler1(ctx: StepFinishDecisionContext) {
+async function testDecisionHookUniqueness(): Promise<void> {
+  class InvalidFeature implements AgentFeature {
+    name = 'InvalidFeature';
+
+    async handler1(_ctx: StepFinishDecisionContext) {
       return Decision.Approve;
     }
 
-    @StepFinish
-    async handler2(ctx: StepFinishDecisionContext) {
+    async handler2(_ctx: StepFinishDecisionContext) {
       return Decision.Deny;
     }
   }
 
-  console.log('❌ 失败: 应该抛出错误但没有');
-} catch (e: any) {
-  if (e.message.includes('只能使用一次')) {
-    console.log('✅ 成功: 正确抛出错误');
-    console.log('   错误信息:', e.message);
-  } else {
-    console.log('❌ 失败: 抛出了意外的错误 -', e.message);
+  applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler1');
+
+  let errorMessage = '';
+  try {
+    applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler2');
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
   }
+
+  assert(errorMessage.includes('只能使用一次'), 'decision hook should be limited to one method per feature');
 }
 
-console.log('\n=== 测试 2: 非流程控制型钩子（StepStart）允许多个 ===\n');
+async function testMultipleNotifyHooks(): Promise<void> {
+  class ValidFeature implements AgentFeature {
+    name = 'ValidFeature';
 
-try {
-  class ValidFeature1 implements AgentFeature {
-    name = 'ValidFeature1';
-
-    @StepStart
-    async logStart(ctx: StepStartContext) {
-      console.log('   [logStart] executed');
-    }
-
-    @StepStart
-    async trackMetrics(ctx: StepStartContext) {
-      console.log('   [trackMetrics] executed');
-    }
-
-    @StepStart
-    async sendAnalytics(ctx: StepStartContext) {
-      console.log('   [sendAnalytics] executed');
-    }
+    async logStart(_ctx: StepStartContext) {}
+    async trackMetrics(_ctx: StepStartContext) {}
+    async sendAnalytics(_ctx: StepStartContext) {}
   }
 
-  console.log('✅ 成功: 多个 StepStart 钩子正常注册');
+  applyMethodDecorator(StepStart, ValidFeature.prototype, 'logStart');
+  applyMethodDecorator(StepStart, ValidFeature.prototype, 'trackMetrics');
+  applyMethodDecorator(StepStart, ValidFeature.prototype, 'sendAnalytics');
 
-  const feature1 = new ValidFeature1();
-  const metadata = getDecoratorMetadata(feature1);
-  const methods = metadata.hookDecisions.get(CoreLifecycle.StepStart);
-  console.log('   注册的方法列表:', methods);
-
-  if (methods === 'logStart,trackMetrics,sendAnalytics') {
-    console.log('   ✅ 方法列表格式正确');
-  } else {
-    console.log('   ❌ 方法列表格式错误，期望 "logStart,trackMetrics,sendAnalytics"');
-  }
-} catch (e: any) {
-  console.log('❌ 失败:', e.message);
+  const feature = new ValidFeature();
+  const metadata = getDecoratorMetadata(feature);
+  assert(
+    metadata.hookDecisions.get(CoreLifecycle.StepStart) === 'logStart,trackMetrics,sendAnalytics',
+    'notify hooks should allow multiple methods in declaration order'
+  );
 }
 
-console.log('\n=== 测试 3: HooksRegistry 多方法注册与执行 ===\n');
-
-try {
+async function testRegistryExecutesMultipleHooks(): Promise<void> {
   const registry = new HooksRegistry();
   const executionOrder: string[] = [];
 
   class MultiHookFeature implements AgentFeature {
     name = 'MultiHookFeature';
 
-    @StepStart
-    async firstHook(ctx: StepStartContext) {
+    async firstHook(_ctx: StepStartContext) {
       executionOrder.push('first');
     }
 
-    @StepStart
-    async secondHook(ctx: StepStartContext) {
+    async secondHook(_ctx: StepStartContext) {
       executionOrder.push('second');
     }
 
-    @StepStart
-    async thirdHook(ctx: StepStartContext) {
+    async thirdHook(_ctx: StepStartContext) {
       executionOrder.push('third');
     }
   }
+
+  applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'firstHook');
+  applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'secondHook');
+  applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'thirdHook');
 
   const feature = new MultiHookFeature();
   registry.collectFromFeature(feature);
 
   const hooks = registry.get(CoreLifecycle.StepStart);
-  console.log(`   注册的钩子数量: ${hooks.length}`);
-  console.log('   钩子方法名:', hooks.map(h => h.methodName).join(', '));
+  assert(hooks.length === 3, 'registry should collect all notify hook methods');
+  assert(
+    hooks.map(hook => hook.methodName).join(',') === 'firstHook,secondHook,thirdHook',
+    'registry should preserve hook method names'
+  );
 
-  if (hooks.length === 3) {
-    console.log('   ✅ 注册数量正确');
-  } else {
-    console.log(`   ❌ 注册数量错误: 期望 3，实际 ${hooks.length}`);
-  }
-
-  // 执行钩子
   await registry.executeVoid(CoreLifecycle.StepStart, {
     step: 0,
     callIndex: 0,
@@ -127,47 +114,35 @@ try {
     context: {} as any,
   });
 
-  console.log('   执行顺序:', executionOrder.join(' -> '));
-  if (JSON.stringify(executionOrder) === JSON.stringify(['first', 'second', 'third'])) {
-    console.log('   ✅ 执行顺序正确');
-  } else {
-    console.log('   ❌ 执行顺序错误');
-  }
-} catch (e: any) {
-  console.log('❌ 失败:', e.message);
-  console.log(e.stack);
+  assert(
+    executionOrder.join(',') === 'first,second,third',
+    'registry should execute multiple notify hooks in order'
+  );
 }
 
-console.log('\n=== 测试 4: 混合使用流程控制型和非流程控制型钩子 ===\n');
-
-try {
+async function testMixedHookMetadata(): Promise<void> {
   class MixedFeature implements AgentFeature {
     name = 'MixedFeature';
 
-    @StepStart
-    async beforeStep(ctx: StepStartContext) {
-      console.log('   [beforeStep] Before step logic');
-    }
-
-    @StepFinish
-    async afterStep(ctx: StepFinishDecisionContext) {
+    async beforeStep(_ctx: StepStartContext) {}
+    async afterStep(_ctx: StepFinishDecisionContext) {
       return Decision.Approve;
     }
-
-    @StepStart
-    async logStep(ctx: StepStartContext) {
-      console.log('   [logStep] Logging step');
-    }
+    async logStep(_ctx: StepStartContext) {}
   }
 
-  const mixedFeature = new MixedFeature();
-  const metadata = getDecoratorMetadata(mixedFeature);
+  applyMethodDecorator(StepStart, MixedFeature.prototype, 'beforeStep');
+  applyMethodDecorator(StepFinish, MixedFeature.prototype, 'afterStep');
+  applyMethodDecorator(StepStart, MixedFeature.prototype, 'logStep');
 
-  console.log('✅ 成功: 混合钩子正常注册');
-  console.log('   StepStart 方法:', metadata.hookDecisions.get(CoreLifecycle.StepStart));
-  console.log('   StepFinish 方法:', metadata.hookDecisions.get(CoreLifecycle.StepFinish));
-} catch (e: any) {
-  console.log('❌ 失败:', e.message);
+  const metadata = getDecoratorMetadata(new MixedFeature());
+  assert(metadata.hookDecisions.get(CoreLifecycle.StepStart) === 'beforeStep,logStep', 'mixed metadata should keep all notify hooks');
+  assert(metadata.hookDecisions.get(CoreLifecycle.StepFinish) === 'afterStep', 'mixed metadata should keep decision hook');
 }
 
-console.log('\n=== 所有测试完成 ===\n');
+await testDecisionHookUniqueness();
+await testMultipleNotifyHooks();
+await testRegistryExecutesMultipleHooks();
+await testMixedHookMetadata();
+
+console.log('Hook constraint tests passed');

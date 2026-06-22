@@ -315,6 +315,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   name: 'read',
   description: 'Read a file from the local filesystem. Can read files with offset/limit for pagination, and can also read directory contents. For large files, use offset and limit parameters to read in chunks.',
   render: 'read',
+  parallelizable: true,
   parameters: {
     type: 'object',
     properties: {
@@ -1109,6 +1110,7 @@ export function createLsTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   name: 'ls',
   description: 'List files in a directory with tree structure output. Automatically ignores common build/cache directories.',
   render: 'ls',
+  parallelizable: true,
   parameters: {
     type: 'object',
     properties: {
@@ -1222,6 +1224,7 @@ export function createGlobTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   name: 'glob',
   description: 'Fast file pattern matching tool that works with any codebase size. Supports glob patterns like "**/*.js" or "src/**/*.ts". Returns matching file paths sorted by modification time.',
   render: 'glob',
+  parallelizable: true,
   parameters: {
     type: 'object',
     properties: {
@@ -1318,6 +1321,7 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   name: 'grep',
   description: 'A powerful search tool built on ripgrep. Supports full regex syntax, file type filtering, and context control. Use this tool for content searches; NEVER invoke grep or rg as Bash commands.',
   render: 'grep',
+  parallelizable: true,
   parameters: {
     type: 'object',
     properties: {

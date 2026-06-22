@@ -43,6 +43,7 @@ function createMockCallFinishContext(): CallFinishContext {
     response: 'test response',
     steps: 1,
     completed: true,
+    finishReason: 'completed',
   };
 }
 

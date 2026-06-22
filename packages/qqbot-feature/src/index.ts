@@ -144,11 +144,17 @@ function buildQQChannelSystemMessage(request: QQBotInboundRequest): string {
     ? `\n- 附件: ${request.attachments.map(a => `${a.localPath || a.originalUrl || a.contentType}`).join(', ')}`
     : '';
 
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
+  const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${weekday} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
   return `以下这条消息由用户在QQ中发送，你的本轮最终回复也将通过QQ发送给用户。
 
 【会话信息】
 - 用户: ${request.senderName || '未知'} (${request.senderId})
-- 场景: ${chatType}${request.groupOpenid ? ` (群组: ${request.groupOpenid})` : ''}${receivedAttachments}
+- 场景: ${chatType}${request.groupOpenid ? ` (群组: ${request.groupOpenid})` : ''}
+- 当前时间: ${timestamp}${receivedAttachments}
 
 【系统提示】
 当你需要向用户的QQ会话发送图片、文件、语音、视频等非文本内容时，你必须使用 upload_attachment 工具。该工具会立即向QQ服务器上传文件，所有附件会在你本轮完成所有工具调用，回复完毕停止后自动按顺序发送给用户。

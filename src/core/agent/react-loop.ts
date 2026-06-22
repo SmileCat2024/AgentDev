@@ -13,6 +13,7 @@ import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
 import type { ToolCall, LLMResponse, Message, UsageInfo } from '../types.js';
 import type { ToolResult, HookResult, StepFinishDecisionContext } from '../lifecycle.js';
+import type { CallFinishReason } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
 import type { HooksRegistry } from '../hooks-registry.js';
@@ -59,7 +60,7 @@ export class ReActLoopRunner {
       context: Context,
       step: number,
       callIndex: number
-    ) => Promise<void>,
+    ) => Promise<ToolExecResult>,
     private onStepStartFn: (ctx: any) => Promise<void>,
     private onStepFinishedFn: (ctx: any) => Promise<HookResult | undefined>,
     private onInterruptFn: (ctx: any) => Promise<void>
@@ -86,6 +87,7 @@ export class ReActLoopRunner {
     // ========== ReAct 循环 ==========
     let completed = false;
     let finalResponse = '';
+    let finishReason: CallFinishReason = 'max_steps';
 
     outerLoop:
     for (let step = 0; step < this.agent.maxTurns; step++) {
@@ -255,20 +257,22 @@ export class ReActLoopRunner {
             const stepFinishDecision = normalizeDecision(decisionResult);
 
           // 处理钩子返回的控制流指令
-            if (stepFinishResult?.action === 'end') {
-              completed = true;
-              finalResponse = response.content;
-              logger.info('Step ended call via forward hook', { step });
-              return 'break';
-            }
+             if (stepFinishResult?.action === 'end') {
+               completed = true;
+               finalResponse = response.content;
+               finishReason = 'completed';
+               logger.info('Step ended call via forward hook', { step });
+               return 'break';
+             }
 
-          // 处理反向钩子的决策
-            if (stepFinishDecision === Decision.Deny) {
-              completed = true;
-              finalResponse = response.content;
-              logger.info('Step ended call via reverse hook deny', { step });
-              return 'break';
-            }
+           // 处理反向钩子的决策
+             if (stepFinishDecision === Decision.Deny) {
+               completed = true;
+               finalResponse = response.content;
+               finishReason = 'completed';
+               logger.info('Step ended call via reverse hook deny', { step });
+               return 'break';
+             }
 
           // 如果反向钩子要求继续（Approve），不结束循环
             if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
@@ -278,7 +282,7 @@ export class ReActLoopRunner {
 
           // 真正结束
             logger.info('Step completed call naturally', { step });
-            return { completed: true, finalResponse: response.content, turns: step + 1 };
+            return { completed: true, finalResponse: response.content, turns: step + 1, finishReason: 'completed' };
           }
 
         // 执行工具
@@ -312,30 +316,89 @@ export class ReActLoopRunner {
             }
           }
 
+          // ========== 结果收集 Map ==========
+          const resultsMap = new Map<string, ToolExecResult>();
+
           if (!batchRejected) {
-          for (let i = 0; i < response.toolCalls.length; i++) {
-            const call = response.toolCalls[i];
+            // ========== 分流 ==========
+            const parallelCalls = response.toolCalls.filter(
+              call => this.agent.tools.isParallelizable(call.name)
+            );
+            const serialCalls = response.toolCalls.filter(
+              call => !this.agent.tools.isParallelizable(call.name)
+            );
 
-            // 在执行每个工具前检查中断信号
-            if (signal?.aborted) {
-              interrupted = true;
-              // 为当前及剩余的 tool calls 补齐 interrupted result
-              for (let j = i; j < response.toolCalls.length; j++) {
-                const pendingCall = response.toolCalls[j];
-                context.addToolMessage(pendingCall, {
-                  success: false,
-                  result: { error: 'Interrupted by user' },
-                }, callIndex);
-                logger.info('Tool result padded for interrupt', { toolName: pendingCall.name, toolIndex: j });
+            // ========== Phase 1: 并发执行 parallelizable 工具 ==========
+            if (parallelCalls.length > 0) {
+              if (!signal?.aborted) {
+                const parallelResults = await Promise.allSettled(
+                  parallelCalls.map(call =>
+                    this.executeToolFn(call, input, context, step, callIndex)
+                  )
+                );
+                parallelCalls.forEach((call, i) => {
+                  const settled = parallelResults[i];
+                  if (settled.status === 'fulfilled') {
+                    resultsMap.set(call.id, settled.value);
+                  } else {
+                    const errorMsg = settled.reason instanceof Error
+                      ? settled.reason.message : String(settled.reason);
+                    resultsMap.set(call.id, {
+                      success: false,
+                      result: { error: errorMsg },
+                    });
+                  }
+                });
+              } else {
+                // 中断：为所有 parallelizable 工具补齐 interrupted result
+                for (const call of parallelCalls) {
+                  resultsMap.set(call.id, {
+                    success: false,
+                    result: { error: 'Interrupted by user' },
+                  });
+                }
+                interrupted = true;
               }
-              break;
             }
 
-            if (call.name === 'wait') {
-              waitCalled = true;
+            // ========== Phase 2: 串行执行剩余工具 ==========
+            for (let i = 0; i < serialCalls.length; i++) {
+              const call = serialCalls[i];
+
+              // 在执行每个工具前检查中断信号
+              if (signal?.aborted) {
+                interrupted = true;
+                // 为当前及剩余的 serial 工具补齐 interrupted result
+                for (let j = i; j < serialCalls.length; j++) {
+                  resultsMap.set(serialCalls[j].id, {
+                    success: false,
+                    result: { error: 'Interrupted by user' },
+                  });
+                  logger.info('Tool result padded for interrupt', { toolName: serialCalls[j].name, toolIndex: j });
+                }
+                break;
+              }
+
+              if (call.name === 'wait') {
+                waitCalled = true;
+              }
+              const result = await this.executeToolFn(call, input, context, step, callIndex);
+              resultsMap.set(call.id, result);
             }
-            await this.executeToolFn(call, input, context, step, callIndex);
-          }
+
+            // ========== 统一注入：按原始顺序写入 context ==========
+            for (const call of response.toolCalls) {
+              const result = resultsMap.get(call.id);
+              if (result) {
+                context.addToolMessage(call, result, callIndex);
+              } else {
+                // 安全网：结果缺失
+                context.addToolMessage(call, {
+                  success: false,
+                  result: { error: 'Tool result missing (internal error)' },
+                }, callIndex);
+              }
+            }
           } // end if (!batchRejected)
 
           // 如果在 tool 执行中被中断，结束当前 call
@@ -344,6 +407,7 @@ export class ReActLoopRunner {
             const lastContent = context.getAll().filter(m => m.role === 'assistant' && m.content).pop();
             finalResponse = lastContent?.content ?? response.content ?? '';
             completed = false;
+            finishReason = 'interrupted';
             logger.info('Call interrupted during tool execution', { step });
             return 'interrupted' as const;
           }
@@ -359,7 +423,7 @@ export class ReActLoopRunner {
             finalResponse = lastContent?.content ?? response.content ?? '';
             completed = false;
             logger.info('Call ending for continuation request', { step, kind: continuationRequest.kind });
-            return { completed: false, finalResponse, turns: step + 1, continuationRequest };
+            return { completed: false, finalResponse, turns: step + 1, continuationRequest, finishReason: 'continuation' };
           }
 
           // 推送消息到 DebugHub
@@ -397,20 +461,22 @@ export class ReActLoopRunner {
           const stepFinishDecision = normalizeDecision(stepFinishDecisionResult);
 
         // 处理钩子返回的控制流指令
-          if (stepFinishResult?.action === 'end') {
-            completed = true;
-            finalResponse = response.content;
-            logger.info('Step ended call after tools via forward hook', { step });
-            return 'break';
-          }
+           if (stepFinishResult?.action === 'end') {
+             completed = true;
+             finalResponse = response.content;
+             finishReason = 'completed';
+             logger.info('Step ended call after tools via forward hook', { step });
+             return 'break';
+           }
 
         // 处理反向钩子的决策
-          if (stepFinishDecision === Decision.Deny) {
-            completed = true;
-            finalResponse = response.content;
-            logger.info('Step ended call after tools via reverse hook deny', { step });
-            return 'break';
-          }
+           if (stepFinishDecision === Decision.Deny) {
+             completed = true;
+             finalResponse = response.content;
+             finishReason = 'completed';
+             logger.info('Step ended call after tools via reverse hook deny', { step });
+             return 'break';
+           }
 
           if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
             logger.debug('Step requested continuation after tools', { step });
@@ -422,6 +488,7 @@ export class ReActLoopRunner {
         } catch (error) {
           // 如果是中断导致的错误，不回滚，直接传播
           if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+            finishReason = 'interrupted';
             logger.info('Step aborted by interrupt signal', { step });
             return 'interrupted' as const;
           }
@@ -443,12 +510,13 @@ export class ReActLoopRunner {
           }
 
           // 错误消息进入 context，保持 context/viewer 一致性
+          const fr: CallFinishReason = error instanceof ClassifiedAPIError ? 'api_error' : 'error';
           context.addAssistantMessage({ content: `${errorTag} ${errorMsg}` }, callIndex);
           this.pushToDebug(context.getAll());
           logger.warn('Step rolled back after failure', { step, errorType: error instanceof ClassifiedAPIError ? error.errorType : 'unknown', error: errorMsg });
 
           // 返回错误消息而非抛出，确保前端能在对话中看到错误说明
-          return { completed: false, finalResponse: `${errorTag} ${errorMsg}`, turns: step + 1 };
+          return { completed: false, finalResponse: `${errorTag} ${errorMsg}`, turns: step + 1, finishReason: fr };
         }
       });
 
@@ -499,15 +567,22 @@ export class ReActLoopRunner {
       }
     }
 
-    // 达到最大步数 - 中断处理
+    // 未完成处理（max_steps 或 interrupted）
     if (!completed) {
+      // 区分中断 vs 最大步数：中断时 signal.aborted 为 true
+      if (signal?.aborted) {
+        finishReason = 'interrupted';
+      } else {
+        finishReason = 'max_steps';
+      }
+
       const partialResult = context.getAll()[context.getAll().length - 1]?.content || '';
 
       // 触发中断钩子
       const interruptResult = await this.executeHookFn(
         'onInterrupt',
         () => this.onInterruptFn({
-          reason: 'max_steps_reached',
+          reason: signal?.aborted ? 'interrupted' : 'max_steps_reached',
           step: this.agent._currentStep,
           context,
         }),
@@ -524,6 +599,7 @@ export class ReActLoopRunner {
       finalResponse,
       completed,
       turns: this.agent._currentStep + 1,
+      finishReason,
     };
   }
 

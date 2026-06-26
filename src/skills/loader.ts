@@ -193,12 +193,18 @@ function deduplicateSkills(skills: SkillMetadata[]): SkillMetadata[] {
  */
 export async function discoverMulti(options: SkillsOptions = {}): Promise<SkillMetadata[]> {
   const {
+    dir,
     scanAgentdevDir = true,
     scanClaudeDir = false,
     extraDirs = [],
   } = options;
   const cwd = processCwd();
   const directories: string[] = [];
+
+  // Explicitly specified dir takes highest priority
+  if (dir) {
+    directories.push(isAbsolute(dir) ? dir : resolve(cwd, dir));
+  }
 
   if (scanAgentdevDir) {
     directories.push(resolve(cwd, '.agentdev', 'skills'));

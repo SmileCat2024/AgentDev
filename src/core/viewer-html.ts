@@ -2147,6 +2147,18 @@ export function generateViewerHtml(port: number): string {
       background: transparent !important;
     }
 
+    /* 修复行号不随内容滚动的问题：将 absolute 改为 sticky */
+    .d2h-code-side-linenumber {
+      position: sticky !important;
+      left: 0 !important;
+      z-index: 1 !important;
+    }
+    .d2h-code-linenumber {
+      position: sticky !important;
+      left: 0 !important;
+      z-index: 1 !important;
+    }
+
     /* 用户输入容器（默认隐藏） */
     #user-input-container {
       display: none;

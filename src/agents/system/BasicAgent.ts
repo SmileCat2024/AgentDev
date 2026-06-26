@@ -15,6 +15,7 @@ import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
 import { createLLM } from '../../llm/index.js';
 import { existsSync } from 'fs';
+import { join } from 'path';
 import { cwd, platform } from 'process';
 import { getDefaultMCPConfigDir } from '../../mcp/config.js';
 
@@ -162,7 +163,8 @@ export class BasicAgent extends Agent {
     this.use(new OpencodeBasicFeature({ workspaceDir }));
 
     // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
-    this.use(new SkillFeature(config.skillConfig || config.skillsDir));
+    const skillInput = config.skillConfig || config.skillsDir || join(workspaceDir, '.agentdev', 'skills');
+    this.use(new SkillFeature(skillInput));
 
     // 注册 SubAgentFeature（子代理工具和消息处理）
     this.use(new SubAgentFeature());

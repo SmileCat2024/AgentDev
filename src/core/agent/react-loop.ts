@@ -121,7 +121,7 @@ export class ReActLoopRunner {
           await this.hooksRegistry.executeVoid(CoreLifecycle.StepStart, { step, callIndex, context, input, agent: this.agent });
 
           // 执行 LLM 调用（空响应时 step 内重试）
-          const MAX_EMPTY_RETRIES = 2;
+          const MAX_EMPTY_RETRIES = 5;
           let response: LLMResponse;
           let hasToolCalls = false;
           for (let emptyAttempt = 0; emptyAttempt <= MAX_EMPTY_RETRIES; emptyAttempt++) {
@@ -402,7 +402,10 @@ export class ReActLoopRunner {
           } // end if (!batchRejected)
 
           // 如果在 tool 执行中被中断，结束当前 call
-          if (interrupted) {
+          // 同时检查 signal?.aborted：当 abort 在并行工具 race 或单个工具执行期间触发时，
+          // interrupted 标志不会被设置（只有 pre-check 和 serial 循环头部会设），
+          // 但工具已通过 ToolInterruptError 返回了 error result，此时应立即退出。
+          if (interrupted || signal?.aborted) {
             this.pushToDebug(context.getAll());
             const lastContent = context.getAll().filter(m => m.role === 'assistant' && m.content).pop();
             finalResponse = lastContent?.content ?? response.content ?? '';

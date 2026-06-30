@@ -21,15 +21,15 @@ function escapeHtml(text: any): string {
 
 export default {
   call: () => {
-    return `<div class="bash-command">清空所有任务</div>`;
+    return `<div class="bash-command">取消未完成任务并保留历史</div>`;
   },
   result: (data: any, success?: boolean) => {
     if (!success || data.error) {
       return `<div class="tool-error">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-        <span>${escapeHtml(data.error || '清空任务失败')}</span>
+        <span>${escapeHtml(data.error || '取消任务失败')}</span>
       </div>`;
     }
-    return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务列表已清空')}</div>`;
+    return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '未完成任务已取消')}</div>`;
   }
 } as const satisfies InlineRenderTemplate;

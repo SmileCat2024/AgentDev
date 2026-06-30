@@ -23,6 +23,7 @@ import {
   type RequestInputMsg,
   type HookInspectorSnapshot,
   type AgentOverviewSnapshot,
+  type TodoPlanSnapshot,
   type UserInputRequest,
   type UserInputResponse,
   type UserInputAction,
@@ -524,6 +525,21 @@ export class DebugHub {
       agentId,
       overview,
     });
+  }
+
+  updateTodoPlan(agentId: string, plan: TodoPlanSnapshot): void {
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.updateTodoPlan(agentId, plan).catch(error => {
+        console.error(`[DebugHub] Claw updateTodoPlan 失败: ${(error as Error).message}`);
+      });
+      return;
+    }
+
+    this.sendToWorker({
+      type: 'update-todo-plan',
+      agentId,
+      plan,
+    } as DebugHubIPCMessage);
   }
 
   /**

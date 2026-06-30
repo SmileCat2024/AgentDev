@@ -62,7 +62,7 @@ export default {
       </div>`;
     }
     if (data.status === 'deleted') {
-      return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已删除')}</div>`;
+      return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已取消并保留记录')}</div>`;
     }
     return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已更新')}</div>`;
   }

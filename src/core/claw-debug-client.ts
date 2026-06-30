@@ -3,6 +3,7 @@ import type {
   HookInspectorSnapshot,
   Message,
   Notification,
+  TodoPlanSnapshot,
   Tool,
   UserInputRequest,
   UserInputResponse,
@@ -15,6 +16,7 @@ type ClawEventKind =
   | 'snapshot'
   | 'lifecycle'
   | 'tools'
+  | 'todo-plan'
   | 'input';
 
 interface ClawSessionRegistration {
@@ -141,6 +143,13 @@ export class ClawDebugClient {
     await this.pushEvent(agentId, 'snapshot', {
       scope: 'overview',
       overview,
+    });
+  }
+
+  async updateTodoPlan(agentId: string, plan: TodoPlanSnapshot): Promise<void> {
+    await this.pushEvent(agentId, 'todo-plan', {
+      scope: 'todoPlan',
+      plan,
     });
   }
 

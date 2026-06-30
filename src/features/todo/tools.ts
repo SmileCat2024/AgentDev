@@ -91,7 +91,7 @@ export class TodoToolFactory {
 
 重要说明：
 - 必须提供 activeForm，subject 应该是祈使句形式（"执行任务"），activeForm 应该是进行时形式（"正在执行任务"）
-- 创建后任务状态为 pending，可以通过 task_update 更新为 in_progress 或 completed`,
+- 创建后任务状态为 pending，可以通过 task_update 更新为 in_progress、completed 或 deleted（取消并保留记录）`,
       parameters: {
         type: 'object',
         properties: {
@@ -138,7 +138,7 @@ export class TodoToolFactory {
 返回信息：
 - id: 任务标识符
 - subject: 简短描述
-- status: 任务状态（pending/in_progress/completed）
+- status: 任务状态（pending/in_progress/completed/deleted）
 - owner: 负责人（如果已分配）
 - blockedBy: 阻塞此任务的其他任务 ID 列表`,
       parameters: {
@@ -146,7 +146,7 @@ export class TodoToolFactory {
         properties: {
           status: {
             type: 'string',
-            enum: ['pending', 'in_progress', 'completed', 'all'],
+            enum: ['pending', 'in_progress', 'completed', 'deleted', 'all'],
             description: '按状态筛选任务，默认显示所有任务',
             default: 'all',
           },
@@ -160,6 +160,7 @@ export class TodoToolFactory {
           pending: tasks.filter(t => t.status === 'pending').length,
           inProgress: tasks.filter(t => t.status === 'in_progress').length,
           completed: tasks.filter(t => t.status === 'completed').length,
+          cancelled: tasks.filter(t => t.status === 'deleted').length,
         };
         return Promise.resolve({ tasks, summary });
       },
@@ -220,7 +221,7 @@ export class TodoToolFactory {
 主要用途：
 1. 标记任务进行中：将 status 设置为 "in_progress"
 2. 标记任务完成：将 status 设置为 "completed"
-3. 删除任务：将 status 设置为 "deleted"
+3. 取消任务并保留记录：将 status 设置为 "deleted"
 
 依赖关系管理：
 - addBlocks: 添加此任务阻塞的其他任务 ID
@@ -269,9 +270,9 @@ export class TodoToolFactory {
     const self = this;
     return createTool({
       name: 'task_clear',
-      description: `清空任务列表中的所有任务。
+      description: `取消任务列表中的所有未完成任务，并保留历史记录。
 
-注意：此操作不可逆，所有任务将被永久删除。`,
+注意：此操作不会移除历史；pending/in_progress 会变为 deleted，completed 会保留。`,
       parameters: {
         type: 'object',
         properties: {},
@@ -280,7 +281,7 @@ export class TodoToolFactory {
       execute: () => {
         const count = self.getTasksCountFn();
         self.clearTasksFn();
-        return Promise.resolve({ message: `已清空 ${count} 个任务` });
+        return Promise.resolve({ message: `已取消未完成任务；当前保留 ${count} 条历史记录` });
       },
     });
   }

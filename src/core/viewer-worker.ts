@@ -9,7 +9,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { createServer as createNetServer, Server, Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -224,6 +224,9 @@ class ViewerWorker {
       case 'update-agent-overview':
         this.handleUpdateAgentOverview(msg);
         break;
+      case 'update-todo-plan':
+        this.handleUpdateTodoPlan(msg);
+        break;
       case 'push-messages':
         this.handlePushMessages(msg);
         break;
@@ -387,6 +390,13 @@ class ViewerWorker {
     const overviewMatch = url.match(/^\/api\/agents\/([^/]+)\/overview$/);
     if (overviewMatch && req.method === 'GET') {
       this.handleGetAgentOverview(req, res, overviewMatch[1]);
+      return;
+    }
+
+    // GET /api/agents/:id/todo - 指定 Agent 的 todo/plan 快照
+    const todoMatch = url.match(/^\/api\/agents\/([^/]+)\/todo$/);
+    if (todoMatch && req.method === 'GET') {
+      this.handleGetAgentTodoPlan(req, res, todoMatch[1]);
       return;
     }
 
@@ -819,6 +829,18 @@ class ViewerWorker {
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(this.getMergedOverview(session)));
+  }
+
+  private handleGetAgentTodoPlan(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(session.todoPlan ?? this.createEmptyTodoPlan()));
   }
 
   /**
@@ -1265,6 +1287,7 @@ class ViewerWorker {
         lastEventCount: 0,
         logs: [],
         overview: this.createEmptyOverview(),
+        todoPlan: this.createEmptyTodoPlan(),
         queuedInputs: [],
       };
       this.agentSessions.set(agentId, session);
@@ -1388,6 +1411,14 @@ class ViewerWorker {
     this.updateSessionActivity(agentId);
   }
 
+  public handleUpdateTodoPlan(msg: { agentId: string; plan: TodoPlanSnapshot }): void {
+    const { agentId, plan } = msg;
+    const session = this.agentSessions.get(agentId);
+    if (!session) return;
+    session.todoPlan = this.normalizeTodoPlan(plan);
+    this.updateSessionActivity(agentId);
+  }
+
   /**
    * 清空 Feature 模板映射（当 Agent 断开连接时调用）
    */
@@ -1438,6 +1469,61 @@ class ViewerWorker {
         totalCacheHitRequests: 0,
       },
       runtime: this.createEmptyRuntimeState(),
+    };
+  }
+
+  private createEmptyTodoPlan(): TodoPlanSnapshot {
+    return {
+      feature: 'todo',
+      updatedAt: 0,
+      counter: 0,
+      tasks: [],
+      summary: {
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        completed: 0,
+        cancelled: 0,
+        blocked: 0,
+      },
+    };
+  }
+
+  private normalizeTodoPlan(plan?: TodoPlanSnapshot | null): TodoPlanSnapshot {
+    const fallback = this.createEmptyTodoPlan();
+    if (!plan || typeof plan !== 'object') return fallback;
+    const normalizeStatus = (status: unknown): TodoTaskSnapshot['status'] => {
+      return status === 'in_progress' || status === 'completed' || status === 'deleted'
+        ? status
+        : 'pending';
+    };
+    const tasks = Array.isArray(plan.tasks) ? plan.tasks.map(task => ({
+      id: String(task.id ?? ''),
+      subject: String(task.subject ?? ''),
+      description: String(task.description ?? ''),
+      activeForm: String(task.activeForm ?? ''),
+      status: normalizeStatus(task.status),
+      owner: typeof task.owner === 'string' ? task.owner : undefined,
+      blocks: Array.isArray(task.blocks) ? task.blocks.map(String) : [],
+      blockedBy: Array.isArray(task.blockedBy) ? task.blockedBy.map(String) : [],
+      metadata: task.metadata && typeof task.metadata === 'object' ? task.metadata : undefined,
+      createdAt: typeof task.createdAt === 'number' ? task.createdAt : 0,
+      updatedAt: typeof task.updatedAt === 'number' ? task.updatedAt : 0,
+    })).filter(task => task.id) : [];
+    const summary = plan.summary || fallback.summary;
+    return {
+      feature: 'todo',
+      updatedAt: typeof plan.updatedAt === 'number' ? plan.updatedAt : Date.now(),
+      counter: typeof plan.counter === 'number' ? plan.counter : tasks.length,
+      tasks,
+      summary: {
+        total: typeof summary.total === 'number' ? summary.total : tasks.length,
+        pending: typeof summary.pending === 'number' ? summary.pending : tasks.filter(t => t.status === 'pending').length,
+        inProgress: typeof summary.inProgress === 'number' ? summary.inProgress : tasks.filter(t => t.status === 'in_progress').length,
+        completed: typeof summary.completed === 'number' ? summary.completed : tasks.filter(t => t.status === 'completed').length,
+        cancelled: typeof summary.cancelled === 'number' ? summary.cancelled : tasks.filter(t => t.status === 'deleted').length,
+        blocked: typeof summary.blocked === 'number' ? summary.blocked : tasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && t.blockedBy.length > 0).length,
+      },
     };
   }
 

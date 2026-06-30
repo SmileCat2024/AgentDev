@@ -538,6 +538,16 @@ class AgentBase {
     );
     this.syncRegisteredToolsToDebug();
     this.pushInspectorSnapshot();
+    for (const feature of this.features.values()) {
+      const maybePushSnapshot = (feature as any).pushDebugSnapshot;
+      if (typeof maybePushSnapshot === 'function') {
+        try {
+          maybePushSnapshot.call(feature, this.agentId);
+        } catch (error) {
+          console.warn(`[Agent] Feature '${feature.name}' debug snapshot push failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
     if (this.persistentContext) {
       this.pushToDebug(this.persistentContext.getAll());
     }

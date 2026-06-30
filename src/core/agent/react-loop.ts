@@ -22,6 +22,7 @@ import { CoreLifecycle, Decision, normalizeDecision } from '../lifecycle.js';
 import { createStepCheckpoint, rollbackToStepCheckpoint } from '../checkpoint.js';
 import { createLogger, runWithLogScope } from '../logging.js';
 import { ClassifiedAPIError } from '../../llm/api-errors.js';
+import { getRetryDelay, sleep } from '../../llm/retry.js';
 
 const logger = createLogger('agent.react');
 
@@ -187,10 +188,12 @@ export class ReActLoopRunner {
 
               // 异常空响应，尝试重试
               if (emptyAttempt < MAX_EMPTY_RETRIES) {
+                const delayMs = getRetryDelay(emptyAttempt + 1);
                 logger.info('LLM returned empty response, retrying in step', {
                   step,
                   callIndex,
                   attempt: emptyAttempt + 1,
+                  delayMs,
                   stopReason,
                 });
                 this.pushToDebug([
@@ -202,6 +205,7 @@ export class ReActLoopRunner {
                   logger.info('Empty response retry skipped due to interrupt', { step });
                   break;
                 }
+                await sleep(delayMs, signal);
                 continue; // 重试 LLM 调用
               }
 

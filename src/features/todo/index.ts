@@ -26,6 +26,8 @@ import type { StepStartContext, StepFinishDecisionContext } from '../../core/lif
 import { Decision } from '../../core/lifecycle.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
 import type { Tool } from '../../core/types.js';
+import type { TodoPlanSnapshot } from '../../core/types.js';
+import { DebugHub } from '../../core/debug-hub.js';
 import { TodoToolFactory } from './tools.js';
 import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from './types.js';
 
@@ -46,6 +48,7 @@ export class TodoFeature implements AgentFeature {
 
   private tasks = new Map<string, TodoTask>();
   private counter = 0;
+  private debugAgentId = '';
   private config: Required<Omit<TodoFeatureConfig, 'reminderTemplate' | 'reminderThresholdWithTasks' | 'reminderThresholdWithoutTasks'>> & {
     reminderTemplate?: string;
     reminderThresholdWithTasks?: number;
@@ -130,7 +133,7 @@ export class TodoFeature implements AgentFeature {
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
-    this.clearTasks();
+    this.pushDebugSnapshot();
   }
 
   captureState(): FeatureStateSnapshot {
@@ -161,6 +164,17 @@ export class TodoFeature implements AgentFeature {
       ? state.consecutiveNoTodoTurns
       : 0;
     this.reminderInjected = Boolean(state.reminderInjected);
+    this.pushDebugSnapshot();
+  }
+
+  pushDebugSnapshot(agentId?: string): void {
+    if (agentId) {
+      this.debugAgentId = agentId;
+    }
+    const hub = DebugHub.getInstance();
+    const targetAgentId = agentId || this.debugAgentId || hub.getCurrentAgentId();
+    if (!targetAgentId || !hub.isConnected()) return;
+    hub.updateTodoPlan(targetAgentId, this.getPlanSnapshot());
   }
 
   getHookDescription(lifecycle: string, methodName: string): string | undefined {
@@ -274,6 +288,7 @@ export class TodoFeature implements AgentFeature {
     };
     this.tasks.set(task.id, task);
     console.log(`[TodoFeature] Created task ${task.id}: ${subject} (total tasks: ${this.tasks.size})`);
+    this.pushDebugSnapshot();
     return task;
   }
 
@@ -317,9 +332,7 @@ export class TodoFeature implements AgentFeature {
     Object.assign(task, updates);
     task.updatedAt = Date.now();
 
-    if (task.status === 'deleted') {
-      this.tasks.delete(taskId);
-    }
+    this.pushDebugSnapshot();
     return task;
   }
 
@@ -327,8 +340,39 @@ export class TodoFeature implements AgentFeature {
    * 清空所有任务
    */
   clearTasks(): void {
-    this.tasks.clear();
-    this.counter = 0;
+    const now = Date.now();
+    for (const task of this.tasks.values()) {
+      if (task.status === 'pending' || task.status === 'in_progress') {
+        task.status = 'deleted';
+        task.updatedAt = now;
+      }
+    }
+    this.pushDebugSnapshot();
+  }
+
+  getPlanSnapshot(): TodoPlanSnapshot {
+    const tasks = Array.from(this.tasks.values())
+      .map(task => ({
+        ...task,
+        blocks: Array.isArray(task.blocks) ? task.blocks.slice() : [],
+        blockedBy: Array.isArray(task.blockedBy) ? task.blockedBy.slice() : [],
+        metadata: task.metadata && typeof task.metadata === 'object' ? { ...task.metadata } : undefined,
+      }))
+      .sort((left, right) => left.createdAt - right.createdAt || Number(left.id) - Number(right.id));
+    return {
+      feature: 'todo',
+      updatedAt: Date.now(),
+      counter: this.counter,
+      tasks,
+      summary: {
+        total: tasks.length,
+        pending: tasks.filter(task => task.status === 'pending').length,
+        inProgress: tasks.filter(task => task.status === 'in_progress').length,
+        completed: tasks.filter(task => task.status === 'completed').length,
+        cancelled: tasks.filter(task => task.status === 'deleted').length,
+        blocked: tasks.filter(task => (task.status === 'pending' || task.status === 'in_progress') && task.blockedBy.length > 0).length,
+      },
+    };
   }
 
   // ========== 私有方法 ==========

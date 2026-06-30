@@ -472,6 +472,37 @@ export interface AgentOverviewSnapshot {
   modelName?: string;
 }
 
+export interface TodoTaskSnapshot {
+  id: string;
+  subject: string;
+  description: string;
+  activeForm: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'deleted';
+  owner?: string;
+  blocks: string[];
+  blockedBy: string[];
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TodoPlanSummary {
+  total: number;
+  pending: number;
+  inProgress: number;
+  completed: number;
+  cancelled: number;
+  blocked: number;
+}
+
+export interface TodoPlanSnapshot {
+  feature: 'todo';
+  updatedAt: number;
+  counter: number;
+  tasks: TodoTaskSnapshot[];
+  summary: TodoPlanSummary;
+}
+
 /**
  * Agent 会话数据（Worker 端）
  */
@@ -498,6 +529,7 @@ export interface AgentSession {
   _lastMessageSig?: string;
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
+  todoPlan?: TodoPlanSnapshot;
   // 运行期间排队等待的用户输入（用于输入框常驻 + 队列注入）
   queuedInputs: QueuedInput[];
 }
@@ -519,6 +551,7 @@ export type DebugHubIPCMessage =
   | RegisterAgentMsg
   | UpdateAgentInspectorMsg
   | UpdateAgentOverviewMsg
+  | UpdateTodoPlanMsg
   | PushMessagesMsg
   | RegisterToolsMsg
   | SetCurrentAgentMsg
@@ -555,6 +588,12 @@ export interface UpdateAgentOverviewMsg {
   type: 'update-agent-overview';
   agentId: string;
   overview: AgentOverviewSnapshot;
+}
+
+export interface UpdateTodoPlanMsg {
+  type: 'update-todo-plan';
+  agentId: string;
+  plan: TodoPlanSnapshot;
 }
 
 /**

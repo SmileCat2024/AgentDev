@@ -10,7 +10,7 @@
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from 'agentdev';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot } from 'agentdev';
 import { getPackageInfoFromSource } from 'agentdev';
 import { CallStart } from 'agentdev';
 
@@ -34,6 +34,7 @@ export class MemoryFeature implements AgentFeature {
   private filename: string;
   private sourceRoot: string;
   private _packageInfo: PackageInfo | null = null;
+  private _injected = false;
 
   constructor(config: MemoryFeatureConfig = {}) {
     this.filename = config.filename ?? 'CLAUDE.md';
@@ -70,6 +71,11 @@ export class MemoryFeature implements AgentFeature {
       return;
     }
 
+    // 防止回退后重复注入（rollback 恢复 injected=true 时直接跳过）
+    if (this._injected) {
+      return;
+    }
+
     // 获取当前工作目录
     const cwd = this.sourceRoot;
 
@@ -92,6 +98,15 @@ export class MemoryFeature implements AgentFeature {
 
     // 注入为系统消息
     ctx.context.add({ role: 'system', content });
+    this._injected = true;
+  }
+
+  captureState(): FeatureStateSnapshot {
+    return { injected: this._injected };
+  }
+
+  restoreState(snapshot: FeatureStateSnapshot): void {
+    this._injected = Boolean((snapshot as any)?.injected);
   }
 
   /**

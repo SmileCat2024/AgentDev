@@ -323,7 +323,6 @@ class AgentBase {
       }
 
 
-      preCallRuntime = await this.captureRuntimeSnapshot(context, this._callIndex - 1);
       // ========== CallStart 反向钩子 ==========
       // 在系统提示词之后、用户输入之前调用，确保 Feature 可以正确注入消息
 
@@ -334,6 +333,10 @@ class AgentBase {
       await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall, agent: this });
       this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
+
+      // 在 CallStart 钩子之后、用户消息之前捕获快照，
+      // 确保 checkpoint 包含 Feature 注入的内容（CLAUDE.md、交接摘要等）。
+      preCallRuntime = await this.captureRuntimeSnapshot(context, this._callIndex - 1);
 
       // 发送 call.start 通知（供前端消费 agent 运行状态）
       try {
@@ -657,6 +660,50 @@ class AgentBase {
     this.pushInspectorSnapshot();
 
     return { draftInput: checkpoint.draftInput };
+  }
+
+  /**
+   * 预注入 CallStart 钩子内容（不触发完整 onCall 流程）。
+   *
+   * 用于新 session 在首次用户输入前就能展示注入的上下文（如 handoff 摘要、CLAUDE.md）。
+   * 执行初始化（如果尚未初始化）和 CallStart 钩子，但不添加用户消息、不进入 ReAct 循环。
+   * Feature 的状态守卫（如 injected 标志）确保后续真实 onCall 时不会重复注入。
+   */
+  async preInjectCallStart(): Promise<void> {
+    await this.ensureFeatureTools();
+
+    const context = this.persistentContext ?? new Context();
+    this.persistentContext = context;
+
+    // 首次初始化（与 onCall 中的逻辑一致）
+    if (!this._initialized) {
+      await executeHook(
+        this,
+        () => (this as any).onInitiate({ context }),
+        { hookName: 'onInitiate', input: '' }
+      );
+      this.syncRegisteredToolsToDebug();
+      this.pushInspectorSnapshot();
+
+      if (this.templateResolver && context.getAll().length === 0) {
+        const systemMsg = await this.templateResolver.resolve();
+        if (systemMsg) {
+          context.addSystemMessage(systemMsg, this._callIndex);
+        }
+      }
+
+      this._initialized = true;
+    }
+
+    // 执行 CallStart 钩子（isFirstCall = true）
+    await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, {
+      input: '',
+      context,
+      isFirstCall: true,
+      agent: this,
+    });
+    this.syncRegisteredToolsToDebug();
+    this.pushInspectorSnapshot();
   }
 
   /**

@@ -217,8 +217,19 @@ export async function discoverMulti(options: SkillsOptions = {}): Promise<SkillM
     directories.push(isAbsolute(d) ? d : resolve(cwd, d));
   }
 
+  // Deduplicate directories — on Windows the same physical path can appear
+  // with different drive-letter casing (e.g. "D:\…" vs "d:\…").
+  const isWin = process.platform === 'win32';
+  const seen = new Set<string>();
+  const uniqueDirs = directories.filter(d => {
+    const key = isWin ? d.toLowerCase() : d;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
   const allSkills: SkillMetadata[] = [];
-  for (const dir of directories) {
+  for (const dir of uniqueDirs) {
     const skills = await discover({ dir });
     allSkills.push(...skills);
   }

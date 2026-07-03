@@ -1,6 +1,6 @@
 import type { AgentConfigFile, ModelConfig, CustomHeaderEntry } from '../core/config.js';
 import { resolveCustomHeaders } from './custom-headers.js';
-import type { LLMClient, LLMResponse, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '../core/types.js';
+import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
 import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
@@ -149,10 +149,11 @@ export class AnthropicLLM implements LLMClient {
     this.initPromise = ensureHttpClientInitialized();
   }
 
-  async chat(messages: Message[], tools: Tool[], options?: { signal?: AbortSignal }): Promise<LLMResponse> {
+  async chat(messages: Message[], tools: Tool[], options?: LLMChatOptions): Promise<LLMResponse> {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
     const compiled = compileContextForAnthropic(messages, tools);
+    const noStream = options?.noStream === true;
 
     for (let attempt = 1; attempt <= DEFAULT_MAX_RETRIES + 1; attempt++) {
       let response: Response | undefined;
@@ -194,7 +195,7 @@ export class AnthropicLLM implements LLMClient {
           body: JSON.stringify({
             model: this._modelName,
             max_tokens: effectiveMaxTokens,
-            stream: true,
+            ...(noStream ? {} : { stream: true }),
             ...(thinkingEnabled
               ? { thinking: { type: 'enabled', budget_tokens: effectiveBudgetTokens } }
               : {}),
@@ -213,6 +214,16 @@ export class AnthropicLLM implements LLMClient {
           const err = new Error(`Anthropic API error ${response.status}: ${errorText}`);
           (err as any).status = response.status;
           throw err;
+        }
+
+        if (noStream) {
+          const payload = await response.json() as AnthropicCompatErrorPayload;
+          if (isCompatErrorPayload(payload)) {
+            const err = new Error(`Anthropic-compatible API error ${payload.code ?? 'unknown'}: ${payload.msg ?? payload.message ?? 'unknown error'}`);
+            (err as any).status = payload.code;
+            throw err;
+          }
+          return parseAnthropicJsonResponse(payload);
         }
 
         const contentType = response.headers.get('content-type') || '';
@@ -462,6 +473,64 @@ function findDoubleNewlineIndex(buffer: string): { index: number; separatorLen: 
     }
   }
   return { index: -1, separatorLen: 0 };
+}
+
+/**
+ * Parse a non-streaming Anthropic API JSON response into LLMResponse.
+ * Used when noStream option is set — avoids SSE fragility for one-shot calls.
+ */
+function parseAnthropicJsonResponse(data: Record<string, any>): LLMResponse {
+  let content = '';
+  let reasoning = '';
+  const toolCalls: ToolCall[] = [];
+  const thinkingBlocks: ThinkingBlock[] = [];
+
+  if (Array.isArray(data.content)) {
+    for (const block of data.content) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        content += block.text;
+      } else if (block.type === 'thinking') {
+        const thinking = typeof block.thinking === 'string' ? block.thinking : '';
+        const signature = typeof block.signature === 'string' ? block.signature : '';
+        if (thinking) reasoning += thinking;
+        if (signature.length > 0 && thinking.length > 0) {
+          thinkingBlocks.push({ thinking, signature });
+        }
+      } else if (block.type === 'tool_use') {
+        toolCalls.push({
+          id: String(block.id ?? ''),
+          name: String(block.name ?? ''),
+          arguments: (block.input && typeof block.input === 'object' && !Array.isArray(block.input))
+            ? block.input as Record<string, any>
+            : {},
+        });
+      }
+    }
+  }
+
+  const usageRaw = data.usage;
+  let usageInfo: UsageInfo | undefined;
+  if (usageRaw && (usageRaw.input_tokens !== undefined || usageRaw.output_tokens !== undefined)) {
+    const realInput = (usageRaw.input_tokens || 0)
+      + (usageRaw.cache_creation_input_tokens || 0)
+      + (usageRaw.cache_read_input_tokens || 0);
+    usageInfo = {
+      inputTokens: realInput,
+      outputTokens: usageRaw.output_tokens || 0,
+      totalTokens: realInput + (usageRaw.output_tokens || 0),
+      ...(usageRaw.cache_creation_input_tokens ? { cacheCreationTokens: usageRaw.cache_creation_input_tokens } : {}),
+      ...(usageRaw.cache_read_input_tokens ? { cacheReadTokens: usageRaw.cache_read_input_tokens } : {}),
+    };
+  }
+
+  return {
+    content,
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    ...(reasoning ? { reasoning } : {}),
+    ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
+    ...(usageInfo ? { usage: usageInfo } : {}),
+    stopReason: data.stop_reason ?? null,
+  };
 }
 
 async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<LLMResponse> {

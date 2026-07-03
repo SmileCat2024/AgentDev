@@ -336,6 +336,8 @@ export interface LLMClient {
 export interface LLMChatOptions {
   /** 允许中断正在进行的 LLM 调用 */
   signal?: AbortSignal;
+  /** 请求非流式响应（适用于一次性摘要、标题生成等场景） */
+  noStream?: boolean;
 }
 
 // 占位符上下文类型

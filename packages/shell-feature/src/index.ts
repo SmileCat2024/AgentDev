@@ -92,7 +92,7 @@ export class ShellFeature implements AgentFeature {
             type: 'boolean',
             title: '启用 PowerShell',
             description: '启用后，Agent 将获得 PowerShell 工具。Windows 系统自带 PowerShell 5.1。',
-            default: false,
+            default: true,
           },
           powershellPath: {
             type: 'file',
@@ -107,13 +107,13 @@ export class ShellFeature implements AgentFeature {
 
   private resolveShellConfig(featureConfig: unknown): ResolvedShellConfig {
     if (!featureConfig || typeof featureConfig !== 'object') {
-      return { bashEnabled: true, powershellEnabled: false };
+      return { bashEnabled: true, powershellEnabled: true };
     }
     const c = featureConfig as Record<string, unknown>;
     return {
       bashEnabled: c.bashEnabled !== false,
       bashPath: typeof c.bashPath === 'string' && c.bashPath.trim() ? c.bashPath.trim() : undefined,
-      powershellEnabled: c.powershellEnabled === true,
+      powershellEnabled: c.powershellEnabled !== false,
       powershellPath: typeof c.powershellPath === 'string' && c.powershellPath.trim() ? c.powershellPath.trim() : undefined,
     };
   }

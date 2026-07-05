@@ -31,7 +31,7 @@ export class AudioFeedbackFeature implements AgentFeature {
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '在 call 完成时播放音频反馈，提供愉悦的交互体验。';
 
-  private readonly config: Required<AudioFeedbackConfig>;
+  private config: Required<AudioFeedbackConfig>;
   private readonly runtime: AudioFeedbackRuntimeState = {
     enabled: true,
     volume: 0.5,
@@ -42,12 +42,12 @@ export class AudioFeedbackFeature implements AgentFeature {
   };
   private logger?: FeatureInitContext['logger'];
 
-  constructor(config: AudioFeedbackConfig = {}) {
+  constructor() {
     this.config = {
-      audioPath: config.audioPath ?? join(__dirname, 'media', 'success.mp3'),
-      errorAudioPath: config.errorAudioPath ?? join(__dirname, 'media', 'error.mp3'),
-      enabled: config.enabled ?? true,
-      volume: config.volume ?? 0.5,
+      audioPath: join(__dirname, 'media', 'success.mp3'),
+      errorAudioPath: join(__dirname, 'media', 'error.mp3'),
+      enabled: true,
+      volume: 0.5,
     };
     this.runtime.enabled = this.config.enabled;
     this.runtime.volume = this.config.volume;
@@ -171,6 +171,27 @@ export class AudioFeedbackFeature implements AgentFeature {
 
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
     this.logger = ctx.logger;
+
+    // Read behavior config from system featureConfig
+    if (ctx.featureConfig && typeof ctx.featureConfig === 'object') {
+      const fc = ctx.featureConfig as AudioFeedbackConfig;
+      if (typeof fc.enabled === 'boolean') {
+        this.config.enabled = fc.enabled;
+        this.runtime.enabled = fc.enabled;
+      }
+      if (typeof fc.volume === 'number') {
+        this.config.volume = fc.volume;
+        this.runtime.volume = fc.volume;
+      }
+      if (typeof fc.audioPath === 'string' && fc.audioPath.trim()) {
+        this.config.audioPath = fc.audioPath.trim();
+        this.runtime.audioPath = fc.audioPath.trim();
+      }
+      if (typeof fc.errorAudioPath === 'string' && fc.errorAudioPath.trim()) {
+        this.config.errorAudioPath = fc.errorAudioPath.trim();
+        this.runtime.errorAudioPath = fc.errorAudioPath.trim();
+      }
+    }
 
     this.logger?.info('AudioFeedback initiated', {
       enabled: this.runtime.enabled,

@@ -114,10 +114,10 @@ async function readFileStats(path: string): Promise<{ isDirectory(): boolean }> 
  * @returns Skill 元数据列表
  */
 export async function discover(options: SkillsOptions = {}): Promise<SkillMetadata[]> {
-  const { dir } = options;
+  const { dir, baseDir } = options;
 
   // 解析 skills 目录路径
-  const skillsDir = resolveSkillsDir(dir);
+  const skillsDir = resolveSkillsDir(dir, baseDir);
 
   // 检查目录是否存在
   if (!existsSync(skillsDir)) {
@@ -153,10 +153,11 @@ export async function discover(options: SkillsOptions = {}): Promise<SkillMetada
 /**
  * 解析 skills 目录路径
  * @param dir 用户指定的目录路径
+ * @param baseDir 相对路径基准目录，默认 process.cwd()
  * @returns 解析后的绝对路径
  */
-function resolveSkillsDir(dir?: string): string {
-  const cwd = process.cwd();
+function resolveSkillsDir(dir?: string, baseDir?: string): string {
+  const resolvedBase = baseDir ?? process.cwd();
 
   // 如果用户指定了目录
   if (dir) {
@@ -164,14 +165,12 @@ function resolveSkillsDir(dir?: string): string {
     if (isAbsolute(dir)) {
       return dir;
     }
-    // 相对路径以 cwd 为基准
-    const resolved = resolve(cwd, dir);
-    // 确保 Windows 路径使用正确的分隔符
-    return resolved;
+    // 相对路径以 baseDir 为基准
+    return resolve(resolvedBase, dir);
   }
 
-  // 默认使用 cwd/.agentdev/skills
-  return resolve(cwd, '.agentdev', 'skills');
+  // 默认使用 baseDir/.agentdev/skills
+  return resolve(resolvedBase, '.agentdev', 'skills');
 }
 
 /**
@@ -197,24 +196,25 @@ export async function discoverMulti(options: SkillsOptions = {}): Promise<SkillM
     scanAgentdevDir = true,
     scanClaudeDir = false,
     extraDirs = [],
+    baseDir,
   } = options;
-  const cwd = processCwd();
+  const resolvedBase = baseDir ?? processCwd();
   const directories: string[] = [];
 
   // Explicitly specified dir takes highest priority
   if (dir) {
-    directories.push(isAbsolute(dir) ? dir : resolve(cwd, dir));
+    directories.push(isAbsolute(dir) ? dir : resolve(resolvedBase, dir));
   }
 
   if (scanAgentdevDir) {
-    directories.push(resolve(cwd, '.agentdev', 'skills'));
+    directories.push(resolve(resolvedBase, '.agentdev', 'skills'));
   }
   if (scanClaudeDir) {
-    directories.push(resolve(cwd, '.claude', 'skills'));
+    directories.push(resolve(resolvedBase, '.claude', 'skills'));
   }
   const limitedExtras = extraDirs.filter(Boolean).slice(0, 5);
   for (const d of limitedExtras) {
-    directories.push(isAbsolute(d) ? d : resolve(cwd, d));
+    directories.push(isAbsolute(d) ? d : resolve(resolvedBase, d));
   }
 
   // Deduplicate directories — on Windows the same physical path can appear

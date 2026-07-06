@@ -51,6 +51,8 @@ export interface SkillFeatureConfig extends SkillsOptions {
   scanClaudeDir?: boolean;
   /** 额外 skills 目录列表 */
   extraDirs?: string[];
+  /** 相对路径基准目录，默认 process.cwd() */
+  baseDir?: string;
 }
 
 /**
@@ -173,7 +175,7 @@ export class SkillFeature implements AgentFeature {
           extraDirs: {
             type: 'directory',
             title: '额外技能目录',
-            description: '额外加载技能文件的目录列表（至多 5 个），同名技能会自动加后缀区分。',
+            description: '额外加载技能文件的目录列表（至多 5 个）。相对路径以工作目录为基准，绝对路径直接使用。同名技能会自动加后缀区分。',
             default: [],
             maxItems: 5,
           },
@@ -195,14 +197,36 @@ export class SkillFeature implements AgentFeature {
   /**
    * 初始化钩子
    * 执行 Skills 发现并注册数据源
+   *
+   * featureConfig（运行时配置）覆盖构造函数的默认值。
+   * 路径解析以 agent 的 workspaceDir 为基准。
    */
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    // 从 featureConfig 读取运行时配置，覆盖构造函数默认值
+    const fc = ctx.featureConfig;
+    let scanAgentdevDir = this.scanAgentdevDir;
+    let scanClaudeDir = this.scanClaudeDir;
+    let extraDirs = this.extraDirs;
+
+    if (fc && typeof fc === 'object') {
+      const c = fc as Record<string, unknown>;
+      if (typeof c.scanAgentdevDir === 'boolean') scanAgentdevDir = c.scanAgentdevDir;
+      if (typeof c.scanClaudeDir === 'boolean') scanClaudeDir = c.scanClaudeDir;
+      if (Array.isArray(c.extraDirs)) {
+        extraDirs = c.extraDirs.filter((d): d is string => typeof d === 'string' && d.trim() !== '');
+      }
+    }
+
+    // 使用 agent 的 workspaceDir 作为路径基准
+    const baseDir = ctx.config?.workspaceDir;
+
     // 使用多目录发现：.agentdev/skills + .claude/skills + 额外目录
     this.skills = await discoverMulti({
       dir: this.skillsDir,
-      scanAgentdevDir: this.scanAgentdevDir,
-      scanClaudeDir: this.scanClaudeDir,
-      extraDirs: this.extraDirs,
+      scanAgentdevDir,
+      scanClaudeDir,
+      extraDirs,
+      baseDir,
     });
 
     // 合并 Feature 自带 skills，用户 skills 优先（同名覆盖）

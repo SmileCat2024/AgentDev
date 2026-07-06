@@ -1,44 +1,45 @@
 /**
- * MemoryFeature - 读取 CLAUDE.md 并注入到上下文
+ * MemoryFeature - 读取项目文档（如 CLAUDE.md）并注入到上下文
  *
  * 功能：
- * - 仅在首次对话开始前（CallStart）读取当前工作目录的 CLAUDE.md 文件
+ * - 仅在首次对话开始前（CallStart）读取工作目录下的指定文档文件
  * - 如果文件存在，将其作为系统消息注入到上下文中
  * - 后续轮次不再重复注入
+ * - 支持配置多个文档文件，相对路径以工作目录为基准
  */
 
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
-import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot } from '../../core/feature.js';
+import { resolve, isAbsolute } from 'path';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot, FeatureManifestDefinition } from '../../core/feature.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import { CallStart } from '../../core/hooks-decorator.js';
 
 export interface MemoryFeatureConfig {
-  /** CLAUDE.md 文件名，默认 'CLAUDE.md' */
-  filename?: string;
-  /** 是否强制注入，即使文件不存在也记录日志 */
-  forceInject?: boolean;
   /** 读取 CLAUDE.md 的工作目录 */
   workspaceDir?: string;
-  /** 宿主资源目录；如果提供，优先从这里读取 CLAUDE.md */
+  /** 宿主资源目录；如果提供，优先从这里读取文档 */
   resourceRoot?: string;
+  /** 文档文件列表（相对路径以 workspaceDir 为基准），默认 ['CLAUDE.md'] */
+  documents?: string[];
 }
 
 export class MemoryFeature implements AgentFeature {
   readonly name = 'memory';
   readonly dependencies: string[] = [];
-  readonly source = fileURLToPath(import.meta.url).replace(/\\\\/g, '/');
-  readonly description = '自动读取并注入项目 CLAUDE.md 文件作为系统提示词。';
+  readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+  readonly description = '自动读取并注入项目文档文件（如 CLAUDE.md）作为系统提示词。';
 
-  private filename: string;
-  private sourceRoot: string;
+  private documents: string[];
+  private baseDir: string;
   private _packageInfo: PackageInfo | null = null;
   private _injected = false;
 
   constructor(config: MemoryFeatureConfig = {}) {
-    this.filename = config.filename ?? 'CLAUDE.md';
-    this.sourceRoot = config.resourceRoot ?? config.workspaceDir ?? process.cwd();
+    this.documents = Array.isArray(config.documents) && config.documents.length > 0
+      ? config.documents.filter(d => typeof d === 'string' && d.trim())
+      : ['CLAUDE.md', 'AGENT.md'];
+    this.baseDir = config.resourceRoot ?? config.workspaceDir ?? process.cwd();
   }
 
   /**
@@ -59,8 +60,67 @@ export class MemoryFeature implements AgentFeature {
     return [];
   }
 
+  getFeatureManifest(): FeatureManifestDefinition {
+    return {
+      schemaVersion: 1 as const,
+      settings: {
+        properties: {
+          readClaudeMd: {
+            type: 'boolean' as const,
+            title: 'CLAUDE.md',
+            description: '读取工作目录下的 CLAUDE.md 文件',
+            default: true,
+          },
+          readAgentMd: {
+            type: 'boolean' as const,
+            title: 'AGENT.md',
+            description: '读取工作目录下的 AGENT.md 文件',
+            default: true,
+          },
+          extraDocs: {
+            type: 'file' as const,
+            title: '自定义文档',
+            description: '额外的文档文件路径。相对路径（如 docs/RULES.md）以工作目录为基准，绝对路径直接使用。',
+            default: [],
+            maxItems: 10,
+            accept: '.md,.txt',
+          },
+        },
+      },
+    };
+  }
+
   /**
-   * CallStart 钩子：仅在首次对话开始时注入 CLAUDE.md 内容
+   * 初始化钩子：从 featureConfig 读取运行时配置，覆盖构造函数默认值
+   */
+  async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    const wsDir = ctx.config?.workspaceDir;
+    if (wsDir) {
+      this.baseDir = wsDir;
+    }
+
+    const fc = ctx.featureConfig;
+    if (fc && typeof fc === 'object') {
+      const c = fc as Record<string, unknown>;
+      const docs: string[] = [];
+
+      if (c.readClaudeMd !== false) docs.push('CLAUDE.md');
+      if (c.readAgentMd !== false) docs.push('AGENT.md');
+
+      if (Array.isArray(c.extraDocs)) {
+        for (const d of c.extraDocs) {
+          if (typeof d === 'string' && d.trim()) {
+            docs.push(d.trim());
+          }
+        }
+      }
+
+      this.documents = docs;
+    }
+  }
+
+  /**
+   * CallStart 钩子：仅在首次对话开始时注入文档内容
    */
   @CallStart
   async injectCLAUDEContent(
@@ -76,28 +136,29 @@ export class MemoryFeature implements AgentFeature {
       return;
     }
 
-    // 获取当前工作目录
-    const cwd = this.sourceRoot;
-
-    // 查找 CLAUDE.md 文件
-    const filePath = resolve(cwd, this.filename);
-
-    // 检查文件是否存在
-    if (!existsSync(filePath)) {
-      // 文件不存在，不做任何操作
-      return;
+    // 读取所有配置的文档文件
+    const contents: string[] = [];
+    for (const doc of this.documents) {
+      const filePath = isAbsolute(doc) ? doc : resolve(this.baseDir, doc);
+      if (!existsSync(filePath)) {
+        continue;
+      }
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        if (content && content.trim().length > 0) {
+          contents.push(content);
+        }
+      } catch {
+        // 容错：跳过读取失败的文件
+      }
     }
 
-    // 读取文件内容
-    const content = readFileSync(filePath, 'utf-8');
-
-    // 如果内容为空，跳过注入
-    if (!content || content.trim().length === 0) {
+    if (contents.length === 0) {
       return;
     }
 
     // 注入为系统消息
-    ctx.context.add({ role: 'system', content });
+    ctx.context.add({ role: 'system', content: contents.join('\n\n') });
     this._injected = true;
   }
 
@@ -114,7 +175,7 @@ export class MemoryFeature implements AgentFeature {
    */
   getHookDescription(lifecycle: string, methodName: string): string | undefined {
     if (lifecycle === 'CallStart' && methodName === 'injectCLAUDEContent') {
-      return '仅在首次对话开始前读取并注入 CLAUDE.md 文件内容';
+      return '仅在首次对话开始前读取并注入项目文档文件内容';
     }
     return undefined;
   }

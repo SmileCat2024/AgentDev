@@ -11,7 +11,7 @@
 import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
-import type { ToolCall, LLMResponse, Message, UsageInfo } from '../types.js';
+import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput } from '../types.js';
 import type { ToolResult, HookResult, StepFinishDecisionContext } from '../lifecycle.js';
 import type { CallFinishReason } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
@@ -558,10 +558,10 @@ export class ReActLoopRunner {
           if (queuedInput) {
             logger.info('Step 级别队列：注入排队消息', {
               step,
-              queuedInput: queuedInput.slice(0, 100),
+              queuedInput: queuedInput.text.slice(0, 100),
             });
             // 将排队消息作为新的用户输入注入 context
-            context.addUserMessage(queuedInput, callIndex);
+            context.addUserMessage(queuedInput.text, callIndex, queuedInput.images);
             // 推送到 DebugHub
             this.pushToDebug(context.getAll());
             // 继续循环，不要 break
@@ -614,9 +614,9 @@ export class ReActLoopRunner {
    * 从 ViewerWorker 获取并消费一条排队消息
    *
    * @param agentId Agent ID
-   * @returns 排队消息文本，如果没有则返回 null
+   * @returns 排队消息（文本 + 图片），如果没有则返回 null
    */
-  private async fetchQueuedInput(agentId: string): Promise<string | null> {
+  private async fetchQueuedInput(agentId: string): Promise<{ text: string; images?: ImageInput[] } | null> {
     // 从环境变量获取 ViewerWorker 端口
     const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
     const viewerUrl = `http://127.0.0.1:${viewerPort}`;
@@ -633,7 +633,12 @@ export class ReActLoopRunner {
 
       const data = await res.json();
       if (data.input && data.input.text) {
-        return data.input.text;
+        return {
+          text: data.input.text,
+          ...(Array.isArray(data.input.images) && data.input.images.length > 0
+            ? { images: data.input.images }
+            : {}),
+        };
       }
       return null;
     } catch (e) {

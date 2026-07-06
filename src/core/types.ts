@@ -217,6 +217,28 @@ export interface AgentConnectionResponse {
 // 消息角色（支持子代理 ID 作为消息来源）
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool' | string;
 
+/**
+ * 图片输入（多模态支持）
+ *
+ * 支持两种数据来源：
+ * - `path`：图片已落盘到本地文件，编译 LLM 请求时按需读取为 base64（推荐）
+ * - `base64`：内联 base64 数据（向后兼容旧会话）
+ *
+ * 优先使用 `path`；`base64` 仅作为旧会话兼容或无法落盘时的回退。
+ * - 视觉模式（vision: true）：从 path 或 base64 读取图片数据传给 LLM API
+ * - 非视觉模式（vision: false）：source 用于生成文字占位符
+ */
+export interface ImageInput {
+  /** 本地文件绝对路径（推荐方式，避免 session 膨胀） */
+  path?: string;
+  /** Base64 编码的图片数据（不含 data URI 前缀），向后兼容 */
+  base64?: string;
+  /** MIME 类型，如 'image/png'、'image/jpeg' */
+  mediaType?: string;
+  /** 来源描述或原始文件名（用于非视觉模式的文字占位符显示） */
+  source?: string;
+}
+
 // 消息结构
 export interface Message {
   role: MessageRole;
@@ -226,6 +248,8 @@ export interface Message {
   toolCalls?: ToolCall[];
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
   thinkingBlocks?: ThinkingBlock[];
+  /** 图片附件（仅 user 消息有效），多模态输入 */
+  images?: ImageInput[];
   /**
    * LLM 用量信息（仅 assistant 消息有值）。
    *
@@ -543,6 +567,8 @@ export interface QueuedInput {
   id: string;
   text: string;
   timestamp: number;
+  /** 图片附件（多模态输入） */
+  images?: ImageInput[];
 }
 
 /**

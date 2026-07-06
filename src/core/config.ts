@@ -41,6 +41,8 @@ export interface ModelConfig {
   customHeaders?: CustomHeaderEntry[];
   /** OpenAI 专用接口面：chat / responses */
   apiSurface?: 'chat' | 'responses';
+  /** 是否启用视觉（多模态图片输入）支持，默认 false */
+  vision?: boolean;
   // 未来可扩展
   region?: string;
   projectId?: string;

@@ -27,6 +27,7 @@ import {
   type UserInputRequest,
   type UserInputResponse,
   type UserInputAction,
+  type ImageInput,
 } from './types.js';
 import { ClawDebugClient } from './claw-debug-client.js';
 import { getClawRuntimeUrl, resolveDebugTransportMode } from './debug-transport.js';
@@ -56,7 +57,7 @@ export class DebugHub {
 
   // 输入请求回调映射：requestId → resolver
   private pendingInputRequests = new Map<string, (response: UserInputResponse) => void>();
-  private queuedInputHandler?: (agentId: string, input: { id: string; text: string; timestamp: number }) => void | Promise<void>;
+  private queuedInputHandler?: (agentId: string, input: { id: string; text: string; timestamp: number; images?: ImageInput[] }) => void | Promise<void>;
   private interruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
 
   // 活跃的输入请求元数据（用于重连恢复）：agentId → requestInfo
@@ -74,6 +75,7 @@ export class DebugHub {
   // UDS 客户端连接
   private udsClient?: Socket;
   private udsPath: string;
+  private workerReadBuffer: string = '';
   private workerPort: number | null = null;
   private clientReady: boolean = false;
   private stopped: boolean = false;
@@ -564,7 +566,7 @@ export class DebugHub {
     return getDebugCapabilities();
   }
 
-  setQueuedInputHandler(handler?: (agentId: string, input: { id: string; text: string; timestamp: number }) => void | Promise<void>): void {
+  setQueuedInputHandler(handler?: (agentId: string, input: { id: string; text: string; timestamp: number; images?: ImageInput[] }) => void | Promise<void>): void {
     this.queuedInputHandler = handler;
   }
 
@@ -716,6 +718,7 @@ export class DebugHub {
       this.udsClient = connect(this.udsPath);
 
       this.udsClient.on('connect', () => {
+        this.workerReadBuffer = '';
         this.clientReady = true;
         this.reconnectAttempts = 0; // 重置重连计数
         console.log(`[DebugHub] 已连接到 ViewerWorker: ${this.udsPath}`);
@@ -741,7 +744,9 @@ export class DebugHub {
       });
 
       this.udsClient.on('data', (data: Buffer) => {
-        const lines = data.toString().split('\n');
+        this.workerReadBuffer += data.toString();
+        const lines = this.workerReadBuffer.split('\n');
+        this.workerReadBuffer = lines.pop() ?? '';
         for (const line of lines) {
           if (!line.trim()) continue;
           try {
@@ -758,6 +763,7 @@ export class DebugHub {
       });
 
       this.udsClient.on('close', () => {
+        this.workerReadBuffer = '';
         this.clientReady = false;
         console.warn('[DebugHub] 与 ViewerWorker 的连接已断开');
 

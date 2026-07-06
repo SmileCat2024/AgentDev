@@ -3,10 +3,11 @@
  * 实现 LLMClient 接口
  */
 
-import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo } from '../core/types.js';
+import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo, ImageInput } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 import type { CustomHeaderEntry } from '../core/config.js';
 import { resolveCustomHeaders } from './custom-headers.js';
+import { resolveImageDataUri } from './image-resolver.js';
 import OpenAI from 'openai';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
 import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
@@ -32,6 +33,7 @@ export class OpenAILLM implements LLMClient {
   private maxTokens?: number;
   private providerOptions?: Record<string, unknown>;
   private customHeaders?: CustomHeaderEntry[];
+  private visionEnabled: boolean;
   private initPromise: Promise<void>;
 
   /** 返回当前 LLM 实例使用的模型名 */
@@ -44,6 +46,7 @@ export class OpenAILLM implements LLMClient {
     maxTokens?: number,
     providerOptions?: Record<string, unknown>,
     customHeaders?: CustomHeaderEntry[],
+    visionEnabled: boolean = false,
   ) {
     this.client = new OpenAI({
       apiKey,
@@ -67,6 +70,7 @@ export class OpenAILLM implements LLMClient {
     this.maxTokens = maxTokens;
     this.providerOptions = providerOptions;
     this.customHeaders = customHeaders;
+    this.visionEnabled = visionEnabled;
     this.initPromise = ensureHttpClientInitialized();
   }
 
@@ -78,11 +82,31 @@ export class OpenAILLM implements LLMClient {
     await this.initPromise;
     // 转换消息格式为 OpenAI 格式
     const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = messages.map(m => {
-      const base = { content: m.content };
       if (m.role === 'tool') {
         return { role: 'tool', content: m.content, tool_call_id: m.toolCallId! };
       }
-      return { role: m.role, ...base };
+      // 处理 user 消息中的图片
+      if (m.role === 'user' && m.images && m.images.length > 0) {
+        if (this.visionEnabled) {
+          const parts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+          if (m.content) {
+            parts.push({ type: 'text', text: m.content });
+          }
+          for (const img of m.images) {
+            const url = resolveImageDataUri(img) || img.source;
+            if (url) {
+              parts.push({ type: 'image_url', image_url: { url } });
+            }
+          }
+          return { role: 'user', content: parts };
+        }
+        // 非视觉模式：将图片降级为文字占位符
+        const placeholders = m.images
+          .map(img => `【Image】${img.source || '(inline image)'}`)
+          .join('\n');
+        return { role: 'user', content: `${m.content}\n${placeholders}` };
+      }
+      return { role: m.role, content: m.content };
     }) as OpenAI.Chat.ChatCompletionMessageParam[];
 
     // 转换工具格式
@@ -303,6 +327,7 @@ export function createOpenAILLM(
       configOrApiKey.defaultModel.maxTokens,
       configOrApiKey.defaultModel.providerOptions,
       configOrApiKey.defaultModel.customHeaders,
+      configOrApiKey.defaultModel.vision ?? false,
     );
   }
   // 处理 ModelConfig
@@ -314,6 +339,7 @@ export function createOpenAILLM(
       configOrApiKey.maxTokens,
       configOrApiKey.providerOptions,
       configOrApiKey.customHeaders,
+      configOrApiKey.vision ?? false,
     );
   }
   // 处理单独传参

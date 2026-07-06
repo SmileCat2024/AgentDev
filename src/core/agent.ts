@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot } from './types.js';
+import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot, ImageInput } from './types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -241,7 +241,7 @@ class AgentBase {
   /**
    * 唯一的公开入口 - 执行 Agent
    */
-  async onCall(input: string): Promise<string> {
+  async onCall(input: string, images?: ImageInput[]): Promise<string> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
 
@@ -346,7 +346,7 @@ class AgentBase {
 
       // 添加用户输入（使用可能被 Feature 修改过的缓存）
       finalInput = this._pendingInput ?? input;
-      context.addUserMessage(finalInput, this._callIndex);
+      context.addUserMessage(finalInput, this._callIndex, images);
       this.pushToDebug(context.getAll());
 
       // 提前提交 rollback checkpoint：确保在 ReAct 循环中的 step auto-save

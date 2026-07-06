@@ -7,8 +7,9 @@
 
 import OpenAI from 'openai';
 import type { AgentConfigFile, ModelConfig, CustomHeaderEntry } from '../core/config.js';
-import type { LLMClient, LLMResponse, Message, Tool, ToolCall, UsageInfo, ThinkingBlock } from '../core/types.js';
+import type { LLMClient, LLMResponse, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '../core/types.js';
 import { resolveCustomHeaders } from './custom-headers.js';
+import { resolveImageDataUri } from './image-resolver.js';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
 import { classifyAndWrapError } from './api-errors.js';
 import { initHttpClient } from './http-client.js';
@@ -68,6 +69,7 @@ export class OpenAIResponsesLLM implements LLMClient {
   private thinkingBudgetTokens?: number;
   private providerOptions?: Record<string, unknown>;
   private customHeaders?: CustomHeaderEntry[];
+  private visionEnabled: boolean;
   private initPromise: Promise<void>;
 
   /** 返回当前 LLM 实例使用的模型名 */
@@ -81,6 +83,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     thinkingBudgetTokens?: number,
     providerOptions?: Record<string, unknown>,
     customHeaders?: CustomHeaderEntry[],
+    visionEnabled: boolean = false,
   ) {
     this.client = new OpenAI({
       apiKey,
@@ -104,6 +107,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     this.thinkingBudgetTokens = thinkingBudgetTokens;
     this.providerOptions = providerOptions;
     this.customHeaders = customHeaders;
+    this.visionEnabled = visionEnabled;
     this.initPromise = ensureHttpClientInitialized();
   }
 
@@ -115,6 +119,7 @@ export class OpenAIResponsesLLM implements LLMClient {
       maxTokens: this.maxTokens,
       thinkingBudgetTokens: this.thinkingBudgetTokens,
       providerOptions: this.providerOptions,
+      visionEnabled: this.visionEnabled,
     });
     let preferNonStreaming = false;
 
@@ -375,6 +380,7 @@ export interface CompileOpenAIResponsesOptions {
   maxTokens?: number;
   thinkingBudgetTokens?: number;
   providerOptions?: Record<string, unknown>;
+  visionEnabled?: boolean;
 }
 
 export function compileContextForOpenAIResponses(
@@ -387,16 +393,51 @@ export function compileContextForOpenAIResponses(
   for (const message of messages) {
     if (!message) continue;
 
-    if (message.role === 'system' || message.role === 'user') {
+    if (message.role === 'system') {
       input.push({
         type: 'message',
-        role: message.role,
+        role: 'system',
         content: [
           {
             type: 'input_text',
             text: String(message.content ?? ''),
           },
         ],
+      });
+      continue;
+    }
+
+    if (message.role === 'user') {
+      const visionEnabled = options.visionEnabled ?? false;
+      let textContent = String(message.content ?? '');
+
+      // 处理图片
+      if (message.images && message.images.length > 0) {
+        if (visionEnabled) {
+          // 视觉模式：生成 input_image 内容块
+          const contentParts: any[] = [
+            { type: 'input_text', text: textContent },
+          ];
+          for (const img of message.images) {
+            const url = resolveImageDataUri(img) || img.source;
+            if (url) {
+              contentParts.push({ type: 'input_image', image_url: url, detail: 'auto' });
+            }
+          }
+          input.push({ type: 'message', role: 'user', content: contentParts });
+          continue;
+        }
+        // 非视觉模式：降级为文字占位符
+        const placeholders = message.images
+          .map(img => `【Image】${img.source || '(inline image)'}`)
+          .join('\n');
+        textContent = `${textContent}\n${placeholders}`;
+      }
+
+      input.push({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: textContent }],
       });
       continue;
     }
@@ -724,6 +765,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.defaultModel.thinkingBudgetTokens,
       configOrApiKey.defaultModel.providerOptions,
       configOrApiKey.defaultModel.customHeaders,
+      configOrApiKey.defaultModel.vision ?? false,
     );
   }
 
@@ -736,6 +778,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.thinkingBudgetTokens,
       configOrApiKey.providerOptions,
       configOrApiKey.customHeaders,
+      configOrApiKey.vision ?? false,
     );
   }
 

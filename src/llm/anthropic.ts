@@ -1,10 +1,11 @@
 import type { AgentConfigFile, ModelConfig, CustomHeaderEntry } from '../core/config.js';
 import { resolveCustomHeaders } from './custom-headers.js';
-import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '../core/types.js';
+import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo, ImageInput } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
 import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
 import { initHttpClient } from './http-client.js';
+import { resolveImageBase64 } from './image-resolver.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
@@ -41,7 +42,16 @@ type AnthropicToolUseBlock = {
   input?: unknown;
 };
 
-type AnthropicContentBlock = AnthropicTextBlock | AnthropicThinkingBlock | AnthropicToolResultBlock | AnthropicToolUseBlock;
+type AnthropicImageBlock = {
+  type: 'image';
+  source: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
+};
+
+type AnthropicContentBlock = AnthropicTextBlock | AnthropicThinkingBlock | AnthropicToolResultBlock | AnthropicToolUseBlock | AnthropicImageBlock;
 
 interface AnthropicRequestMessage {
   role: 'user' | 'assistant';
@@ -145,6 +155,7 @@ export class AnthropicLLM implements LLMClient {
     private readonly thinkingBudgetTokens?: number,
     private readonly thinkingKeepTurns: number = DEFAULT_THINKING_KEEP_TURNS,
     private readonly customHeaders?: CustomHeaderEntry[],
+    private readonly visionEnabled: boolean = false,
   ) {
     this.initPromise = ensureHttpClientInitialized();
   }
@@ -152,7 +163,7 @@ export class AnthropicLLM implements LLMClient {
   async chat(messages: Message[], tools: Tool[], options?: LLMChatOptions): Promise<LLMResponse> {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
-    const compiled = compileContextForAnthropic(messages, tools);
+    const compiled = compileContextForAnthropic(messages, tools, this.visionEnabled);
     const noStream = options?.noStream === true;
 
     for (let attempt = 1; attempt <= DEFAULT_MAX_RETRIES + 1; attempt++) {
@@ -300,7 +311,7 @@ function createContextManagementConfig(keepTurns: number): AnthropicContextManag
   };
 }
 
-export function compileContextForAnthropic(messages: Message[], tools: Tool[]): CompiledAnthropicRequest {
+export function compileContextForAnthropic(messages: Message[], tools: Tool[], visionEnabled: boolean = false): CompiledAnthropicRequest {
   const systemBlocks: AnthropicTextBlock[] = [];
   const compiledMessages: AnthropicRequestMessage[] = [];
   let seenFirstUser = false;
@@ -338,10 +349,38 @@ export function compileContextForAnthropic(messages: Message[], tools: Tool[]): 
         break;
       case 'user': {
         seenFirstUser = true;
-        const contentBlocks = [...pendingUserBlocks, { type: 'text' as const, text: message.content }];
+        const contentBlocks: AnthropicContentBlock[] = [...pendingUserBlocks];
+        let textContent = message.content;
+
+        // 处理图片
+        if (message.images && message.images.length > 0) {
+          if (visionEnabled) {
+            for (const img of message.images) {
+              const data = resolveImageBase64(img);
+              if (data) {
+                contentBlocks.push({
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: img.mediaType || 'image/png',
+                    data,
+                  },
+                });
+              }
+            }
+          } else {
+            // 非视觉模式：降级为文字占位符
+            const placeholders = message.images
+              .map(img => `【Image】${img.source || '(inline image)'}`)
+              .join('\n');
+            textContent = `${message.content}\n${placeholders}`;
+          }
+        }
+
+        contentBlocks.push({ type: 'text', text: textContent });
         compiledMessages.push({
           role: 'user',
-          content: contentBlocks.length === 1 ? message.content : contentBlocks,
+          content: contentBlocks.length === 1 ? textContent : contentBlocks,
         });
         pendingUserBlocks = [];
         break;
@@ -883,6 +922,7 @@ export function createAnthropicLLM(
       configOrApiKey.defaultModel.thinkingBudgetTokens,
       configOrApiKey.defaultModel.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
       configOrApiKey.defaultModel.customHeaders,
+      configOrApiKey.defaultModel.vision ?? false,
     );
   }
 
@@ -895,6 +935,7 @@ export function createAnthropicLLM(
       configOrApiKey.thinkingBudgetTokens,
       configOrApiKey.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
       configOrApiKey.customHeaders,
+      configOrApiKey.vision ?? false,
     );
   }
 

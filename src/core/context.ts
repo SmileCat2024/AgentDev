@@ -16,6 +16,7 @@ import type {
   MessageMeta,
   MessageTag,
   ParsedContent,
+  ImageInput,
 } from './types.js';
 import { cloneMessages } from './message.js';
 import { ContextQuery } from './context-query.js';
@@ -187,13 +188,13 @@ export class Context {
   /**
    * 添加用户消息
    */
-  addUserMessage(content: string, turn: number): void {
+  addUserMessage(content: string, turn: number, images?: ImageInput[]): void {
     this.addMessage(
-      { role: 'user', content, turn },
+      { role: 'user', content, turn, images },
       { turn }
     );
     // 同步到 messages 数组（保持向后兼容）
-    this.messages.push({ role: 'user', content, turn });
+    this.messages.push({ role: 'user', content, turn, images });
   }
 
   /**
@@ -315,6 +316,7 @@ export class Context {
       toolCalls: message.toolCalls,
       reasoning: message.reasoning,
       thinkingBlocks: message.thinkingBlocks,
+      images: message.images,
 
       // 元数据字段
       id,

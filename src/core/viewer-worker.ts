@@ -1086,7 +1086,7 @@ class ViewerWorker {
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
-        const { text } = JSON.parse(body);
+        const { text, images } = JSON.parse(body);
         if (!text || typeof text !== 'string') {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ error: 'Missing or invalid text' }));
@@ -1108,6 +1108,7 @@ class ViewerWorker {
           id: `q-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           text,
           timestamp: Date.now(),
+          ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
         };
         session.queuedInputs.push(queuedInput);
         console.log(`[Viewer Worker] 用户输入已排队: ${agentId}, queueLength=${session.queuedInputs.length}`);

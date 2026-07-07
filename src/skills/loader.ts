@@ -57,10 +57,13 @@ function parseSkillFrontmatter(content: string, path: string): SkillMetadata | n
 }
 
 /**
- * 递归扫描目录并收集 SKILL.md 文件
- * 支持跟随符号链接目录
+ * 扫描目录下的 SKILL.md 文件（仅一级结构）
+ *
+ * 标准结构：每个一级子目录代表一个 skill，其内部直接包含 SKILL.md。
+ * 同时兼容 SKILL.md 直接放在 skills 根目录的情况。
+ * 不做递归深入。
  */
-async function collectSkillFiles(dir: string, skillsDir: string): Promise<string[]> {
+async function collectSkillFiles(dir: string): Promise<string[]> {
   const skillFiles: string[] = [];
 
   try {
@@ -69,27 +72,34 @@ async function collectSkillFiles(dir: string, skillsDir: string): Promise<string
     for (const entry of entries) {
       const fullPath = join(dir, entry.name);
 
-      // 如果是 SKILL.md 文件，直接收集
+      // SKILL.md 直接放在根目录的情况
       if (entry.isFile() && entry.name === 'SKILL.md') {
         skillFiles.push(normalize(fullPath));
+        continue;
       }
-      // 如果是目录，递归扫描（包括符号链接目录）
-      else if (entry.isDirectory() || entry.isSymbolicLink()) {
-        // 对于符号链接，需要检查它是否指向一个目录
-        let isLinkToDir = false;
-        if (entry.isSymbolicLink()) {
-          try {
-            const stats = await readFileStats(fullPath);
-            isLinkToDir = stats.isDirectory();
-          } catch {
-            // 符号链接目标不存在或无法访问，跳过
-            continue;
-          }
-        }
 
-        if (isLinkToDir || entry.isDirectory()) {
-          const subFiles = await collectSkillFiles(fullPath, skillsDir);
-          skillFiles.push(...subFiles);
+      // 一级子目录（含指向目录的符号链接）：检查其直接子项是否包含 SKILL.md
+      let isDir = entry.isDirectory();
+      if (!isDir && entry.isSymbolicLink()) {
+        try {
+          const stats = await readFileStats(fullPath);
+          isDir = stats.isDirectory();
+        } catch {
+          continue;
+        }
+      }
+
+      if (isDir) {
+        try {
+          const subEntries = await readdir(fullPath, { withFileTypes: true });
+          for (const subEntry of subEntries) {
+            if (subEntry.isFile() && subEntry.name === 'SKILL.md') {
+              skillFiles.push(normalize(join(fullPath, 'SKILL.md')));
+              break; // 每个 skill 目录只取一个 SKILL.md
+            }
+          }
+        } catch {
+          // 容错：跳过无法访问的子目录
         }
       }
     }
@@ -127,8 +137,8 @@ export async function discover(options: SkillsOptions = {}): Promise<SkillMetada
   const skills: SkillMetadata[] = [];
 
   try {
-    // 手动递归扫描目录，支持符号链接
-    const skillFiles = await collectSkillFiles(skillsDir, skillsDir);
+    // 扫描一级目录结构（每个子目录一个 skill）
+    const skillFiles = await collectSkillFiles(skillsDir);
 
     for (const fullPath of skillFiles) {
       try {

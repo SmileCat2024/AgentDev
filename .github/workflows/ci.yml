@@ -24,7 +24,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+        run: rm -f package-lock.json && npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Type check
         run: npx tsc --noEmit
@@ -42,7 +42,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+        run: rm -f package-lock.json && npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Lint
         run: npm run lint
@@ -60,7 +60,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+        run: rm -f package-lock.json && npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Build
         run: npm run build

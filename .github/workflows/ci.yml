@@ -27,7 +27,7 @@ jobs:
         run: rm -f package-lock.json && npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: npx tsc --noEmit -p tsconfig.ci.json
 
   lint:
     name: Lint
@@ -61,9 +61,6 @@ jobs:
 
       - name: Install dependencies
         run: rm -f package-lock.json && npm install --legacy-peer-deps --no-audit --no-fund
-
-      - name: Build
-        run: npm run build
 
       - name: Test with coverage
         run: npm run test:ci

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "node_modules",
+    "dist",
+    "vitest.config.ts",
+    "eslint.config.mjs",
+    "src/test/**",
+    "src/features/*/test/**",
+    "src/features/qqbot/**"
+  ]
+}

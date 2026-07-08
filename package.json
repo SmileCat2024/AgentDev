@@ -37,7 +37,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
-    "@sliverp/qqbot": "^1.5.5",
+    "@sliverp/qqbot": "^1.6.1",
     "better-sqlite3": "^12.8.0",
     "diff": "^8.0.3",
     "glob": "^13.0.6",

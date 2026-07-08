@@ -1,12 +1,17 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@sliverp/qqbot/standalone": ["./src/test/stubs/qqbot-standalone"]
+    }
+  },
+  "include": ["src"],
   "exclude": [
     "node_modules",
     "dist",
     "vitest.config.ts",
     "eslint.config.mjs",
-    "src/test/**",
-    "src/features/*/test/**",
-    "src/features/qqbot/**"
+    "src/test",
+    "src/features/*/test"
   ]
 }

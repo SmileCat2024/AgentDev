@@ -1,6 +1,12 @@
 import { defineConfig } from 'vitest/config';
+import { resolve } from 'path';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@sliverp/qqbot/standalone': resolve(__dirname, 'src/test/stubs/qqbot-standalone'),
+    },
+  },
   test: {
     include: [
       'src/**/__tests__/**/*.test.ts',

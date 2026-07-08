@@ -20,6 +20,10 @@
     "node_modules",
     "dist",
     "examples",
-    "src/test"
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "src/test/**",
+    "src/features/*/test/**",
+    "vitest.config.ts"
   ]
 }

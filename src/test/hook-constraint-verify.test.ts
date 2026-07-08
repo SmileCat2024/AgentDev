@@ -2,6 +2,7 @@
  * 反向钩子约束验证
  */
 
+import { describe, it, expect } from 'vitest';
 import { StepFinish, StepStart, Decision, getDecoratorMetadata } from '../core/hooks-decorator.js';
 import { HooksRegistry } from '../core/hooks-registry.js';
 import { CoreLifecycle } from '../core/lifecycle.js';
@@ -11,138 +12,112 @@ import type {
   StepStartContext,
 } from '../core/lifecycle.js';
 
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
-
 function applyMethodDecorator(
   decorator: (target: any, propertyKey: string, descriptor: PropertyDescriptor) => PropertyDescriptor,
   target: any,
   propertyKey: string
 ): void {
   const descriptor = Object.getOwnPropertyDescriptor(target, propertyKey);
-  assert(descriptor, `missing descriptor for ${propertyKey}`);
+  expect(descriptor).toBeDefined();
   Object.defineProperty(target, propertyKey, decorator(target, propertyKey, descriptor!));
 }
 
-async function testDecisionHookUniqueness(): Promise<void> {
-  class InvalidFeature implements AgentFeature {
-    name = 'InvalidFeature';
+describe('Reverse hook constraints', () => {
+  it('should limit decision hook to one method per feature', () => {
+    class InvalidFeature implements AgentFeature {
+      name = 'InvalidFeature';
 
-    async handler1(_ctx: StepFinishDecisionContext) {
-      return Decision.Approve;
+      async handler1(_ctx: StepFinishDecisionContext) {
+        return Decision.Approve;
+      }
+
+      async handler2(_ctx: StepFinishDecisionContext) {
+        return Decision.Deny;
+      }
     }
 
-    async handler2(_ctx: StepFinishDecisionContext) {
-      return Decision.Deny;
-    }
-  }
+    applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler1');
 
-  applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler1');
-
-  let errorMessage = '';
-  try {
-    applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler2');
-  } catch (error) {
-    errorMessage = error instanceof Error ? error.message : String(error);
-  }
-
-  assert(errorMessage.includes('只能使用一次'), 'decision hook should be limited to one method per feature');
-}
-
-async function testMultipleNotifyHooks(): Promise<void> {
-  class ValidFeature implements AgentFeature {
-    name = 'ValidFeature';
-
-    async logStart(_ctx: StepStartContext) {}
-    async trackMetrics(_ctx: StepStartContext) {}
-    async sendAnalytics(_ctx: StepStartContext) {}
-  }
-
-  applyMethodDecorator(StepStart, ValidFeature.prototype, 'logStart');
-  applyMethodDecorator(StepStart, ValidFeature.prototype, 'trackMetrics');
-  applyMethodDecorator(StepStart, ValidFeature.prototype, 'sendAnalytics');
-
-  const feature = new ValidFeature();
-  const metadata = getDecoratorMetadata(feature);
-  assert(
-    metadata.hookDecisions.get(CoreLifecycle.StepStart) === 'logStart,trackMetrics,sendAnalytics',
-    'notify hooks should allow multiple methods in declaration order'
-  );
-}
-
-async function testRegistryExecutesMultipleHooks(): Promise<void> {
-  const registry = new HooksRegistry();
-  const executionOrder: string[] = [];
-
-  class MultiHookFeature implements AgentFeature {
-    name = 'MultiHookFeature';
-
-    async firstHook(_ctx: StepStartContext) {
-      executionOrder.push('first');
-    }
-
-    async secondHook(_ctx: StepStartContext) {
-      executionOrder.push('second');
-    }
-
-    async thirdHook(_ctx: StepStartContext) {
-      executionOrder.push('third');
-    }
-  }
-
-  applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'firstHook');
-  applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'secondHook');
-  applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'thirdHook');
-
-  const feature = new MultiHookFeature();
-  registry.collectFromFeature(feature);
-
-  const hooks = registry.get(CoreLifecycle.StepStart);
-  assert(hooks.length === 3, 'registry should collect all notify hook methods');
-  assert(
-    hooks.map(hook => hook.methodName).join(',') === 'firstHook,secondHook,thirdHook',
-    'registry should preserve hook method names'
-  );
-
-  await registry.executeVoid(CoreLifecycle.StepStart, {
-    step: 0,
-    callIndex: 0,
-    input: 'test',
-    context: {} as any,
+    expect(() => {
+      applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler2');
+    }).toThrow(/只能使用一次/);
   });
 
-  assert(
-    executionOrder.join(',') === 'first,second,third',
-    'registry should execute multiple notify hooks in order'
-  );
-}
+  it('should allow multiple notify hooks in declaration order', () => {
+    class ValidFeature implements AgentFeature {
+      name = 'ValidFeature';
 
-async function testMixedHookMetadata(): Promise<void> {
-  class MixedFeature implements AgentFeature {
-    name = 'MixedFeature';
-
-    async beforeStep(_ctx: StepStartContext) {}
-    async afterStep(_ctx: StepFinishDecisionContext) {
-      return Decision.Approve;
+      async logStart(_ctx: StepStartContext) {}
+      async trackMetrics(_ctx: StepStartContext) {}
+      async sendAnalytics(_ctx: StepStartContext) {}
     }
-    async logStep(_ctx: StepStartContext) {}
-  }
 
-  applyMethodDecorator(StepStart, MixedFeature.prototype, 'beforeStep');
-  applyMethodDecorator(StepFinish, MixedFeature.prototype, 'afterStep');
-  applyMethodDecorator(StepStart, MixedFeature.prototype, 'logStep');
+    applyMethodDecorator(StepStart, ValidFeature.prototype, 'logStart');
+    applyMethodDecorator(StepStart, ValidFeature.prototype, 'trackMetrics');
+    applyMethodDecorator(StepStart, ValidFeature.prototype, 'sendAnalytics');
 
-  const metadata = getDecoratorMetadata(new MixedFeature());
-  assert(metadata.hookDecisions.get(CoreLifecycle.StepStart) === 'beforeStep,logStep', 'mixed metadata should keep all notify hooks');
-  assert(metadata.hookDecisions.get(CoreLifecycle.StepFinish) === 'afterStep', 'mixed metadata should keep decision hook');
-}
+    const metadata = getDecoratorMetadata(new ValidFeature());
+    expect(metadata.hookDecisions.get(CoreLifecycle.StepStart)).toBe('logStart,trackMetrics,sendAnalytics');
+  });
 
-await testDecisionHookUniqueness();
-await testMultipleNotifyHooks();
-await testRegistryExecutesMultipleHooks();
-await testMixedHookMetadata();
+  it('should execute multiple notify hooks in order via registry', async () => {
+    const registry = new HooksRegistry();
+    const executionOrder: string[] = [];
 
-console.log('Hook constraint tests passed');
+    class MultiHookFeature implements AgentFeature {
+      name = 'MultiHookFeature';
+
+      async firstHook(_ctx: StepStartContext) {
+        executionOrder.push('first');
+      }
+
+      async secondHook(_ctx: StepStartContext) {
+        executionOrder.push('second');
+      }
+
+      async thirdHook(_ctx: StepStartContext) {
+        executionOrder.push('third');
+      }
+    }
+
+    applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'firstHook');
+    applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'secondHook');
+    applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'thirdHook');
+
+    const feature = new MultiHookFeature();
+    registry.collectFromFeature(feature);
+
+    const hooks = registry.get(CoreLifecycle.StepStart);
+    expect(hooks).toHaveLength(3);
+    expect(hooks.map(hook => hook.methodName).join(',')).toBe('firstHook,secondHook,thirdHook');
+
+    await registry.executeVoid(CoreLifecycle.StepStart, {
+      step: 0,
+      callIndex: 0,
+      input: 'test',
+      context: {} as any,
+    });
+
+    expect(executionOrder.join(',')).toBe('first,second,third');
+  });
+
+  it('should keep notify and decision hooks separate in mixed metadata', () => {
+    class MixedFeature implements AgentFeature {
+      name = 'MixedFeature';
+
+      async beforeStep(_ctx: StepStartContext) {}
+      async afterStep(_ctx: StepFinishDecisionContext) {
+        return Decision.Approve;
+      }
+      async logStep(_ctx: StepStartContext) {}
+    }
+
+    applyMethodDecorator(StepStart, MixedFeature.prototype, 'beforeStep');
+    applyMethodDecorator(StepFinish, MixedFeature.prototype, 'afterStep');
+    applyMethodDecorator(StepStart, MixedFeature.prototype, 'logStep');
+
+    const metadata = getDecoratorMetadata(new MixedFeature());
+    expect(metadata.hookDecisions.get(CoreLifecycle.StepStart)).toBe('beforeStep,logStep');
+    expect(metadata.hookDecisions.get(CoreLifecycle.StepFinish)).toBe('afterStep');
+  });
+});

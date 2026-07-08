@@ -113,7 +113,7 @@ export function rewriteWindowsNullRedirect(command: string): string {
  * wrapSingleQuote("echo it's") → "'echo it'\"'\"'s'"
  */
 function escapeForSingleQuote(str: string): string {
-  return str.replace(/'/g, `'\"'\"'`);
+  return str.replace(/'/g, `'"'"'`);
 }
 
 function wrapSingleQuote(str: string): string {

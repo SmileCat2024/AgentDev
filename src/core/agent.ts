@@ -14,7 +14,7 @@ import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, Usage
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
-import { Context, ContextSnapshot } from './context.js';
+import { Context, type ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';

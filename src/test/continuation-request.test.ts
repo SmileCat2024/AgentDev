@@ -1,25 +1,10 @@
 /**
  * Continuation Request 测试
- *
- * 验证：
- * 1. 控制工具执行后通过 context.registerContinuationRequest 登记请求
- * 2. ReAct 循环在工具结果闭合后停止，不再请求 LLM
- * 3. onCall 正常返回（不抛异常）
- * 4. consumeContinuationRequest 返回请求
- * 5. 重复消费返回 null（一次性消费）
- * 6. 下一次 onCall 自动清理上次遗留的请求
- * 7. 普通 onCall（无 continuation）行为不变
  */
 
+import { describe, it, expect } from 'vitest';
 import { Agent } from '../core/agent.js';
 import type { LLMClient, LLMResponse, Message, Tool } from '../core/types.js';
-import type { CallContinuationRequest } from '../core/continuation.js';
-
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
 
 // ========== Mock LLM ==========
 
@@ -31,7 +16,6 @@ class CheckpointLLM implements LLMClient {
     const hasToolResults = messages.some(m => m.role === 'tool');
 
     if (!hasToolResults) {
-      // Step 0: 调用 checkpoint 工具
       return {
         content: 'Creating a checkpoint.',
         toolCalls: [
@@ -40,7 +24,6 @@ class CheckpointLLM implements LLMClient {
       };
     }
 
-    // 不应该执行到这里（continuation request 应让循环停止）
     return { content: 'should not reach here' };
   }
 }
@@ -73,217 +56,145 @@ class NormalCompletionLLM implements LLMClient {
 
 // ========== 测试用例 ==========
 
-async function testCheckpointContinuation(): Promise<void> {
-  const llm = new CheckpointLLM();
-  let registerCalled = false;
-
-  const tools: Tool[] = [
-    {
-      name: 'checkpoint',
-      description: 'Create a checkpoint',
-      executionMode: 'exclusive',
-      execute: async (args: any, context?: any) => {
-        // 通过注入的 registerContinuationRequest 登记 continuation
-        assert(typeof context?.registerContinuationRequest === 'function',
-          'registerContinuationRequest should be injected into tool context');
-        context.registerContinuationRequest({
-          kind: 'checkpoint',
-          checkpointId: args.checkpointId,
-        });
-        registerCalled = true;
-        return `Checkpoint "${args.checkpointId}" has been established.`;
-      },
+const checkpointTool: Tool[] = [
+  {
+    name: 'checkpoint',
+    description: 'Create a checkpoint',
+    executionMode: 'exclusive',
+    execute: async (args: any, context?: any) => {
+      context?.registerContinuationRequest({
+        kind: 'checkpoint',
+        checkpointId: args.checkpointId,
+      });
+      return `Checkpoint "${args.checkpointId}" has been established.`;
     },
-  ];
+  },
+];
 
-  const agent = new (class extends Agent {
-    constructor() {
-      super({ llm, maxTurns: 5, name: 'CheckpointAgent', tools });
-    }
-  })();
+describe('Continuation Request', () => {
+  it('should register continuation, stop LLM loop, and consume once', async () => {
+    const llm = new CheckpointLLM();
 
-  const response = await agent.onCall('Do something with checkpoint');
+    const agent = new (class extends Agent {
+      constructor() {
+        super({ llm, maxTurns: 5, name: 'CheckpointAgent', tools: checkpointTool });
+      }
+    })();
 
-  // 验证：工具执行了 registerContinuationRequest
-  assert(registerCalled, 'registerContinuationRequest should have been called');
+    const response = await agent.onCall('Do something with checkpoint');
 
-  // 验证：LLM 只被调用了一次（工具结果闭合后循环停止）
-  assert(llm.chatCount === 1, `LLM should be called exactly once, got ${llm.chatCount}`);
+    expect(llm.chatCount).toBe(1);
+    expect(typeof response).toBe('string');
 
-  // 验证：onCall 正常返回
-  assert(typeof response === 'string', 'onCall should return a string');
+    const request = agent.consumeContinuationRequest();
+    expect(request).not.toBeNull();
+    expect(request!.kind).toBe('checkpoint');
+    expect((request as any).checkpointId).toBe('cp-test');
 
-  // 验证：consumeContinuationRequest 返回请求
-  const request = agent.consumeContinuationRequest();
-  assert(request !== null, 'continuation request should be available');
-  assert(request!.kind === 'checkpoint', 'request kind should be checkpoint');
-  assert((request as any).checkpointId === 'cp-test', 'checkpointId should match');
+    expect(agent.consumeContinuationRequest()).toBeNull();
+  });
 
-  // 验证：重复消费返回 null
-  const secondConsume = agent.consumeContinuationRequest();
-  assert(secondConsume === null, 'second consume should return null');
+  it('should register rollback continuation with summary', async () => {
+    const llm = new RollbackLLM();
 
-  console.log('[PASS] Checkpoint continuation: registered, LLM stopped, consumed once');
-}
-
-async function testRollbackContinuation(): Promise<void> {
-  const llm = new RollbackLLM();
-
-  const tools: Tool[] = [
-    {
-      name: 'rollback_to_checkpoint',
-      description: 'Rollback to checkpoint',
-      executionMode: 'exclusive',
-      execute: async (args: any, context?: any) => {
-        context?.registerContinuationRequest({
-          kind: 'rollback',
-          checkpointId: args.checkpointId,
-          summary: args.summary,
-        });
-        return 'Rollback requested.';
-      },
-    },
-  ];
-
-  const agent = new (class extends Agent {
-    constructor() {
-      super({ llm, maxTurns: 5, name: 'RollbackAgent', tools });
-    }
-  })();
-
-  await agent.onCall('Try and rollback');
-
-  const request = agent.consumeContinuationRequest();
-  assert(request !== null, 'rollback continuation request should be available');
-  assert(request!.kind === 'rollback', 'request kind should be rollback');
-  assert((request as any).checkpointId === 'cp-test', 'checkpointId should match');
-  assert((request as any).summary === 'tried A, failed because B', 'summary should match');
-
-  console.log('[PASS] Rollback continuation: registered with summary, consumed');
-}
-
-async function testStaleRequestCleared(): Promise<void> {
-  // 测试：onCall 开始时自动清理上次遗留的 continuation request
-  const checkpointLLM = new CheckpointLLM();
-  const normalLLM = new NormalCompletionLLM();
-
-  const tools: Tool[] = [
-    {
-      name: 'checkpoint',
-      description: 'Create a checkpoint',
-      executionMode: 'exclusive',
-      execute: async (args: any, context?: any) => {
-        context?.registerContinuationRequest({
-          kind: 'checkpoint',
-          checkpointId: args.checkpointId,
-        });
-        return 'Checkpoint created.';
-      },
-    },
-  ];
-
-  // Agent 1: 注册 continuation 但不消费（模拟宿主忘记消费）
-  const agent1 = new (class extends Agent {
-    constructor() {
-      super({ llm: checkpointLLM, maxTurns: 5, name: 'StaleAgent', tools });
-    }
-  })();
-
-  await agent1.onCall('First call with checkpoint');
-  // 不消费！留一个 stale request
-
-  // Agent 2: 普通调用（无 continuation），不应看到 agent1 的 request
-  const agent2 = new (class extends Agent {
-    constructor() {
-      super({ llm: normalLLM, maxTurns: 5, name: 'NormalAgent' });
-    }
-  })();
-
-  await agent2.onCall('Normal call');
-  assert(agent2.consumeContinuationRequest() === null, 'normal call should not have continuation');
-
-  // Agent 3: 使用 checkpoint LLM，第一次 onCall 注册 continuation
-  // 然后第二次 onCall（用不同 LLM）应清理掉旧的
-  const checkpointLLM2 = new CheckpointLLM();
-  const agent3 = new (class extends Agent {
-    private llmIdx = 0;
-    constructor() {
-      super({ llm: checkpointLLM2, maxTurns: 5, name: 'StaleAgent3', tools });
-    }
-  })();
-
-  await agent3.onCall('Register checkpoint');
-  // 不消费！现在 _continuationRequest 有值
-
-  // 第二次 onCall 开始时会清理旧的 _continuationRequest
-  // 但 checkpointLLM2 已经被调用过一次，第二次调用时消息中已有 tool result，
-  // 所以不会再次调用 checkpoint 工具。用 NormalCompletionLLM 替换。
-  (agent3 as any).llm = normalLLM;
-  await agent3.onCall('Normal follow-up');
-  assert(agent3.consumeContinuationRequest() === null,
-    'second onCall should clear stale continuation and not register new one');
-
-  console.log('[PASS] Stale request handling: cleared at onCall start');
-}
-
-async function testDoubleRegisterThrows(): Promise<void> {
-  const llm = new CheckpointLLM();
-
-  const tools: Tool[] = [
-    {
-      name: 'checkpoint',
-      description: 'Create a checkpoint',
-      executionMode: 'exclusive',
-      execute: async (args: any, context?: any) => {
-        // 第一次注册
-        context?.registerContinuationRequest({
-          kind: 'checkpoint',
-          checkpointId: 'cp-1',
-        });
-        // 第二次注册应该抛异常
-        try {
+    const tools: Tool[] = [
+      {
+        name: 'rollback_to_checkpoint',
+        description: 'Rollback to checkpoint',
+        executionMode: 'exclusive',
+        execute: async (args: any, context?: any) => {
           context?.registerContinuationRequest({
-            kind: 'checkpoint',
-            checkpointId: 'cp-2',
+            kind: 'rollback',
+            checkpointId: args.checkpointId,
+            summary: args.summary,
           });
-          throw new Error('should have thrown on double registration');
-        } catch (e) {
-          assert(
-            (e as Error).message.includes('already registered'),
-            'should throw "already registered" error'
-          );
-        }
-        return 'Checkpoint created.';
+          return 'Rollback requested.';
+        },
       },
-    },
-  ];
+    ];
 
-  const agent = new (class extends Agent {
-    constructor() {
-      super({ llm, maxTurns: 5, name: 'DoubleRegisterAgent', tools });
-    }
-  })();
+    const agent = new (class extends Agent {
+      constructor() {
+        super({ llm, maxTurns: 5, name: 'RollbackAgent', tools });
+      }
+    })();
 
-  await agent.onCall('Test double register');
+    await agent.onCall('Try and rollback');
 
-  const request = agent.consumeContinuationRequest();
-  assert(request !== null, 'first registration should succeed');
-  assert((request as any).checkpointId === 'cp-1', 'should retain first request');
+    const request = agent.consumeContinuationRequest();
+    expect(request).not.toBeNull();
+    expect(request!.kind).toBe('rollback');
+    expect((request as any).checkpointId).toBe('cp-test');
+    expect((request as any).summary).toBe('tried A, failed because B');
+  });
 
-  console.log('[PASS] Double register: throws, first request retained');
-}
+  it('should clear stale request at onCall start', async () => {
+    const checkpointLLM = new CheckpointLLM();
+    const normalLLM = new NormalCompletionLLM();
 
-async function main(): Promise<void> {
-  await testCheckpointContinuation();
-  await testRollbackContinuation();
-  await testStaleRequestCleared();
-  await testDoubleRegisterThrows();
+    // Agent with stale request (not consumed)
+    const agent1 = new (class extends Agent {
+      constructor() {
+        super({ llm: checkpointLLM, maxTurns: 5, name: 'StaleAgent', tools: checkpointTool });
+      }
+    })();
 
-  console.log('\nAll continuation request tests passed.');
-}
+    await agent1.onCall('First call with checkpoint');
+    // Don't consume — leaves stale request
 
-main().catch(error => {
-  const message = error instanceof Error ? error.stack || error.message : String(error);
-  console.error(`[FAIL] ${message}`);
-  process.exitCode = 1;
+    // Different agent, normal call — should have no continuation
+    const agent2 = new (class extends Agent {
+      constructor() {
+        super({ llm: normalLLM, maxTurns: 5, name: 'NormalAgent' });
+      }
+    })();
+
+    await agent2.onCall('Normal call');
+    expect(agent2.consumeContinuationRequest()).toBeNull();
+
+    // Same agent: second onCall clears stale request
+    const checkpointLLM2 = new CheckpointLLM();
+    const agent3 = new (class extends Agent {
+      constructor() {
+        super({ llm: checkpointLLM2, maxTurns: 5, name: 'StaleAgent3', tools: checkpointTool });
+      }
+    })();
+
+    await agent3.onCall('Register checkpoint');
+
+    (agent3 as any).llm = normalLLM;
+    await agent3.onCall('Normal follow-up');
+    expect(agent3.consumeContinuationRequest()).toBeNull();
+  });
+
+  it('should throw on double registration and retain first request', async () => {
+    const llm = new CheckpointLLM();
+
+    const tools: Tool[] = [
+      {
+        name: 'checkpoint',
+        description: 'Create a checkpoint',
+        executionMode: 'exclusive',
+        execute: async (_args: any, context?: any) => {
+          context?.registerContinuationRequest({ kind: 'checkpoint', checkpointId: 'cp-1' });
+          expect(() => {
+            context?.registerContinuationRequest({ kind: 'checkpoint', checkpointId: 'cp-2' });
+          }).toThrow(/already registered/);
+          return 'Checkpoint created.';
+        },
+      },
+    ];
+
+    const agent = new (class extends Agent {
+      constructor() {
+        super({ llm, maxTurns: 5, name: 'DoubleRegisterAgent', tools });
+      }
+    })();
+
+    await agent.onCall('Test double register');
+
+    const request = agent.consumeContinuationRequest();
+    expect(request).not.toBeNull();
+    expect((request as any).checkpointId).toBe('cp-1');
+  });
 });

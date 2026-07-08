@@ -839,7 +839,7 @@ function finalizeToolCalls(pendingToolUses: Map<number, PendingToolUse>): ToolCa
 }
 
 function stripBOM(str: string): string {
-  // eslint-disable-next-line no-control-regex
+  // eslint-disable-next-line no-irregular-whitespace -- BOM 字符 (U+FEFF) 是正则匹配目标
   return str.replace(/^﻿/, '');
 }
 

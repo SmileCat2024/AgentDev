@@ -1,15 +1,10 @@
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { createTool } from '../core/tool.js';
 import { Agent } from '../core/agent.js';
 import type { AgentFeature } from '../core/feature.js';
 import type { LLMClient, LLMResponse, Message, Tool } from '../core/types.js';
 import { DebugHub } from '../core/debug-hub.js';
 import { ViewerWorker } from '../core/viewer-worker.js';
-
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
 
 function getTestUdsPath(): string {
   if (process.platform === 'win32') {
@@ -57,15 +52,31 @@ class InitiateDisableAgent extends Agent {
   }
 }
 
-async function main(): Promise<void> {
-  const originalUdsPath = process.env.AGENTDEV_UDS_PATH;
+describe('Debugger hub tools sync', () => {
+  let worker: ViewerWorker;
+  let originalUdsPath: string | undefined;
   const udsPath = getTestUdsPath();
-  process.env.AGENTDEV_UDS_PATH = udsPath;
 
-  const worker = new ViewerWorker(0, false, udsPath);
-  await worker.start();
+  beforeAll(() => {
+    originalUdsPath = process.env.AGENTDEV_UDS_PATH;
+    process.env.AGENTDEV_UDS_PATH = udsPath;
+  });
 
-  try {
+  afterAll(async () => {
+    DebugHub.getInstance().stop();
+    await worker.stop();
+
+    if (originalUdsPath === undefined) {
+      delete process.env.AGENTDEV_UDS_PATH;
+    } else {
+      process.env.AGENTDEV_UDS_PATH = originalUdsPath;
+    }
+  });
+
+  it('should sync tool registry after feature disable', async () => {
+    worker = new ViewerWorker(0, false, udsPath);
+    await worker.start();
+
     const agent = new TestAgent({
       llm: new NoopLLM(),
       name: 'ToolsSyncAgent',
@@ -73,8 +84,8 @@ async function main(): Promise<void> {
 
     await agent.withViewer('ToolsSyncAgent', 0, false);
 
-    const agentId = (agent as any).agentId as string | undefined;
-    assert(agentId, 'agent should be registered in debugger');
+    const agentId = (agent as any).agentId as string;
+    expect(agentId).toBeDefined();
 
     await waitFor(() => {
       const session = (worker as any).agentSessions.get(agentId);
@@ -95,10 +106,10 @@ async function main(): Promise<void> {
         );
     });
 
-    console.log('[PASS] debugger hub tool registry stays in sync after feature disable');
-
     await agent.dispose();
+  });
 
+  it('should reflect pre-disabled tools before the first call', async () => {
     const preDisabledAgent = new TestAgent({
       llm: new NoopLLM(),
       name: 'PreDisabledAgent',
@@ -108,8 +119,8 @@ async function main(): Promise<void> {
 
     await preDisabledAgent.withViewer('PreDisabledAgent', 0, false);
 
-    const preDisabledAgentId = (preDisabledAgent as any).agentId as string | undefined;
-    assert(preDisabledAgentId, 'pre-disabled agent should be registered in debugger');
+    const preDisabledAgentId = (preDisabledAgent as any).agentId as string;
+    expect(preDisabledAgentId).toBeDefined();
 
     await waitFor(() => {
       const session = (worker as any).agentSessions.get(preDisabledAgentId);
@@ -123,9 +134,10 @@ async function main(): Promise<void> {
         );
     });
 
-    console.log('[PASS] debugger snapshot reflects pre-disabled tools before the first call');
     await preDisabledAgent.dispose();
+  });
 
+  it('should sync tool registry after onInitiate disables tools', async () => {
     const initiateAgent = new InitiateDisableAgent({
       llm: new NoopLLM(),
       name: 'InitiateDisableAgent',
@@ -133,8 +145,8 @@ async function main(): Promise<void> {
 
     await initiateAgent.withViewer('InitiateDisableAgent', 0, false);
 
-    const initiateAgentId = (initiateAgent as any).agentId as string | undefined;
-    assert(initiateAgentId, 'initiate-disable agent should be registered in debugger');
+    const initiateAgentId = (initiateAgent as any).agentId as string;
+    expect(initiateAgentId).toBeDefined();
 
     await waitFor(() => {
       const session = (worker as any).agentSessions.get(initiateAgentId);
@@ -155,22 +167,6 @@ async function main(): Promise<void> {
         );
     });
 
-    console.log('[PASS] debugger hub tool registry stays in sync after onInitiate disables tools');
     await initiateAgent.dispose();
-  } finally {
-    DebugHub.getInstance().stop();
-    await worker.stop();
-
-    if (originalUdsPath === undefined) {
-      delete process.env.AGENTDEV_UDS_PATH;
-    } else {
-      process.env.AGENTDEV_UDS_PATH = originalUdsPath;
-    }
-  }
-}
-
-main().catch(error => {
-  const message = error instanceof Error ? error.stack || error.message : String(error);
-  console.error(`[FAIL] ${message}`);
-  process.exitCode = 1;
+  });
 });

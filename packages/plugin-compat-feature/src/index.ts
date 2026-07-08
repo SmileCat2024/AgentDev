@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { resolve } from 'path';
 import type { AgentFeature, FeatureInitContext, FeatureContext } from 'agentdev';
 import type { Tool } from 'agentdev';
-import { ToolRegistry } from 'agentdev';
+import { type ToolRegistry } from 'agentdev';
 import type {
   OpenClawPluginManifest,
   PluginCompatConfig,

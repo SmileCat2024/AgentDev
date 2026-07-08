@@ -1,13 +1,8 @@
+import { describe, it, expect } from 'vitest';
 import { Agent } from '../core/agent.js';
 import type { AgentFeature } from '../core/feature.js';
-import type { LLMClient, LLMResponse, Message, Tool, ToolCall } from '../core/types.js';
+import type { LLMClient, LLMResponse, Message, Tool } from '../core/types.js';
 import type { ToolResult } from '../core/lifecycle.js';
-
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
 
 class RollbackLLM implements LLMClient {
   async chat(messages: Message[], _tools: Tool[]): Promise<LLMResponse> {
@@ -92,27 +87,26 @@ class RollbackAgent extends Agent {
   }
 }
 
-async function testStepCheckpointRollback(): Promise<void> {
-  const feature = new RollbackFeature();
-  const agent = new RollbackAgent(feature);
+describe('Step checkpoint rollback', () => {
+  it('should restore feature state and surface the error after tool failure', async () => {
+    const feature = new RollbackFeature();
+    const agent = new RollbackAgent(feature);
 
-  const result = await agent.onCall('请测试 step rollback');
+    const result = await agent.onCall('请测试 step rollback');
 
-  assert(result.includes('forced failure after tool execution'), 'agent should surface the forced failure');
-  assert(feature.counter === 0, 'feature state should be restored after rollback');
-  assert(feature.beforeRollbackCount === 0, 'beforeRollback state mutations should not leak after restore');
-  assert(feature.afterRollbackCount === 1, 'afterRollback should run after restore');
+    expect(result).toContain('forced failure after tool execution');
+    expect(feature.counter).toBe(0);
+    expect(feature.beforeRollbackCount).toBe(0);
+    expect(feature.afterRollbackCount).toBe(1);
 
-  const messages = agent.getContext().getAll();
-  assert(messages.length === 2, 'rollback should remove step messages and keep the surfaced error response');
-  assert(messages[0]?.role === 'user', 'the pre-step user message should be preserved');
-  assert(messages[1]?.role === 'assistant', 'the surfaced error response should be recorded');
-  assert(messages[1]?.content.includes('forced failure after tool execution'), 'the recorded error should mention the failure');
+    const messages = agent.getContext().getAll();
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.role).toBe('user');
+    expect(messages[1]?.role).toBe('assistant');
+    expect(messages[1]?.content).toContain('forced failure after tool execution');
 
-  const query = agent.getContext().query();
-  assert(query.byRole('user').count() === 1, 'context query should remain usable after rollback restore');
-  assert(agent.getContext().query().byRole('assistant').count() === 1, 'only the surfaced error assistant message should remain after rollback');
-}
-
-await testStepCheckpointRollback();
-console.log('Rollback checkpoint tests passed');
+    const query = agent.getContext().query();
+    expect(query.byRole('user').count()).toBe(1);
+    expect(agent.getContext().query().byRole('assistant').count()).toBe(1);
+  });
+});

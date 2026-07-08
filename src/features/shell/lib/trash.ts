@@ -19,7 +19,7 @@ import {
   throwFileNotFoundError,
   throwPermissionDeniedError,
 } from './errors.js';
-import { ErrorCode, Mode, TrashResult, SafeRmOptions, SafeRmResult } from './types.js';
+import { ErrorCode, Mode, TrashResult, type SafeRmOptions, type SafeRmResult } from './types.js';
 
 /**
  * SafeRm 类 - 安全删除核心

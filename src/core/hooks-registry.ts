@@ -5,7 +5,7 @@
  */
 
 import type { AgentFeature } from './feature.js';
-import { CoreLifecycle, Decision, DecisionResult, normalizeDecision } from './lifecycle.js';
+import { CoreLifecycle, Decision, type DecisionResult, normalizeDecision } from './lifecycle.js';
 import { getDecoratorMetadata } from './hooks-decorator.js';
 import type { DecisionContext, HookLifecycleSnapshot } from './types.js';
 import { createLogger, runWithLogScope } from './logging.js';

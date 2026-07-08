@@ -5,11 +5,11 @@
  * 支持通过 UDS（Unix Domain Socket）或 Windows Named Pipe 接收来自多进程的连接
  */
 
-import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { createServer as createNetServer, Server, Socket } from 'net';
+import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, AgentSession, DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,

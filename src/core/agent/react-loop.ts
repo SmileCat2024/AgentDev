@@ -123,7 +123,7 @@ export class ReActLoopRunner {
 
           // 执行 LLM 调用（空响应时 step 内重试）
           const MAX_EMPTY_RETRIES = 5;
-          let response: LLMResponse;
+          let response!: LLMResponse;
           let hasToolCalls = false;
           for (let emptyAttempt = 0; emptyAttempt <= MAX_EMPTY_RETRIES; emptyAttempt++) {
             const llmStartTime = Date.now();
@@ -286,8 +286,11 @@ export class ReActLoopRunner {
 
           // 真正结束
             logger.info('Step completed call naturally', { step });
-            return { completed: true, finalResponse: response.content, turns: step + 1, finishReason: 'completed' };
+             return { completed: true, finalResponse: response.content, turns: step + 1, finishReason: 'completed' as const };
           }
+
+          // hasToolCalls 已确认，提取非空引用
+          const toolCalls = response.toolCalls!;
 
         // 执行工具
           let waitCalled = false;
@@ -296,8 +299,8 @@ export class ReActLoopRunner {
 
           // ========== Exclusive batch pre-check ==========
           // 如果批次中包含 exclusive 工具且不止一个工具调用，整批拒绝执行
-          if (response.toolCalls.length > 1) {
-            const exclusiveNames = response.toolCalls
+          if (toolCalls.length > 1) {
+            const exclusiveNames = toolCalls
               .filter(call => this.agent.tools.isExclusive(call.name))
               .map(call => call.name);
 
@@ -308,7 +311,7 @@ export class ReActLoopRunner {
                 ? `The exclusive tool [${namesStr}] must be the only tool call in this assistant turn. No tool in this batch was executed. Retry with only ${namesStr}.`
                 : `Multiple exclusive tools [${namesStr}] were called together. Each exclusive tool must be the only tool call in its turn. No tool in this batch was executed. Retry with a single exclusive tool.`;
 
-              for (const call of response.toolCalls) {
+              for (const call of toolCalls) {
                 const failResult: ToolExecResult = {
                   success: false,
                   result: { error: errorMsg },
@@ -316,7 +319,7 @@ export class ReActLoopRunner {
                 context.addToolMessage(call, failResult, callIndex);
               }
               this.pushToDebug(context.getAll());
-              logger.info('Exclusive batch violation, all tools rejected', { step, exclusiveNames, batchSize: response.toolCalls.length });
+              logger.info('Exclusive batch violation, all tools rejected', { step, exclusiveNames, batchSize: toolCalls.length });
             }
           }
 
@@ -325,10 +328,10 @@ export class ReActLoopRunner {
 
           if (!batchRejected) {
             // ========== 分流 ==========
-            const parallelCalls = response.toolCalls.filter(
+            const parallelCalls = toolCalls.filter(
               call => this.agent.tools.isParallelizable(call.name)
             );
-            const serialCalls = response.toolCalls.filter(
+            const serialCalls = toolCalls.filter(
               call => !this.agent.tools.isParallelizable(call.name)
             );
 
@@ -391,7 +394,7 @@ export class ReActLoopRunner {
             }
 
             // ========== 统一注入：按原始顺序写入 context ==========
-            for (const call of response.toolCalls) {
+            for (const call of toolCalls) {
               const result = resultsMap.get(call.id);
               if (result) {
                 context.addToolMessage(call, result, callIndex);
@@ -430,7 +433,7 @@ export class ReActLoopRunner {
             finalResponse = lastContent?.content ?? response.content ?? '';
             completed = false;
             logger.info('Call ending for continuation request', { step, kind: continuationRequest.kind });
-            return { completed: false, finalResponse, turns: step + 1, continuationRequest, finishReason: 'continuation' };
+            return { completed: false, finalResponse, turns: step + 1, continuationRequest, finishReason: 'continuation' as const };
           }
 
           // 推送消息到 DebugHub

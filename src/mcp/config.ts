@@ -90,7 +90,7 @@ function resolveMCPConfigInput(
   rootDir: string = cwd()
 ): { configPath: string; fallbackServerId: string } {
   let configPath: string;
-  let fallbackServerId = 'default';
+  let fallbackServerId: string;
 
   if (isAbsolute(input)) {
     configPath = input;

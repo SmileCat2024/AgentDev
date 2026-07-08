@@ -12,7 +12,7 @@
  * - 直观：API 简单明了
  */
 
-import { connect, Socket } from 'net';
+import { connect, type Socket } from 'net';
 import {
   getDefaultUDSPath,
   type Message,
@@ -784,7 +784,7 @@ export class DebugHub {
         break;
 
       // 处理用户输入响应
-      case 'input-response':
+      case 'input-response': {
         const resolver = this.pendingInputRequests.get(msg.requestId);
         if (resolver) {
           resolver(msg.response ?? {
@@ -796,6 +796,7 @@ export class DebugHub {
           console.warn(`[DebugHub] 未知输入响应: ${msg.requestId}`);
         }
         break;
+      }
 
       case 'queue-input':
         if (this.queuedInputHandler && msg.input?.id && typeof msg.input?.text === 'string') {
@@ -806,7 +807,7 @@ export class DebugHub {
         break;
 
       // 处理中断信号
-      case 'interrupt-agent':
+      case 'interrupt-agent': {
         console.log(`[DebugHub] 收到中断信号: agentId=${msg.agentId}, knownAgents=[${[...this.agents.keys()].join(',')}]`);
         const agentData = this.agents.get(msg.agentId);
         console.log(`[DebugHub] agentData found=${!!agentData}, hasAgent=${!!agentData?.agent}, hasInterrupt=${typeof (agentData?.agent as any)?.interrupt}`);
@@ -822,6 +823,7 @@ export class DebugHub {
           });
         }
         break;
+      }
     }
   }
 

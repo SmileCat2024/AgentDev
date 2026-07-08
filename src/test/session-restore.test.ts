@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 import { mkdtemp } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -5,12 +6,6 @@ import { Agent } from '../core/agent.js';
 import { FileSessionStore } from '../core/session-store.js';
 import type { AgentFeature } from '../core/feature.js';
 import type { LLMClient, LLMResponse, Message, Tool } from '../core/types.js';
-
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
 
 class ResumeLLM implements LLMClient {
   async chat(messages: Message[], _tools: Tool[]): Promise<LLMResponse> {
@@ -22,13 +17,7 @@ class ResumeLLM implements LLMClient {
     if (lastUser === 'first' && !hasMutateResult) {
       return {
         content: '先执行一次状态变更。',
-        toolCalls: [
-          {
-            id: 'tool_resume_1',
-            name: 'mutate_state',
-            arguments: {},
-          },
-        ],
+        toolCalls: [{ id: 'tool_resume_1', name: 'mutate_state', arguments: {} }],
       };
     }
 
@@ -86,39 +75,34 @@ class SessionAgent extends Agent {
     });
     this.use(sessionFeature);
   }
-
-  getFeatureState(): SessionFeature {
-    return this.sessionFeature;
-  }
 }
 
-async function testSessionRestore(): Promise<void> {
-  const sessionDir = await mkdtemp(join(tmpdir(), 'agentdev-session-'));
-  const store = new FileSessionStore(sessionDir);
-  const sessionId = 'restore-demo';
+describe('Session restore', () => {
+  it('should restore context and feature state across processes', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'agentdev-session-'));
+    const store = new FileSessionStore(sessionDir);
+    const sessionId = 'restore-demo';
 
-  const agent1Feature = new SessionFeature();
-  const agent1 = new SessionAgent(agent1Feature);
-  const firstResult = await agent1.onCall('first');
+    const agent1Feature = new SessionFeature();
+    const agent1 = new SessionAgent(agent1Feature);
+    const firstResult = await agent1.onCall('first');
 
-  assert(firstResult === 'first done', 'first call should finish naturally');
-  assert(agent1Feature.counter === 1, 'first session should mutate feature state');
+    expect(firstResult).toBe('first done');
+    expect(agent1Feature.counter).toBe(1);
 
-  await agent1.saveSession(sessionId, store);
+    await agent1.saveSession(sessionId, store);
 
-  const agent2Feature = new SessionFeature();
-  const agent2 = new SessionAgent(agent2Feature);
-  await agent2.loadSession(sessionId, store);
+    const agent2Feature = new SessionFeature();
+    const agent2 = new SessionAgent(agent2Feature);
+    await agent2.loadSession(sessionId, store);
 
-  assert(agent2Feature.counter === 1, 'restored session should recover feature state');
-  assert(agent2Feature.initiateCount === 1, 'feature resources should be initialized exactly once on restore');
-  assert(agent2.getContext().getAll().filter(message => message.role === 'system').length === 1, 'restored context should preserve a single system message');
+    expect(agent2Feature.counter).toBe(1);
+    expect(agent2Feature.initiateCount).toBe(1);
+    expect(agent2.getContext().getAll().filter(message => message.role === 'system')).toHaveLength(1);
 
-  const resumedResult = await agent2.onCall('second');
-  assert(resumedResult === 'restored-users:2', 'resumed call should continue from restored context');
-  assert(agent2.getContext().getAll().filter(message => message.role === 'system').length === 1, 'restored call should not duplicate system message');
-  assert(agent2Feature.initiateCount === 1, 'restored session should not re-run feature initiate on resumed calls');
-}
-
-await testSessionRestore();
-console.log('Session restore tests passed');
+    const resumedResult = await agent2.onCall('second');
+    expect(resumedResult).toBe('restored-users:2');
+    expect(agent2.getContext().getAll().filter(message => message.role === 'system')).toHaveLength(1);
+    expect(agent2Feature.initiateCount).toBe(1);
+  });
+});

@@ -1,12 +1,7 @@
+import { describe, it, expect } from 'vitest';
 import { Agent } from '../core/agent.js';
 import type { AgentFeature } from '../core/feature.js';
 import type { LLMClient, LLMResponse, Message, Tool } from '../core/types.js';
-
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
 
 class RollbackCallLLM implements LLMClient {
   async chat(messages: Message[], _tools: Tool[]): Promise<LLMResponse> {
@@ -49,23 +44,22 @@ class RollbackCallAgent extends Agent {
   }
 }
 
-async function testRollbackToCall(): Promise<void> {
-  const agent = new RollbackCallAgent(new RollbackCallFeature());
-  const first = await agent.onCall('first');
-  const second = await agent.onCall('second');
+describe('rollbackToCall API', () => {
+  it('should restore context to before the target call and allow re-branching', async () => {
+    const agent = new RollbackCallAgent(new RollbackCallFeature());
+    const first = await agent.onCall('first');
+    const second = await agent.onCall('second');
 
-  assert(first === 'first reply', 'first call should complete');
-  assert(second === 'second reply', 'second call should complete');
-  assert(agent.getContext().getAll().filter(message => message.role === 'user').length === 2, 'context should contain two user turns before rollback');
+    expect(first).toBe('first reply');
+    expect(second).toBe('second reply');
+    expect(agent.getContext().getAll().filter(message => message.role === 'user')).toHaveLength(2);
 
-  const rollback = await agent.rollbackToCall(1);
-  assert(rollback.draftInput === 'second', 'rollback should return the target user input as draft');
-  assert(agent.getContext().getAll().filter(message => message.role === 'user').length === 1, 'rollback should restore context to before the target call');
+    const rollback = await agent.rollbackToCall(1);
+    expect(rollback.draftInput).toBe('second');
+    expect(agent.getContext().getAll().filter(message => message.role === 'user')).toHaveLength(1);
 
-  const resumed = await agent.onCall('second edited');
-  assert(resumed === 'second edited reply', 'agent should continue from the restored branch');
-  assert(agent.getContext().getAll().filter(message => message.role === 'user').length === 2, 'new branch should contain edited second input');
-}
-
-await testRollbackToCall();
-console.log('Rollback call API tests passed');
+    const resumed = await agent.onCall('second edited');
+    expect(resumed).toBe('second edited reply');
+    expect(agent.getContext().getAll().filter(message => message.role === 'user')).toHaveLength(2);
+  });
+});

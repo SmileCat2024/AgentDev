@@ -1,3 +1,4 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { BasicAgent } from '../../../agents/index.js';
 import type { LLMClient, LLMResponse, Message, Tool } from '../../../core/types.js';
 import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
@@ -19,12 +20,6 @@ function getMCPToolNames(agent: BasicAgent): string[] {
     .sort();
 }
 
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
-
 async function collectTools(label: string, mcpServer?: string | false): Promise<string[]> {
   const agent = new BasicAgent({
     llm: new MockLLM(),
@@ -34,12 +29,7 @@ async function collectTools(label: string, mcpServer?: string | false): Promise<
 
   try {
     await agent.onCall('smoke test');
-    const tools = getMCPToolNames(agent);
-    console.log(`[PASS] ${label}: ${tools.length} MCP tools`);
-    if (tools.length > 0) {
-      console.log(`  ${tools.slice(0, 5).join(', ')}${tools.length > 5 ? ' ...' : ''}`);
-    }
-    return tools;
+    return getMCPToolNames(agent);
   } finally {
     await agent.dispose();
   }
@@ -79,9 +69,7 @@ process.stdin.on('data', (chunk) => {
         command: execPath,
         args: [serverPath],
         cwd: tmpdir(),
-        env: {
-          MOCK_MCP_TOOL_NAME: toolName,
-        },
+        env: { MOCK_MCP_TOOL_NAME: toolName },
       },
     },
   }, null, 2);
@@ -98,51 +86,45 @@ async function removeTempDir(tempDir: string): Promise<void> {
       await rm(tempDir, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (attempt === 4) {
-        throw error;
-      }
+      if (attempt === 4) throw error;
       await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
 }
 
-async function main(): Promise<void> {
-  const originalCwd = cwd();
-  const { tempDir, githubConfigPath } = await createMockMCPWorkspace();
+describe('MCP smoke', () => {
+  let originalCwd: string;
+  let tempDir: string;
+  let githubConfigPath: string;
 
-  try {
+  beforeAll(async () => {
+    originalCwd = cwd();
+    const workspace = await createMockMCPWorkspace();
+    tempDir = workspace.tempDir;
+    githubConfigPath = workspace.githubConfigPath;
     chdir(tempDir);
+  });
 
-    const disabledTools = await collectTools('disabled', false);
-    assert(disabledTools.length === 0, 'disabled mode should not register any MCP tools');
-
-    const githubTools = await collectTools('github-only', githubConfigPath);
-    assert(githubTools.length > 0, 'github-only mode should register MCP tools');
-    assert(
-      githubTools.every(name => name.startsWith('mcp_github_')),
-      'github-only mode should only register github MCP tools'
-    );
-
-    const autoTools = await collectTools('auto');
-    assert(autoTools.length >= githubTools.length, 'auto mode should register at least the github MCP tools');
-    assert(
-      autoTools.some(name => name.startsWith('mcp_github_')),
-      'auto mode should include github MCP tools'
-    );
-    assert(
-      autoTools.some(name => name.startsWith('mcp_extra_')),
-      'auto mode should include all local MCP config files'
-    );
-
-    console.log('[DONE] MCP smoke test passed');
-  } finally {
+  afterAll(async () => {
     chdir(originalCwd);
     await removeTempDir(tempDir);
-  }
-}
+  });
 
-main().catch(error => {
-  const message = error instanceof Error ? error.stack || error.message : String(error);
-  console.error(`[FAIL] ${message}`);
-  process.exitCode = 1;
+  it('should register zero MCP tools when disabled', async () => {
+    const disabledTools = await collectTools('disabled', false);
+    expect(disabledTools).toHaveLength(0);
+  });
+
+  it('should register only specified server tools in single-server mode', async () => {
+    const githubTools = await collectTools('github-only', githubConfigPath);
+    expect(githubTools.length).toBeGreaterThan(0);
+    expect(githubTools.every(name => name.startsWith('mcp_github_'))).toBe(true);
+  });
+
+  it('should register all local MCP config files in auto mode', async () => {
+    const autoTools = await collectTools('auto');
+    expect(autoTools.length).toBeGreaterThanOrEqual(2);
+    expect(autoTools.some(name => name.startsWith('mcp_github_'))).toBe(true);
+    expect(autoTools.some(name => name.startsWith('mcp_extra_'))).toBe(true);
+  });
 });

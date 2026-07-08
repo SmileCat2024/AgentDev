@@ -8,7 +8,7 @@ import { join, resolve, dirname } from 'path';
 import { FileSystem } from './fs.js';
 import { validateOperator, parseTrashInfo } from './trashinfo.js';
 import { SafeRmError, throwFileExistsError, throwNoTrashDirError } from './errors.js';
-import { ErrorCode, RestoreOptions, RestoreTarget, RestoreResult, ListResult } from './types.js';
+import { ErrorCode, type RestoreOptions, type RestoreTarget, type RestoreResult, type ListResult } from './types.js';
 
 /**
  * 通配符匹配
@@ -285,7 +285,7 @@ export function restore(
   let actualTarget: RestoreTarget = target;
   if (parseIndexRanges && typeof target === 'string') {
     // 检查是否为纯数字索引规格
-    if (/^[\d,\s\-]+$/.test(target.trim())) {
+    if (/^[\d,\s-]+$/.test(target.trim())) {
       try {
         actualTarget = parseIndexSpec(target);
       } catch {

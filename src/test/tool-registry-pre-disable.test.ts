@@ -1,42 +1,43 @@
+import { describe, it, expect } from 'vitest';
 import { createTool, ToolRegistry } from '../core/tool.js';
 
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
+describe('ToolRegistry pre-disable', () => {
+  it('should pre-disable a tool before registration and preserve state', () => {
+    const registry = new ToolRegistry();
 
-async function main(): Promise<void> {
-  const registry = new ToolRegistry();
+    expect(registry.disable('future_tool')).toBe(true);
 
-  assert(registry.disable('future_tool') === true, 'pre-disable should succeed even before registration');
+    registry.register(createTool({
+      name: 'future_tool',
+      description: 'Tool registered after disable.',
+      async execute() {
+        return 'ok';
+      },
+    }));
 
-  registry.register(createTool({
-    name: 'future_tool',
-    description: 'Tool registered after disable.',
-    async execute() {
-      return 'ok';
-    },
-  }));
+    expect(registry.has('future_tool')).toBe(true);
+    expect(registry.isEnabled('future_tool')).toBe(false);
+    expect(registry.isDisabled('future_tool')).toBe(true);
+    expect(registry.getAll().some(tool => tool.name === 'future_tool')).toBe(true);
+  });
 
-  assert(registry.has('future_tool'), 'tool should be registered');
-  assert(!registry.isEnabled('future_tool'), 'pre-disabled tool should stay disabled after registration');
-  assert(registry.isDisabled('future_tool'), 'pre-disabled tool should be in disabled state after registration');
-  assert(registry.getAll().some(tool => tool.name === 'future_tool'), 'disabled tool should still appear in LLM-visible tool list');
+  it('should support remove and re-enable after pre-disable', () => {
+    const registry = new ToolRegistry();
+    registry.disable('future_tool');
+    registry.register(createTool({
+      name: 'future_tool',
+      description: 'Tool registered after disable.',
+      async execute() {
+        return 'ok';
+      },
+    }));
 
-  assert(registry.remove('future_tool') === true, 'remove should work after registration');
-  assert(registry.isRemoved('future_tool'), 'tool should become removed after remove');
-  assert(!registry.getAll().some(tool => tool.name === 'future_tool'), 'removed tool should not appear in LLM-visible tool list');
+    expect(registry.remove('future_tool')).toBe(true);
+    expect(registry.isRemoved('future_tool')).toBe(true);
+    expect(registry.getAll().some(tool => tool.name === 'future_tool')).toBe(false);
 
-  assert(registry.enable('future_tool') === true, 'enable should work after registration');
-  assert(registry.isEnabled('future_tool'), 'tool should become enabled after enable');
-  assert(registry.getAll().some(tool => tool.name === 'future_tool'), 'enabled tool should reappear in enabled tool list');
-
-  console.log('[PASS] ToolRegistry preserves pre-disable state across later registration');
-}
-
-main().catch(error => {
-  const message = error instanceof Error ? error.stack || error.message : String(error);
-  console.error(`[FAIL] ${message}`);
-  process.exitCode = 1;
+    expect(registry.enable('future_tool')).toBe(true);
+    expect(registry.isEnabled('future_tool')).toBe(true);
+    expect(registry.getAll().some(tool => tool.name === 'future_tool')).toBe(true);
+  });
 });

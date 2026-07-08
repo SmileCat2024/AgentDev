@@ -1,5 +1,5 @@
 import type { Tool } from '../core/types.js';
-import { MCPConnectionManager } from './connection-manager.js';
+import { type MCPConnectionManager } from './connection-manager.js';
 import {
   MCPClient,
   createMCPTool,

@@ -1,12 +1,7 @@
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ViewerWorker } from '../core/viewer-worker.js';
-
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
 
 function getStructuredToolPayload(result: any): any {
   if (result?.structuredContent) {
@@ -31,213 +26,180 @@ function getTestUdsPath(): string {
   return `/tmp/agentdev-viewer-test-${process.pid}-${Date.now()}.sock`;
 }
 
-async function main(): Promise<void> {
-  const worker = new ViewerWorker(0, false, getTestUdsPath());
-  await worker.start();
+describe('Debugger MCP', () => {
+  let worker: ViewerWorker;
+  let transport: StreamableHTTPClientTransport;
+  let client: Client;
+  let port: number;
 
-  const address = (worker as any).server.address();
-  const port = typeof address === 'object' && address ? address.port : 0;
-  assert(typeof port === 'number' && port > 0, 'viewer worker should listen on a dynamic port');
+  beforeAll(async () => {
+    worker = new ViewerWorker(0, false, getTestUdsPath());
+    await worker.start();
 
-  const hookInspector = {
-    lifecycleOrder: ['CallStart', 'ToolUse'],
-    features: [{
-      name: 'shell',
-      enabled: true,
-      status: 'enabled' as const,
-      hookCount: 1,
-      toolCount: 2,
-      enabledToolCount: 2,
-      source: '/tmp/shell.ts',
-      description: 'Shell feature',
-      tools: [
-        { name: 'bash', description: 'Run bash', enabled: true, renderCall: 'bash', renderResult: 'bash' },
-        { name: 'trash_delete', description: 'Move file to trash', enabled: true, renderCall: 'trash', renderResult: 'trash' },
-      ],
-    }],
-    hooks: [{
-      lifecycle: 'ToolUse',
-      kind: 'decision' as const,
-      entries: [{
-        order: 1,
-        featureName: 'shell',
-        methodName: 'onToolUse',
+    const address = (worker as any).server.address();
+    port = typeof address === 'object' && address ? address.port : 0;
+
+    const hookInspector = {
+      lifecycleOrder: ['CallStart', 'ToolUse'],
+      features: [{
+        name: 'shell',
+        enabled: true,
+        status: 'enabled' as const,
+        hookCount: 1,
+        toolCount: 2,
+        enabledToolCount: 2,
+        source: '/tmp/shell.ts',
+        description: 'Shell feature',
+        tools: [
+          { name: 'bash', description: 'Run bash', enabled: true, renderCall: 'bash', renderResult: 'bash' },
+          { name: 'trash_delete', description: 'Move file to trash', enabled: true, renderCall: 'trash', renderResult: 'trash' },
+        ],
+      }],
+      hooks: [{
         lifecycle: 'ToolUse',
         kind: 'decision' as const,
-        source: { file: '/tmp/shell.ts', line: 12, column: 3, display: '/tmp/shell.ts:12:3' },
-        description: 'Blocks risky commands',
-      }],
-    }],
-  };
-
-  worker.handleRegisterAgent({
-    type: 'register-agent',
-    agentId: 'agent-test-1',
-    name: 'DebuggerTestAgent',
-    createdAt: Date.now(),
-    projectRoot: process.cwd(),
-    hookInspector,
-  });
-
-  worker.handlePushNotification({
-    type: 'push-notification',
-    agentId: 'agent-test-1',
-    notification: {
-      type: 'log.entry',
-      category: 'event',
-      timestamp: Date.now(),
-      data: {
-        id: 'log-1',
-        timestamp: Date.now(),
-        level: 'error',
-        message: 'Tool execution failed',
-        namespace: 'agent.tool',
-        context: {
-          agentId: 'agent-test-1',
-          agentName: 'DebuggerTestAgent',
-          feature: 'shell',
+        entries: [{
+          order: 1,
+          featureName: 'shell',
+          methodName: 'onToolUse',
           lifecycle: 'ToolUse',
-        },
-        data: {
-          toolName: 'bash',
-          code: 'EACCES',
-        },
-      },
-    },
-  });
+          kind: 'decision' as const,
+          source: { file: '/tmp/shell.ts', line: 12, column: 3, display: '/tmp/shell.ts:12:3' },
+          description: 'Blocks risky commands',
+        }],
+      }],
+    };
 
-  for (let index = 0; index < 240; index += 1) {
+    worker.handleRegisterAgent({
+      type: 'register-agent',
+      agentId: 'agent-test-1',
+      name: 'DebuggerTestAgent',
+      createdAt: Date.now(),
+      projectRoot: process.cwd(),
+      hookInspector,
+    });
+
     worker.handlePushNotification({
       type: 'push-notification',
       agentId: 'agent-test-1',
       notification: {
         type: 'log.entry',
         category: 'event',
-        timestamp: Date.now() + index + 1,
+        timestamp: Date.now(),
         data: {
-          id: `log-seeded-${index}`,
-          timestamp: Date.now() + index + 1,
-          level: 'info',
-          message: `Seeded log ${index}`,
-          namespace: 'agent.seed',
+          id: 'log-1',
+          timestamp: Date.now(),
+          level: 'error',
+          message: 'Tool execution failed',
+          namespace: 'agent.tool',
           context: {
             agentId: 'agent-test-1',
             agentName: 'DebuggerTestAgent',
+            feature: 'shell',
+            lifecycle: 'ToolUse',
           },
+          data: { toolName: 'bash', code: 'EACCES' },
         },
       },
     });
-  }
 
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
-  const client = new Client({
-    name: 'debugger-mcp-test-client',
-    version: '0.1.0',
+    for (let index = 0; index < 240; index += 1) {
+      worker.handlePushNotification({
+        type: 'push-notification',
+        agentId: 'agent-test-1',
+        notification: {
+          type: 'log.entry',
+          category: 'event',
+          timestamp: Date.now() + index + 1,
+          data: {
+            id: `log-seeded-${index}`,
+            timestamp: Date.now() + index + 1,
+            level: 'info',
+            message: `Seeded log ${index}`,
+            namespace: 'agent.seed',
+            context: { agentId: 'agent-test-1', agentName: 'DebuggerTestAgent' },
+          },
+        },
+      });
+    }
+
+    transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
+    client = new Client({ name: 'debugger-mcp-test-client', version: '0.1.0' });
+    await client.connect(transport);
   });
 
-  try {
-    await client.connect(transport);
+  afterAll(async () => {
+    await transport.close();
+    await worker.stop();
+  });
 
+  it('should expose tools, resources, and prompts', async () => {
     const tools = await client.listTools();
-    assert(tools.tools.some(tool => tool.name === 'query_logs'), 'query_logs tool should be listed');
-    assert(tools.tools.some(tool => tool.name === 'get_hooks'), 'get_hooks tool should be listed');
+    expect(tools.tools.some(tool => tool.name === 'query_logs')).toBe(true);
+    expect(tools.tools.some(tool => tool.name === 'get_hooks')).toBe(true);
 
     const resources = await client.listResources();
-    assert(resources.resources.some(resource => resource.uri === 'debug://agents'), 'agents resource should be listed');
-    assert(resources.resources.some(resource => resource.uri === 'debug://agents/current'), 'current agent resource should be listed');
+    expect(resources.resources.some(r => r.uri === 'debug://agents')).toBe(true);
+    expect(resources.resources.some(r => r.uri === 'debug://agents/current')).toBe(true);
 
     const resourceTemplates = await client.listResourceTemplates();
-    assert(
-      resourceTemplates.resourceTemplates.some(resource => resource.uriTemplate === 'debug://agents/{agentId}'),
-      'agent details resource template should be listed'
-    );
+    expect(resourceTemplates.resourceTemplates.some(r => r.uriTemplate === 'debug://agents/{agentId}')).toBe(true);
 
     const prompts = await client.listPrompts();
-    assert(prompts.prompts.some(prompt => prompt.name === 'diagnose_agent'), 'diagnose_agent prompt should be listed');
+    expect(prompts.prompts.some(p => p.name === 'diagnose_agent')).toBe(true);
+  });
 
-    const currentAgentResource = await client.readResource({ uri: 'debug://agents/current' });
-    const currentAgentText = currentAgentResource.contents[0] && 'text' in currentAgentResource.contents[0]
-      ? currentAgentResource.contents[0].text
+  it('should return current agent in resource', async () => {
+    const resource = await client.readResource({ uri: 'debug://agents/current' });
+    const text = resource.contents[0] && 'text' in resource.contents[0]
+      ? (resource.contents[0] as any).text
       : undefined;
-    assert(currentAgentText?.includes('DebuggerTestAgent'), 'current agent resource should include agent name');
+    expect(text).toContain('DebuggerTestAgent');
+  });
 
-    const logsResult = await client.callTool({
+  it('should query logs with filters', async () => {
+    const result = await client.callTool({
       name: 'query_logs',
-      arguments: {
-        level: 'error',
-        feature: 'shell',
-        limit: 10,
-      },
+      arguments: { level: 'error', feature: 'shell', limit: 10 },
     });
-    const logsPayload = getStructuredToolPayload(logsResult);
-    assert(
-      Array.isArray(logsPayload?.logs) &&
-      logsPayload.logs.length === 1,
-      'query_logs should return the seeded error log'
-    );
-    assert(
-      logsPayload?.collectionPolicy?.includesOnlyHubDeliveredLogs === true,
-      'query_logs should explain that only hub-delivered logs are included'
-    );
-    assert(
-      logsPayload?.truncation?.truncated === false,
-      'filtered query_logs result should not report truncation'
-    );
+    const payload = getStructuredToolPayload(result);
 
-    const unboundedLogsResult = await client.callTool({
+    expect(Array.isArray(payload?.logs)).toBe(true);
+    expect(payload.logs).toHaveLength(1);
+    expect(payload?.collectionPolicy?.includesOnlyHubDeliveredLogs).toBe(true);
+    expect(payload?.truncation?.truncated).toBe(false);
+  });
+
+  it('should cap unbounded query and report truncation', async () => {
+    const result = await client.callTool({
       name: 'query_logs',
       arguments: {},
     });
-    const unboundedLogsPayload = getStructuredToolPayload(unboundedLogsResult);
-    assert(
-      Array.isArray(unboundedLogsPayload?.logs) &&
-      unboundedLogsPayload.logs.length === 200,
-      'unbounded query_logs should be capped to the default safety limit'
-    );
-    assert(
-      unboundedLogsPayload?.truncation?.truncated === true,
-      'unbounded query_logs should report truncation'
-    );
-    assert(
-      typeof unboundedLogsPayload?.truncation?.guidance === 'string' &&
-      unboundedLogsPayload.truncation.guidance.includes('"offset": 200'),
-      'unbounded query_logs should explain how to continue with explicit parameters'
-    );
+    const payload = getStructuredToolPayload(result);
 
-    const hooksResult = await client.callTool({
+    expect(payload.logs).toHaveLength(200);
+    expect(payload?.truncation?.truncated).toBe(true);
+    expect(payload?.truncation?.guidance).toContain('"offset": 200');
+  });
+
+  it('should return hook inspector snapshot', async () => {
+    const result = await client.callTool({
       name: 'get_hooks',
-      arguments: {
-        agentId: 'agent-test-1',
-      },
+      arguments: { agentId: 'agent-test-1' },
     });
-    const hooksPayload = getStructuredToolPayload(hooksResult);
-    assert(
-      Array.isArray(hooksPayload?.hooks?.hooks) &&
-      hooksPayload.hooks.hooks.length === 1,
-      'get_hooks should return the seeded hook inspector'
-    );
+    const payload = getStructuredToolPayload(result);
 
-    const diagnosePrompt = await client.getPrompt({
+    expect(Array.isArray(payload?.hooks?.hooks)).toBe(true);
+    expect(payload.hooks.hooks).toHaveLength(1);
+  });
+
+  it('should embed agent snapshot in diagnose prompt', async () => {
+    const prompt = await client.getPrompt({
       name: 'diagnose_agent',
-      arguments: {
-        agentId: 'agent-test-1',
-      },
+      arguments: { agentId: 'agent-test-1' },
     });
-    assert(
-      diagnosePrompt.messages[0]?.content.type === 'text' &&
-      diagnosePrompt.messages[0].content.text.includes('DebuggerTestAgent'),
-      'diagnose prompt should embed the agent snapshot'
-    );
 
-    console.log('[PASS] debugger MCP server exposes tools, resources, and prompts');
-  } finally {
-    await transport.close();
-    await worker.stop();
-  }
-}
-
-main().catch(error => {
-  const message = error instanceof Error ? error.stack || error.message : String(error);
-  console.error(`[FAIL] ${message}`);
-  process.exitCode = 1;
+    expect(prompt.messages[0]?.content.type).toBe('text');
+    expect((prompt.messages[0].content as any).text).toContain('DebuggerTestAgent');
+  });
 });

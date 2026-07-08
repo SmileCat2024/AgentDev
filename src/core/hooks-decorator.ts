@@ -4,7 +4,7 @@
  * 使用装饰器标记反向钩子方法，提供编译时和运行时类型检查
  */
 
-import { CoreLifecycle, Decision, DecisionResult } from './lifecycle.js';
+import { CoreLifecycle, Decision, type DecisionResult } from './lifecycle.js';
 import type { HookSourceLocation } from './types.js';
 import type {
   AgentInitiateContext,

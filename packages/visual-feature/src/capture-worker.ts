@@ -15,8 +15,8 @@
 import sharp from 'sharp';
 import type { CaptureResult } from './types.js';
 import type { WindowState } from './monitor.js';
-import { WindowMonitorService } from './monitor.js';
-import { VisualCacheManager } from './cache.js';
+import { type WindowMonitorService } from './monitor.js';
+import { type VisualCacheManager } from './cache.js';
 
 // ========== 类型定义 ==========
 

@@ -6,7 +6,7 @@
 
 import type { TemplateSource, PlaceholderContext } from '../../template/types.js';
 import { TemplateComposer } from '../../template/composer.js';
-import { TemplateLoader } from '../../template/loader.js';
+import { type TemplateLoader } from '../../template/loader.js';
 
 /**
  * 模板解析器类

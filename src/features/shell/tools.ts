@@ -70,7 +70,7 @@ export async function processOutputWithPersistence(
   const totalKB = Math.round(output.length / 1024);
 
   // 尝试将完整输出持久化到磁盘
-  let filePath: string | null = null;
+  let filePath: string | null;
   try {
     const tempDir = path.join(workdir, '.agentdev', 'temp');
     const now = new Date();
@@ -221,7 +221,7 @@ export async function runShellCommand(
   const quotedCommand = quoteShellCommand(normalizedCommand, addStdinRedirect);
 
   // 3. 构建 eval 命令字符串
-  const quotedBashrc = `'${bashrcPath.replace(/'/g, `'\"'\"'`)}'`;
+  const quotedBashrc = `'${bashrcPath.replace(/'/g, `'"'"'`)}'`;
   const commandString = `source ${quotedBashrc} 2>/dev/null || true; eval ${quotedCommand}`;
 
   // 4. 确定 bash 路径和参数

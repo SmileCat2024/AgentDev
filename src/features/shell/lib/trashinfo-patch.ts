@@ -35,7 +35,7 @@ export function validateOperator(operator: string | null | undefined): void {
   }
 
   // 检查非法字符
-  const illegalChars = '<>:"|?*\/()[]{}';
+  const illegalChars = '<>:"|?*/()[]{}';
   for (const char of illegalChars) {
     if (operator.includes(char)) {
       throw new SafeRmError(

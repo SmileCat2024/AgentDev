@@ -13,11 +13,11 @@
  * - 使用已缓存的截图进行分析
  */
 
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import type { AnalysisResult } from './cache.js';
 import type { WindowState } from './monitor.js';
-import { WindowMonitorService } from './monitor.js';
-import { VisualCacheManager } from './cache.js';
+import { type WindowMonitorService } from './monitor.js';
+import { type VisualCacheManager } from './cache.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 

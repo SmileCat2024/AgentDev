@@ -214,21 +214,23 @@ export class TemplateComposer {
         // 静态字符串，替换占位符
         return PlaceholderResolver.resolve(part.value, context);
 
-      case 'file':
+      case 'file': {
         sources.push(part.path);
         // 从文件加载，然后替换占位符
         const fileContent = await this.loader.load(part.path);
         return PlaceholderResolver.resolve(fileContent, context);
+      }
 
       case 'dataSource':
         // 使用数据源注册中心渲染
         return await DataSourceRegistry.render(part.name, part.template, context);
 
-      case 'composer':
+      case 'composer': {
         // 嵌套组合器，递归渲染
         const result = await part.composer.render(context);
         sources.push(...result.sources);
         return result.content;
+      }
 
       case 'conditional':
         // 不会到这里，已在 render 中处理

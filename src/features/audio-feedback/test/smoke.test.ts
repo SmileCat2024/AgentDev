@@ -1,111 +1,85 @@
-/**
- * Audio Feedback Feature Smoke Test
- * 测试 Feature 的基本功能和 API
- */
-
+import { describe, it, expect } from 'vitest';
 import { AudioFeedbackFeature } from '../index.js';
 import type { AudioFeedbackSnapshot } from '../types.js';
 
-function assert(condition: unknown, message: string): void {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
+describe('Audio Feedback Feature smoke', () => {
+  it('should create with correct basic properties', () => {
+    const feature = new AudioFeedbackFeature({ enabled: true, volume: 0.5 });
 
-async function main(): Promise<void> {
-  console.log('[START] Audio Feedback Feature smoke test\n');
-
-  // 1. 测试 Feature 创建
-  const feature = new AudioFeedbackFeature({
-    enabled: true,
-    volume: 0.5,
+    expect(feature.name).toBe('audio-feedback');
+    expect(feature.description).toBeDefined();
+    expect(feature.isEnabled()).toBe(true);
   });
 
-  assert(feature.name === 'audio-feedback', 'feature name should be audio-feedback');
-  assert(feature.description !== undefined, 'feature should have description');
-  assert(feature.isEnabled() === true, 'feature should be enabled by default');
-  console.log('[PASS] Feature creation and basic properties');
+  it('should capture correct state snapshot', () => {
+    const feature = new AudioFeedbackFeature({ enabled: true, volume: 0.5 });
+    const snapshot = feature.captureState() as AudioFeedbackSnapshot;
 
-  // 2. 测试状态快照
-  const snapshot = feature.captureState() as AudioFeedbackSnapshot;
+    expect(snapshot.enabled).toBe(true);
+    expect(snapshot.volume).toBe(0.5);
+    expect(typeof snapshot.audioPath).toBe('string');
+    expect(snapshot.playCount).toBe(0);
+    expect(snapshot.activeMode).toBeNull();
+  });
 
-  assert(snapshot.enabled === true, 'snapshot should show enabled');
-  assert(snapshot.volume === 0.5, 'snapshot volume should be 0.5');
-  assert(typeof snapshot.audioPath === 'string', 'snapshot should have audioPath');
-  assert(snapshot.playCount === 0, 'playCount should start at 0');
-  assert(snapshot.activeMode === null, 'activeMode should start as null');
-  console.log('[PASS] State snapshot');
+  it('should expose two flow modes', () => {
+    const feature = new AudioFeedbackFeature({ enabled: true, volume: 0.5 });
+    const flowModes = feature.getFlowModes?.() || [];
 
-  const flowModes = feature.getFlowModes?.() || [];
-  assert(flowModes.length === 2, 'feature should expose two flow modes');
-  assert(flowModes.some((mode) => mode.id === 'play-feedback'), 'feature should expose play-feedback mode');
-  assert(flowModes.some((mode) => mode.id === 'mute-feedback'), 'feature should expose mute-feedback mode');
-  console.log('[PASS] Flow mode declarations');
+    expect(flowModes).toHaveLength(2);
+    expect(flowModes.some(mode => mode.id === 'play-feedback')).toBe(true);
+    expect(flowModes.some(mode => mode.id === 'mute-feedback')).toBe(true);
+  });
 
-  // 3. 测试 API 方法
-  feature.setEnabled(false);
-  assert(feature.isEnabled() === false, 'feature should be disabled');
-  console.log('[PASS] setEnabled(false)');
+  it('should toggle enabled state and flow modes', () => {
+    const feature = new AudioFeedbackFeature({ enabled: true, volume: 0.5 });
 
-  feature.setEnabled(true);
-  assert(feature.isEnabled() === true, 'feature should be enabled');
-  console.log('[PASS] setEnabled(true)');
+    feature.setEnabled(false);
+    expect(feature.isEnabled()).toBe(false);
 
-  feature.applyFlowMode?.('mute-feedback');
-  assert(feature.isEnabled() === false, 'mute-feedback mode should disable playback');
-  console.log('[PASS] applyFlowMode(mute-feedback)');
+    feature.setEnabled(true);
+    expect(feature.isEnabled()).toBe(true);
 
-  feature.applyFlowMode?.('play-feedback');
-  assert(feature.isEnabled() === true, 'play-feedback mode should enable playback');
-  console.log('[PASS] applyFlowMode(play-feedback)');
+    feature.applyFlowMode?.('mute-feedback');
+    expect(feature.isEnabled()).toBe(false);
 
-  feature.resetFlowModes?.();
-  assert(feature.isEnabled() === true, 'resetFlowModes should restore constructor baseline');
-  console.log('[PASS] resetFlowModes()');
+    feature.applyFlowMode?.('play-feedback');
+    expect(feature.isEnabled()).toBe(true);
 
-  feature.setVolume(0.8);
-  const newSnapshot = feature.captureState() as AudioFeedbackSnapshot;
-  assert(newSnapshot.volume === 0.8, 'volume should be updated to 0.8');
-  console.log('[PASS] setVolume(0.8)');
+    feature.resetFlowModes?.();
+    expect(feature.isEnabled()).toBe(true);
+  });
 
-  // 4. 测试音量边界
-  feature.setVolume(1.5); // 超过 1 应被限制
-  const clampedSnapshot = feature.captureState() as AudioFeedbackSnapshot;
-  assert(clampedSnapshot.volume === 1, 'volume should be clamped to 1');
-  console.log('[PASS] Volume clamping (max 1)');
+  it('should clamp volume to valid range', () => {
+    const feature = new AudioFeedbackFeature({ enabled: true, volume: 0.5 });
 
-  feature.setVolume(-0.5); // 低于 0 应被限制
-  const minSnapshot = feature.captureState() as AudioFeedbackSnapshot;
-  assert(minSnapshot.volume === 0, 'volume should be clamped to 0');
-  console.log('[PASS] Volume clamping (min 0)');
+    feature.setVolume(0.8);
+    expect((feature.captureState() as AudioFeedbackSnapshot).volume).toBe(0.8);
 
-  // 5. 测试播放计数
-  assert(feature.getPlayCount() === 0, 'playCount should start at 0');
-  console.log('[PASS] getPlayCount()');
+    feature.setVolume(1.5);
+    expect((feature.captureState() as AudioFeedbackSnapshot).volume).toBe(1);
 
-  // 6. 测试状态恢复
-  const testSnapshot: AudioFeedbackSnapshot = {
-    enabled: false,
-    volume: 0.3,
-    audioPath: '/test/path.mp3',
-    playCount: 42,
-    activeMode: 'mute-feedback',
-  };
+    feature.setVolume(-0.5);
+    expect((feature.captureState() as AudioFeedbackSnapshot).volume).toBe(0);
+  });
 
-  feature.restoreState(testSnapshot);
-  const restoredSnapshot = feature.captureState() as AudioFeedbackSnapshot;
+  it('should restore state from snapshot', () => {
+    const feature = new AudioFeedbackFeature({ enabled: true, volume: 0.5 });
 
-  assert(restoredSnapshot.enabled === false, 'should restore enabled state');
-  assert(restoredSnapshot.volume === 0.3, 'should restore volume');
-  assert(restoredSnapshot.playCount === 42, 'should restore playCount');
-  assert(restoredSnapshot.activeMode === 'mute-feedback', 'should restore activeMode');
-  console.log('[PASS] State restoration');
+    const testSnapshot: AudioFeedbackSnapshot = {
+      enabled: false,
+      volume: 0.3,
+      audioPath: '/test/path.mp3',
+      playCount: 42,
+      activeMode: 'mute-feedback',
+    };
 
-  console.log('\n[DONE] Audio Feedback Feature smoke test passed');
-}
+    feature.restoreState(testSnapshot);
+    const restored = feature.captureState() as AudioFeedbackSnapshot;
 
-main().catch(error => {
-  const message = error instanceof Error ? error.stack || error.message : String(error);
-  console.error(`[FAIL] ${message}`);
-  process.exitCode = 1;
+    expect(restored.enabled).toBe(false);
+    expect(restored.volume).toBe(0.3);
+    expect(restored.playCount).toBe(42);
+    expect(restored.activeMode).toBe('mute-feedback');
+  });
 });

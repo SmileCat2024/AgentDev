@@ -12,7 +12,7 @@
 
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { createTool } from '../../core/tool.js';
@@ -350,7 +350,7 @@ export function createCaptureAndUnderstandTool(
     render: { call: 'capture', result: 'capture' },
     execute: async ({ hwnd }: { hwnd: string }) => {
       // 1. 尝试截图
-      let captureResult = await captureWindow(hwnd, pythonPath, pythonArgs);
+      const captureResult = await captureWindow(hwnd, pythonPath, pythonArgs);
 
       let imageToAnalyze = captureResult.data;
       let imageSource = '新截图';
@@ -493,7 +493,7 @@ export function createCaptureAndUnderstandAdvancedTool(
     render: { call: 'capture', result: 'capture' },
     execute: async ({ hwnd }: { hwnd: string }) => {
       // 1. 尝试截图（与基础工具相同的逻辑）
-      let captureResult = await captureWindow(hwnd, pythonPath, pythonArgs);
+      const captureResult = await captureWindow(hwnd, pythonPath, pythonArgs);
 
       let imageToAnalyze = captureResult.data;
       let imageSource = '新截图';

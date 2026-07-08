@@ -61,7 +61,7 @@ export default {
     const ext = path.split('.').pop().toLowerCase();
 
     const lines = rawContent.split('\n');
-    let startLine = data.offset || 1;
+    const startLine = data.offset || 1;
     const hasLinePrefix = lines.length > 0 && /^\d+: /.test(lines[0]);
 
     let resultHtml = '<div class="code-read-container">';
@@ -78,7 +78,7 @@ export default {
       }
 
       const codeExts = ['js', 'ts', 'py', 'java', 'c', 'cpp', 'rs', 'go', 'json', 'html', 'css', 'sh', 'bash', 'yaml', 'yml', 'xml', 'sql', 'md'];
-      let highlightedLine = codeLine;
+      let highlightedLine: string;
       if (codeExts.includes(ext)) {
         const lang = ext === 'ts' ? 'typescript' : (ext === 'js' ? 'javascript' : (ext === 'py' ? 'python' : ext));
         try {

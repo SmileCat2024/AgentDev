@@ -4,7 +4,7 @@
  */
 
 import type { ToolCall, Tool, LLMResponse, Message } from './types.js';
-import { Context } from './context.js';
+import { type Context } from './context.js';
 import type { Agent } from './agent.js';
 import type { AgentFeature } from './feature.js';
 

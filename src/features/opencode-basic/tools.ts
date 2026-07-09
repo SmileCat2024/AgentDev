@@ -54,7 +54,8 @@ const IGNORE_PATTERNS = [
  */
 interface ReadDedupEntry {
   mtimeMs: number;
-  offset: number;
+  /** undefined = set by Edit/Write, not a Read */
+  offset: number | undefined;
   limit: number | undefined;
 }
 const readDedupState = new Map<string, ReadDedupEntry>();
@@ -407,7 +408,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
 
     // 去重：如果同一文件同一范围已读过且 mtime 没变，返回 stub
     const dedupEntry = readDedupState.get(resolvedFilePath);
-    if (dedupEntry) {
+    if (dedupEntry && dedupEntry.offset !== undefined) {
       const rangeMatch =
         dedupEntry.offset === (offsetParam ?? 1) &&
         dedupEntry.limit === limitParam;
@@ -526,16 +527,29 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
     console.log(`[write] ${resolvedFilePath}`);
 
-    // 检测现有文件的编码和行尾符
+    // 检测现有文件的编码
     let encoding: FileEncoding = 'utf8';
-    let lineEndings: LineEndingType = 'LF';
     const exists = await stat(resolvedFilePath).then(() => true).catch(() => false);
     let contentOld = '';
     if (exists) {
+      // Read-before-write 校验：必须先读才能写
+      const dedupEntry = readDedupState.get(resolvedFilePath);
+      if (!dedupEntry) {
+        throw new Error(
+          `File has not been read yet. Read it first before writing to it: ${resolvedFilePath}`
+        );
+      }
+      // Staleness 校验：文件在上次读取后被外部修改则拒绝写入
+      const currentMtime = (await stat(resolvedFilePath)).mtimeMs;
+      if (currentMtime !== dedupEntry.mtimeMs) {
+        throw new Error(
+          `File has been modified since last read. Read the file again before writing to it: ${resolvedFilePath}`
+        );
+      }
+
       const buffer = await readFile(resolvedFilePath, { encoding: null });
       encoding = detectEncoding(buffer);
       const rawContent = buffer.toString(encoding);
-      lineEndings = detectLineEndings(rawContent);
       contentOld = rawContent.replaceAll('\r\n', '\n');
     }
 
@@ -546,13 +560,13 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const dir = path.dirname(resolvedFilePath);
     await mkdir(dir, { recursive: true });
 
-    // 写入文件（保留编码和行尾符）
-    await writeTextContent(resolvedFilePath, content, encoding, lineEndings);
+    // 写入文件（保留编码，强制 LF 行尾符以避免跨平台损坏）
+    await writeTextContent(resolvedFilePath, content, encoding, 'LF');
 
-    // 更新 read 去重状态（写入后使旧的去重条目失效）
+    // 更新 read 去重状态（offset=undefined 表示由 Write 设置，非 Read 产生）
     try {
       const mtimeMs = (await stat(resolvedFilePath)).mtimeMs;
-      readDedupState.set(resolvedFilePath, { mtimeMs, offset: 1, limit: undefined });
+      readDedupState.set(resolvedFilePath, { mtimeMs, offset: undefined, limit: undefined });
     } catch {
       // ignore
     }
@@ -603,6 +617,14 @@ function levenshtein(a: string, b: string): number {
  * Replacer 类型
  */
 type Replacer = (content: string, find: string) => Generator<string, void, unknown>;
+
+/**
+ * 带名称的 Replacer 条目
+ */
+interface ReplacerEntry {
+  name: string;
+  fn: Replacer;
+}
 
 /**
  * 精确匹配替换器
@@ -950,31 +972,42 @@ const multiOccurrenceReplacer: Replacer = function* (content, find) {
 };
 
 /**
- * 所有替换器列表
+ * 所有替换器列表（按精确度从高到低排序）
  */
-const REPLACERS: Replacer[] = [
-  simpleReplacer,
-  lineTrimmedReplacer,
-  blockAnchorReplacer,
-  whitespaceNormalizedReplacer,
-  indentationFlexibleReplacer,
-  escapeNormalizedReplacer,
-  trimmedBoundaryReplacer,
-  contextAwareReplacer,
-  multiOccurrenceReplacer,
+const REPLACERS: ReplacerEntry[] = [
+  { name: 'simpleReplacer', fn: simpleReplacer },
+  { name: 'lineTrimmedReplacer', fn: lineTrimmedReplacer },
+  { name: 'blockAnchorReplacer', fn: blockAnchorReplacer },
+  { name: 'whitespaceNormalizedReplacer', fn: whitespaceNormalizedReplacer },
+  { name: 'indentationFlexibleReplacer', fn: indentationFlexibleReplacer },
+  { name: 'escapeNormalizedReplacer', fn: escapeNormalizedReplacer },
+  { name: 'trimmedBoundaryReplacer', fn: trimmedBoundaryReplacer },
+  { name: 'contextAwareReplacer', fn: contextAwareReplacer },
+  { name: 'multiOccurrenceReplacer', fn: multiOccurrenceReplacer },
 ];
+
+/**
+ * replace() 的返回结果
+ */
+interface ReplaceResult {
+  content: string;
+  /** 命中的替换器名称 */
+  matchedReplacer: string;
+  /** 文件中实际匹配到的字符串（可能与 oldString 缩进/空白不同） */
+  actualMatchedString: string;
+}
 
 /**
  * 执行替换
  */
-function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
+function replace(content: string, oldString: string, newString: string, replaceAll = false): ReplaceResult {
   if (oldString === newString) {
     throw new Error('No changes to apply: oldString and newString are identical.');
   }
 
   let notFound = true;
 
-  for (const replacer of REPLACERS) {
+  for (const { name, fn: replacer } of REPLACERS) {
     for (const search of replacer(content, oldString)) {
       const index = content.indexOf(search);
       if (index === -1) continue;
@@ -982,13 +1015,21 @@ function replace(content: string, oldString: string, newString: string, replaceA
       notFound = false;
 
       if (replaceAll) {
-        return content.replaceAll(search, newString);
+        return {
+          content: content.replaceAll(search, newString),
+          matchedReplacer: name,
+          actualMatchedString: search,
+        };
       }
 
       const lastIndex = content.lastIndexOf(search);
       if (index !== lastIndex) continue;
 
-      return content.substring(0, index) + newString + content.substring(index + search.length);
+      return {
+        content: content.substring(0, index) + newString + content.substring(index + search.length),
+        matchedReplacer: name,
+        actualMatchedString: search,
+      };
     }
   }
 
@@ -1051,6 +1092,21 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       throw new Error(`File not found: ${resolvedFilePath}`);
     }
 
+    // Read-before-write 校验：必须先读才能编辑
+    const dedupEntry = readDedupState.get(resolvedFilePath);
+    if (!dedupEntry) {
+      throw new Error(
+        `File has not been read yet. Read it first before editing it: ${resolvedFilePath}`
+      );
+    }
+    // Staleness 校验：文件在上次读取后被外部修改则拒绝编辑
+    const currentMtime = (await stat(resolvedFilePath)).mtimeMs;
+    if (currentMtime !== dedupEntry.mtimeMs) {
+      throw new Error(
+        `File has been modified since last read. Read the file again before editing it: ${resolvedFilePath}`
+      );
+    }
+
     // 读取文件，检测编码和行尾符
     const buffer = await readFile(resolvedFilePath, { encoding: null });
     const encoding = detectEncoding(buffer);
@@ -1061,7 +1117,35 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const actualOldString = findActualString(contentOld, oldString);
     const effectiveOldString = actualOldString ?? oldString;
 
-    const contentNew = replace(contentOld, effectiveOldString, newString, replaceAll);
+    const replaceResult = replace(contentOld, effectiveOldString, newString, replaceAll);
+    const contentNew = replaceResult.content;
+
+    // 当使用了非精确匹配（模糊匹配器）时，生成警告信息
+    let warning: string | undefined;
+    if (replaceResult.matchedReplacer !== 'simpleReplacer') {
+      const actualLines = replaceResult.actualMatchedString.split('\n');
+      const providedLines = effectiveOldString.split('\n');
+
+      // 检测是否为纯缩进差异
+      let indentOnly = true;
+      if (actualLines.length === providedLines.length) {
+        for (let i = 0; i < actualLines.length; i++) {
+          if (actualLines[i].trim() !== providedLines[i].trim()) {
+            indentOnly = false;
+            break;
+          }
+        }
+      } else {
+        indentOnly = false;
+      }
+
+      const diffType = indentOnly ? 'indentation/whitespace' : 'content formatting';
+      warning =
+        `Edit applied via fuzzy matching (${replaceResult.matchedReplacer}). ` +
+        `The oldString did not exactly match the file content — ${diffType} differs. ` +
+        `The newString was written as-is, which may produce incorrect indentation or formatting. ` +
+        `Please re-read the file to verify the result is correct.`;
+    }
 
     // 生成 diff
     const diff = createTwoFilesPatch(resolvedFilePath, resolvedFilePath, contentOld, contentNew);
@@ -1077,10 +1161,10 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     // 写入文件（保留编码和行尾符）
     await writeTextContent(resolvedFilePath, contentNew, encoding, lineEndings);
 
-    // 更新 read 去重状态
+    // 更新 read 去重状态（offset=undefined 表示由 Edit 设置，非 Read 产生）
     try {
       const mtimeMs = (await stat(resolvedFilePath)).mtimeMs;
-      readDedupState.set(resolvedFilePath, { mtimeMs, offset: 1, limit: undefined });
+      readDedupState.set(resolvedFilePath, { mtimeMs, offset: undefined, limit: undefined });
     } catch {
       // ignore
     }
@@ -1090,7 +1174,8 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       diff,
       additions,
       deletions,
-      message: 'Edit applied successfully'
+      message: warning ?? 'Edit applied successfully',
+      ...(warning && { warning })
     };
   }
   });

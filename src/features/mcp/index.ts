@@ -97,9 +97,9 @@ export class MCPFeature implements AgentFeature {
     this.input = input;
     this.options = options;
 
-    if (typeof input === 'string') {
-      this.config = loadMCPConfigFromInput(input);
-    } else if (input) {
+    // Only store direct config objects; string inputs are resolved lazily in
+    // resolveRuntimeConfig where workspaceDir is available for path resolution.
+    if (input && typeof input !== 'string') {
       this.config = input;
     }
   }
@@ -146,17 +146,20 @@ export class MCPFeature implements AgentFeature {
   }
 
   private resolveRuntimeConfig(ctx: FeatureInitContext): MCPConfig | undefined {
+    // Direct config objects set in constructor — no path resolution needed.
     if (this.config) {
       return this.config;
     }
 
+    const rootDir = ctx.config?.workspaceDir;
+
     if (typeof this.input === 'string') {
-      this.config = loadMCPConfigFromInput(this.input);
+      this.config = loadMCPConfigFromInput(this.input, rootDir);
       return this.config;
     }
 
     const featureConfig = this.resolveFeatureConfig(ctx.featureConfig);
-    this.config = loadAllMCPConfigs(undefined, {
+    this.config = loadAllMCPConfigs(rootDir, {
       loadDefaultDir: featureConfig.scanAgentdevDir,
       extraConfigFiles: featureConfig.extraConfigFiles,
       excludeServers: this.options.excludeServers,

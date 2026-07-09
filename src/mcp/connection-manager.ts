@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
   CompatibilityCallToolResultSchema,
@@ -94,62 +95,49 @@ export class MCPConnectionManager {
     name: string,
     config: MCPSstdioConfig,
     connection: MCPConnection
-  ): Promise<any> {
-    const isWindows = process.platform === 'win32';
-    const useShell = isWindows || config.command.includes(' ') || config.command.includes('npx');
-
-    const childProc = spawn(config.command, config.args, {
-      env: { ...process.env, ...config.env },
+  ): Promise<Client> {
+    const client = new Client({
+      name: `agentdev-${name}`,
+      version: '0.1.0',
+    });
+    const transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args,
+      env: config.env,
       cwd: config.cwd,
-      stdio: ['pipe', 'pipe', 'inherit'],
-      shell: useShell,
-      windowsHide: true,
+      stderr: 'pipe',
     });
 
-    childProc.on('error', (error: Error) => {
+    await client.connect(transport);
+
+    client.onerror = (error) => {
       connection.state = MCPConnectionState.Error;
       connection.lastError = error.message;
-      this.rejectAllPendingRequests(connection, error);
-      this.log('error', `MCP server ${name} process error: ${error.message}`);
-    });
-
-    const stderr = (childProc as any).stderr;
-    if (stderr) {
-      stderr.on('data', (data: Buffer) => {
-        this.log('debug', `[MCP] ${name} stderr: ${data.toString()}`);
-      });
-    }
-
-    const stdout = childProc.stdout;
-    if (stdout) {
-      stdout.on('data', (data: Buffer) => {
-        this.handleProcessOutput(connection, data.toString());
-      });
-    }
-
-    childProc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
-      this.log('info', `MCP server ${name} exited: code=${code}, signal=${signal}`);
+      this.log('error', `MCP server ${name} client error: ${error.message}`);
+    };
+    transport.onclose = () => {
+      this.log(
+        connection.allowReconnect ? 'warn' : 'info',
+        `MCP server ${name} stdio transport closed`
+      );
       connection.state = MCPConnectionState.Disconnected;
-      this.rejectAllPendingRequests(connection, new Error(`MCP server ${name} exited`));
+      this.rejectAllPendingRequests(connection, new Error(`MCP server ${name} disconnected`));
       if (connection.allowReconnect) {
         this.scheduleReconnect(name);
       }
-    });
+    };
 
-    const startupDelay = process.platform === 'win32' ? 2000 : 500;
-    await new Promise(resolve => setTimeout(resolve, startupDelay));
-
-    this.log('info', `[MCP] Using direct JSON-RPC communication for ${name}`);
-
-    connection.process = childProc;
-    connection.server = childProc as any;
+    // StdioClientTransport manages the child process internally;
+    // transport.close() handles cleanup, so no need to track the process.
+    connection.transport = transport;
+    connection.server = client;
     connection.state = MCPConnectionState.Connected;
     connection.connectedAt = Date.now();
     connection.lastError = undefined;
     connection.reconnectAttempts = 0;
 
     this.log('info', `Connected to MCP server ${name} (stdio)`);
-    return childProc as any;
+    return client;
   }
 
   /**

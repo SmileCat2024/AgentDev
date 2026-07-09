@@ -25,12 +25,23 @@ function readConfigFile(configPath: string): unknown {
   }
 }
 
+/**
+ * 归一化单个 server 配置：将 MCP 标准字段 `type` 映射到 `transport`。
+ * Claude Desktop / Cursor 等客户端使用 `type`，框架内部统一用 `transport`。
+ */
+function normalizeServerConfig(server: Record<string, unknown>): Record<string, unknown> {
+  if (!server.transport && typeof server.type === 'string') {
+    return { ...server, transport: server.type };
+  }
+  return server;
+}
+
 function isMCPServerConfig(value: unknown): value is MCPServerConfig {
   if (!value || typeof value !== 'object') {
     return false;
   }
 
-  const config = value as Record<string, unknown>;
+  const config = normalizeServerConfig(value as Record<string, unknown>);
   if (config.transport === 'stdio') {
     return typeof config.command === 'string' && Array.isArray(config.args);
   }
@@ -64,14 +75,19 @@ function normalizeToMCPConfig(
 ): MCPConfig | undefined {
   if (isMCPConfig(value)) {
     const config = value as unknown as Record<string, unknown>;
-    const servers = (config.servers ?? config.mcpServers) as Record<string, MCPServerConfig> | undefined;
-    if (!servers) {
+    const rawServers = (config.servers ?? config.mcpServers) as Record<string, unknown> | undefined;
+    if (!rawServers) {
       return undefined;
     }
 
-    return {
-      servers,
-    };
+    const servers: Record<string, MCPServerConfig> = {};
+    for (const [id, server] of Object.entries(rawServers)) {
+      if (server && typeof server === 'object') {
+        servers[id] = normalizeServerConfig(server as Record<string, unknown>) as unknown as MCPServerConfig;
+      }
+    }
+
+    return { servers };
   }
 
   if (isMCPServerConfig(value)) {

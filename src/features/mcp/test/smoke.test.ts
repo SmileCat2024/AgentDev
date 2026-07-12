@@ -35,6 +35,34 @@ async function collectTools(label: string, mcpServer?: string | false): Promise<
   }
 }
 
+const MOCK_SERVER_CODE = [
+  "process.stdin.setEncoding('utf8');",
+  "let buffer = '';",
+  "process.stdin.on('data', (chunk) => {",
+  "  buffer += chunk;",
+  "  const lines = buffer.split(/\\r?\\n/);",
+  "  buffer = lines.pop() || '';",
+  "  for (const line of lines) {",
+  "    if (!line.trim()) continue;",
+  "    const msg = JSON.parse(line);",
+  "    const toolName = process.env.MOCK_MCP_TOOL_NAME || 'status';",
+  "    let result;",
+  "    if (msg.method === 'initialize') {",
+  "      result = { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'mock-mcp', version: '1.0.0' } };",
+  "    } else if (msg.method === 'notifications/initialized') {",
+  "      continue;",
+  "    } else if (msg.method === 'tools/list') {",
+  "      result = { tools: [{ name: toolName, description: 'Mock MCP tool', inputSchema: { type: 'object', properties: {} } }] };",
+  "    } else {",
+  "      result = { content: [{ type: 'text', text: 'ok' }] };",
+  "    }",
+  "    if (msg.id !== undefined) {",
+  "      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n');",
+  "    }",
+  "  }",
+  "});",
+].join('\n');
+
 async function createMockMCPWorkspace(): Promise<{ tempDir: string; githubConfigPath: string }> {
   const tempDir = await mkdtemp(join(tmpdir(), 'agentdev-mcp-smoke-'));
   const configDir = join(tempDir, '.agentdev', 'mcps');
@@ -43,24 +71,7 @@ async function createMockMCPWorkspace(): Promise<{ tempDir: string; githubConfig
   const extraConfigPath = join(configDir, 'extra.json');
 
   await mkdir(configDir, { recursive: true });
-  await writeFile(serverPath, `
-process.stdin.setEncoding('utf8');
-let buffer = '';
-process.stdin.on('data', (chunk) => {
-  buffer += chunk;
-  const lines = buffer.split(/\\r?\\n/);
-  buffer = lines.pop() || '';
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const request = JSON.parse(line);
-    const toolName = process.env.MOCK_MCP_TOOL_NAME || 'status';
-    const result = request.method === 'tools/list'
-      ? { tools: [{ name: toolName, description: 'Mock MCP tool', inputSchema: { type: 'object', properties: {} } }] }
-      : { content: [{ type: 'text', text: 'ok' }] };
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
-  }
-});
-`, 'utf8');
+  await writeFile(serverPath, MOCK_SERVER_CODE, 'utf8');
 
   const createConfig = (serverId: string, toolName: string) => JSON.stringify({
     servers: {

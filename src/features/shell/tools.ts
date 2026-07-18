@@ -1,14 +1,14 @@
 /**
  * Shell Feature 工具定义
  *
- * 提供 bash 工具，通过 Git Bash 执行 Shell 命令，支持 AbortSignal 中断。
+ * 提供 bash 工具，在 Windows 上通过 Git Bash、在 Linux/macOS 上通过原生 bash 执行 Shell 命令，支持 AbortSignal 中断。
  *
  * 改进点（照搬 Claude Code 的优秀实践）：
  * 1. 命令引用：eval + 单引号包裹，彻底解决 syntax error near unexpected token '('
  * 2. 非 -i 模式：去掉 interactive flag，消除 job control 警告
  * 3. stdin redirect：自动添加 < /dev/null 防止命令挂起
  * 4. Windows null rewrite：>nul → >/dev/null
- * 5. 动态 Git Bash 路径检测
+ * 5. 动态 bash 路径检测（Windows: Git Bash; Linux/macOS: $SHELL || /bin/bash）
  * 6. 输出截断：防止大输出撑爆 LLM 上下文
  */
 
@@ -227,9 +227,14 @@ export async function runShellCommand(
   // 4. 确定 bash 路径和参数
   const bashPath = options.bashPath || findGitBashPath();
   if (!bashPath) {
-    throw new Error('Git Bash not found. Please install Git for Windows or configure the path in settings.');
+    const hint = process.platform === 'win32'
+      ? 'Git Bash not found. Please install Git for Windows or configure the path in settings.'
+      : 'Bash not found. Please ensure bash is installed or configure the path in settings.';
+    throw new Error(hint);
   }
   const bashArgs = ['-c', commandString];
+
+  const isWin = process.platform === 'win32';
 
   return new Promise((resolve, reject) => {
     let stdout = '';
@@ -243,10 +248,14 @@ export async function runShellCommand(
       cwd: workdir,
       env: {
         ...process.env,
-        MSYSTEM: process.env.MSYSTEM || 'MINGW64',
+        // MSYSTEM is only meaningful for Git Bash (MSYS2/MinGW) on Windows.
+        ...(isWin ? { MSYSTEM: process.env.MSYSTEM || 'MINGW64' } : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // On Linux/macOS, detached: true puts the child in its own process group
+      // so that process.kill(-pid) can terminate the entire group on timeout/abort.
+      ...(!isWin ? { detached: true } : {}),
     });
 
     const killChild = () => {

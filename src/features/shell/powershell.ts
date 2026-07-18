@@ -124,11 +124,15 @@ export async function runPowerShellCommand(
 
     const timeoutMs = Math.min(options.timeoutMs || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
+    const isWin = process.platform === 'win32';
+
     const child = spawn(psPath, psArgs, {
       cwd: workdir,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // On Linux/macOS, detached: true enables process group kill on timeout/abort.
+      ...(!isWin ? { detached: true } : {}),
     });
 
     const killChild = () => {

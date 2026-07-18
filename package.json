@@ -6,9 +6,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "agentdev-viewer": "dist/cli/viewer.cmd",
-    "agentdev-server": "dist/cli/server.cmd",
-    "agentdev-create-feature": "dist/create-feature-cli.cmd"
+    "agentdev-viewer": "dist/cli/viewer.js",
+    "agentdev-server": "dist/cli/server.js",
+    "agentdev-create-feature": "dist/create-feature-cli.js"
   },
   "files": [
     "dist",

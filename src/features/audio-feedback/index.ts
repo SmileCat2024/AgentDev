@@ -291,6 +291,26 @@ export class AudioFeedbackFeature implements AgentFeature {
       return;
     }
 
+    if (process.platform !== 'win32') {
+      // Linux: try common audio players in order of preference
+      for (const [cmd, args] of [
+        ['pw-play', [audioPath]],                       // PipeWire
+        ['paplay', [audioPath]],                        // PulseAudio
+        ['aplay', ['-q', audioPath]],                   // ALSA (wav only, but widely available)
+        ['ffplay', ['-nodisp', '-autoexit', '-volume', String(Math.round(volume * 100)), audioPath]], // ffmpeg
+      ] as [string, string[]][]) {
+        try {
+          await execFileAsync(cmd, args, { timeout: 15000 });
+          return;
+        } catch {
+          // Player not installed or failed, try next
+        }
+      }
+      // No audio player found on Linux — silently skip (headless server is expected)
+      console.warn('[audio-feedback] No audio player found on Linux. Install pipewire-alsa, pulseaudio-utils, or ffmpeg for audio support.');
+      return;
+    }
+
     // Windows: 使用 WPF MediaPlayer + Dispatcher 消息泵
     const escapedPath = audioPath.replace(/'/g, "''");
     const psScript = [

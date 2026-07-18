@@ -1,7 +1,7 @@
 /**
  * Shell Feature - 独立 npm 包
  *
- * 支持 Git Bash 和 PowerShell 两种 Shell 环境。
+ * 支持 Bash（Windows: Git Bash / Linux/macOS: 原生 bash）和 PowerShell 两种 Shell 环境。
  * 根据用户配置和运行时探测结果，条件注册 Bash 和/或 PowerShell 工具。
  *
  * @example
@@ -78,26 +78,26 @@ export class ShellFeature implements AgentFeature {
         properties: {
           bashEnabled: {
             type: 'boolean',
-            title: '启用 Bash (Git Bash)',
-            description: '启用后，Agent 将获得 Bash 工具。需要系统已安装 Git for Windows。',
+            title: '启用 Bash',
+            description: '启用后，Agent 将获得 Bash 工具。Windows 需要 Git for Windows；Linux/macOS 使用系统自带 Shell。',
             default: true,
           },
           bashPath: {
             type: 'file',
             title: 'Bash 路径',
-            description: 'bash.exe 的路径。留空时自动检测。',
+            description: 'Bash 可执行文件路径。留空时自动检测。',
             placeholder: '自动检测',
           },
           powershellEnabled: {
             type: 'boolean',
             title: '启用 PowerShell',
-            description: '启用后，Agent 将获得 PowerShell 工具。Windows 系统自带 PowerShell 5.1。',
+            description: '启用后，Agent 将获得 PowerShell 工具。Windows 自带 PowerShell 5.1；Linux/macOS 需安装 PowerShell Core (pwsh)。',
             default: true,
           },
           powershellPath: {
             type: 'file',
             title: 'PowerShell 路径',
-            description: 'powershell.exe 或 pwsh.exe 的路径。留空时自动检测。',
+            description: 'PowerShell 可执行文件路径。留空时自动检测。',
             placeholder: '自动检测',
           },
         },
@@ -134,7 +134,7 @@ export class ShellFeature implements AgentFeature {
             const descriptionPath = resolve(this.resourceRoot, '.agentdev/prompts/tool-bash.md');
             this.bashDescription = await readFile(descriptionPath, 'utf-8');
           } catch {
-            this.bashDescription = '执行 Shell 命令（通过 Git Bash）';
+            this.bashDescription = '执行 Shell 命令';
           }
         }
         tools.push(createShellCommandTool(this.bashDescription, {

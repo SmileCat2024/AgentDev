@@ -41,6 +41,8 @@ export interface SystemContext {
   SYSTEM_IS_GIT_REPOSITORY: boolean;
   /** 操作系统平台 */
   SYSTEM_PLATFORM: NodeJS.Platform;
+  /** Shell 环境描述 */
+  SYSTEM_SHELL_ENV: string;
   /** 当前日期 (YYYY-MM-DD) */
   SYSTEM_DATE: string;
   /** 当前使用的模型名称 */
@@ -109,6 +111,7 @@ export class BasicAgent extends Agent {
       SYSTEM_WORKING_DIR: workspaceDir,
       SYSTEM_IS_GIT_REPOSITORY: existsSync(workspaceDir + '/.git'),
       SYSTEM_PLATFORM: platform,
+      SYSTEM_SHELL_ENV: platform === 'win32' ? 'Git bash' : (platform === 'darwin' ? 'Bash (macOS)' : 'Bash'),
       SYSTEM_DATE: new Date().toISOString().split('T')[0], // YYYY-MM-DD
       SYSTEM_CURRENT_MODEL: 'unknown', // 稍后更新
     };

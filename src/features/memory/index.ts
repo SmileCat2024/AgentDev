@@ -136,8 +136,8 @@ export class MemoryFeature implements AgentFeature {
       return;
     }
 
-    // 读取所有配置的文档文件
-    const contents: string[] = [];
+    // 每个文档作为独立的系统消息注入
+    let injected = false;
     for (const doc of this.documents) {
       const filePath = isAbsolute(doc) ? doc : resolve(this.baseDir, doc);
       if (!existsSync(filePath)) {
@@ -146,19 +146,17 @@ export class MemoryFeature implements AgentFeature {
       try {
         const content = readFileSync(filePath, 'utf-8');
         if (content && content.trim().length > 0) {
-          contents.push(content);
+          ctx.context.add({ role: 'system', content });
+          injected = true;
         }
       } catch {
         // 容错：跳过读取失败的文件
       }
     }
 
-    if (contents.length === 0) {
+    if (!injected) {
       return;
     }
-
-    // 注入为系统消息
-    ctx.context.add({ role: 'system', content: contents.join('\n\n') });
     this._injected = true;
   }
 

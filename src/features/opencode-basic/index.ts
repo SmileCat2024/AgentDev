@@ -32,6 +32,8 @@ import {
   createGrepTool,
   normalizeNamedPathArg,
   resolveWorkspacePath,
+  serializeReadDedupState,
+  deserializeReadDedupState,
 } from './tools.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -109,12 +111,14 @@ export class OpencodeBasicFeature implements AgentFeature {
   captureState(): FeatureStateSnapshot {
     return {
       readFiles: Array.from(this.readFiles),
+      readDedupState: serializeReadDedupState(),
     };
   }
 
   restoreState(snapshot: FeatureStateSnapshot): void {
-    const state = snapshot as { readFiles?: string[] };
+    const state = snapshot as { readFiles?: string[]; readDedupState?: unknown };
     this.readFiles = new Set(state.readFiles ?? []);
+    deserializeReadDedupState(state.readDedupState);
   }
 
   /**

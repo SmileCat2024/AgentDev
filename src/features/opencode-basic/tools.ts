@@ -60,6 +60,33 @@ interface ReadDedupEntry {
 }
 const readDedupState = new Map<string, ReadDedupEntry>();
 
+/**
+ * 序列化 readDedupState（模块级状态），供 feature captureState 导出。
+ * 用于会话精简/恢复时保持 edit/write 的"先读后写"校验状态。
+ */
+export function serializeReadDedupState(): Record<string, ReadDedupEntry> {
+  return Object.fromEntries(readDedupState);
+}
+
+/**
+ * 反序列化 readDedupState，供 feature restoreState 恢复。
+ * 先清空再填充，避免残留状态。
+ */
+export function deserializeReadDedupState(data: unknown): void {
+  readDedupState.clear();
+  if (!data || typeof data !== 'object') return;
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const entry = value as { mtimeMs?: unknown; offset?: unknown; limit?: unknown };
+    if (typeof entry.mtimeMs !== 'number') continue;
+    readDedupState.set(key, {
+      mtimeMs: entry.mtimeMs,
+      offset: typeof entry.offset === 'number' ? entry.offset : undefined,
+      limit: typeof entry.limit === 'number' ? entry.limit : undefined,
+    });
+  }
+}
+
 const FILE_UNCHANGED_STUB =
   'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.';
 

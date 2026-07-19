@@ -325,11 +325,22 @@ export function compileContextForAnthropic(messages: Message[], tools: Tool[], v
 
   for (const message of messages) {
     if (!seenFirstUser && message.role === 'system') {
-      systemBlocks.push({
-        type: 'text',
-        text: message.content,
-        cache_control: { type: 'ephemeral' },
-      });
+      // Agent system prompt (no source) → top-level system parameter.
+      // Feature-injected system messages (source set, e.g. 'handoff-seed',
+      // 'partial-compact') → wrap as <reminder> and embed in the next user
+      // turn, so they don't mix into the top-level system parameter.
+      if (!message.source) {
+        systemBlocks.push({
+          type: 'text',
+          text: message.content,
+          cache_control: { type: 'ephemeral' },
+        });
+      } else {
+        pendingUserBlocks.push({
+          type: 'text',
+          text: wrapReminder(message.content),
+        });
+      }
       continue;
     }
 
@@ -616,7 +627,22 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
       charCount += delta.charCount;
       currentPhase = delta.phase;
     }, (usage) => {
-      usageInfo = usage;
+      // Merge instead of replace: message_delta may omit input_tokens
+      // (some Anthropic-compatible providers only send output_tokens in
+      // deltas). Preserve inputTokens/cache tokens from message_start so
+      // the final usageInfo accurately reflects the actual context size.
+      if (usageInfo) {
+        const inputTokens = usage.inputTokens || usageInfo.inputTokens;
+        const outputTokens = usage.outputTokens || usageInfo.outputTokens;
+        usageInfo = {
+          ...usageInfo,
+          ...usage,
+          inputTokens,
+          totalTokens: inputTokens + outputTokens,
+        };
+      } else {
+        usageInfo = usage;
+      }
     }, (reason) => {
       stopReason = reason;
     });

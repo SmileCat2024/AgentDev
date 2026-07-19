@@ -251,6 +251,16 @@ export interface Message {
   /** 图片附件（仅 user 消息有效），多模态输入 */
   images?: ImageInput[];
   /**
+   * 消息来源标记（仅 system 消息使用）。
+   *
+   * - undefined：agent 自身的系统提示词（由 templateResolver 生成），
+   *   Anthropic provider 将其放入顶层 system 参数。
+   * - 有值（如 'handoff-seed'、'partial-compact'）：Feature 注入的 system 消息，
+   *   Anthropic provider 将其包裹为 <reminder> 嵌入最近的 user turn，
+   *   而非混入顶层 system 参数。
+   */
+  source?: string;
+  /**
    * LLM 用量信息（仅 assistant 消息有值）。
    *
    * 由 LLM provider 在生成响应时返回，表示生成此消息时的上下文 token 开销。

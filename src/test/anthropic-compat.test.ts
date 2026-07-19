@@ -146,4 +146,46 @@ describe('Anthropic context compilation', () => {
     expect(contentBlocks[0]?.thinking).toBe('需要延续上一轮的思路。');
     expect(contentBlocks[1]?.type).toBe('text');
   });
+
+  it('should route sourced system messages before first user to reminder, not top-level system', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'Agent system prompt' },
+      { role: 'system', content: 'Handoff summary content', source: 'handoff-seed' },
+      { role: 'user', content: 'Continue the work' },
+    ];
+
+    const compiled = compileContextForAnthropic(messages, []);
+
+    // Only the agent system prompt (no source) goes to top-level system
+    expect(compiled.system).toHaveLength(1);
+    expect(String((compiled.system?.[0] as any)?.text || '')).toBe('Agent system prompt');
+
+    // The sourced system message becomes a <reminder> block embedded in the user turn
+    expect(compiled.messages).toHaveLength(1);
+    expect(compiled.messages[0]?.role).toBe('user');
+    const contentBlocks = compiled.messages[0]?.content as Array<Record<string, unknown>>;
+    expect(contentBlocks).toHaveLength(2);
+    expect(String(contentBlocks[0]?.text || '')).toContain('<reminder>');
+    expect(String(contentBlocks[0]?.text || '')).toContain('Handoff summary content');
+    expect(contentBlocks[1]?.text).toBe('Continue the work');
+  });
+
+  it('should route multiple sourced system messages as separate reminder blocks', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'Agent prompt' },
+      { role: 'system', content: 'Summary', source: 'handoff-seed' },
+      { role: 'system', content: 'Important file: foo.ts', source: 'handoff-seed' },
+      { role: 'user', content: 'Start' },
+    ];
+
+    const compiled = compileContextForAnthropic(messages, []);
+
+    expect(compiled.system).toHaveLength(1);
+    const contentBlocks = compiled.messages[0]?.content as Array<Record<string, unknown>>;
+    // Two reminder blocks + one user text block
+    expect(contentBlocks).toHaveLength(3);
+    expect(String(contentBlocks[0]?.text || '')).toContain('<reminder>Summary</reminder>');
+    expect(String(contentBlocks[1]?.text || '')).toContain('<reminder>Important file: foo.ts</reminder>');
+    expect(contentBlocks[2]?.text).toBe('Start');
+  });
 });

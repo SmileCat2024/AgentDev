@@ -298,7 +298,7 @@ export class Context {
       { turn, source }
     );
     // 同步到 messages 数组
-    this.messages.push({ role: 'system', content, turn });
+    this.messages.push({ role: 'system', content, turn, source });
   }
 
   // ========== 内核化能力：查询接口 ==========

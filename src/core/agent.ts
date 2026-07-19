@@ -19,7 +19,17 @@ import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
 import type { CallContinuationRequest } from './continuation.js';
-import { getDefaultSessionStore, type AgentRuntimeSnapshot, type AgentSessionSnapshot, type SessionStore, type CallRollbackSnapshot, type NamedCheckpoint } from './session-store.js';
+import {
+  getDefaultSessionStore,
+  type AgentRuntimeSnapshot,
+  type RuntimeStateWithoutContext,
+  type AgentSessionSnapshot,
+  type SessionStore,
+  type CallRollbackSnapshot,
+  type CallRollbackSnapshotV2,
+  type NamedCheckpoint,
+} from './session-store.js';
+import type { ContextBoundaryV2 } from './context.js';
 import { UsageStats, type UsageStatsSnapshot } from './usage.js';
 import type {
   ToolContext,
@@ -62,7 +72,11 @@ export type { ContextSnapshot };
 export { HookErrorHandling };
 export type { AgentSessionSnapshot, SessionStore };
 
-type CallRollbackCheckpoint = CallRollbackSnapshot;
+/**
+ * 内部 call checkpoint 类型 — v2 union。
+ * 新 checkpoint 为 'context-boundary'，从老会话加载的为 'legacy-full-snapshot'。
+ */
+type CallRollbackCheckpoint = CallRollbackSnapshotV2;
 
 // 基础类（不含生命周期钩子）
 class AgentBase {
@@ -297,7 +311,8 @@ class AgentBase {
         { hookName: 'onCallStart', input }
       );
 
-      let preCallRuntime: Awaited<ReturnType<typeof this.captureRuntimeSnapshot>> | undefined;
+      let preCallBoundary: ContextBoundaryV2 | undefined;
+      let preCallRuntimeState: RuntimeStateWithoutContext | undefined;
       let finalInput: string | undefined;
       try {
       // ========== Agent Initiate（仅首次）==========
@@ -334,9 +349,10 @@ class AgentBase {
       this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
 
-      // 在 CallStart 钩子之后、用户消息之前捕获快照，
+      // 在 CallStart 钩子之后、用户消息之前捕获边界，
       // 确保 checkpoint 包含 Feature 注入的内容（CLAUDE.md、交接摘要等）。
-      preCallRuntime = await this.captureRuntimeSnapshot(context, this._callIndex - 1);
+      preCallBoundary = context.captureBoundary();
+      preCallRuntimeState = await this.captureRuntimeStateWithoutContext(this._callIndex - 1);
 
       // 发送 call.start 通知（供前端消费 agent 运行状态）
       try {
@@ -353,9 +369,11 @@ class AgentBase {
       // 持久化时，当前 call 的 checkpoint 已存在。这消除了"消息已持久化但
       // checkpoint 缺失"的竞态窗口。
       this.commitCallCheckpoint({
+        kind: 'context-boundary',
         callIndex: this._callIndex,
         draftInput: finalInput,
-        runtime: preCallRuntime,
+        contextBoundary: preCallBoundary,
+        runtimeState: preCallRuntimeState,
       });
 
       // ========== 初始化执行器（延迟初始化）==========
@@ -413,11 +431,13 @@ class AgentBase {
       this.persistentContext = context;
 
       // 失败调用也提交 checkpoint，保持与成功调用对称
-      if (preCallRuntime && finalInput !== undefined) {
+      if (preCallBoundary && preCallRuntimeState && finalInput !== undefined) {
         this.commitCallCheckpoint({
+          kind: 'context-boundary',
           callIndex: this._callIndex,
           draftInput: finalInput,
-          runtime: preCallRuntime,
+          contextBoundary: preCallBoundary,
+          runtimeState: preCallRuntimeState,
         });
       }
 
@@ -589,16 +609,12 @@ class AgentBase {
     const runtime = await this.captureRuntimeSnapshot(this.persistentContext, this._callIndex);
 
     return {
-      version: 1,
+      version: 2,
       sessionId,
       savedAt: Date.now(),
       agentType: this.constructor.name,
       runtime,
-      rollbackHistory: this._callCheckpoints.map(entry => ({
-        callIndex: entry.callIndex,
-        draftInput: entry.draftInput,
-        runtime: { ...entry.runtime },
-      })),
+      rollbackHistory: this._callCheckpoints,
       ...(this._namedCheckpoints.length > 0
         ? { namedCheckpoints: this._namedCheckpoints.map(cp => ({ ...cp, runtime: { ...cp.runtime } })) }
         : {}),
@@ -612,11 +628,10 @@ class AgentBase {
     await this.ensureFeatureTools();
     const normalized = this.normalizeSessionSnapshot(snapshot as AgentSessionSnapshot & Record<string, unknown>);
     await this.restoreRuntimeSnapshot(normalized.runtime);
-    this._callCheckpoints = normalized.rollbackHistory.map(entry => ({
-      callIndex: entry.callIndex,
-      draftInput: entry.draftInput,
-      runtime: entry.runtime,
-    }));
+
+    // 恢复 rollback history，处理 v1/v2 混合格式
+    const rawHistory = normalized.rollbackHistory as unknown as Array<Record<string, unknown>>;
+    this._callCheckpoints = rawHistory.map(entry => this.normalizeCheckpointEntry(entry));
 
     // 恢复命名检查点（如果快照中包含）
     this._namedCheckpoints = (snapshot as AgentSessionSnapshot).namedCheckpoints
@@ -654,7 +669,16 @@ class AgentBase {
       throw new Error(`Rollback checkpoint for call ${callIndex} not found`);
     }
 
-    await this.restoreRuntimeSnapshot(checkpoint.runtime);
+    if (checkpoint.kind === 'context-boundary') {
+      // v2 增量 rollback：截断 Context + 恢复运行态
+      const context = this.getContext();
+      context.truncateToBoundary(checkpoint.contextBoundary);
+      await this.restoreRuntimeStateWithoutContext(checkpoint.runtimeState);
+    } else {
+      // v1 legacy rollback：完整 runtime 恢复
+      await this.restoreRuntimeSnapshot(checkpoint.runtime);
+    }
+
     this._callCheckpoints = this._callCheckpoints.filter(entry => entry.callIndex < callIndex);
     this.pushToDebug(this.getContext().getAll());
     this.pushInspectorSnapshot();
@@ -1503,6 +1527,101 @@ class AgentBase {
     this._callCheckpoints = this._callCheckpoints
       .filter(entry => entry.callIndex < checkpoint.callIndex)
       .concat(checkpoint);
+  }
+
+  /**
+   * 将反序列化的 checkpoint entry 归一化为 v2 union 格式。
+   *
+   * - 有 `kind` 字段 → 已是 v2 格式，直接断言返回
+   * - 无 `kind` 但有 `runtime` → v1 格式，尝试 lazy migration 转 boundary；
+   *   无法安全转换的保留为 legacy-full-snapshot
+   */
+  private normalizeCheckpointEntry(entry: Record<string, unknown>): CallRollbackCheckpoint {
+    if (entry.kind === 'context-boundary' || entry.kind === 'legacy-full-snapshot') {
+      return entry as unknown as CallRollbackCheckpoint;
+    }
+
+    // v1 格式：{ callIndex, draftInput, runtime }
+    const callIndex = typeof entry.callIndex === 'number' ? entry.callIndex : -1;
+    const draftInput = typeof entry.draftInput === 'string' ? entry.draftInput : '';
+    const runtime = entry.runtime as AgentRuntimeSnapshot | undefined;
+
+    if (!runtime) {
+      return {
+        kind: 'legacy-full-snapshot',
+        callIndex,
+        draftInput,
+        runtime: { initialized: false, callIndex, context: undefined, featureStates: [] },
+        legacyReason: 'v1 entry missing runtime',
+      };
+    }
+
+    // 尝试 lazy migration：如果 runtime.context.messages 是当前 Context 的前缀，
+    // 转为 boundary；否则保留 legacy
+    const context = this.persistentContext;
+    const cpContext = runtime.context;
+    const cpMessages = cpContext?.messages;
+    if (context && cpContext && Array.isArray(cpMessages)) {
+      const currentMessages = context.getAll();
+      if (cpMessages.length <= currentMessages.length) {
+        const currentGen = context.captureBoundary().generation;
+        const enrichedLen = Array.isArray(cpContext.enrichedMessages)
+          ? cpContext.enrichedMessages.length
+          : cpMessages.length;
+        return {
+          kind: 'context-boundary',
+          callIndex,
+          draftInput,
+          contextBoundary: {
+            messagesLength: cpMessages.length,
+            enrichedMessagesLength: enrichedLen,
+            sequence: cpContext.sequence ?? enrichedLen,
+            generation: currentGen,
+          },
+          runtimeState: {
+            initialized: runtime.initialized,
+            callIndex: runtime.callIndex,
+            featureStates: runtime.featureStates ?? [],
+            usageStats: runtime.usageStats,
+          },
+        };
+      }
+    }
+
+    return {
+      kind: 'legacy-full-snapshot',
+      callIndex,
+      draftInput,
+      runtime,
+      legacyReason: 'v1 checkpoint not a prefix of current context',
+    };
+  }
+
+  /**
+   * 捕获不含 Context 的运行态（用于增量 checkpoint）。
+   */
+  private async captureRuntimeStateWithoutContext(callIndexOverride?: number): Promise<RuntimeStateWithoutContext> {
+    await this.ensureFeatureTools();
+    return {
+      initialized: this._initialized,
+      callIndex: callIndexOverride ?? this._callIndex,
+      featureStates: captureFeatureSnapshots(this.features),
+      usageStats: this.usageStats.toSnapshot(),
+    };
+  }
+
+  /**
+   * 恢复不含 Context 的运行态（用于增量 rollback）。
+   * 调用前应已通过 truncateToBoundary 截断 Context。
+   */
+  private async restoreRuntimeStateWithoutContext(state: RuntimeStateWithoutContext): Promise<void> {
+    await restoreFeatureSnapshots(state.featureStates, this.features);
+    this._initialized = state.initialized;
+    this._callIndex = state.callIndex;
+    this._currentStep = 0;
+    if (state.usageStats) {
+      this.usageStats.fromSnapshot(state.usageStats);
+    }
   }
 
   private normalizeSessionSnapshot(snapshot: AgentSessionSnapshot & Record<string, unknown>): AgentSessionSnapshot {

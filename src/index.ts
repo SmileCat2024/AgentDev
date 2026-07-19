@@ -13,6 +13,14 @@ export { DebugHub } from './core/debug-hub.js';
 export { createLogger, installConsoleBridge, runWithLogScope } from './core/logging.js';
 export type { Logger, LoggerBindings } from './core/logging.js';
 export { FileSessionStore, getDefaultSessionStore } from './core/session-store.js';
+export type {
+  AgentRuntimeSnapshot,
+  RuntimeStateWithoutContext,
+  CallRollbackSnapshot,
+  CallRollbackSnapshotV2,
+  IncrementalCallRollbackSnapshot,
+  LegacyCallRollbackSnapshot,
+} from './core/session-store.js';
 
 // Feature 系统
 export * from './features/index.js';

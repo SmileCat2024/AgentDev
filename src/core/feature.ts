@@ -125,26 +125,6 @@ export interface FeatureManifestDefinition {
   };
 }
 
-// ========== 正向钩子（纯通知，void 返回）==========
-
-/**
- * Feature 初始化上下文
- */
-export interface FeatureInitContext {
-  /** Agent ID */
-  agentId: string;
-  /** Agent 配置 */
-  config: import('./types.js').AgentConfig;
-  /** Feature 级结构化日志 */
-  logger: import('./logging.js').Logger;
-  /** Feature 特定配置 */
-  featureConfig?: unknown;
-  /** 获取其他 Feature */
-  getFeature<T extends AgentFeature>(name: string): T | undefined;
-  /** 注册工具 */
-  registerTool(tool: Tool): void;
-}
-
 /**
  * Agent Feature 接口
  *

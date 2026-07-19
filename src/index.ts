@@ -29,7 +29,7 @@ export * from './features/index.js';
 export * from './agents/index.js';
 
 // 生命周期类型
-export { Decision } from './core/lifecycle.js';
+export { Decision, normalizeDecision } from './core/lifecycle.js';
 export type { ToolContext, ToolResult, HookResult, AgentInitiateContext, DecisionResult } from './core/lifecycle.js';
 
 // 注意：所有工具现在通过 Feature 系统提供
@@ -116,7 +116,14 @@ export type {
 export { getPackageInfoFromSource } from './core/feature.js';
 export type { FeatureManifestDefinition, FeatureManifestSettingProperty } from './core/feature.js';
 export { CallStart, CallFinish, StepStart, StepFinish, ToolUse, ToolFinished } from './core/hooks-decorator.js';
-export type { CallStartContext, CallFinishContext, StepStartContext, StepFinishedContext } from './core/lifecycle.js';
+export type {
+  CallStartContext,
+  CallFinishContext,
+  StepStartContext,
+  StepFinishedContext,
+  StepFinishDecisionContext,
+  ToolFinishedDecisionContext,
+} from './core/lifecycle.js';
 export type { CallFinishReason } from './core/lifecycle.js';
 
 export type { ModelConfig, AgentConfigFile } from './core/config.js';

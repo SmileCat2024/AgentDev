@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Context } from '../../core/context.js';
+import type { ContextBoundaryV2 } from '../../core/context.js';
 import type { LLMResponse, ToolCall } from '../../core/types.js';
 
 /** Helper: create a minimal LLMResponse */
@@ -405,6 +406,300 @@ describe('Context', () => {
       ctx.addUserMessage('b', 1);
       const enriched = ctx.getAllEnriched();
       expect(enriched[1].sequence).toBeGreaterThan(enriched[0].sequence);
+    });
+  });
+
+  // ========== 边界原语 ==========
+
+  describe('captureBoundary', () => {
+    it('should capture current array lengths, sequence and generation', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.addAssistantMessage(makeResponse('b'), 1);
+      const boundary = ctx.captureBoundary();
+      expect(boundary.messagesLength).toBe(2);
+      expect(boundary.enrichedMessagesLength).toBe(2);
+      expect(boundary.sequence).toBe(2);
+      expect(boundary.generation).toBe(0);
+    });
+
+    it('should not change generation', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.captureBoundary();
+      ctx.captureBoundary();
+      // Multiple captures don't change generation
+      const boundary = ctx.captureBoundary();
+      expect(boundary.generation).toBe(0);
+    });
+  });
+
+  describe('truncateToBoundary', () => {
+    it('should truncate both arrays to equal lengths', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.addAssistantMessage(makeResponse('b'), 1);
+      ctx.addUserMessage('c', 2);
+
+      const boundary = ctx.captureBoundary();
+      ctx.addUserMessage('d', 3);
+
+      ctx.truncateToBoundary(boundary);
+      expect(ctx.length).toBe(3);
+      expect(ctx.getAllEnriched()).toHaveLength(3);
+      expect(ctx.getAll()[2].content).toBe('c');
+    });
+
+    it('should truncate when messages and enriched have different lengths', () => {
+      const ctx = new Context();
+      // add() only pushes to messages[], not enrichedMessages[]
+      ctx.add({ role: 'user', content: 'legacy', turn: 0 });
+      ctx.addUserMessage('typed', 1);
+
+      // messages: [legacy, typed], enriched: [typed]
+      expect(ctx.length).toBe(2);
+      expect(ctx.getAllEnriched()).toHaveLength(1);
+
+      const boundary = ctx.captureBoundary();
+      ctx.addUserMessage('extra', 2);
+
+      ctx.truncateToBoundary(boundary);
+      expect(ctx.length).toBe(2);
+      expect(ctx.getAllEnriched()).toHaveLength(1);
+    });
+
+    it('should restore sequence after truncation', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.addUserMessage('b', 1);
+      const seqBefore = ctx.captureBoundary().sequence;
+
+      ctx.addUserMessage('c', 2);
+      const seqAfter = ctx.captureBoundary().sequence;
+      expect(seqAfter).toBeGreaterThan(seqBefore);
+
+      ctx.truncateToBoundary({ messagesLength: 2, enrichedMessagesLength: 2, sequence: seqBefore, generation: 0 });
+      // After truncation, sequence should be restored
+      ctx.addUserMessage('d', 2);
+      const enriched = ctx.getAllEnriched();
+      expect(enriched[2].sequence).toBe(seqBefore);
+    });
+
+    it('should rebuild indexes after truncation', () => {
+      const ctx = new Context();
+      ctx.addAssistantMessage(makeResponse('a', [makeToolCall('tc1', 'search')]), 1);
+      ctx.addAssistantMessage(makeResponse('b', [makeToolCall('tc2', 'write')]), 2);
+      const boundary = ctx.captureBoundary();
+      ctx.addAssistantMessage(makeResponse('c', [makeToolCall('tc3', 'read')]), 3);
+
+      ctx.truncateToBoundary(boundary);
+      // search tool is in the retained part — index should still work
+      expect(ctx.query().byTool('search').exec()).toHaveLength(1);
+      // Third message should be gone
+      const enriched = ctx.getAllEnriched();
+      expect(enriched).toHaveLength(2);
+      expect(enriched.every(m => m.content !== 'c')).toBe(true);
+    });
+
+    it('should truncate to empty boundary', () => {
+      const ctx = new Context();
+      const emptyBoundary = ctx.captureBoundary();
+      ctx.addUserMessage('a', 1);
+      ctx.addUserMessage('b', 2);
+
+      ctx.truncateToBoundary(emptyBoundary);
+      expect(ctx.length).toBe(0);
+      expect(ctx.getAllEnriched()).toHaveLength(0);
+    });
+
+    it('should truncate to boundary captured after add() then typed add()', () => {
+      const ctx = new Context();
+      ctx.add({ role: 'user', content: 'legacy1', turn: 0 });
+      ctx.addUserMessage('typed1', 1);
+      ctx.add({ role: 'user', content: 'legacy2', turn: 0 });
+      // messages: [legacy1, typed1, legacy2], enriched: [typed1]
+      const boundary = ctx.captureBoundary();
+
+      ctx.addUserMessage('typed2', 2);
+      ctx.add({ role: 'user', content: 'legacy3', turn: 0 });
+      // messages: [legacy1, typed1, legacy2, typed2, legacy3], enriched: [typed1, typed2]
+
+      ctx.truncateToBoundary(boundary);
+      expect(ctx.length).toBe(3);
+      expect(ctx.getAllEnriched()).toHaveLength(1);
+    });
+  });
+
+  describe('truncateToBoundary validation', () => {
+    it('should reject messagesLength exceeding current length', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      expect(ctx.length).toBe(1);
+
+      const bad: ContextBoundaryV2 = {
+        messagesLength: 5,
+        enrichedMessagesLength: 1,
+        sequence: 1,
+        generation: 0,
+      };
+      expect(() => ctx.truncateToBoundary(bad)).toThrow(/exceeds current length/);
+    });
+
+    it('should reject enrichedMessagesLength exceeding current length', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+
+      const bad: ContextBoundaryV2 = {
+        messagesLength: 1,
+        enrichedMessagesLength: 5,
+        sequence: 1,
+        generation: 0,
+      };
+      expect(() => ctx.truncateToBoundary(bad)).toThrow(/exceeds current length/);
+    });
+
+    it('should reject negative messagesLength', () => {
+      const ctx = new Context();
+      const bad: ContextBoundaryV2 = {
+        messagesLength: -1,
+        enrichedMessagesLength: 0,
+        sequence: 0,
+        generation: 0,
+      };
+      expect(() => ctx.truncateToBoundary(bad)).toThrow(/non-negative integer/);
+    });
+
+    it('should reject non-integer enrichedMessagesLength', () => {
+      const ctx = new Context();
+      const bad: ContextBoundaryV2 = {
+        messagesLength: 0,
+        enrichedMessagesLength: 1.5,
+        sequence: 0,
+        generation: 0,
+      };
+      expect(() => ctx.truncateToBoundary(bad)).toThrow(/non-negative integer/);
+    });
+
+    it('should reject generation mismatch after clear', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      const boundary = ctx.captureBoundary();
+
+      ctx.clear();
+      ctx.addUserMessage('b', 1);
+
+      expect(() => ctx.truncateToBoundary(boundary)).toThrow(/generation mismatch/);
+    });
+
+    it('should reject generation mismatch after apply', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      const boundary = ctx.captureBoundary();
+
+      ctx.apply(msgs => [...msgs, { role: 'user', content: 'extra', turn: 0 }]);
+
+      expect(() => ctx.truncateToBoundary(boundary)).toThrow(/generation mismatch/);
+    });
+
+    it('should reject generation mismatch after restore to different lineage', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      const boundary = ctx.captureBoundary(); // generation 0
+
+      // Simulate loading a legacy snapshot (no generation field)
+      // restore() will increment generation since snapshot has no generation
+      const legacySnapshot = { version: 2, messages: [{ role: 'user', content: 'x', turn: 0 }] };
+      ctx.restore(legacySnapshot); // generation → 1
+
+      expect(() => ctx.truncateToBoundary(boundary)).toThrow(/generation mismatch/);
+    });
+  });
+
+  describe('generation invalidation', () => {
+    it('clear should increment generation', () => {
+      const ctx = new Context();
+      expect(ctx.captureBoundary().generation).toBe(0);
+      ctx.clear();
+      expect(ctx.captureBoundary().generation).toBe(1);
+    });
+
+    it('apply should increment generation', () => {
+      const ctx = new Context();
+      ctx.apply(msgs => msgs);
+      expect(ctx.captureBoundary().generation).toBe(1);
+    });
+
+    it('restore with generation in snapshot should preserve it', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.clear(); // gen → 1
+      ctx.addUserMessage('b', 1);
+      const snapshot = ctx.toJSON();
+      expect(snapshot.generation).toBe(1);
+
+      const ctx2 = new Context();
+      ctx2.restore(snapshot);
+      expect(ctx2.captureBoundary().generation).toBe(1);
+    });
+
+    it('restore without generation in snapshot should increment', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.clear(); // gen → 1
+      ctx.addUserMessage('b', 1);
+      const snapshot = ctx.toJSON();
+      delete (snapshot as any).generation;
+
+      const ctx2 = new Context();
+      // new Context has gen 0, restore without generation → gen becomes 1
+      ctx2.restore(snapshot);
+      expect(ctx2.captureBoundary().generation).toBe(1);
+    });
+
+    it('typed adds should not change generation', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.addAssistantMessage(makeResponse('b'), 1);
+      ctx.addSystemMessage('sys', 0);
+      const call = makeToolCall('tc1', 'search');
+      ctx.addToolMessage(call, { success: true, result: 'ok' }, 1);
+      expect(ctx.captureBoundary().generation).toBe(0);
+    });
+
+    it('truncateToBoundary should not change generation', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('a', 1);
+      ctx.addUserMessage('b', 2);
+      const boundary = ctx.captureBoundary();
+      ctx.addUserMessage('c', 3);
+
+      ctx.truncateToBoundary(boundary);
+      expect(ctx.captureBoundary().generation).toBe(0);
+
+      // Can still use the original boundary after truncation
+      ctx.addUserMessage('d', 3);
+      ctx.truncateToBoundary(boundary);
+      expect(ctx.length).toBe(2);
+    });
+
+    it('boundary should remain usable after multiple typed adds and truncations', () => {
+      const ctx = new Context();
+      ctx.addUserMessage('base', 1);
+      const boundary = ctx.captureBoundary();
+
+      // Cycle 1
+      ctx.addUserMessage('c1', 2);
+      ctx.truncateToBoundary(boundary);
+      expect(ctx.length).toBe(1);
+
+      // Cycle 2
+      ctx.addUserMessage('c2', 2);
+      ctx.addAssistantMessage(makeResponse('c2r'), 2);
+      ctx.truncateToBoundary(boundary);
+      expect(ctx.length).toBe(1);
+
+      // Boundary still valid
+      expect(ctx.captureBoundary().generation).toBe(boundary.generation);
     });
   });
 });

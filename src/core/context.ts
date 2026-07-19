@@ -38,6 +38,24 @@ export interface ContextSnapshot {
   messages: Message[];
   enrichedMessages?: EnrichedMessage[];
   sequence?: number;
+  generation?: number;
+}
+
+/**
+ * Context 边界快照 — 用于增量 rollback。
+ *
+ * 记录某个时间点两个数组的长度、sequence 和 generation，
+ * 截断时只需按长度切片即可恢复到该边界。
+ *
+ * generation 用于防止 ABA 问题：如果 Context 经历了
+ * clear/apply/restore 等非追加 mutation，generation 会递增，
+ * 旧 boundary 会被拒绝。
+ */
+export interface ContextBoundaryV2 {
+  messagesLength: number;
+  enrichedMessagesLength: number;
+  sequence: number;
+  generation: number;
 }
 
 export class Context {
@@ -49,6 +67,16 @@ export class Context {
   private enrichedMessages: EnrichedMessage[] = [];
   private indexes = new Map<string, Set<string>>();
   private sequence: number = 0;
+
+  /**
+   * Lineage generation，用于检测非追加 mutation。
+   *
+   * - 纯追加 typed message（addUserMessage 等）：不变
+   * - rollback 的合法截断（truncateToBoundary）：不变
+   * - clear / apply：递增
+   * - restore：使用 snapshot 携带的 generation，否则递增
+   */
+  private generation: number = 0;
 
   /**
    * 添加一条消息
@@ -94,6 +122,7 @@ export class Context {
    */
   clear(): void {
     this.messages = [];
+    this.generation++;
   }
 
   /**
@@ -101,6 +130,7 @@ export class Context {
    */
   apply(middleware: (messages: Message[]) => Message[]): this {
     this.messages = middleware(this.messages);
+    this.generation++;
     return this;
   }
 
@@ -131,6 +161,7 @@ export class Context {
         parsed: { ...message.parsed },
       })),
       sequence: this.sequence,
+      generation: this.generation,
     };
   }
 
@@ -156,6 +187,7 @@ export class Context {
         }))
       : [];
     this.sequence = snapshot.sequence ?? this.enrichedMessages.length;
+    this.generation = snapshot.generation ?? this.generation + 1;
     this.rebuildIndexes();
     return this;
   }
@@ -422,5 +454,81 @@ export class Context {
    */
   private generateId(): string {
     return `msg_${Date.now()}_${this.sequence}`;
+  }
+
+  // ========== 边界原语（增量 rollback） ==========
+
+  /**
+   * 捕获当前 Context 的前缀边界。
+   *
+   * 返回一个轻量快照，记录两个数组的长度、sequence 和 generation。
+   * 后续可传给 truncateToBoundary() 恢复到此边界。
+   *
+   * generation 不变：纯读取操作。
+   */
+  captureBoundary(): ContextBoundaryV2 {
+    return {
+      messagesLength: this.messages.length,
+      enrichedMessagesLength: this.enrichedMessages.length,
+      sequence: this.sequence,
+      generation: this.generation,
+    };
+  }
+
+  /**
+   * 校验 boundary 是否与当前 Context 兼容。
+   *
+   * @throws 如果 generation 不匹配、长度非法或超出当前数组。
+   */
+  private assertBoundaryCompatible(boundary: ContextBoundaryV2): void {
+    if (boundary.generation !== this.generation) {
+      throw new Error(
+        `Context boundary generation mismatch: boundary=${boundary.generation}, current=${this.generation}. ` +
+          'Context has been mutated by clear/apply/restore since the boundary was captured.',
+      );
+    }
+    if (!Number.isInteger(boundary.messagesLength) || boundary.messagesLength < 0) {
+      throw new Error(
+        `Context boundary messagesLength must be a non-negative integer, got ${boundary.messagesLength}`,
+      );
+    }
+    if (
+      !Number.isInteger(boundary.enrichedMessagesLength) ||
+      boundary.enrichedMessagesLength < 0
+    ) {
+      throw new Error(
+        `Context boundary enrichedMessagesLength must be a non-negative integer, got ${boundary.enrichedMessagesLength}`,
+      );
+    }
+    if (boundary.messagesLength > this.messages.length) {
+      throw new Error(
+        `Context boundary messagesLength (${boundary.messagesLength}) exceeds current length (${this.messages.length})`,
+      );
+    }
+    if (boundary.enrichedMessagesLength > this.enrichedMessages.length) {
+      throw new Error(
+        `Context boundary enrichedMessagesLength (${boundary.enrichedMessagesLength}) exceeds current length (${this.enrichedMessages.length})`,
+      );
+    }
+  }
+
+  /**
+   * 将两个数组截断到指定边界。
+   *
+   * 这是合法的 rollback 操作：generation 保持不变，
+   * 截断后同一 lineage 的旧 boundary 仍然可以继续使用。
+   *
+   * @throws 如果 boundary 与当前 Context 不兼容（generation 不匹配或长度越界）。
+   */
+  truncateToBoundary(boundary: ContextBoundaryV2): void {
+    this.assertBoundaryCompatible(boundary);
+
+    this.messages = this.messages.slice(0, boundary.messagesLength);
+    this.enrichedMessages = this.enrichedMessages.slice(
+      0,
+      boundary.enrichedMessagesLength,
+    );
+    this.sequence = boundary.sequence;
+    this.rebuildIndexes();
   }
 }

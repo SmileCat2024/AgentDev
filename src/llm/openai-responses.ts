@@ -477,7 +477,7 @@ export function compileContextForOpenAIResponses(
     }
 
     if (message.role === 'assistant') {
-      const assistantItems = compileAssistantMessageToResponsesItems(message);
+      const assistantItems = compileAssistantMessageToResponsesItems(message, responsesProfile);
       input.push(...assistantItems);
       continue;
     }
@@ -556,7 +556,10 @@ export function compileContextForOpenAIResponses(
   return request;
 }
 
-function compileAssistantMessageToResponsesItems(message: Message): any[] {
+function compileAssistantMessageToResponsesItems(
+  message: Message,
+  responsesProfile: OpenAIResponsesProfile,
+): any[] {
   const items: any[] = [];
   const reasoningParts: string[] = [];
 
@@ -572,7 +575,10 @@ function compileAssistantMessageToResponsesItems(message: Message): any[] {
     }
   }
 
-  if (reasoningParts.length > 0) {
+  // Codex reasoning summaries are output-only display data. Without the
+  // server-issued encrypted_content they cannot be replayed as input items;
+  // synthetic id/status fields cause a 400 on the next turn.
+  if (reasoningParts.length > 0 && responsesProfile !== 'codex') {
     items.push({
       type: 'reasoning',
       id: `reasoning-${items.length}`,
@@ -592,7 +598,7 @@ function compileAssistantMessageToResponsesItems(message: Message): any[] {
         {
           type: 'output_text',
           text: message.content,
-          annotations: [],
+          ...(responsesProfile === 'standard' ? { annotations: [] } : {}),
         },
       ],
     });
@@ -609,7 +615,7 @@ function compileAssistantMessageToResponsesItems(message: Message): any[] {
     }
   }
 
-  if (items.length === 0) {
+  if (items.length === 0 && responsesProfile === 'standard') {
     items.push({
       type: 'message',
       role: 'assistant',

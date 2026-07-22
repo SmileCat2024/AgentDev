@@ -118,6 +118,48 @@ describe('OpenAI Responses compilation', () => {
     expect(compiled.input).toHaveLength(1);
   });
 
+  it('should replay Codex assistant history without output-only reasoning fields', () => {
+    const compiled = compileContextForOpenAIResponses(
+      [
+        { role: 'user', content: 'First turn' },
+        {
+          role: 'assistant',
+          content: 'First answer',
+          reasoning: 'Local reasoning summary',
+          thinkingBlocks: [{ signature: 'reasoning-item-id', thinking: 'Local thinking block' }],
+        },
+        { role: 'user', content: 'Second turn' },
+      ],
+      [],
+      { modelName: 'gpt-5.6-sol', responsesProfile: 'codex' },
+    );
+
+    expect(compiled.input).toHaveLength(3);
+    expect(compiled.input.some((item) => item.type === 'reasoning')).toBe(false);
+    expect(compiled.input[1]).toEqual({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'First answer' }],
+    });
+    expect(JSON.stringify(compiled.input)).not.toContain('status');
+    expect(JSON.stringify(compiled.input)).not.toContain('annotations');
+  });
+
+  it('should omit a Codex assistant turn that contains only local reasoning summaries', () => {
+    const compiled = compileContextForOpenAIResponses(
+      [
+        { role: 'user', content: 'First turn' },
+        { role: 'assistant', content: '', reasoning: 'Local-only summary' },
+        { role: 'user', content: 'Second turn' },
+      ],
+      [],
+      { modelName: 'gpt-5.6-sol', responsesProfile: 'codex' },
+    );
+
+    expect(compiled.input).toHaveLength(2);
+    expect(compiled.input.map((item) => item.role)).toEqual(['user', 'user']);
+  });
+
   it('should preserve the standard Responses request shape by default', () => {
     const compiled = compileContextForOpenAIResponses(
       [{ role: 'system', content: 'Standard system message' }, { role: 'user', content: 'Hello' }],

@@ -426,9 +426,11 @@ export function compileContextForOpenAIResponses(
 
       input.push({
         type: 'message',
-        // Feature-injected system messages are runtime reminders rather than
-        // part of the stable agent identity on the Codex backend.
-        role: responsesProfile === 'codex' && message.source ? 'user' : 'system',
+        // ChatGPT's Codex endpoint only accepts the stable, leading system
+        // identity through `instructions`. Runtime reminders can be injected
+        // after the conversation starts without a `source` marker, so every
+        // remaining system message must be replayed as user input.
+        role: responsesProfile === 'codex' ? 'user' : 'system',
         content: [
           {
             type: 'input_text',
@@ -436,6 +438,7 @@ export function compileContextForOpenAIResponses(
           },
         ],
       });
+      if (responsesProfile === 'codex') reachedConversation = true;
       continue;
     }
 

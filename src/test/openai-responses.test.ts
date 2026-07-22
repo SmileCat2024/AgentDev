@@ -118,6 +118,32 @@ describe('OpenAI Responses compilation', () => {
     expect(compiled.input).toHaveLength(1);
   });
 
+  it('should replay untagged runtime system reminders as Codex user input', () => {
+    const compiled = compileContextForOpenAIResponses(
+      [
+        { role: 'system', content: 'Primary identity' },
+        { role: 'user', content: 'Start the task' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'tool_1', name: 'weather', arguments: { city: 'Shanghai' } }],
+        },
+        { role: 'tool', content: '{"success":true}', toolCallId: 'tool_1' },
+        { role: 'system', content: 'Runtime reminder without source metadata' },
+      ],
+      tools,
+      { modelName: 'gpt-5.6-sol', responsesProfile: 'codex' },
+    );
+
+    expect(compiled.instructions).toBe('Primary identity');
+    expect(compiled.input.at(-1)).toEqual({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Runtime reminder without source metadata' }],
+    });
+    expect(compiled.input.some((item) => item.type === 'message' && item.role === 'system')).toBe(false);
+  });
+
   it('should replay Codex assistant history without output-only reasoning fields', () => {
     const compiled = compileContextForOpenAIResponses(
       [

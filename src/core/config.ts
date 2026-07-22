@@ -41,6 +41,8 @@ export interface ModelConfig {
   customHeaders?: CustomHeaderEntry[];
   /** OpenAI 专用接口面：chat / responses */
   apiSurface?: 'chat' | 'responses';
+  /** Responses 后端契约。codex 用于 ChatGPT 管理的 Codex Responses 端点。 */
+  responsesProfile?: 'standard' | 'codex';
   /** 是否启用视觉（多模态图片输入）支持，默认 false */
   vision?: boolean;
   // 未来可扩展

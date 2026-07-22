@@ -76,6 +76,59 @@ describe('OpenAI Responses compilation', () => {
     expect('id' in assistantMessage).toBe(false);
     expect('status' in assistantMessage).toBe(false);
   });
+
+  it('should compile the strict ChatGPT Codex Responses contract', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'Primary identity' },
+      { role: 'system', content: 'Feature reminder', source: 'handoff-seed' },
+      { role: 'user', content: 'Hello' },
+    ];
+
+    const compiled = compileContextForOpenAIResponses(messages, tools, {
+      modelName: 'gpt-5.6-sol',
+      maxTokens: 400_000,
+      responsesProfile: 'codex',
+      providerOptions: {
+        instructions: 'must not override runtime instructions',
+        store: true,
+        input: [],
+      },
+    });
+
+    expect(compiled.instructions).toBe('Primary identity');
+    expect(compiled.store).toBe(false);
+    expect(compiled.max_output_tokens).toBeUndefined();
+    expect(compiled.input).toHaveLength(2);
+    expect(compiled.input[0].role).toBe('user');
+    expect(compiled.input[0].content[0].text).toBe('Feature reminder');
+    expect(compiled.input[1].role).toBe('user');
+    expect(compiled.tool_choice).toBe('auto');
+    expect(compiled.parallel_tool_calls).toBe(true);
+  });
+
+  it('should provide non-empty Codex instructions when no system message exists', () => {
+    const compiled = compileContextForOpenAIResponses(
+      [{ role: 'user', content: 'Hello' }],
+      [],
+      { modelName: 'gpt-5.6-sol', responsesProfile: 'codex' },
+    );
+
+    expect(compiled.instructions).toBeTruthy();
+    expect(compiled.store).toBe(false);
+    expect(compiled.input).toHaveLength(1);
+  });
+
+  it('should preserve the standard Responses request shape by default', () => {
+    const compiled = compileContextForOpenAIResponses(
+      [{ role: 'system', content: 'Standard system message' }, { role: 'user', content: 'Hello' }],
+      [],
+      { modelName: 'gpt-5.6' },
+    );
+
+    expect(compiled.instructions).toBeUndefined();
+    expect(compiled.store).toBeUndefined();
+    expect(compiled.input[0].role).toBe('system');
+  });
 });
 
 describe('parseRetryAfter', () => {
@@ -86,6 +139,42 @@ describe('parseRetryAfter', () => {
 });
 
 describe('OpenAIResponsesLLM fallback', () => {
+  it('should preserve streamed text when Codex sends a sparse completed snapshot', async () => {
+    const llm = new OpenAIResponsesLLM(
+      'test-api-key',
+      'gpt-5.6-sol',
+      'https://example.com/backend-api/codex',
+      400_000,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      'codex',
+    );
+
+    (llm as any).client.responses.stream = () => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'response.output_text.delta', delta: 'OK' };
+        yield {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+          },
+        };
+      },
+    });
+
+    const result = await llm.chat(
+      [{ role: 'system', content: 'Probe' }, { role: 'user', content: 'Reply OK' }],
+      [],
+    );
+
+    expect(result.content).toBe('OK');
+    expect(result.usage?.totalTokens).toBe(3);
+  });
+
   it('should fall back to non-streaming on empty stream', async () => {
     const llm = new OpenAIResponsesLLM('test-api-key', 'gpt-5.5', 'https://example.com/v1');
     let streamCalls = 0;

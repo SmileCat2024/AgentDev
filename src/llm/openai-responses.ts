@@ -25,8 +25,10 @@ function ensureHttpClientInitialized() {
 
 type ResponsesRequest = {
   model: string;
+  instructions?: string;
   input: any[];
   tools?: Array<Record<string, unknown>>;
+  tool_choice?: 'auto';
   max_output_tokens?: number;
   parallel_tool_calls?: boolean;
   reasoning?: Record<string, unknown>;
@@ -36,6 +38,10 @@ type ResponsesRequest = {
   include?: Array<string>;
   [key: string]: unknown;
 };
+
+export type OpenAIResponsesProfile = 'standard' | 'codex';
+
+const DEFAULT_CODEX_INSTRUCTIONS = 'You are a helpful assistant.';
 
 type ResponsesSnapshot = {
   output?: any[];
@@ -70,6 +76,7 @@ export class OpenAIResponsesLLM implements LLMClient {
   private providerOptions?: Record<string, unknown>;
   private customHeaders?: CustomHeaderEntry[];
   private visionEnabled: boolean;
+  private responsesProfile: OpenAIResponsesProfile;
   private initPromise: Promise<void>;
 
   /** 返回当前 LLM 实例使用的模型名 */
@@ -84,6 +91,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     providerOptions?: Record<string, unknown>,
     customHeaders?: CustomHeaderEntry[],
     visionEnabled: boolean = false,
+    responsesProfile: OpenAIResponsesProfile = 'standard',
   ) {
     this.client = new OpenAI({
       apiKey,
@@ -108,6 +116,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     this.providerOptions = providerOptions;
     this.customHeaders = customHeaders;
     this.visionEnabled = visionEnabled;
+    this.responsesProfile = responsesProfile;
     this.initPromise = ensureHttpClientInitialized();
   }
 
@@ -120,6 +129,7 @@ export class OpenAIResponsesLLM implements LLMClient {
       thinkingBudgetTokens: this.thinkingBudgetTokens,
       providerOptions: this.providerOptions,
       visionEnabled: this.visionEnabled,
+      responsesProfile: this.responsesProfile,
     });
     let preferNonStreaming = false;
 
@@ -148,6 +158,7 @@ export class OpenAIResponsesLLM implements LLMClient {
         let stopReason: string | null = null;
         let usageInfo: UsageInfo | null = null;
         let completedSnapshot: ResponsesSnapshot | null = null;
+        let completedText = '';
 
         const functionCalls = new Map<string, AccumulatedFunctionCall>();
         const reasoningItems = new Map<string, AccumulatedReasoning>();
@@ -165,6 +176,10 @@ export class OpenAIResponsesLLM implements LLMClient {
                 content += delta;
                 charCount += delta.length;
               }
+              break;
+            }
+            case 'response.output_text.done': {
+              completedText = String(event.text || completedText || '');
               break;
             }
             case 'response.function_call_arguments.delta': {
@@ -203,6 +218,8 @@ export class OpenAIResponsesLLM implements LLMClient {
                 });
               } else if (item.type === 'reasoning') {
                 recordReasoningItem(reasoningItems, item);
+              } else if (item.type === 'message' && event.type === 'response.output_item.done') {
+                completedText = extractOutputMessageText(item) || completedText;
               }
               break;
             }
@@ -298,8 +315,11 @@ export class OpenAIResponsesLLM implements LLMClient {
         const parsedThinkingBlocks = parsedSnapshot?.thinkingBlocks?.length
           ? parsedSnapshot.thinkingBlocks
           : finalizeThinkingBlocks(reasoningItems);
-        const finalContent = parsedSnapshot?.content ?? content;
-        const finalReasoning = parsedSnapshot?.reasoning ?? reasoning;
+        // ChatGPT's Codex backend currently emits the actual message through
+        // stream events but returns response.completed with output: []. Never
+        // let that sparse terminal snapshot erase text already received.
+        const finalContent = parsedSnapshot?.content || content || completedText;
+        const finalReasoning = parsedSnapshot?.reasoning || reasoning;
         const finalStopReason = parsedSnapshot?.stopReason ?? stopReason;
 
         return {
@@ -381,6 +401,7 @@ export interface CompileOpenAIResponsesOptions {
   thinkingBudgetTokens?: number;
   providerOptions?: Record<string, unknown>;
   visionEnabled?: boolean;
+  responsesProfile?: OpenAIResponsesProfile;
 }
 
 export function compileContextForOpenAIResponses(
@@ -389,14 +410,25 @@ export function compileContextForOpenAIResponses(
   options: CompileOpenAIResponsesOptions = {},
 ): ResponsesRequest {
   const input: any[] = [];
+  const responsesProfile = options.responsesProfile ?? 'standard';
+  const codexInstructionParts: string[] = [];
+  let reachedConversation = false;
 
   for (const message of messages) {
     if (!message) continue;
 
     if (message.role === 'system') {
+      if (responsesProfile === 'codex' && !reachedConversation && !message.source) {
+        const instruction = String(message.content ?? '').trim();
+        if (instruction) codexInstructionParts.push(instruction);
+        continue;
+      }
+
       input.push({
         type: 'message',
-        role: 'system',
+        // Feature-injected system messages are runtime reminders rather than
+        // part of the stable agent identity on the Codex backend.
+        role: responsesProfile === 'codex' && message.source ? 'user' : 'system',
         content: [
           {
             type: 'input_text',
@@ -406,6 +438,8 @@ export function compileContextForOpenAIResponses(
       });
       continue;
     }
+
+    reachedConversation = true;
 
     if (message.role === 'user') {
       const visionEnabled = options.visionEnabled ?? false;
@@ -486,10 +520,18 @@ export function compileContextForOpenAIResponses(
     model: options.modelName || 'gpt-4o',
     input,
     ...(compiledTools ? { tools: compiledTools } : {}),
-    ...(typeof options.maxTokens === 'number' && Number.isFinite(options.maxTokens) && options.maxTokens > 0
+    ...(responsesProfile !== 'codex'
+      && typeof options.maxTokens === 'number'
+      && Number.isFinite(options.maxTokens)
+      && options.maxTokens > 0
       ? { max_output_tokens: options.maxTokens }
       : {}),
-    ...(tools.length > 0 ? { parallel_tool_calls: true } : {}),
+    ...(tools.length > 0
+      ? {
+          parallel_tool_calls: true,
+          ...(responsesProfile === 'codex' ? { tool_choice: 'auto' as const } : {}),
+        }
+      : {}),
     ...(typeof options.thinkingBudgetTokens === 'number' && options.thinkingBudgetTokens > 0
       ? {
           reasoning: {
@@ -500,6 +542,16 @@ export function compileContextForOpenAIResponses(
       : {}),
     ...(options.providerOptions ?? {}),
   };
+
+  if (responsesProfile === 'codex') {
+    // ChatGPT's Codex endpoint uses a stricter Responses contract than the
+    // public API. Keep these fields runtime-owned so generic provider options
+    // cannot accidentally turn a valid OAuth request back into a 400.
+    request.model = options.modelName || 'gpt-4o';
+    request.instructions = codexInstructionParts.join('\n\n').trim() || DEFAULT_CODEX_INSTRUCTIONS;
+    request.input = input;
+    request.store = false;
+  }
 
   return request;
 }
@@ -690,6 +742,14 @@ function extractTextDelta(delta: unknown): string {
   return '';
 }
 
+function extractOutputMessageText(item: any): string {
+  if (!Array.isArray(item?.content)) return '';
+  return item.content
+    .filter((part: any) => part?.type === 'output_text' && typeof part.text === 'string')
+    .map((part: any) => part.text)
+    .join('');
+}
+
 function mapThinkingBudgetToEffort(thinkingBudgetTokens: number): 'low' | 'medium' | 'high' {
   if (thinkingBudgetTokens >= 100000) return 'high';
   if (thinkingBudgetTokens >= 10000) return 'medium';
@@ -766,6 +826,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.defaultModel.providerOptions,
       configOrApiKey.defaultModel.customHeaders,
       configOrApiKey.defaultModel.vision ?? false,
+      configOrApiKey.defaultModel.responsesProfile ?? 'standard',
     );
   }
 
@@ -779,6 +840,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.providerOptions,
       configOrApiKey.customHeaders,
       configOrApiKey.vision ?? false,
+      configOrApiKey.responsesProfile ?? 'standard',
     );
   }
 

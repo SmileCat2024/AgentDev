@@ -494,6 +494,31 @@ export function compileContextForOpenAIResponses(
         call_id: message.toolCallId,
         output: String(message.content ?? ''),
       });
+      // tool 消息附带图片：保守策略——追加一条 user 消息携带图片
+      if (message.images && message.images.length > 0) {
+        const visionEnabled = options.visionEnabled ?? false;
+        if (visionEnabled) {
+          const contentParts: any[] = [
+            { type: 'input_text', text: `[Tool image result for ${message.toolCallId}]` },
+          ];
+          for (const img of message.images) {
+            const url = resolveImageDataUri(img) || img.source;
+            if (url) {
+              contentParts.push({ type: 'input_image', image_url: url, detail: 'auto' });
+            }
+          }
+          input.push({ type: 'message', role: 'user', content: contentParts });
+        } else {
+          const placeholders = message.images
+            .map(img => `【Image】${img.source || '(inline image)'}`)
+            .join('\n');
+          input.push({
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: `[Tool image placeholders]\n${placeholders}` }],
+          });
+        }
+      }
       continue;
     }
 

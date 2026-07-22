@@ -248,7 +248,7 @@ export interface Message {
   toolCalls?: ToolCall[];
   reasoning?: string; // 思考内容（GLM-4.7等模型的扩展字段）
   thinkingBlocks?: ThinkingBlock[];
-  /** 图片附件（仅 user 消息有效），多模态输入 */
+  /** 图片附件（user 消息：用户输入的图片；tool 消息：工具返回的图片），多模态输入 */
   images?: ImageInput[];
   /**
    * 消息来源标记（仅 system 消息使用）。

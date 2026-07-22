@@ -11,6 +11,7 @@ import type { AgentFeature, ContextInjector } from '../feature.js';
 import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext } from '../lifecycle.js';
 import type { ToolExecResult } from '../context.js';
 import type { HooksRegistry } from '../hooks-registry.js';
+import { isWithImagesResult } from '../tool-result-images.js';
 import { CoreLifecycle, normalizeDecision, Decision } from '../lifecycle.js';
 import { createLogger, runWithLogScope } from '../logging.js';
 
@@ -275,10 +276,18 @@ export class ToolExecutor {
         result.success = true;
         result.data = data;
 
-        execResult = {
-          success: true,
-          result: typeof data === 'string' ? data : JSON.stringify(data),
-        };
+        if (isWithImagesResult(data)) {
+          execResult = {
+            success: true,
+            result: data.text,
+            images: data.images,
+          };
+        } else {
+          execResult = {
+            success: true,
+            result: typeof data === 'string' ? data : JSON.stringify(data),
+          };
+        }
 
       } catch (error) {
         const isInterrupt = error instanceof ToolInterruptError

@@ -28,6 +28,8 @@ export interface ToolExecResult {
   success: boolean;
   result: string | Record<string, any>;
   error?: string;
+  /** 工具返回的图片（注入到 tool 消息，视觉模式下传给 LLM） */
+  images?: ImageInput[];
 }
 
 /**
@@ -271,22 +273,27 @@ export class Context {
       result: result.result,
       ...(result.error ? { error: result.error } : {}),
     });
-    this.addMessage(
-      {
-        role: 'tool',
-        turn,
-        toolCallId: call.id,
-        content,
-      },
-      { turn }
-    );
-    // 同步到 messages 数组
-    this.messages.push({
+    this.addSerializedToolMessage(call.id, content, turn, result.images);
+  }
+
+  /**
+   * 添加已经序列化的工具消息。
+   *
+   * 用于 session/handoff 恢复等边界：原始 tool content 已经是 provider 可重放的
+   * 序列化字符串，不应先解析成 ToolExecResult 再重新编码。该入口同时维护
+   * messages[] 与 enrichedMessages[]，并保留工具返回的图片附件。
+   */
+  addSerializedToolMessage(toolCallId: string, content: string, turn: number, images?: ImageInput[]): void {
+    const normalizedImages = images?.length ? images : undefined;
+    const message: Message = {
       role: 'tool',
       turn,
-      toolCallId: call.id,
+      toolCallId,
       content,
-    });
+      ...(normalizedImages ? { images: normalizedImages } : {}),
+    };
+    this.addMessage(message, { turn });
+    this.messages.push({ ...message });
   }
 
   /**

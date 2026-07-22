@@ -8,7 +8,8 @@
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature, QQBotFeature } from '../src/features/index.js';
+import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature } from '../src/features/index.js';
+import { QQBotFeature } from '@agentdev/qqbot-feature';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 
 /**

@@ -41,6 +41,10 @@ export type { ToolContext, ToolResult, HookResult, AgentInitiateContext, Decisio
 // 消息
 export { system, user, assistant, toolResult, createMessage } from './core/message.js';
 
+// 工具图片注入
+export { withImages, isWithImagesResult } from './core/tool-result-images.js';
+export type { WithImagesResult } from './core/tool-result-images.js';
+
 // LLM
 export {
   AnthropicLLM,

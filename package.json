@@ -15,9 +15,6 @@
     "README.md",
     "LICENSE"
   ],
-  "bundleDependencies": [
-    "@sliverp/qqbot"
-  ],
   "scripts": {
     "build": "tsup && node scripts/copy-feature-skills.mjs && node scripts/generate-bin-cmds.mjs",
     "dev": "tsup --watch",
@@ -37,7 +34,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.4.6",
-    "@sliverp/qqbot": "^1.5.5",
     "better-sqlite3": "^12.8.0",
     "diff": "^8.0.3",
     "glob": "^13.0.6",

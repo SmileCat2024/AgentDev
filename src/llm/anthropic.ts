@@ -31,7 +31,7 @@ type AnthropicThinkingBlock = {
 type AnthropicToolResultBlock = {
   type: 'tool_result';
   tool_use_id: string;
-  content: string;
+  content: string | (AnthropicTextBlock | AnthropicImageBlock)[];
   is_error?: boolean;
 };
 
@@ -356,7 +356,7 @@ export function compileContextForAnthropic(messages: Message[], tools: Tool[], v
         });
         break;
       case 'tool':
-        pendingUserBlocks.push(toolMessageToAnthropicBlock(message));
+        pendingUserBlocks.push(toolMessageToAnthropicBlock(message, visionEnabled));
         break;
       case 'user': {
         seenFirstUser = true;
@@ -468,17 +468,60 @@ function assistantMessageToAnthropicContent(message: Message): string | Anthropi
   return blocks;
 }
 
-function toolMessageToAnthropicBlock(message: Message): AnthropicToolResultBlock {
+function toolMessageToAnthropicBlock(message: Message, visionEnabled: boolean): AnthropicToolResultBlock {
   if (!message.toolCallId) {
     throw new Error('Anthropic compilation requires tool messages to include toolCallId');
   }
 
   const parsed = parseToolPayload(message.content);
+  const isError = parsed.isError;
+
+  // No images → simple string content (unchanged behavior)
+  if (!message.images || message.images.length === 0) {
+    return {
+      type: 'tool_result',
+      tool_use_id: message.toolCallId,
+      content: parsed.content,
+      ...(isError ? { is_error: true } : {}),
+    };
+  }
+
+  // Images present
+  if (visionEnabled) {
+    // Vision mode: embed image blocks inside tool_result.content array
+    const contentParts: (AnthropicTextBlock | AnthropicImageBlock)[] = [
+      { type: 'text', text: parsed.content },
+    ];
+    for (const img of message.images) {
+      const data = resolveImageBase64(img);
+      if (data) {
+        contentParts.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: img.mediaType || 'image/png',
+            data,
+          },
+        });
+      }
+    }
+    return {
+      type: 'tool_result',
+      tool_use_id: message.toolCallId,
+      content: contentParts,
+      ...(isError ? { is_error: true } : {}),
+    };
+  }
+
+  // Non-vision mode: degrade to text placeholders appended to tool result
+  const placeholders = message.images
+    .map(img => `【Image】${img.source || '(inline image)'}`)
+    .join('\n');
   return {
     type: 'tool_result',
     tool_use_id: message.toolCallId,
-    content: parsed.content,
-    ...(parsed.isError ? { is_error: true } : {}),
+    content: `${parsed.content}\n${placeholders}`,
+    ...(isError ? { is_error: true } : {}),
   };
 }
 

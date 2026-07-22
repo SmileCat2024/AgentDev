@@ -41,15 +41,6 @@ export type { SkillFeatureConfig } from './skill/index.js';
 // Plugin Compatibility Feature
 export { PluginCompatFeature } from './plugin-compat/index.js';
 
-// QQBot Feature
-export { QQBotFeature } from './qqbot/index.js';
-export type {
-  QQBotFeatureConfig,
-  QQBotSendOptions,
-  QQBotSendResult,
-  KnownUser,
-} from './qqbot/index.js';
-
 // Shell Feature
 export { ShellFeature } from './shell/index.js';
 

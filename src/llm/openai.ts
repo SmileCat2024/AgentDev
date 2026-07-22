@@ -81,9 +81,35 @@ export class OpenAILLM implements LLMClient {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
     // 转换消息格式为 OpenAI 格式
-    const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = messages.map(m => {
+    // 使用 flatMap 而非 map，因为带图片的 tool 消息需要额外追加一条 user 消息
+    const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = messages.flatMap(m => {
       if (m.role === 'tool') {
-        return { role: 'tool', content: m.content, tool_call_id: m.toolCallId! };
+        const results: OpenAI.Chat.ChatCompletionMessageParam[] = [
+          { role: 'tool', content: m.content, tool_call_id: m.toolCallId! },
+        ];
+        // tool 消息附带图片
+        if (m.images && m.images.length > 0) {
+          if (this.visionEnabled) {
+            // 视觉模式：追加一条 user 消息携带图片
+            const parts: OpenAI.Chat.ChatCompletionContentPart[] = [
+              { type: 'text', text: `[Tool image result for ${m.toolCallId}]` },
+            ];
+            for (const img of m.images) {
+              const url = resolveImageDataUri(img) || img.source;
+              if (url) {
+                parts.push({ type: 'image_url', image_url: { url } });
+              }
+            }
+            results.push({ role: 'user', content: parts });
+          } else {
+            // 非视觉模式：降级为文字占位符，追加到 tool 消息后
+            const placeholders = m.images
+              .map(img => `【Image】${img.source || '(inline image)'}`)
+              .join('\n');
+            results.push({ role: 'user', content: `[Tool image placeholders]\n${placeholders}` });
+          }
+        }
+        return results;
       }
       // 处理 user 消息中的图片
       if (m.role === 'user' && m.images && m.images.length > 0) {
@@ -98,16 +124,16 @@ export class OpenAILLM implements LLMClient {
               parts.push({ type: 'image_url', image_url: { url } });
             }
           }
-          return { role: 'user', content: parts };
+          return [{ role: 'user', content: parts }];
         }
         // 非视觉模式：将图片降级为文字占位符
         const placeholders = m.images
           .map(img => `【Image】${img.source || '(inline image)'}`)
           .join('\n');
-        return { role: 'user', content: `${m.content}\n${placeholders}` };
+        return [{ role: 'user', content: `${m.content}\n${placeholders}` }];
       }
-      return { role: m.role, content: m.content };
-    }) as OpenAI.Chat.ChatCompletionMessageParam[];
+      return [{ role: m.role, content: m.content }] as OpenAI.Chat.ChatCompletionMessageParam[];
+    });
 
     // 转换工具格式
     const chatTools = tools.map(t => ({

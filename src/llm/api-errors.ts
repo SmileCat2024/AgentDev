@@ -239,6 +239,11 @@ export function classifyAPIError(error: unknown, status?: number): APIErrorType 
     // fetch failed（Undici 通用网络错误包装）
     if (msg.includes('fetch failed')) return 'connection_error';
 
+    // OpenAI SDK may intentionally hide the underlying socket error and only
+    // expose this stable message. Preserve the network classification instead
+    // of reporting it as an unknown API failure.
+    if (msg.includes('connection error')) return 'connection_error';
+
     // 超时关键字
     if (msg.includes('timeout') || msg.includes('timed out')) {
       return 'connection_timeout';

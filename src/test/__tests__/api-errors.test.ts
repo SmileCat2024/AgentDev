@@ -100,6 +100,16 @@ describe('api-errors', () => {
     });
   });
 
+  describe('classifyAPIError - SDK network wrappers', () => {
+    it('should classify the OpenAI SDK connection wrapper', () => {
+      expect(classifyAPIError(new Error('Connection error.'))).toBe('connection_error');
+    });
+
+    it('should classify the OpenAI SDK timeout wrapper', () => {
+      expect(classifyAPIError(new Error('Request timed out.'))).toBe('connection_timeout');
+    });
+  });
+
   describe('classifyAPIError - connection errors', () => {
     it('should classify ECONNRESET as connection_error', () => {
       expect(classifyAPIError(errWithCode('reset', 'ECONNRESET'))).toBe('connection_error');

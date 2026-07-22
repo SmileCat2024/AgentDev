@@ -18,6 +18,22 @@ const logger = createLogger('llm.http-client');
 // 动态加载 undici（兼容打包和运行时）
 let undici: any;
 let undiciLoadPromise: Promise<any> | null = null;
+let initialGlobalDispatcher: any = null;
+
+export const HTTP_CONNECT_TIMEOUT_MS = 10_000;
+export const HTTP_HEADERS_TIMEOUT_MS = 60_000;
+
+export function buildHttpDispatcherOptions(noProxy?: string): Record<string, unknown> {
+  return {
+    ...(noProxy ? { noProxy } : {}),
+    headersTimeout: HTTP_HEADERS_TIMEOUT_MS,
+    connect: { timeout: HTTP_CONNECT_TIMEOUT_MS },
+  };
+}
+
+export function isExternallyManagedDispatcher(current: any, initial: any): boolean {
+  return current != null && initial != null && current !== initial;
+}
 
 async function loadUndici(): Promise<any> {
   if (undiciLoadPromise) {
@@ -47,6 +63,7 @@ async function loadUndici(): Promise<any> {
 
 // 初始化 undici 加载
 undici = await loadUndici();
+initialGlobalDispatcher = undici?.getGlobalDispatcher?.() ?? null;
 
 // ========== 代理配置 ==========
 
@@ -116,6 +133,17 @@ export async function initHttpClient(): Promise<void> {
   const proxyUrl = getProxyUrl();
 
   try {
+    // An embedding host may already own the global dispatcher (for example,
+    // AgentDevClaw applies a runtime-switchable proxy before starting agents).
+    // Replacing it here creates two competing proxy lifecycles and discards
+    // the host's timeout/NO_PROXY policy. Reuse the host-owned dispatcher.
+    const currentDispatcher = undici.getGlobalDispatcher?.() ?? null;
+    if (isExternallyManagedDispatcher(currentDispatcher, initialGlobalDispatcher)) {
+      _dispatcher = currentDispatcher;
+      logger.info('Using host-managed Undici dispatcher');
+      return;
+    }
+
     // undici 已作为外部依赖导入，运行时由 Node.js 提供
 
     if (proxyUrl) {
@@ -123,8 +151,7 @@ export async function initHttpClient(): Promise<void> {
       const proxyAgent = new undici.EnvHttpProxyAgent({
         httpProxy: proxyUrl,
         httpsProxy: proxyUrl,
-        noProxy: process.env.NO_PROXY || process.env.no_proxy,
-        connect: { connectTimeout: 10_000 },
+        ...buildHttpDispatcherOptions(process.env.NO_PROXY || process.env.no_proxy),
       });
       undici.setGlobalDispatcher(proxyAgent);
       _dispatcher = proxyAgent;
@@ -135,11 +162,11 @@ export async function initHttpClient(): Promise<void> {
       // 默认 Agent：keep-alive + 连接池
       // undici Agent 内置 DNS 缓存（通过 Node.js 内部的 c-ares 解析器）
       const agent = new undici.Agent({
+        ...buildHttpDispatcherOptions(),
         keepAliveTimeout: 30_000,
         keepAliveMaxTimeout: 300_000,
         connections: 50,
         pipelining: 1,
-        connect: { connectTimeout: 10_000 },
       });
       undici.setGlobalDispatcher(agent);
       _dispatcher = agent;

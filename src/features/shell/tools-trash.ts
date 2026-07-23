@@ -56,7 +56,8 @@ export function createSafeTrashDeleteTool(workspaceDir: string = process.cwd()):
       required: ['paths'],
     },
     render: { call: 'trash-delete', result: 'trash-delete' },
-    execute: async ({ paths, trashDir }) => {
+    execute: async (args) => {
+      const { paths, trashDir } = args as { paths: string[]; trashDir?: string };
       const trashDirPath = trashDir || defaultTrashDir;
       console.log(`[safe_trash_delete] Moving ${paths.length} item(s) to ${trashDirPath}`);
 
@@ -98,7 +99,8 @@ export function createSafeTrashListTool(workspaceDir: string = process.cwd()): T
       },
     },
     render: { call: 'trash-list', result: 'trash-list' },
-    execute: async ({ trashDir }) => {
+    execute: async (args) => {
+      const { trashDir } = args as { trashDir?: string };
       const trashDirPath = trashDir || defaultTrashDir;
       console.log(`[safe_trash_list] Listing ${trashDirPath}`);
 
@@ -145,7 +147,8 @@ export function createSafeTrashRestoreTool(workspaceDir: string = process.cwd())
       required: ['target'],
     },
     render: { call: 'trash-restore', result: 'trash-restore' },
-    execute: async ({ target, trashDir, overwrite }) => {
+    execute: async (args) => {
+      const { target, trashDir, overwrite } = args as { target: string | number | Array<string | number>; trashDir?: string; overwrite?: boolean };
       const trashDirPath = trashDir || defaultTrashDir;
       console.log(`[safe_trash_restore] Restoring ${target} from ${trashDirPath}`);
 

@@ -23,7 +23,8 @@ export function createWebFetchTool(): Tool {
       required: ['url'],
     },
     render: { call: 'web-fetch', result: 'web-fetch' },
-    execute: async ({ url }) => {
+    execute: async (args) => {
+      const { url } = args as { url: string };
       console.log(`[web_fetch] ${url}`);
       try {
         const response = await fetch(url);

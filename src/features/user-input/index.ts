@@ -271,7 +271,11 @@ export class UserInputFeature implements AgentFeature {
           },
           required: ['prompt', 'question', 'options']
         },
-        execute: async ({ prompt, question, options, allowCustom, customLabel, customPlaceholder }) => {
+        execute: async (args) => {
+          const { prompt, question, options, allowCustom, customLabel, customPlaceholder } = args as {
+            prompt: string; question: string; options: ChoiceToolQuestionInput['options'];
+            allowCustom?: boolean; customLabel?: string; customPlaceholder?: string;
+          };
           const choices = await this.requestUserChoices(prompt, [{
             id: 'question',
             question,
@@ -331,7 +335,8 @@ export class UserInputFeature implements AgentFeature {
           },
           required: ['prompt', 'questions']
         },
-        execute: async ({ prompt, questions }: { prompt: string; questions: ChoiceToolQuestionInput[] }) => {
+        execute: async (args) => {
+          const { prompt, questions } = args as { prompt: string; questions: ChoiceToolQuestionInput[] };
           const choices = await this.requestUserChoices(prompt, questions);
           return { choices };
         },

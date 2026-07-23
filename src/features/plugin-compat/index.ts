@@ -219,7 +219,7 @@ export class PluginCompatFeature implements AgentFeature {
       throw new Error(`Tool not found: ${name}`);
     }
 
-    return tool.execute(params);
+    return tool.execute(params as Record<string, unknown>);
   }
 
   /**

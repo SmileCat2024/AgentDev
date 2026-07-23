@@ -48,11 +48,12 @@ function createLspTools(feature: LspFeature): Tool[] {
       },
       required: ['filePath', 'line', 'character'],
     },
-    async execute(args: { filePath: string; line: number; character: number }) {
+    async execute(args: Record<string, unknown>) {
+      const { filePath: fp, line, character } = args as { filePath: string; line: number; character: number };
       const workdir = feature.getWorkdir();
-      const filePath = path.isAbsolute(args.filePath)
-        ? args.filePath
-        : path.resolve(workdir, args.filePath);
+      const filePath = path.isAbsolute(fp)
+        ? fp
+        : path.resolve(workdir, fp);
 
       const fs = await import('fs/promises');
       try { await fs.access(filePath); } catch { throw new Error(`File not found: ${filePath}`); }
@@ -62,7 +63,7 @@ function createLspTools(feature: LspFeature): Tool[] {
 
       await feature.touchFile(filePath);
 
-      const position = { file: filePath, line: args.line - 1, character: args.character - 1 };
+      const position = { file: filePath, line: line - 1, character: character - 1 };
       const uri = `file://${filePath}`;
 
       let result: any;

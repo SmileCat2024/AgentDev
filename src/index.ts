@@ -83,6 +83,8 @@ export type {
   MessageUsage,
   Tool,
   ToolCall,
+  ToolExecutionContext,
+  ToolResultValue,
   LLMResponse,
   LLMClient,
   AgentConfig,

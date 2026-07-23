@@ -4,7 +4,7 @@
  * 封装单个工具的执行逻辑
  */
 
-import type { ToolCall, Message } from '../types.js';
+import type { ToolCall, Message, ToolExecutionContext } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
 import type { AgentFeature, ContextInjector } from '../feature.js';
@@ -215,7 +215,7 @@ export class ToolExecutor {
       try {
         // 执行工具
         // 使用声明的上下文注入器
-        let toolContext: any = undefined;
+        let toolContext: ToolExecutionContext | undefined = undefined;
 
         for (const { pattern, injector } of this.contextInjectors) {
           if (typeof pattern === 'string' && pattern === call.name) {

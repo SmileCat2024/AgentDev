@@ -24,7 +24,8 @@ export function createExampleTool(deps: {
       call: 'example-tool',
       result: 'example-tool',
     },
-    execute: async ({ note }, context) => {
+    execute: async (args, context) => {
+      const { note } = args as { note?: string };
       // 这里故意保留一个最常见的 Feature 工具结构：
       // 1. 读取注入的运行时上下文
       // 2. 更新 Feature 状态

@@ -123,21 +123,42 @@ export interface AgentRuntimeSnapshot {
 }
 
 /**
+ * 工具执行上下文
+ *
+ * 由框架在执行工具时注入。Feature 通过 {@link AgentFeature.getContextInjectors}
+ * 可以扩展额外字段。
+ */
+export interface ToolExecutionContext {
+  /** 中断信号，用于取消工具执行 */
+  signal?: AbortSignal;
+  /** 注册 continuation request（供 checkpoint/rollback 等控制流工具使用） */
+  registerContinuationRequest?: (request: unknown) => void;
+  /** Feature 通过 contextInjectors 注入的自定义属性 */
+  [key: string]: unknown;
+}
+
+/**
+ * 工具执行返回值类型
+ *
+ * 工具可以返回纯文本或结构化对象。框架会自动序列化非 string 返回值。
+ */
+export type ToolResultValue = string | Record<string, unknown>;
+
+/**
  * 工具定义
  */
 export interface Tool {
   name: string;
   description: string;
-  parameters?: Record<string, any>;
+  parameters?: Record<string, unknown>;
   /**
    * 执行工具
    *
-   * @param args 工具参数
-   * @param context 执行上下文，可能包含：
-   *   - signal?: AbortSignal - 用于中断工具执行
-   *   - ...其他上下文信息
+   * @param args 工具参数（来自 LLM 的 JSON 解析结果）
+   * @param context 执行上下文，包含框架注入的 signal、registerContinuationRequest，
+   *   以及各 Feature 通过 contextInjectors 注入的自定义属性
    */
-  execute: (args: any, context?: any) => Promise<any>;
+  execute: (args: Record<string, unknown>, context?: ToolExecutionContext) => Promise<ToolResultValue>;
   /** 可选：渲染配置 */
   render?: ToolRenderConfig;
   /**

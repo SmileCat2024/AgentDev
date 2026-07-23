@@ -3,7 +3,7 @@
  * 简单的工具创建函数
  */
 
-import type { Tool, ToolRenderConfig } from './types.js';
+import type { Tool, ToolRenderConfig, ToolExecutionContext, ToolResultValue } from './types.js';
 
 /**
  * 渲染配置扩展类型
@@ -20,8 +20,8 @@ export function createTool(
   config: {
     name: string;
     description: string;
-    parameters?: Record<string, any>;
-    execute: (args: any, context?: any) => Promise<any>;
+    parameters?: Record<string, unknown>;
+    execute: (args: Record<string, unknown>, context?: ToolExecutionContext) => Promise<unknown>;
     render?: ToolRenderInput;
     executionMode?: 'normal' | 'exclusive';
     parallelizable?: boolean;
@@ -56,7 +56,7 @@ export function createTool(
     name: config.name,
     description: config.description,
     parameters: config.parameters,
-    execute: config.execute,
+    execute: config.execute as Tool['execute'],
     render: finalRender,
     ...(config.executionMode ? { executionMode: config.executionMode } : {}),
     ...(config.parallelizable ? { parallelizable: config.parallelizable } : {}),

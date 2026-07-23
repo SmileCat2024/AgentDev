@@ -30,11 +30,13 @@ export const invokeSkillTool: Tool = createTool({
     required: ['skill']
   },
   render: { call: 'skill', result: 'skill' },
-  execute: async ({ skill }, context?: { _context?: { skills?: SkillMetadata[] } }) => {
+  execute: async (args, context) => {
+    const { skill } = args as { skill: string };
     console.log(`[invoke_skill] ${skill}`);
 
     // 从 context 中获取 skills 列表
-    const skills = context?._context?.skills || [];
+    const ctx = context?._context as { skills?: SkillMetadata[] } | undefined;
+    const skills = ctx?.skills || [];
 
     // 查找匹配的 skill
     const skillMetadata = skills.find(s => s.name === skill);

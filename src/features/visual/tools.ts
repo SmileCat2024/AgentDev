@@ -348,7 +348,8 @@ export function createCaptureAndUnderstandTool(
       required: ['hwnd'],
     },
     render: { call: 'capture', result: 'capture' },
-    execute: async ({ hwnd }: { hwnd: string }) => {
+    execute: async (args) => {
+      const { hwnd } = args as { hwnd: string };
       // 1. 尝试截图
       const captureResult = await captureWindow(hwnd, pythonPath, pythonArgs);
 
@@ -491,7 +492,8 @@ export function createCaptureAndUnderstandAdvancedTool(
       required: ['hwnd'],
     },
     render: { call: 'capture', result: 'capture' },
-    execute: async ({ hwnd }: { hwnd: string }) => {
+    execute: async (args) => {
+      const { hwnd } = args as { hwnd: string };
       // 1. 尝试截图（与基础工具相同的逻辑）
       const captureResult = await captureWindow(hwnd, pythonPath, pythonArgs);
 

@@ -374,7 +374,8 @@ export function createShellCommandTool(
       required: ['command'],
     },
     render: { call: 'bash', result: 'bash' },
-    execute: async ({ command, timeout }, context?: { signal?: AbortSignal }) => {
+    execute: async (args, context) => {
+      const { command, timeout } = args as { command: string; timeout?: number };
       const result = await runShellCommand(command, { ...options, timeoutMs: timeout }, context?.signal);
       return result.output;
     },

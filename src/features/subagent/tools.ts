@@ -44,8 +44,9 @@ export class SubAgentToolFactory {
         required: ['type']
       },
       render: { call: 'agent-spawn', result: 'agent-spawn' },
-      execute: async ({ type }, context?: { parentAgent?: Agent }) => {
-        const parentAgent = context?.parentAgent ?? self.getParentAgentFn();
+      execute: async (args, context) => {
+        const { type } = args as { type: string };
+        const parentAgent = (context?.parentAgent as Agent | undefined) ?? self.getParentAgentFn();
         const pool = self.getPoolFn();
 
         if (!parentAgent) {
@@ -98,7 +99,8 @@ export class SubAgentToolFactory {
         }
       },
       render: { call: 'agent-list', result: 'json' },
-      execute: async ({ filter = 'all' }) => {
+      execute: async (args) => {
+        const { filter = 'all' } = args as { filter?: string };
         const pool = self.getPoolFn();
         const instances = pool.list(filter === 'all' ? undefined : filter as any);
 
@@ -142,7 +144,8 @@ export class SubAgentToolFactory {
         required: ['agentId', 'message']
       },
       render: { call: 'agent-send', result: 'agent-send' },
-      execute: async ({ agentId, message }) => {
+      execute: async (args) => {
+        const { agentId, message } = args as { agentId: string; message: string };
         const pool = self.getPoolFn();
 
         // 检查子代理是否存在以及状态
@@ -213,7 +216,8 @@ export class SubAgentToolFactory {
         required: ['agentId']
       },
       render: { call: 'agent-close', result: 'json' },
-      execute: async ({ agentId, reason = 'manual' }) => {
+      execute: async (args) => {
+        const { agentId, reason = 'manual' } = args as { agentId: string; reason?: string };
         const pool = self.getPoolFn();
         await pool.close(agentId, reason);
 

@@ -4,7 +4,7 @@
  * 将 MCP 工具适配为现有 Tool 接口，保持架构一致性
  */
 
-import type { Tool } from '../core/types.js';
+import type { Tool, ToolExecutionContext, ToolResultValue } from '../core/types.js';
 
 /**
  * 注册工具的简化接口
@@ -41,7 +41,7 @@ export interface MCPToolAdapterConfig {
 export class MCPToolAdapter implements Tool {
   readonly name: string;
   readonly description: string;
-  readonly parameters?: Record<string, any>;
+  readonly parameters?: Record<string, unknown>;
   readonly render?: { call?: string; result?: string };
 
   constructor(
@@ -60,7 +60,7 @@ export class MCPToolAdapter implements Tool {
   /**
    * 执行 MCP 工具
    */
-  async execute(args: any, context?: any): Promise<any> {
+  async execute(args: Record<string, unknown>, context?: ToolExecutionContext): Promise<ToolResultValue> {
     const startTime = Date.now();
 
     try {
@@ -80,7 +80,7 @@ export class MCPToolAdapter implements Tool {
   /**
    * 格式化 MCP 工具结果
    */
-  private formatResult(result: any, duration: number): any {
+  private formatResult(result: any, duration: number): Record<string, unknown> {
     // 处理错误结果
     if (result && result.isError) {
       return {
@@ -98,7 +98,7 @@ export class MCPToolAdapter implements Tool {
       .join('\n');
 
     // 返回格式化结果
-    const formatted: any = {
+    const formatted: Record<string, unknown> = {
       content: textContent,
       server: this.config.serverName,
       duration,
@@ -134,7 +134,7 @@ export class MCPToolAdapter implements Tool {
   /**
    * 格式化错误
    */
-  private formatError(error: unknown, duration: number): any {
+  private formatError(error: unknown, duration: number): Record<string, unknown> {
     const errorMessage = error instanceof Error
       ? error.message
       : String(error);

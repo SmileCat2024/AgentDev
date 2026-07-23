@@ -26,7 +26,7 @@ import {
   TOOL_DISPLAY_NAMES,
   getToolRenderConfig
 } from './render.js';
-import { generateViewerHtml } from './viewer-html.js';
+import { generateViewerHtml } from './viewer-html/index.js';
 
 const QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT = 200;
 

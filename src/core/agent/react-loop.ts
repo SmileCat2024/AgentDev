@@ -222,6 +222,43 @@ export class ReActLoopRunner {
               ]);
             } else {
               // 正常响应（有 content 或有 toolCalls），添加到 context
+
+              // ========== max_tokens 截断防御 ==========
+              // 当 stopReason 指示输出被 token 上限截断（max_tokens / length），
+              // 且模型返回了 toolCalls 但参数为空对象 {} 时，
+              // 说明模型在生成工具参数内容时被强制截断，JSON 不完整。
+              // 此时不应执行这些空参数工具，而是注入明确的错误消息，
+              // 避免模型陷入"截断→空参数→报错→重试→再截断"的死循环。
+              const isTruncated = response.stopReason === 'max_tokens' || response.stopReason === 'length';
+              if (isTruncated && hasToolCalls) {
+                const hasEmptyArgs = response.toolCalls!.some(
+                  call => !call.arguments || Object.keys(call.arguments).length === 0
+                );
+                if (hasEmptyArgs) {
+                  logger.warn('LLM output truncated by max_tokens with empty tool arguments', {
+                    step,
+                    callIndex,
+                    stopReason: response.stopReason,
+                    toolCount: response.toolCalls!.length,
+                  });
+                  // 仍然添加 assistant 消息（保持协议完整）
+                  context.addAssistantMessage(response, callIndex);
+                  // 为每个空参数工具注入截断错误
+                  for (const call of response.toolCalls!) {
+                    if (!call.arguments || Object.keys(call.arguments).length === 0) {
+                      context.addToolMessage(call, {
+                        success: false,
+                        result: {
+                          error: `[Output truncated by max_tokens] The model output was cut off while generating arguments for tool "${call.name}". This usually means maxTokens is too small for the content being generated. Consider increasing maxTokens in the model preset configuration.`,
+                        },
+                      }, callIndex);
+                    }
+                  }
+                  this.pushToDebug(context.getAll());
+                  break; // 跳出重试循环，进入下一轮 LLM 调用
+                }
+              }
+
               context.addAssistantMessage(response, callIndex);
               this.pushToDebug(context.getAll());
             }

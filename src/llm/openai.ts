@@ -269,11 +269,27 @@ export class OpenAILLM implements LLMClient {
         // 构建最终的 tool_calls 数组
         let toolCalls: ToolCall[] | undefined;
         if (accumulatedToolCalls.size > 0) {
-          toolCalls = Array.from(accumulatedToolCalls.values()).map(tc => ({
-            id: tc.id,
-            name: tc.name,
-            arguments: JSON.parse(tc.arguments),
-          }));
+          toolCalls = Array.from(accumulatedToolCalls.values()).map(tc => {
+            let parsedArgs: Record<string, any> = {};
+            const argStr = tc.arguments.trim();
+            if (argStr) {
+              try {
+                parsedArgs = JSON.parse(argStr);
+              } catch {
+                // JSON 不完整（通常是 max_tokens 截断导致）
+                // 返回空对象，由 react-loop 的截断防御处理
+                console.warn(
+                  `[OpenAI] Failed to parse tool arguments for tool "${tc.name}". ` +
+                  `Arguments length: ${argStr.length}, preview: ${argStr.slice(0, 200)}`,
+                );
+              }
+            }
+            return {
+              id: tc.id,
+              name: tc.name,
+              arguments: parsedArgs,
+            };
+          });
         }
 
         return {

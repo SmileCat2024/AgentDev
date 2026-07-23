@@ -7,8 +7,8 @@
 
 import { spawn, execSync } from 'child_process';
 import { existsSync } from 'fs';
-import type { Tool } from '../../core/types.js';
-import { createTool } from '../../core/tool.js';
+import type { Tool } from 'agentdev';
+import { createTool } from 'agentdev';
 import { processOutputWithPersistence, type ShellExecutionResult } from './tools.js';
 
 // ---------------------------------------------------------------------------

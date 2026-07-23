@@ -308,9 +308,16 @@ export async function runShellCommand(
       clearTimeout(timeoutId);
       signal?.removeEventListener('abort', onAbort);
 
+      const cleanStderr = stderr
+        .split('\n')
+        .filter(line => !line.includes('process group') && !line.includes('job control'))
+        .join('\n')
+        .trim();
+
       if (timedOut) {
-        processOutputWithPersistence(stdout || '', workdir).then(truncatedStdout => {
-          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s\n\n${truncatedStdout || stderr}`));
+        const combined = [stdout, cleanStderr].filter(Boolean).join('\n\n--- stderr ---\n');
+        processOutputWithPersistence(combined, workdir).then(truncated => {
+          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s\n\n${truncated}`));
         }).catch(() => {
           reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`));
         });
@@ -324,28 +331,29 @@ export async function runShellCommand(
         return;
       }
 
-      const cleanStderr = stderr
-        .split('\n')
-        .filter(line => !line.includes('process group') && !line.includes('job control'))
-        .join('\n')
-        .trim();
-
-      // 截断输出并持久化完整内容到磁盘
-      processOutputWithPersistence(stdout || '', workdir).then(truncatedStdout => {
-        if (code === 0) {
+      if (code === 0) {
+        // 成功：stdout 和 stderr 分别独立截断
+        Promise.all([
+          processOutputWithPersistence(stdout || '', workdir),
+          processOutputWithPersistence(cleanStderr || '', workdir),
+        ]).then(([truncatedStdout, truncatedStderr]) => {
           resolve({
             stdout: truncatedStdout,
-            stderr: cleanStderr,
-            output: truncatedStdout || cleanStderr,
+            stderr: truncatedStderr,
+            output: truncatedStdout || truncatedStderr,
           });
-        } else {
-          // 命令执行失败（非零退出码）
-          const output = truncatedStdout || cleanStderr;
-          reject(new Error(output || `Command failed with exit code ${code}`));
-        }
-      }).catch(err => {
-        reject(err);
-      });
+        }).catch(err => {
+          reject(err);
+        });
+      } else {
+        // 失败：合并 stdout + stderr 后统一截断
+        const combined = [stdout, cleanStderr].filter(Boolean).join('\n\n--- stderr ---\n');
+        processOutputWithPersistence(combined, workdir).then(truncated => {
+          reject(new Error(truncated || `Command failed with exit code ${code}`));
+        }).catch(err => {
+          reject(err);
+        });
+      }
     });
 
     child.on('error', (err) => {

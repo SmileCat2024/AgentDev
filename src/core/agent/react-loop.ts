@@ -243,19 +243,17 @@ export class ReActLoopRunner {
                   });
                   // 仍然添加 assistant 消息（保持协议完整）
                   context.addAssistantMessage(response, callIndex);
-                  // 为每个空参数工具注入截断错误
+                  // 为该响应中的所有工具调用注入截断错误（整个响应被截断，所有工具参数都不可信）
                   for (const call of response.toolCalls!) {
-                    if (!call.arguments || Object.keys(call.arguments).length === 0) {
-                      context.addToolMessage(call, {
-                        success: false,
-                        result: {
-                          error: `[Output truncated by max_tokens] The model output was cut off while generating arguments for tool "${call.name}". This usually means maxTokens is too small for the content being generated. Consider increasing maxTokens in the model preset configuration.`,
-                        },
-                      }, callIndex);
-                    }
+                    context.addToolMessage(call, {
+                      success: false,
+                      result: {
+                        error: `[Output truncated by max_tokens] The model output was cut off while generating arguments for tool "${call.name}". This usually means maxTokens is too small for the content being generated. Consider increasing maxTokens in the model preset configuration.`,
+                      },
+                    }, callIndex);
                   }
                   this.pushToDebug(context.getAll());
-                  break; // 跳出重试循环，进入下一轮 LLM 调用
+                  return 'next'; // 跳过正常工具执行（防止重复 tool_result），直接进入下一轮 LLM 调用
                 }
               }
 

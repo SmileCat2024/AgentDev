@@ -199,14 +199,14 @@ export class UsageStats {
    */
   getCallUsage(callIndex: number): CallUsageSummary | undefined {
     const summary = this.currentCallUsage.get(callIndex);
-    return summary ? { ...summary } : undefined;
+    return summary ? { ...summary, totalUsage: { ...summary.totalUsage } } : undefined;
   }
 
   /**
    * 获取所有 Call 的用量汇总
    */
   getAllCallUsage(): CallUsageSummary[] {
-    return Array.from(this.currentCallUsage.values()).map(s => ({ ...s }));
+    return Array.from(this.currentCallUsage.values()).map(s => ({ ...s, totalUsage: { ...s.totalUsage } }));
   }
 
   /**
@@ -297,5 +297,6 @@ export class UsageStats {
     this.currentStepRecords = [];
     this.totalRequests = 0;
     this.totalCacheHitRequests = 0;
+    this.lastRequestUsage = null;
   }
 }

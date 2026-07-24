@@ -8,11 +8,11 @@
  * 4. featureConfig 消费逻辑
  */
 
-import { describe, it, expect } from 'bun:test';
-import { findExecutable } from '../src/features/lsp/which.js';
-import { SERVERS } from '../src/features/lsp/servers.js';
-import { LspFeature } from '../src/features/lsp/index.js';
-import type { LspFeatureConfig } from '../src/features/lsp/types.js';
+import { describe, it, expect } from 'vitest';
+import { findExecutable } from '../which.js';
+import { SERVERS } from '../servers.js';
+import { LspFeature } from '../index.js';
+import type { LspFeatureConfig } from '../types.js';
 
 // ============================================================
 // 1. findExecutable()
@@ -173,43 +173,54 @@ describe('LspFeature.getFeatureManifest()', () => {
     expect(manifest.settings!.properties).toBeDefined();
   });
 
-  it('has exactly 14 file-type entries for language servers', () => {
+  it('has exactly 14 group-type entries for language servers', () => {
     const feature = new LspFeature();
     const manifest = feature.getFeatureManifest();
     const props = manifest.settings!.properties;
 
-    // Should have one entry per server
     const serverIds = Object.keys(SERVERS);
     for (const id of serverIds) {
       expect(props[id]).toBeDefined();
-      expect(props[id].type).toBe('file');
+      expect(props[id].type).toBe('group');
       expect(props[id].title).toBeDefined();
       expect(typeof props[id].title).toBe('string');
       expect(props[id].title.length).toBeGreaterThan(0);
+      // Each group should have nested properties (mode, binary, etc.)
+      expect(props[id].properties).toBeDefined();
     }
   });
 
-  it('each manifest entry has a description mentioning the server name', () => {
+  it('each server group has nested entries with titles', () => {
     const feature = new LspFeature();
     const manifest = feature.getFeatureManifest();
     const props = manifest.settings!.properties;
 
-    for (const [id, prop] of Object.entries(props)) {
-      expect(prop.description).toBeDefined();
-      expect(typeof prop.description).toBe('string');
-      // Description should mention the server ID or a recognizable name
-      expect(prop.description!.length).toBeGreaterThan(0);
+    const serverIds = Object.keys(SERVERS);
+    for (const id of serverIds) {
+      const group = props[id];
+      expect(group.properties).toBeDefined();
+      for (const nestedProp of Object.values(group.properties!)) {
+        expect(nestedProp.title).toBeDefined();
+        expect(typeof nestedProp.title).toBe('string');
+        expect(nestedProp.title.length).toBeGreaterThan(0);
+      }
     }
   });
 
-  it('manifest entries have placeholder text', () => {
+  it('nested file/string entries have placeholder text', () => {
     const feature = new LspFeature();
     const manifest = feature.getFeatureManifest();
     const props = manifest.settings!.properties;
 
-    for (const prop of Object.values(props)) {
-      expect(prop.placeholder).toBeDefined();
-      expect(typeof prop.placeholder).toBe('string');
+    const serverIds = Object.keys(SERVERS);
+    for (const id of serverIds) {
+      const group = props[id];
+      for (const nestedProp of Object.values(group.properties!)) {
+        if (nestedProp.type === 'file' || nestedProp.type === 'string') {
+          expect(nestedProp.placeholder).toBeDefined();
+          expect(typeof nestedProp.placeholder).toBe('string');
+        }
+      }
     }
   });
 });
@@ -219,7 +230,7 @@ describe('LspFeature.getFeatureManifest()', () => {
 // ============================================================
 
 describe('LspFeature featureConfig consumption', () => {
-  it('reads binary paths from featureConfig and stores in servers config', async () => {
+  it('reads binarypaths from featureConfig and stores in servers config', async () => {
     const feature = new LspFeature({ workdir: '/tmp/test' });
     const logs: string[] = [];
     const mockLogger = {

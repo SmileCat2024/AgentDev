@@ -124,7 +124,7 @@ export class OpencodeBasicFeature implements AgentFeature {
   /**
    * 工具使用前拦截器
    * - 记录 read 操作的文件路径
-   * - 验证 write 操作是否已先读取
+   * - 验证 write / edit 操作是否已先读取（write 创建的新文件自动豁免）
    */
   @ToolUse
   async validateWriteOperation(ctx: ToolContext): Promise<DecisionResult> {
@@ -147,8 +147,8 @@ export class OpencodeBasicFeature implements AgentFeature {
       return Decision.Continue;
     }
 
-    // 验证 write 操作
-    if (toolName === 'write') {
+    // 验证 write 和 edit 操作
+    if (toolName === 'write' || toolName === 'edit') {
       const filePath = normalizeNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
       const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
 
@@ -157,8 +157,11 @@ export class OpencodeBasicFeature implements AgentFeature {
         .then(() => true)
         .catch(() => false);
 
-      // 新建文件，允许
+      // 新建文件（仅 write 会走到此分支），允许并记录，
+      // 这样后续可以直接 edit 而不需要重新 read
       if (!exists) {
+        this.readFiles.add(normalizedPath);
+
         this.logger?.info('Write allowed for new file', {
           filePath: normalizedPath,
           feature: 'opencode-basic',
@@ -168,9 +171,9 @@ export class OpencodeBasicFeature implements AgentFeature {
         return Decision.Continue;
       }
 
-      // 修改现有文件，检查是否已读
+      // 修改现有文件，检查是否已读或已 write 过
       if (!this.readFiles.has(normalizedPath)) {
-        this.logger?.warn('Write blocked: file not read in this session', {
+        this.logger?.warn(`${toolName} blocked: file not read in this session`, {
           filePath: normalizedPath,
           readFiles: Array.from(this.readFiles),
           feature: 'opencode-basic',
@@ -184,7 +187,7 @@ export class OpencodeBasicFeature implements AgentFeature {
         };
       }
 
-      this.logger?.info('Write allowed: file was read previously', {
+      this.logger?.info(`${toolName} allowed: file was read or written previously`, {
         filePath: normalizedPath,
         feature: 'opencode-basic',
         lifecycle: 'ToolUse',

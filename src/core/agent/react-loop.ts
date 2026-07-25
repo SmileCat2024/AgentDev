@@ -70,6 +70,15 @@ export class ReActLoopRunner {
   }
 
   /**
+   * 热替换内部持有的 LLM 引用
+   *
+   * 由 Agent.setLLM() 调用，确保 ReAct 循环在下一次 step 中使用新 LLM。
+   */
+  swapLLM(llm: any): void {
+    this.agent.llm = llm;
+  }
+
+  /**
    * 执行完整的 ReAct 循环
    *
    * @param input 用户输入

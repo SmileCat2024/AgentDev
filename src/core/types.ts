@@ -395,6 +395,18 @@ export interface LLMChatOptions {
   noStream?: boolean;
 }
 
+/**
+ * 可热更新的模型元数据（与 LLMClient 实例解耦）
+ *
+ * 用于 Agent.setLLM() 时传递模型上下文信息，
+ * 供 Feature（如 ContextGuard）根据新模型的 contextLength 调整行为。
+ */
+export interface LLMMeta {
+  modelName?: string;
+  contextLength?: number | null;
+  compressRatio?: number;
+}
+
 // 占位符上下文类型
 import type { PlaceholderContext, TemplateSource } from '../template/types.js';
 

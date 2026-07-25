@@ -87,6 +87,7 @@ export type {
   ToolResultValue,
   LLMResponse,
   LLMClient,
+  LLMMeta,
   AgentConfig,
   ContextMiddleware,
   ToolRenderConfig,

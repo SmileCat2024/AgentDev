@@ -57,6 +57,15 @@ export class TemplateResolver {
   }
 
   /**
+   * 获取当前系统上下文（可变引用）
+   *
+   * 供 Agent.setLLM() 更新 SYSTEM_CURRENT_MODEL 等占位符变量。
+   */
+  getSystemContext(): PlaceholderContext | undefined {
+    return this.systemContext;
+  }
+
+  /**
    * 解析系统提示词（渲染模板）
    */
   async resolve(): Promise<string> {

@@ -8,6 +8,7 @@
 import type { Tool } from './types.js';
 import type { ToolCall } from './types.js';
 import type { InlineRenderTemplate } from './types.js';
+import type { LLMClient } from './types.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
@@ -230,6 +231,14 @@ export interface AgentFeature {
    * 清理钩子
    */
   onDestroy?(ctx: FeatureContext): Promise<void>;
+
+  /**
+   * LLM 变更时调用（可选）
+   *
+   * Feature 可在此重新绑定对 LLM 的引用、更新阈值等。
+   * 该钩子在 Agent.setLLM() 中被同步调用，且仅在 onCall 间隙执行。
+   */
+  onLLMSwap?(newLLM: LLMClient, oldLLM: LLMClient): void;
 
   /**
    * 捕获可回滚的 Feature 状态

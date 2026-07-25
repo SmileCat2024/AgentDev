@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot, ImageInput } from './types.js';
+import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot, ImageInput, LLMMeta } from './types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -140,6 +140,12 @@ class AgentBase {
   private templateResolver?: TemplateResolver;
   private toolExecutor?: ToolExecutor;
   private reactRunner?: ReActLoopRunner;
+
+  // ========== LLM 热切换 ==========
+  /** 与 LLMClient 实例解耦的模型元数据 */
+  private _llmMeta: LLMMeta = {};
+  /** 外部消费者通过 onLLMSwap() 注册的回调 */
+  private _llmSwapCallbacks: Array<(newLLM: AgentConfig['llm'], oldLLM: AgentConfig['llm']) => void> = [];
 
   constructor(config: AgentConfig) {
     installConsoleBridge();
@@ -660,6 +666,92 @@ class AgentBase {
    */
   isRunning(): boolean {
     return this._currentCallInput !== undefined;
+  }
+
+  // ========== LLM 热切换 ==========
+
+  /**
+   * 热替换 LLM 实例
+   *
+   * - 更新 Agent.llm + ReActLoopRunner 内部引用
+   * - 更新模型元数据（_llmMeta）
+   * - 触发 Feature.onLLMSwap() 和已注册的回调
+   * - 更新 SystemContext 中的 SYSTEM_CURRENT_MODEL
+   * - 推送 Overview Snapshot（使前端立即看到新模型名）
+   *
+   * @param llm 新的 LLM 实例
+   * @param meta 可选：模型元数据（contextLength、compressRatio 等）
+   * @throws 如果当前有正在运行的 onCall
+   */
+  setLLM(llm: AgentConfig['llm'], meta?: LLMMeta): void {
+    if (this.isRunning()) {
+      throw new Error('Cannot swap LLM while onCall is running');
+    }
+
+    const oldLLM = this.llm;
+    this.llm = llm;
+
+    if (meta) {
+      this._llmMeta = { ...meta };
+    }
+
+    // 更新 SystemContext 中的模型名（为将来可能的模板重解析做准备）
+    if (meta?.modelName) {
+      const ctx = this.templateResolver?.getSystemContext();
+      if (ctx) {
+        ctx.SYSTEM_CURRENT_MODEL = meta.modelName;
+      }
+    }
+
+    // 同步 ReActLoopRunner 内部持有的 LLM 引用（消除引用快照卡点）
+    if (this.reactRunner) {
+      this.reactRunner.swapLLM(llm);
+    }
+
+    // 触发 Feature 的 onLLMSwap 钩子
+    for (const feature of this.features.values()) {
+      if (typeof feature.onLLMSwap === 'function') {
+        try {
+          feature.onLLMSwap(llm, oldLLM);
+        } catch (error) {
+          this.logger.warn(`Feature ${feature.name} onLLMSwap error`, { error });
+        }
+      }
+    }
+
+    // 触发外部注册的回调
+    for (const callback of this._llmSwapCallbacks) {
+      try {
+        callback(llm, oldLLM);
+      } catch (error) {
+        this.logger.warn('onLLMSwap callback error', { error });
+      }
+    }
+
+    // 推送新 Overview Snapshot
+    this.pushOverviewSnapshot();
+
+    this.logger.info('LLM swapped', {
+      newModel: (llm as any)?.modelName,
+      oldModel: (oldLLM as any)?.modelName,
+    });
+  }
+
+  /**
+   * 注册 LLM 变更回调
+   *
+   * 外部消费者（如 Claw 的 run-prebuilt-agent.js）可在 setLLM 时收到通知。
+   * 回调在 Feature.onLLMSwap 之后同步执行。
+   */
+  onLLMSwap(callback: (newLLM: AgentConfig['llm'], oldLLM: AgentConfig['llm']) => void): void {
+    this._llmSwapCallbacks.push(callback);
+  }
+
+  /**
+   * 获取当前模型元数据（不可变副本）
+   */
+  getLLMMeta(): LLMMeta {
+    return { ...this._llmMeta };
   }
 
   async rollbackToCall(callIndex: number): Promise<{ draftInput: string }> {

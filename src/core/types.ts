@@ -570,6 +570,8 @@ export interface TodoPlanSnapshot {
   counter: number;
   tasks: TodoTaskSnapshot[];
   summary: TodoPlanSummary;
+  /** 中断目标 task ID（由 ControlledTodoFeature 扩展，null = 无中断目标） */
+  interruptTargetId?: string | null;
 }
 
 /**

@@ -1474,6 +1474,7 @@ class ViewerWorker {
         cancelled: 0,
         blocked: 0,
       },
+      interruptTargetId: null,
     };
   }
 
@@ -1512,6 +1513,7 @@ class ViewerWorker {
         cancelled: typeof summary.cancelled === 'number' ? summary.cancelled : tasks.filter(t => t.status === 'deleted').length,
         blocked: typeof summary.blocked === 'number' ? summary.blocked : tasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && t.blockedBy.length > 0).length,
       },
+      interruptTargetId: typeof plan.interruptTargetId === 'string' ? plan.interruptTargetId : null,
     };
   }
 

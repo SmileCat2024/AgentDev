@@ -681,13 +681,11 @@ class AgentBase {
    *
    * @param llm 新的 LLM 实例
    * @param meta 可选：模型元数据（contextLength、compressRatio 等）
-   * @throws 如果当前有正在运行的 onCall
+   *
+   * 允许在 onCall 运行期间调用（mid-turn swap）。在途的 LLM 请求由旧实例的
+   * Promise 持有，不受引用替换影响；下一个 ReAct step 会同步读取新引用。
    */
   setLLM(llm: AgentConfig['llm'], meta?: LLMMeta): void {
-    if (this.isRunning()) {
-      throw new Error('Cannot swap LLM while onCall is running');
-    }
-
     const oldLLM = this.llm;
     this.llm = llm;
 

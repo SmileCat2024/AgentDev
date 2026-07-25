@@ -8,7 +8,7 @@
  * - Feature.onLLMSwap 钩子触发
  * - onLLMSwap() 回调注册触发
  * - getLLMMeta 返回更新的元数据
- * - setLLM 在 isRunning 时抛异常
+ * - setLLM 允许 mid-turn swap（在途请求由旧 Promise 持有，下个 step 用新 LLM）
  * - Feature.onLLMSwap 抛错不阻断 setLLM
  * - setLLM 推送 Overview Snapshot
  */
@@ -165,7 +165,7 @@ describe('LLM Hot Swap (setLLM)', () => {
     });
   });
 
-  it('should throw when swapping during a running onCall', async () => {
+  it('should allow swapping during a running onCall (mid-turn swap)', async () => {
     const llmA = new MockLLM('model-a');
     const llmB = new MockLLM('model-b');
 
@@ -174,7 +174,11 @@ describe('LLM Hot Swap (setLLM)', () => {
     // Simulate running state
     (agent as any)._currentCallInput = 'simulated running';
 
-    expect(() => agent.setLLM(llmB)).toThrow('Cannot swap LLM while onCall is running');
+    // Mid-turn swap should succeed — no throw
+    expect(() => agent.setLLM(llmB, { modelName: 'model-b' })).not.toThrow();
+
+    // LLM reference should be updated
+    expect((agent as any).llm).toBe(llmB);
 
     // Clean up
     (agent as any)._currentCallInput = undefined;

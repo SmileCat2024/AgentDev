@@ -584,6 +584,10 @@ export class ReActLoopRunner {
       }
 
       if (stepResult === 'break') {
+        // Hook 触发的完成：检查是否有排队消息，如果有则注入并继续循环
+        if (await this._drainAndInjectQueuedInputs(context, callIndex, 'Hook 结束后队列检查')) {
+          continue outerLoop;
+        }
         break;
       }
       if (stepResult === 'continue') {
@@ -594,38 +598,18 @@ export class ReActLoopRunner {
         break;
       }
       if (typeof stepResult === 'object') {
+        // 自然完成：检查是否有排队消息，如果有则注入并继续循环
+        // 否则这些消息会永远卡在队列里（因为 return 后不会再有 step 边界检查）
+        if (await this._drainAndInjectQueuedInputs(context, callIndex, 'Call 完成后队列检查')) {
+          continue outerLoop;
+        }
         return stepResult;
       }
 
       // ========== Step 级别队列检查 ==========
       // 在每个 step 结束后检查是否有排队消息，如果有则全部注入并继续循环
-      if (this.agent.agentId) {
-        try {
-          const queuedInputs: Array<{ text: string; images?: ImageInput[] }> = [];
-          // 一次性 drain 所有排队消息，而不是只取一条
-          while (true) {
-            const qi = await this.fetchQueuedInput(this.agent.agentId);
-            if (!qi) break;
-            queuedInputs.push(qi);
-          }
-          if (queuedInputs.length > 0) {
-            logger.info('Step 级别队列：注入排队消息', {
-              step,
-              count: queuedInputs.length,
-            });
-            // 将所有排队消息作为连续的 user 块注入 context
-            for (const qi of queuedInputs) {
-              context.addUserMessage(qi.text, callIndex, qi.images);
-            }
-            // 推送到 DebugHub
-            this.pushToDebug(context.getAll());
-            // 继续循环，不要 break
-            continue outerLoop;
-          }
-        } catch (e) {
-          // 队列查询失败，忽略，继续正常流程
-          logger.debug('队列查询失败，忽略', { error: e instanceof Error ? e.message : String(e) });
-        }
+      if (await this._drainAndInjectQueuedInputs(context, callIndex, 'Step 级别队列')) {
+        continue outerLoop;
       }
     }
 
@@ -700,6 +684,39 @@ export class ReActLoopRunner {
       // 网络错误或 ViewerWorker 不可用
       return null;
     }
+  }
+
+  /**
+   * 排空所有排队消息并注入到 context。
+   * 在 step 边界和 call 完成时调用，确保用户在 agent 忙时排队的消息不会丢失。
+   *
+   * @returns true 如果有消息被注入（调用方应 continue 循环）
+   */
+  private async _drainAndInjectQueuedInputs(
+    context: ConversationContext,
+    callIndex: number,
+    logLabel: string,
+  ): Promise<boolean> {
+    if (!this.agent.agentId) return false;
+    try {
+      const items: Array<{ text: string; images?: ImageInput[] }> = [];
+      while (true) {
+        const qi = await this.fetchQueuedInput(this.agent.agentId);
+        if (!qi) break;
+        items.push(qi);
+      }
+      if (items.length > 0) {
+        logger.info(`${logLabel}：注入排队消息`, { count: items.length });
+        for (const qi of items) {
+          context.addUserMessage(qi.text, callIndex, qi.images);
+        }
+        this.pushToDebug(context.getAll());
+        return true;
+      }
+    } catch (e) {
+      logger.debug(`${logLabel}：队列查询失败，忽略`, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return false;
   }
 
   /**

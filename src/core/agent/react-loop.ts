@@ -598,17 +598,25 @@ export class ReActLoopRunner {
       }
 
       // ========== Step 级别队列检查 ==========
-      // 在每个 step 结束后检查是否有排队消息，如果有则注入并继续循环
+      // 在每个 step 结束后检查是否有排队消息，如果有则全部注入并继续循环
       if (this.agent.agentId) {
         try {
-          const queuedInput = await this.fetchQueuedInput(this.agent.agentId);
-          if (queuedInput) {
+          const queuedInputs: Array<{ text: string; images?: ImageInput[] }> = [];
+          // 一次性 drain 所有排队消息，而不是只取一条
+          while (true) {
+            const qi = await this.fetchQueuedInput(this.agent.agentId);
+            if (!qi) break;
+            queuedInputs.push(qi);
+          }
+          if (queuedInputs.length > 0) {
             logger.info('Step 级别队列：注入排队消息', {
               step,
-              queuedInput: queuedInput.text.slice(0, 100),
+              count: queuedInputs.length,
             });
-            // 将排队消息作为新的用户输入注入 context
-            context.addUserMessage(queuedInput.text, callIndex, queuedInput.images);
+            // 将所有排队消息作为连续的 user 块注入 context
+            for (const qi of queuedInputs) {
+              context.addUserMessage(qi.text, callIndex, qi.images);
+            }
             // 推送到 DebugHub
             this.pushToDebug(context.getAll());
             // 继续循环，不要 break

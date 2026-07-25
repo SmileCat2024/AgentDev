@@ -57,6 +57,8 @@ export class DebugHub {
 
   // 输入请求回调映射：requestId → resolver
   private pendingInputRequests = new Map<string, (response: UserInputResponse) => void>();
+  // @deprecated (2026-07-25) — supplement mechanism removed; no caller sets
+  // this handler. Kept for backward compatibility; safe to remove.
   private queuedInputHandler?: (agentId: string, input: { id: string; text: string; timestamp: number; images?: ImageInput[] }) => void | Promise<void>;
   private interruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
 
@@ -566,6 +568,10 @@ export class DebugHub {
     return getDebugCapabilities();
   }
 
+  /**
+   * @deprecated (2026-07-25) — supplement mechanism removed; no caller invokes
+   * this method. Kept for backward compatibility; safe to remove.
+   */
   setQueuedInputHandler(handler?: (agentId: string, input: { id: string; text: string; timestamp: number; images?: ImageInput[] }) => void | Promise<void>): void {
     this.queuedInputHandler = handler;
   }
@@ -574,6 +580,10 @@ export class DebugHub {
     this.interruptHandler = handler;
   }
 
+  /**
+   * @deprecated (2026-07-25) — supplement mechanism removed; no caller invokes
+   * this method. Kept for backward compatibility; safe to remove.
+   */
   consumeQueuedInput(agentId: string, inputId: string): void {
     if (this.transportMode === 'claw') {
       return;
@@ -798,6 +808,8 @@ export class DebugHub {
         break;
       }
 
+      // @deprecated (2026-07-25) — supplement mechanism removed; queuedInputHandler
+      // is never set, so this branch is always skipped. Safe to remove.
       case 'queue-input':
         if (this.queuedInputHandler && msg.input?.id && typeof msg.input?.text === 'string') {
           Promise.resolve(this.queuedInputHandler(msg.agentId, msg.input)).catch((error) => {

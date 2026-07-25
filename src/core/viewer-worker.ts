@@ -247,6 +247,9 @@ class ViewerWorker {
       case 'request-input':
         this.handleRequestInput(msg);
         break;
+      // @deprecated (2026-07-25) — supplement UDS path removed; handleQueueInput
+      // no longer forwards to UDS, so this message type is never sent.
+      // Kept for backward compatibility; safe to remove in a future cleanup.
       case 'consume-queued-input':
         this.handleConsumeQueuedInput(msg.agentId, msg.inputId);
         break;
@@ -1113,21 +1116,6 @@ class ViewerWorker {
         session.queuedInputs.push(queuedInput);
         console.log(`[Viewer Worker] 用户输入已排队: ${agentId}, queueLength=${session.queuedInputs.length}`);
 
-        const targetClientId = session.clientId;
-        const targetSocket = targetClientId ? this.udsClients.get(targetClientId) : null;
-        (session as any).useArbiterQueue = !!targetSocket;
-        if (targetSocket) {
-          try {
-            targetSocket.write(JSON.stringify({
-              type: 'queue-input',
-              agentId,
-              input: queuedInput,
-            }) + '\n');
-          } catch (writeError) {
-            console.error('[Viewer Worker] queue-input 转发到运行时失败:', writeError);
-          }
-        }
-
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ success: true, id: queuedInput.id, queueLength: session.queuedInputs.length }));
       } catch (e) {
@@ -1164,12 +1152,6 @@ class ViewerWorker {
       return;
     }
 
-    if ((session as any).useArbiterQueue) {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ input: null, remaining: session.queuedInputs?.length || 0 }));
-      return;
-    }
-
     const queued = session.queuedInputs || [];
     if (queued.length === 0) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1183,6 +1165,11 @@ class ViewerWorker {
     res.end(JSON.stringify({ input, remaining: queued.length }));
   }
 
+  /**
+   * @deprecated (2026-07-25) — supplement mechanism removed; this method is
+   * only reachable via the deprecated 'consume-queued-input' UDS handler above.
+   * Safe to remove in a future cleanup.
+   */
   private handleConsumeQueuedInput(agentId: string, inputId: string): void {
     const session = this.agentSessions.get(agentId);
     if (!session || !Array.isArray(session.queuedInputs) || !inputId) {

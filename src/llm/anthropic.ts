@@ -1,4 +1,4 @@
-import type { AgentConfigFile, ModelConfig, CustomHeaderEntry } from '../core/config.js';
+import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '../core/config.js';
 import { resolveCustomHeaders } from './custom-headers.js';
 import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo, ImageInput } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
@@ -119,27 +119,8 @@ interface PendingThinkingBlock {
   signature: string;
 }
 
-interface AnthropicContextManagementConfig {
-  edits: Array<{
-    type: 'clear_thinking_20251015';
-    keep: {
-      type: 'thinking_turns';
-      value: number;
-    } | 'all';
-  }>;
-}
-
 const DEFAULT_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_MAX_TOKENS = 4096;
-const DEFAULT_THINKING_KEEP_TURNS = 5;
-const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
-
-/**
- * Minimum output tokens reserved for actual response content (text + tool calls)
- * when thinking is enabled. Without this, the model could consume the entire
- * max_tokens budget on thinking alone and produce empty content.
- */
-const MIN_OUTPUT_TOKENS_WHEN_THINKING = 4096;
 
 export class AnthropicLLM implements LLMClient {
   private initPromise: Promise<void>;
@@ -152,8 +133,9 @@ export class AnthropicLLM implements LLMClient {
     private readonly _modelName: string = 'claude-sonnet-4-5-20250929',
     private readonly baseUrl: string = DEFAULT_BASE_URL,
     private readonly maxTokens: number = DEFAULT_MAX_TOKENS,
-    private readonly thinkingBudgetTokens?: number,
-    private readonly thinkingKeepTurns: number = DEFAULT_THINKING_KEEP_TURNS,
+    private readonly thinkingEffort?: ThinkingEffort,
+    private readonly _thinkingBudgetTokens?: number,
+    private readonly _thinkingKeepTurns: number = 5,
     private readonly customHeaders?: CustomHeaderEntry[],
     private readonly visionEnabled: boolean = false,
   ) {
@@ -174,23 +156,20 @@ export class AnthropicLLM implements LLMClient {
           throw new DOMException('Aborted', 'AbortError');
         }
 
-        // Compute effective token budgets to satisfy the Anthropic API constraint:
-        // budget_tokens must be strictly less than max_tokens.
-        // When thinking is enabled, ensure max_tokens has room for actual output
-        // by scaling the thinking budget DOWN to fit, never inflating max_tokens
-        // beyond the user-configured value (which could exceed API limits).
-        const originalBudget = this.thinkingBudgetTokens;
-        let effectiveBudgetTokens: number | undefined;
-        if (originalBudget && originalBudget >= 1024) {
-          const roomForThinking = this.maxTokens - MIN_OUTPUT_TOKENS_WHEN_THINKING;
-          if (roomForThinking >= 1024) {
-            effectiveBudgetTokens = Math.min(originalBudget, roomForThinking);
-          }
-          // If maxTokens is too small to accommodate both thinking and output,
-          // thinking is silently disabled — the user's maxTokens takes priority.
-        }
-        const thinkingEnabled = effectiveBudgetTokens !== undefined;
         const effectiveMaxTokens = this.maxTokens;
+
+        // thinkingEffort controls whether thinking is on/off:
+        //   - valid effort value + budgetTokens > 0 → thinking: { type: 'enabled', budget_tokens }
+        //   - 'none'          → thinking: { type: 'disabled' }
+        //   - undefined       → no thinking params (vendor decides)
+        const effort = this.thinkingEffort;
+        const validEfforts: ThinkingEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+        const wantsThinking = effort !== undefined && validEfforts.includes(effort);
+        const useDisabled = effort === 'none';
+        const budget = this._thinkingBudgetTokens;
+        const useEnabled = wantsThinking && typeof budget === 'number' && budget > 0;
+        // Clamp budget to leave room for output (budget_tokens must be < max_tokens)
+        const effectiveBudget = useEnabled ? Math.min(budget!, effectiveMaxTokens - 1) : undefined;
 
         response = await fetch(resolveAnthropicMessagesUrl(this.baseUrl), {
           method: 'POST',
@@ -198,21 +177,17 @@ export class AnthropicLLM implements LLMClient {
             'content-type': 'application/json',
             'x-api-key': this.apiKey,
             'anthropic-version': '2023-06-01',
-            ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
-              ? { 'anthropic-beta': CONTEXT_MANAGEMENT_BETA }
-              : {}),
             ...resolveCustomHeaders(this.customHeaders),
           },
           body: JSON.stringify({
             model: this._modelName,
             max_tokens: effectiveMaxTokens,
             ...(noStream ? {} : { stream: true }),
-            ...(thinkingEnabled
-              ? { thinking: { type: 'enabled', budget_tokens: effectiveBudgetTokens } }
-              : {}),
-            ...(shouldUseContextManagement(this.thinkingBudgetTokens, this.thinkingKeepTurns)
-              ? { context_management: createContextManagementConfig(this.thinkingKeepTurns) }
-              : {}),
+            ...(useDisabled
+              ? { thinking: { type: 'disabled' } }
+              : useEnabled
+                ? { thinking: { type: 'enabled', budget_tokens: effectiveBudget } }
+                : {}),
             ...(compiled.system ? { system: compiled.system } : {}),
             messages: compiled.messages,
             ...(compiled.tools && compiled.tools.length > 0 ? { tools: compiled.tools } : {}),
@@ -291,24 +266,6 @@ function isCompatErrorPayload(payload: AnthropicCompatErrorPayload): boolean {
   if (payload.success === false) return true;
   if (typeof payload.code === 'number' && payload.code !== 0) return true;
   return false;
-}
-
-function shouldUseContextManagement(thinkingBudgetTokens?: number, thinkingKeepTurns?: number): boolean {
-  return !!thinkingBudgetTokens && thinkingBudgetTokens >= 1024 && (thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS) > 0;
-}
-
-function createContextManagementConfig(keepTurns: number): AnthropicContextManagementConfig {
-  return {
-    edits: [
-      {
-        type: 'clear_thinking_20251015',
-        keep: {
-          type: 'thinking_turns',
-          value: keepTurns,
-        },
-      },
-    ],
-  };
 }
 
 export function compileContextForAnthropic(messages: Message[], tools: Tool[], visionEnabled: boolean = false): CompiledAnthropicRequest {
@@ -988,8 +945,9 @@ export function createAnthropicLLM(
       configOrApiKey.defaultModel.model,
       configOrApiKey.defaultModel.baseUrl,
       (configOrApiKey.defaultModel.maxTokens && configOrApiKey.defaultModel.maxTokens > 0) ? configOrApiKey.defaultModel.maxTokens : DEFAULT_MAX_TOKENS,
+      configOrApiKey.defaultModel.thinkingEffort,
       configOrApiKey.defaultModel.thinkingBudgetTokens,
-      configOrApiKey.defaultModel.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
+      configOrApiKey.defaultModel.thinkingKeepTurns ?? 5,
       configOrApiKey.defaultModel.customHeaders,
       configOrApiKey.defaultModel.vision ?? false,
     );
@@ -1001,8 +959,9 @@ export function createAnthropicLLM(
       configOrApiKey.model,
       configOrApiKey.baseUrl,
       (configOrApiKey.maxTokens && configOrApiKey.maxTokens > 0) ? configOrApiKey.maxTokens : DEFAULT_MAX_TOKENS,
+      configOrApiKey.thinkingEffort,
       configOrApiKey.thinkingBudgetTokens,
-      configOrApiKey.thinkingKeepTurns ?? DEFAULT_THINKING_KEEP_TURNS,
+      configOrApiKey.thinkingKeepTurns ?? 5,
       configOrApiKey.customHeaders,
       configOrApiKey.vision ?? false,
     );

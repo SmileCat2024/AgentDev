@@ -5,7 +5,8 @@
 
 import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo, ImageInput } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
-import type { CustomHeaderEntry } from '../core/config.js';
+import type { CustomHeaderEntry, ThinkingEffort } from '../core/config.js';
+import { OPENAI_THINKING_EFFORTS } from '../core/config.js';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import OpenAI from 'openai';
@@ -31,6 +32,7 @@ export class OpenAILLM implements LLMClient {
   private client: OpenAI;
   private _modelName: string;
   private maxTokens?: number;
+  private thinkingEffort?: ThinkingEffort;
   private providerOptions?: Record<string, unknown>;
   private customHeaders?: CustomHeaderEntry[];
   private visionEnabled: boolean;
@@ -44,6 +46,7 @@ export class OpenAILLM implements LLMClient {
     modelName: string = 'gpt-4o',
     baseUrl?: string,
     maxTokens?: number,
+    thinkingEffort?: ThinkingEffort,
     providerOptions?: Record<string, unknown>,
     customHeaders?: CustomHeaderEntry[],
     visionEnabled: boolean = false,
@@ -68,6 +71,7 @@ export class OpenAILLM implements LLMClient {
     });
     this._modelName = modelName;
     this.maxTokens = maxTokens;
+    this.thinkingEffort = thinkingEffort;
     this.providerOptions = providerOptions;
     this.customHeaders = customHeaders;
     this.visionEnabled = visionEnabled;
@@ -152,6 +156,9 @@ export class OpenAILLM implements LLMClient {
       stream: true,
       stream_options: { include_usage: true },
       ...(this.maxTokens ? { max_tokens: this.maxTokens } : {}),
+      ...(this.thinkingEffort && OPENAI_THINKING_EFFORTS.includes(this.thinkingEffort)
+        ? { reasoning_effort: this.thinkingEffort }
+        : {}),
       ...(this.providerOptions ?? {}),
     } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 
@@ -367,6 +374,7 @@ export function createOpenAILLM(
       configOrApiKey.defaultModel.model,
       configOrApiKey.defaultModel.baseUrl,
       configOrApiKey.defaultModel.maxTokens,
+      configOrApiKey.defaultModel.thinkingEffort,
       configOrApiKey.defaultModel.providerOptions,
       configOrApiKey.defaultModel.customHeaders,
       configOrApiKey.defaultModel.vision ?? false,
@@ -379,6 +387,7 @@ export function createOpenAILLM(
       configOrApiKey.model,
       configOrApiKey.baseUrl,
       configOrApiKey.maxTokens,
+      configOrApiKey.thinkingEffort,
       configOrApiKey.providerOptions,
       configOrApiKey.customHeaders,
       configOrApiKey.vision ?? false,

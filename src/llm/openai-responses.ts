@@ -6,7 +6,8 @@
  */
 
 import OpenAI from 'openai';
-import type { AgentConfigFile, ModelConfig, CustomHeaderEntry } from '../core/config.js';
+import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '../core/config.js';
+import { OPENAI_THINKING_EFFORTS } from '../core/config.js';
 import type { LLMClient, LLMResponse, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '../core/types.js';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
@@ -72,6 +73,7 @@ export class OpenAIResponsesLLM implements LLMClient {
   private client: OpenAI;
   private _modelName: string;
   private maxTokens?: number;
+  private thinkingEffort?: ThinkingEffort;
   private thinkingBudgetTokens?: number;
   private providerOptions?: Record<string, unknown>;
   private customHeaders?: CustomHeaderEntry[];
@@ -87,6 +89,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     modelName: string = 'gpt-4o',
     baseUrl?: string,
     maxTokens?: number,
+    thinkingEffort?: ThinkingEffort,
     thinkingBudgetTokens?: number,
     providerOptions?: Record<string, unknown>,
     customHeaders?: CustomHeaderEntry[],
@@ -112,6 +115,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     });
     this._modelName = modelName;
     this.maxTokens = maxTokens;
+    this.thinkingEffort = thinkingEffort;
     this.thinkingBudgetTokens = thinkingBudgetTokens;
     this.providerOptions = providerOptions;
     this.customHeaders = customHeaders;
@@ -126,6 +130,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     const compiled = compileContextForOpenAIResponses(messages, tools, {
       modelName: this._modelName,
       maxTokens: this.maxTokens,
+      thinkingEffort: this.thinkingEffort,
       thinkingBudgetTokens: this.thinkingBudgetTokens,
       providerOptions: this.providerOptions,
       visionEnabled: this.visionEnabled,
@@ -398,6 +403,7 @@ export class OpenAIResponsesLLM implements LLMClient {
 export interface CompileOpenAIResponsesOptions {
   modelName?: string;
   maxTokens?: number;
+  thinkingEffort?: ThinkingEffort;
   thinkingBudgetTokens?: number;
   providerOptions?: Record<string, unknown>;
   visionEnabled?: boolean;
@@ -560,14 +566,21 @@ export function compileContextForOpenAIResponses(
           ...(responsesProfile === 'codex' ? { tool_choice: 'auto' as const } : {}),
         }
       : {}),
-    ...(typeof options.thinkingBudgetTokens === 'number' && options.thinkingBudgetTokens > 0
+    ...(options.thinkingEffort && OPENAI_THINKING_EFFORTS.includes(options.thinkingEffort)
       ? {
           reasoning: {
-            effort: mapThinkingBudgetToEffort(options.thinkingBudgetTokens),
+            effort: options.thinkingEffort,
             summary: 'auto',
           },
         }
-      : {}),
+      : typeof options.thinkingBudgetTokens === 'number' && options.thinkingBudgetTokens > 0
+        ? {
+            reasoning: {
+              effort: mapThinkingBudgetToEffort(options.thinkingBudgetTokens),
+              summary: 'auto',
+            },
+          }
+        : {}),
     ...(options.providerOptions ?? {}),
   };
 
@@ -856,6 +869,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.defaultModel.model,
       configOrApiKey.defaultModel.baseUrl,
       configOrApiKey.defaultModel.maxTokens,
+      configOrApiKey.defaultModel.thinkingEffort,
       configOrApiKey.defaultModel.thinkingBudgetTokens,
       configOrApiKey.defaultModel.providerOptions,
       configOrApiKey.defaultModel.customHeaders,
@@ -870,6 +884,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.model,
       configOrApiKey.baseUrl,
       configOrApiKey.maxTokens,
+      configOrApiKey.thinkingEffort,
       configOrApiKey.thinkingBudgetTokens,
       configOrApiKey.providerOptions,
       configOrApiKey.customHeaders,

@@ -133,7 +133,8 @@ export type {
 } from './core/lifecycle.js';
 export type { CallFinishReason } from './core/lifecycle.js';
 
-export type { ModelConfig, AgentConfigFile } from './core/config.js';
+export type { ModelConfig, AgentConfigFile, ThinkingEffort } from './core/config.js';
+export { OPENAI_THINKING_EFFORTS, ANTHROPIC_THINKING_EFFORTS } from './core/config.js';
 
 // 模板系统类型
 export type {

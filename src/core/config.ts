@@ -25,6 +25,31 @@ export interface CustomHeaderEntry {
 }
 
 /**
+ * 思考力度档位
+ *
+ * 各厂商支持的值不同，配置层接受所有值的并集，
+ * 各 provider 自行筛选自己支持的值，不支持的忽略。
+ */
+export type ThinkingEffort =
+  | 'none'      // 关闭思考（Anthropic → thinking.disabled，OpenAI → effort: none）
+  | 'minimal'   // OpenAI 专属
+  | 'low'       // 两家通用
+  | 'medium'    // 两家通用
+  | 'high'      // 两家通用
+  | 'xhigh'     // 两家通用
+  | 'max';      // Anthropic 专属
+
+/** OpenAI 支持的思考力度档位（供 UI 和校验使用） */
+export const OPENAI_THINKING_EFFORTS: readonly ThinkingEffort[] = [
+  'none', 'minimal', 'low', 'medium', 'high', 'xhigh',
+];
+
+/** Anthropic 支持的思考力度档位（供 UI 和校验使用） */
+export const ANTHROPIC_THINKING_EFFORTS: readonly ThinkingEffort[] = [
+  'none', 'low', 'medium', 'high', 'xhigh', 'max',
+];
+
+/**
  * 统一配置类型
  * 字段允许冗余，各 LLM 实现只取自己需要的
  */
@@ -34,6 +59,7 @@ export interface ModelConfig {
   model: string;
   baseUrl?: string;
   maxTokens?: number;
+  thinkingEffort?: ThinkingEffort;
   thinkingBudgetTokens?: number;
   thinkingKeepTurns?: number;
   providerOptions?: Record<string, unknown>;

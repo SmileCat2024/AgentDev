@@ -405,6 +405,8 @@ export interface LLMMeta {
   modelName?: string;
   contextLength?: number | null;
   compressRatio?: number;
+  presetName?: string;
+  thinkingEffort?: string | null;
 }
 
 // 占位符上下文类型
@@ -539,6 +541,10 @@ export interface AgentOverviewSnapshot {
   runtime?: AgentRuntimeSnapshot;
   /** 可选：当前使用的模型名（由 agent 实例注入） */
   modelName?: string;
+  /** 可选：当前使用的预设名（由 agent 实例注入，用于 UI dropdown 高亮） */
+  presetName?: string;
+  /** 可选：当前 LLM 实例的思考强度（由 agent 实例注入，用于 UI 状态同步） */
+  thinkingEffort?: string | null;
 }
 
 export interface TodoTaskSnapshot {

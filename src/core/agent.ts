@@ -1779,6 +1779,12 @@ class AgentBase {
       ...(typeof (this.llm as any)?.modelName === 'string'
         ? { modelName: (this.llm as any).modelName }
         : {}),
+      ...(typeof this._llmMeta.presetName === 'string' && this._llmMeta.presetName
+        ? { presetName: this._llmMeta.presetName }
+        : {}),
+      ...(this._llmMeta.thinkingEffort != null
+        ? { thinkingEffort: this._llmMeta.thinkingEffort }
+        : {}),
     };
   }
 

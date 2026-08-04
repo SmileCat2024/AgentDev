@@ -28,6 +28,11 @@ let lastNotificationTime: number = 0;
  */
 const THROTTLE_INTERVAL = 100;
 
+/**
+ * 上次通知的 LLM 阶段，用于检测阶段转换
+ */
+let lastLLMPhase: string | null = null;
+
 // ========== 公开 API ==========
 
 /**
@@ -45,6 +50,7 @@ export function _clearNotificationAgent(): void {
   currentAgentId = null;
   // 重置节流状态
   lastNotificationTime = 0;
+  lastLLMPhase = null;
 }
 
 /**
@@ -70,13 +76,30 @@ export function emitNotification(notification: Notification): void {
     || notificationType === 'call.finish'
     || notificationType === 'llm.complete';
 
+  // 阶段转换检测：llm.char_count 的 phase 变化时绕过节流，
+  // 确保用户立即看到 thinking→content→tool_calling 的阶段切换
+  let phaseTransition = false;
+  if (notificationType === 'llm.char_count') {
+    const data = notification.data as Record<string, unknown> | undefined;
+    const phase = typeof data?.phase === 'string' ? data.phase : '';
+    if (phase && phase !== lastLLMPhase) {
+      phaseTransition = true;
+      lastLLMPhase = phase;
+    }
+  }
+
   // 节流：状态类通知需要节流，事件类通知不需要
-  if (notification.category === 'state' && !bypassThrottle) {
+  // 阶段转换也绕过节流
+  if (notification.category === 'state' && !bypassThrottle && !phaseTransition) {
     const timeSinceLast = now - lastNotificationTime;
     if (timeSinceLast < THROTTLE_INTERVAL) {
       // 跳过此次通知
       return;
     }
+    lastNotificationTime = now;
+  } else if (phaseTransition) {
+    // 阶段转换绕过节流，但仍需更新 lastNotificationTime
+    // 否则紧随其后的同 phase 通知也会因为 timeSinceLast 过大而绕过
     lastNotificationTime = now;
   }
 
@@ -99,6 +122,7 @@ export function createLLMCharCount(
     thinkingChars?: number;
     contentChars?: number;
     toolCallCount?: number;
+    streamToolNames?: string[];
   },
 ): Notification {
   return {
@@ -111,6 +135,9 @@ export function createLLMCharCount(
       ...(typeof extras?.thinkingChars === 'number' ? { thinkingChars: extras.thinkingChars } : {}),
       ...(typeof extras?.contentChars === 'number' ? { contentChars: extras.contentChars } : {}),
       ...(typeof extras?.toolCallCount === 'number' ? { toolCallCount: extras.toolCallCount } : {}),
+      ...(Array.isArray(extras?.streamToolNames) && extras.streamToolNames.length > 0
+        ? { streamToolNames: extras.streamToolNames }
+        : {}),
     },
   };
 }

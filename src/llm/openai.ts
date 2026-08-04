@@ -261,7 +261,11 @@ export class OpenAILLM implements LLMClient {
           try {
             const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
             if (charCount > 0 || accumulatedToolCalls.size > 0) {
-              emitNotification(createLLMCharCount(charCount, currentPhase));
+              const toolNames = Array.from(accumulatedToolCalls.values()).map(tc => tc.name).filter(Boolean);
+              emitNotification(createLLMCharCount(charCount, currentPhase, {
+                toolCallCount: accumulatedToolCalls.size,
+                ...(toolNames.length > 0 ? { streamToolNames: toolNames } : {}),
+              }));
             }
           } catch {
             // 通知模块不可用，忽略

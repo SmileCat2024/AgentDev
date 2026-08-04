@@ -1540,6 +1540,7 @@ class ViewerWorker {
     return {
       ...source,
       activeToolNames: Array.isArray(source.activeToolNames) ? source.activeToolNames.slice() : [],
+      streamToolNames: Array.isArray(source.streamToolNames) ? source.streamToolNames.slice() : undefined,
     };
   }
 
@@ -1727,6 +1728,7 @@ class ViewerWorker {
           : (notification.timestamp || Date.now()),
         lastErrorType: null,
         lastErrorMessage: null,
+        streamToolNames: undefined,
       };
     } else if (notification.type === 'call.finish') {
       const finishData = (notification.data && typeof notification.data === 'object')
@@ -1739,6 +1741,7 @@ class ViewerWorker {
         callActive: false,
         activeToolNames: [],
         activeToolCount: 0,
+        streamToolNames: undefined,
         retryAttempt: undefined,
         maxRetries: undefined,
         nextRetryDelayMs: undefined,
@@ -1750,6 +1753,9 @@ class ViewerWorker {
       const charCount = typeof data.charCount === 'number' ? data.charCount : runtimeState.charCount;
       const phase = typeof data.phase === 'string' ? data.phase : '';
       const toolCallCount = typeof data.toolCallCount === 'number' ? data.toolCallCount : runtimeState.toolCallCount;
+      const streamToolNames = Array.isArray(data.streamToolNames)
+        ? data.streamToolNames.map((n) => String(n || '')).filter(Boolean)
+        : undefined;
       const nextStage = this.getRuntimeStageFromLLMPhase(phase);
       session.runtimeState = {
         ...this.updateRuntimeStage(runtimeState, nextStage, notification.timestamp || Date.now()),
@@ -1762,6 +1768,7 @@ class ViewerWorker {
           ? data.contentChars
           : (phase === 'content' ? charCount : runtimeState.contentChars),
         toolCallCount,
+        ...(streamToolNames ? { streamToolNames } : { streamToolNames: undefined }),
       };
     } else if (notification.type === 'llm.complete') {
       const nextStage = session.callActive === true
@@ -1770,6 +1777,7 @@ class ViewerWorker {
       session.runtimeState = {
         ...this.updateRuntimeStage(runtimeState, nextStage, notification.timestamp || Date.now()),
         callActive: session.callActive === true,
+        streamToolNames: undefined,
       };
     } else if (notification.type === 'tool.start') {
       const data = (notification.data && typeof notification.data === 'object')

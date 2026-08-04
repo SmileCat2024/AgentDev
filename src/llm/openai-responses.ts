@@ -302,7 +302,11 @@ export class OpenAIResponsesLLM implements LLMClient {
                 ? 'thinking'
                 : 'content';
             if (charCount > 0 || functionCalls.size > 0) {
-              emitNotification(createLLMCharCount(charCount, currentPhase));
+              const toolNames = Array.from(functionCalls.values()).map(fc => fc.name).filter(Boolean);
+              emitNotification(createLLMCharCount(charCount, currentPhase, {
+                toolCallCount: functionCalls.size,
+                ...(toolNames.length > 0 ? { streamToolNames: toolNames } : {}),
+              }));
             }
           } catch {
             // Ignore notification failures.

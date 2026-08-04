@@ -665,7 +665,8 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
         const event = parseSSEEvent(rawEvent);
         if (event) {
           applyEvent(event);
-          await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size);
+          const toolNames = Array.from(pendingToolUses.values()).map(t => t.name).filter(Boolean);
+          await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size, toolNames);
         }
         sep = findDoubleNewlineIndex(buffer);
       }
@@ -682,7 +683,8 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
     const event = parseSSEEvent(buffer);
     if (event) {
       applyEvent(event);
-      await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size);
+      const toolNames = Array.from(pendingToolUses.values()).map(t => t.name).filter(Boolean);
+      await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size, toolNames);
     }
   }
 
@@ -819,11 +821,19 @@ function applyAnthropicStreamEvent(
   }
 }
 
-async function emitAnthropicProgress(charCount: number, phase: LLMPhase, toolCallCount: number): Promise<void> {
+async function emitAnthropicProgress(
+  charCount: number,
+  phase: LLMPhase,
+  toolCallCount: number,
+  toolNames?: string[],
+): Promise<void> {
   try {
     const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
     if (charCount > 0 || toolCallCount > 0) {
-      emitNotification(createLLMCharCount(charCount, phase));
+      emitNotification(createLLMCharCount(charCount, phase, {
+        toolCallCount,
+        ...(Array.isArray(toolNames) && toolNames.length > 0 ? { streamToolNames: toolNames } : {}),
+      }));
     }
   } catch {
     // Ignore notification failures.

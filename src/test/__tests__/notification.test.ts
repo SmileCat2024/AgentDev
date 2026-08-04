@@ -228,4 +228,109 @@ describe('notification', () => {
       expect(data).not.toHaveProperty('finishReason');
     });
   });
+
+  // ========== streamToolNames 扩展字段 ==========
+
+  describe('createLLMCharCount 流式扩展字段', () => {
+    it('streamToolNames 非空数组时应包含在 data 中', () => {
+      const notif = createLLMCharCount(100, 'tool_calling', {
+        toolCallCount: 2,
+        streamToolNames: ['read', 'edit'],
+      });
+      const data = notif.data as Record<string, unknown>;
+      expect(data).toHaveProperty('streamToolNames');
+      expect(data.streamToolNames).toEqual(['read', 'edit']);
+    });
+
+    it('streamToolNames 空数组时不应包含在 data 中', () => {
+      const notif = createLLMCharCount(100, 'tool_calling', {
+        streamToolNames: [],
+      });
+      const data = notif.data as Record<string, unknown>;
+      expect(data).not.toHaveProperty('streamToolNames');
+    });
+
+    it('不传 streamToolNames 时 data 不含该字段', () => {
+      const notif = createLLMCharCount(100, 'content');
+      const data = notif.data as Record<string, unknown>;
+      expect(data).not.toHaveProperty('streamToolNames');
+    });
+  });
+
+  // ========== 阶段转换绕过节流 ==========
+
+  describe('emitNotification 阶段转换绕过节流', () => {
+    it('llm.char_count phase 变化时应绕过节流', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      _setNotificationAgent('agent-1');
+
+      // 先发 thinking phase
+      emitNotification({ type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'thinking' } });
+      expect(mockPushNotification).toHaveBeenCalledTimes(1);
+
+      // 50ms 后切到 content phase — 应绕过节流
+      vi.setSystemTime(1050);
+      emitNotification({ type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'content' } });
+      expect(mockPushNotification).toHaveBeenCalledTimes(2);
+    });
+
+    it('同一 phase 在 100ms 内重复应被节流', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      _setNotificationAgent('agent-1');
+
+      const notif = { type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'content' } };
+      emitNotification(notif);
+      // 50ms 后同 phase — 应被节流
+      vi.setSystemTime(1050);
+      emitNotification(notif);
+      expect(mockPushNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('thinking → content → tool_calling 连续转换都应通过', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      _setNotificationAgent('agent-1');
+
+      emitNotification({ type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'thinking' } });
+      vi.setSystemTime(1010);
+      emitNotification({ type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'content' } });
+      vi.setSystemTime(1020);
+      emitNotification({ type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'tool_calling' } });
+
+      expect(mockPushNotification).toHaveBeenCalledTimes(3);
+    });
+
+    it('_clearNotificationAgent 应重置 lastLLMPhase', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      _setNotificationAgent('agent-1');
+
+      emitNotification({ type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'thinking' } });
+      expect(mockPushNotification).toHaveBeenCalledTimes(1);
+
+      _clearNotificationAgent();
+      _setNotificationAgent('agent-2');
+
+      // clear 后同一 phase 也应通过
+      vi.setSystemTime(1010);
+      emitNotification({ type: 'llm.char_count', category: 'state', timestamp: 0, data: { phase: 'thinking' } });
+      expect(mockPushNotification).toHaveBeenCalledTimes(2);
+      expect(mockPushNotification).toHaveBeenLastCalledWith('agent-2', expect.anything());
+    });
+
+    it('无 phase 字段的 llm.char_count 不触发阶段转换', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      _setNotificationAgent('agent-1');
+
+      const notif = { type: 'llm.char_count', category: 'state', timestamp: 0, data: {} };
+      emitNotification(notif);
+      // 50ms 后重复 — 应被节流（phase 为空，不触发转换绕过）
+      vi.setSystemTime(1050);
+      emitNotification(notif);
+      expect(mockPushNotification).toHaveBeenCalledTimes(1);
+    });
+  });
 });

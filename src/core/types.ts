@@ -78,6 +78,8 @@ export interface LLMCharCountData {
   thinkingChars?: number;
   contentChars?: number;
   toolCallCount?: number;
+  /** 流式期间已检测到的工具名称（tool_calling 阶段可用） */
+  streamToolNames?: string[];
 }
 
 /**
@@ -112,6 +114,8 @@ export interface AgentRuntimeSnapshot {
   toolCallCount: number;
   activeToolNames: string[];
   activeToolCount: number;
+  /** LLM 流式期间检测到的工具名称（仅 llm_tool_call_building 阶段有值） */
+  streamToolNames?: string[];
   callStartedAt?: number;
   stageStartedAt?: number;
   retryAttempt?: number;

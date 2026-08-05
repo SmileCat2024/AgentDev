@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
+import { NodeStreamableHTTPServerTransport as StreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import * as z from 'zod/v4';
 import type { AgentLogsResponse, AgentSession, DebugLogEntry, HookInspectorSnapshot } from './types.js';
 

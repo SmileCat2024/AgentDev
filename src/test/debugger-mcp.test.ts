@@ -1,6 +1,5 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { ViewerWorker } from '../core/viewer-worker.js';
 
 function getStructuredToolPayload(result: any): any {

@@ -1,12 +1,10 @@
 import { spawn, type ChildProcess } from 'child_process';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
-  CompatibilityCallToolResultSchema,
-  ListToolsResultSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+  Client,
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import type {
   MCPServerConfig,
   MCPSstdioConfig,
@@ -317,12 +315,8 @@ export class MCPConnectionManager {
         return tools;
       }
 
-      const response = await (connection.server as Client).request(
-        {
-          method: 'tools/list',
-          params: {},
-        },
-        ListToolsResultSchema,
+      const response = await (connection.server as Client).listTools(
+        undefined,
         { timeout: 300000 }
       );
       const tools = response.tools || [];
@@ -365,15 +359,8 @@ export class MCPConnectionManager {
         return result;
       }
 
-      const response = await (connection.server as Client).request(
-        {
-          method: 'tools/call',
-          params: {
-            name,
-            arguments: args,
-          },
-        },
-        CompatibilityCallToolResultSchema,
+      const response = await (connection.server as Client).callTool(
+        { name, arguments: args },
         { timeout: 300000 }
       );
       return this.normalizeToolCallResponse(response);

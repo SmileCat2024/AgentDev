@@ -32,7 +32,9 @@
     "server": "node dist/cli/server.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@openai/agents": "^0.4.6",
     "better-sqlite3": "^12.8.0",
     "diff": "^8.0.3",

@@ -97,6 +97,8 @@ export type {
   AgentSession,
   DebugHubIPCMessage,
   ImageInput,
+  UserTurnInput,
+  UserTurnSubmissionResult,
 } from './core/types.js';
 export type { DebugCapabilities } from './core/debug-capabilities.js';
 export type { AgentSessionSnapshot, SessionStore, NamedCheckpoint } from './core/session-store.js';

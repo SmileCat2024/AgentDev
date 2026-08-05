@@ -182,6 +182,47 @@ describe('Context', () => {
       expect(enriched[0].role).toBe('system');
       expect(enriched[0].tags).toContain('system');
     });
+
+    it('should preserve tag on messages[] and enrichedMessages[]', () => {
+      const ctx = new Context();
+      ctx.addSystemMessage('folded note', 0, 'handoff-seed', 'folded-tool-activity');
+      const msgs = ctx.getAll();
+      expect(msgs[0].tag).toBe('folded-tool-activity');
+      const enriched = ctx.getAllEnriched();
+      expect(enriched[0].tag).toBe('folded-tool-activity');
+    });
+
+    it('should omit tag key when not provided', () => {
+      const ctx = new Context();
+      ctx.addSystemMessage('no tag', 0, 'handoff-seed');
+      const msgs = ctx.getAll();
+      expect(msgs[0].tag).toBeUndefined();
+    });
+  });
+
+  describe('tag field transparency', () => {
+    it('should survive serialization round-trip', () => {
+      const ctx = new Context();
+      ctx.addSystemMessage('persist me', 0, 'handoff-seed', 'folded-tool-activity');
+      const json = ctx.serialize();
+      const restored = Context.deserialize(json);
+      const msgs = restored.getAll();
+      expect(msgs[0].tag).toBe('folded-tool-activity');
+    });
+
+    it('should be accessible on enriched query results', () => {
+      const ctx = new Context();
+      ctx.addSystemMessage('queryable', 0, undefined, 'folded-tool-activity');
+      const result = ctx.query().byRole('system').exec();
+      expect(result[0].tag).toBe('folded-tool-activity');
+    });
+
+    it('add() should preserve tag on raw message', () => {
+      const ctx = new Context();
+      ctx.add({ role: 'system', content: 'direct add', turn: 0, tag: 'custom-tag' });
+      const msgs = ctx.getAll();
+      expect(msgs[0].tag).toBe('custom-tag');
+    });
   });
 
   // ========== Parsed content & indexes ==========

@@ -17,20 +17,6 @@ import { createLLM } from '../../llm/index.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { cwd, platform } from 'process';
-import { getDefaultMCPConfigDir } from '../../mcp/config.js';
-
-function hasMeaningfulMcpFeatureConfig(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-  const config = value as Record<string, unknown>;
-  const scanAgentdevDir = config.scanAgentdevDir;
-  const extraConfigFiles = Array.isArray(config.extraConfigFiles)
-    ? config.extraConfigFiles.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  return scanAgentdevDir === false || extraConfigFiles.length > 0;
-}
-
 /**
  * 系统环境信息上下文
  */
@@ -65,7 +51,7 @@ export interface BasicAgentConfig {
   name?: string;
   /** 系统提示词（可选，后续可通过 setPrompt() 设置） */
   systemMessage?: string;
-  /** MCP 配置：传字符串时加载指定配置；传 false 时禁用自动加载；不传时若 .agentdev/mcps 存在则自动加载全部 */
+  /** MCP 配置：传字符串时加载指定配置；传 false 时禁用 MCPFeature；不传时挂载 MCPFeature 并由其自动加载 .agentdev/mcps 等配置 */
   mcpServer?: string | false;
   /** MCP 运行时上下文（可选，如 GitHub Token） */
   mcpContext?: Record<string, unknown>;
@@ -149,10 +135,10 @@ export class BasicAgent extends Agent {
     this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
 
-    const hasDefaultMCPConfigs = existsSync(getDefaultMCPConfigDir());
-    const hasFeatureScopedMcpConfig = hasMeaningfulMcpFeatureConfig(config.features?.mcp);
-    const shouldEnableMCP = config.mcpServer !== false && (typeof config.mcpServer === 'string' || hasDefaultMCPConfigs || hasFeatureScopedMcpConfig);
-    if (shouldEnableMCP) {
+    // MCPFeature 始终挂载；是否实际加载到配置由 feature 自身根据运行时
+    // 配置（features.mcp / .agentdev/mcps）决定。mcpServer === false 是
+    // 唯一的显式 opt-out。
+    if (config.mcpServer !== false) {
       this._mcpFeature = typeof config.mcpServer === 'string'
         ? new MCPFeature(config.mcpServer)
         : new MCPFeature(undefined, { excludeServers: config.excludeMcpServers });

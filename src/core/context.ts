@@ -299,13 +299,13 @@ export class Context {
   /**
    * 添加系统消息
    */
-  addSystemMessage(content: string, turn: number, source?: string): void {
+  addSystemMessage(content: string, turn: number, source?: string, tag?: string): void {
     this.addMessage(
-      { role: 'system', content, turn },
-      { turn, source }
+      { role: 'system', content, turn, ...(tag ? { tag } : {}) },
+      { turn, source, ...(tag ? { tag } : {}) }
     );
     // 同步到 messages 数组
-    this.messages.push({ role: 'system', content, turn, source });
+    this.messages.push({ role: 'system', content, turn, ...(source ? { source } : {}), ...(tag ? { tag } : {}) });
   }
 
   // ========== 内核化能力：查询接口 ==========
@@ -364,6 +364,7 @@ export class Context {
       sequence: this.sequence++,
       agentId: meta.agentId,
       source: meta.source,
+      tag: message.tag ?? meta.tag,
 
       // 分类标签
       tags: this.inferTags(message),

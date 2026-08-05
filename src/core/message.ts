@@ -8,8 +8,8 @@ import type { Message, MessageRole, ToolCall } from './types.js';
 /**
  * 创建消息
  */
-export function createMessage(role: MessageRole, content: string, toolCalls?: ToolCall[], reasoning?: string): Message {
-  return { role, content, toolCalls, reasoning };
+export function createMessage(role: MessageRole, content: string, toolCalls?: ToolCall[], reasoning?: string, tag?: string): Message {
+  return { role, content, toolCalls, reasoning, ...(tag ? { tag } : {}) };
 }
 
 /**

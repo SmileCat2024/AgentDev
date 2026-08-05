@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -435,6 +435,13 @@ class ViewerWorker {
     const inputPostMatch = url.match(/^\/api\/agents\/([^/]+)\/input$/);
     if (inputPostMatch && req.method === 'POST') {
       this.handlePostInput(req, res, inputPostMatch[1]);
+      return;
+    }
+
+    // POST /api/agents/:id/user-turn - 统一提交一个新的用户回合
+    const userTurnMatch = url.match(/^\/api\/agents\/([^/]+)\/user-turn$/);
+    if (userTurnMatch && req.method === 'POST') {
+      this.handlePostUserTurn(req, res, userTurnMatch[1]);
       return;
     }
 
@@ -1018,7 +1025,9 @@ class ViewerWorker {
         const { requestId, input, response } = JSON.parse(body);
 
         const session = this.agentSessions.get(agentId);
-        const pendingRequests = (session as any).pendingInputRequests as Map<string, any> | undefined;
+        const pendingRequests = session
+          ? (session as any).pendingInputRequests as Map<string, any> | undefined
+          : undefined;
         if (!session || !pendingRequests?.has(requestId)) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Request not found or expired' }));
@@ -1030,47 +1039,18 @@ class ViewerWorker {
           text: input,
         };
 
-        // 移除请求
-        pendingRequests.delete(requestId);
-
-        // 通过 UDS 发送响应到正确的客户端
-        const targetClientId = session.clientId;
-        if (targetClientId) {
-          const targetSocket = this.udsClients.get(targetClientId);
-          if (targetSocket) {
-            try {
-              targetSocket.write(JSON.stringify({
-                type: 'input-response',
-                agentId,
-                requestId,
-                input: normalizedResponse.text ?? input ?? '',
-                response: normalizedResponse,
-              }) + '\n');
-              console.log(`[Viewer Worker] 输入响应已发送到 ${targetClientId}: ${requestId}`);
-            } catch (writeError) {
-              console.error('[Viewer Worker] UDS 写入失败:', writeError);
-            }
-          } else {
-            console.warn(`[Viewer Worker] 目标客户端连接不存在: ${targetClientId}`);
-          }
-        } else {
-          // 向后兼容：如果没有记录 clientId，广播到所有客户端
-          console.warn('[Viewer Worker] Agent 未记录 clientId，尝试广播到所有客户端');
-          for (const [cid, socket] of this.udsClients) {
-            try {
-              socket.write(JSON.stringify({
-                type: 'input-response',
-                agentId,
-                requestId,
-                input: normalizedResponse.text ?? input ?? '',
-                response: normalizedResponse,
-              }) + '\n');
-              console.log(`[Viewer Worker] 输入响应广播到 ${cid}`);
-            } catch (writeError) {
-              console.error(`[Viewer Worker] 向 ${cid} 广播失败:`, writeError);
-            }
-          }
+        if (!this.forwardInputResponse(agentId, session, requestId, input ?? '', normalizedResponse)) {
+          res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({
+            success: false,
+            code: 'runtime_not_accepting_input',
+            error: 'Agent runtime is not connected',
+          }));
+          return;
         }
+
+        // IPC 接管成功后再移除请求，避免“HTTP 成功但消息未发送”的假成功。
+        pendingRequests.delete(requestId);
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ success: true }));
@@ -1079,6 +1059,201 @@ class ViewerWorker {
         res.end(JSON.stringify({ error: 'Invalid request' }));
       }
     });
+  }
+
+  /**
+   * 提交一个不绑定 requestId 的新用户回合。
+   *
+   * pendingInputRequests 与 queuedInputs 都由 ViewerWorker 持有，因此仲裁必须
+   * 在这里原子完成，不能由宿主先 GET 再 POST 拼接，否则会产生 TOCTOU 竞态。
+   */
+  public submitUserTurn(agentId: string, input: UserTurnInput): UserTurnSubmissionResult {
+    if (!input || typeof input.text !== 'string' || input.text.length === 0) {
+      return { success: false, code: 'invalid_input', error: 'text must be a non-empty string' };
+    }
+    if (input.images !== undefined && !Array.isArray(input.images)) {
+      return { success: false, code: 'invalid_input', error: 'images must be an array when provided' };
+    }
+    if (input.source !== undefined
+      && (typeof input.source !== 'string' || input.source.length === 0 || input.source.length > 128)) {
+      return { success: false, code: 'invalid_input', error: 'source must be a non-empty string up to 128 characters' };
+    }
+    if (input.sourceRef !== undefined
+      && (typeof input.sourceRef !== 'string' || input.sourceRef.length === 0 || input.sourceRef.length > 512)) {
+      return { success: false, code: 'invalid_input', error: 'sourceRef must be a non-empty string up to 512 characters' };
+    }
+
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      return { success: false, code: 'agent_not_found', error: 'Agent not found' };
+    }
+    if (!this.isSessionConnected(session)) {
+      return {
+        success: false,
+        code: 'runtime_not_accepting_input',
+        error: 'Agent runtime is not connected',
+      };
+    }
+
+    const pendingRequests = (session as any).pendingInputRequests as Map<string, any> | undefined;
+    const pendingEntries = pendingRequests ? Array.from(pendingRequests.entries()) : [];
+    const conflictingRequest = pendingEntries.find(([, request]) => request?.mode === 'choices');
+    if (conflictingRequest) {
+      return {
+        success: false,
+        code: 'input_mode_conflict',
+        error: 'A non-text interactive input request must be completed before submitting a new user turn',
+        pendingMode: 'choices',
+      };
+    }
+
+    const textRequest = pendingEntries
+      .find(([, request]) => request?.mode !== 'choices');
+
+    if (textRequest) {
+      const [requestId] = textRequest;
+      const response = this.createTextInputResponse(input);
+      if (!this.forwardInputResponse(agentId, session, requestId, input.text, response)) {
+        return {
+          success: false,
+          code: 'runtime_not_accepting_input',
+          error: 'Agent runtime is not connected',
+        };
+      }
+      pendingRequests!.delete(requestId);
+      return {
+        success: true,
+        delivery: 'input',
+        requestId,
+        ...(input.source ? { source: input.source } : {}),
+        ...(input.sourceRef ? { sourceRef: input.sourceRef } : {}),
+      };
+    }
+
+    // 只有活跃 call 会在 step/call 边界消费队列。空闲且没有 input request
+    // 时接受队列会制造永久悬挂，因此明确拒绝，让来源侧保留输入并重试。
+    if (session.callActive !== true) {
+      return {
+        success: false,
+        code: 'runtime_not_accepting_input',
+        error: 'Agent runtime has no active call or compatible input request',
+      };
+    }
+
+    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef);
+    console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
+    return {
+      success: true,
+      delivery: 'queued',
+      id: queuedInput.id,
+      queueLength: session.queuedInputs.length,
+      ...(input.source ? { source: input.source } : {}),
+      ...(input.sourceRef ? { sourceRef: input.sourceRef } : {}),
+    };
+  }
+
+  private handlePostUserTurn(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const result = this.submitUserTurn(agentId, JSON.parse(body) as UserTurnInput);
+        const status = result.success
+          ? 200
+          : result.code === 'agent_not_found'
+            ? 404
+            : result.code === 'input_mode_conflict' || result.code === 'runtime_not_accepting_input'
+              ? 409
+              : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: false, code: 'invalid_input', error: 'Invalid request' }));
+      }
+    });
+  }
+
+  private forwardInputResponse(
+    agentId: string,
+    session: AgentSession,
+    requestId: string,
+    input: string,
+    response: UserInputResponse,
+  ): boolean {
+    const message = JSON.stringify({
+      type: 'input-response',
+      agentId,
+      requestId,
+      input: response.text ?? input ?? '',
+      response,
+    }) + '\n';
+
+    const targetClientId = session.clientId;
+    if (targetClientId) {
+      const targetSocket = this.udsClients.get(targetClientId);
+      if (targetSocket) {
+        try {
+          targetSocket.write(message);
+          console.log(`[Viewer Worker] 输入响应已发送到 ${targetClientId}: ${requestId}`);
+          return true;
+        } catch (writeError) {
+          console.error('[Viewer Worker] UDS 写入失败:', writeError);
+          return false;
+        }
+      } else {
+        console.warn(`[Viewer Worker] 目标客户端连接不存在: ${targetClientId}`);
+      }
+      return false;
+    }
+
+    // 向后兼容：如果没有记录 clientId，广播到所有客户端
+    console.warn('[Viewer Worker] Agent 未记录 clientId，尝试广播到所有客户端');
+    let delivered = false;
+    for (const [cid, socket] of this.udsClients) {
+      try {
+        socket.write(message);
+        delivered = true;
+        console.log(`[Viewer Worker] 输入响应广播到 ${cid}`);
+      } catch (writeError) {
+        console.error(`[Viewer Worker] 向 ${cid} 广播失败:`, writeError);
+      }
+    }
+    return delivered;
+  }
+
+  private createTextInputResponse(input: UserTurnInput | QueuedInput): UserInputResponse {
+    const payload: Record<string, unknown> = {};
+    if (Array.isArray(input.images) && input.images.length > 0) payload.images = input.images;
+    if (input.source) payload.source = input.source;
+    if (input.sourceRef) payload.sourceRef = input.sourceRef;
+    return {
+      kind: 'text',
+      text: input.text,
+      ...(Object.keys(payload).length > 0 ? { payload } : {}),
+    };
+  }
+
+  private enqueueQueuedInput(
+    session: AgentSession,
+    text: string,
+    images?: ImageInput[],
+    source?: string,
+    sourceRef?: string,
+  ): QueuedInput {
+    if (!session.queuedInputs) {
+      (session as any).queuedInputs = [];
+    }
+    const queuedInput: QueuedInput = {
+      id: `q-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      text,
+      timestamp: Date.now(),
+      ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
+      ...(source ? { source } : {}),
+      ...(sourceRef ? { sourceRef } : {}),
+    };
+    session.queuedInputs.push(queuedInput);
+    return queuedInput;
   }
 
   /**
@@ -1103,17 +1278,7 @@ class ViewerWorker {
           return;
         }
 
-        if (!session.queuedInputs) {
-          (session as any).queuedInputs = [];
-        }
-
-        const queuedInput = {
-          id: `q-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          text,
-          timestamp: Date.now(),
-          ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
-        };
-        session.queuedInputs.push(queuedInput);
+        const queuedInput = this.enqueueQueuedInput(session, text, images);
         console.log(`[Viewer Worker] 用户输入已排队: ${agentId}, queueLength=${session.queuedInputs.length}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -2032,6 +2197,18 @@ class ViewerWorker {
     if (!pendingRequests) {
       pendingRequests = new Map();
       (session as any).pendingInputRequests = pendingRequests;
+    }
+
+    // 活跃 call 最后一次 drain 与 call.finish 之间仍可能有新输入入队。
+    // 下一次兼容的文本请求出现时在框架层接力，封闭这个生命周期竞态。
+    if (pendingRequests.size === 0 && msg.mode !== 'choices' && session.queuedInputs.length > 0) {
+      const queuedInput = session.queuedInputs[0];
+      const response = this.createTextInputResponse(queuedInput);
+      if (this.forwardInputResponse(agentId, session, requestId, queuedInput.text, response)) {
+        session.queuedInputs.shift();
+        console.log(`[Viewer Worker] 排队用户回合已转交给新输入请求: ${requestId}, remaining=${session.queuedInputs.length}`);
+        return;
+      }
     }
 
     // 存储请求

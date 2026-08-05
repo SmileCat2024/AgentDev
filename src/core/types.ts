@@ -286,6 +286,16 @@ export interface Message {
    */
   source?: string;
   /**
+   * 消息语义标签（所有 role 通用）。
+   *
+   * 与 source 的区别：
+   * - source 控制 LLM 编译层行为（顶层 system vs reminder）
+   * - tag 控制上下文管理层行为（trim/compact 时的保留策略）
+   *
+   * undefined = 无标签，向后兼容，行为与当前完全一致。
+   */
+  tag?: string;
+  /**
    * LLM 用量信息（仅 assistant 消息有值）。
    *
    * 由 LLM provider 在生成响应时返回，表示生成此消息时的上下文 token 开销。
@@ -624,7 +634,47 @@ export interface QueuedInput {
   timestamp: number;
   /** 图片附件（多模态输入） */
   images?: ImageInput[];
+  /** 稳定的输入来源标识，供宿主诊断和后续路由扩展使用 */
+  source?: string;
+  /** 来源侧事件/请求标识，不承担全局幂等语义 */
+  sourceRef?: string;
 }
+
+/**
+ * 一个不绑定具体 input request 的新用户回合。
+ *
+ * ViewerWorker 会原子决定：若存在兼容的文本 input request，则直接响应；
+ * 否则在没有互斥交互请求时加入运行中队列。
+ */
+export interface UserTurnInput {
+  text: string;
+  images?: ImageInput[];
+  source?: string;
+  sourceRef?: string;
+}
+
+export type UserTurnSubmissionResult =
+  | {
+      success: true;
+      delivery: 'input';
+      requestId: string;
+      source?: string;
+      sourceRef?: string;
+    }
+  | {
+      success: true;
+      delivery: 'queued';
+      id: string;
+      queueLength: number;
+      source?: string;
+      sourceRef?: string;
+    }
+  | {
+      success: false;
+      code: 'agent_not_found' | 'invalid_input' | 'input_mode_conflict' | 'runtime_not_accepting_input';
+      error: string;
+      pendingMode?: UserInputRequestMode;
+    };
 
 /**
  * DebugHub IPC 消息类型（主进程 → Worker）
@@ -919,6 +969,8 @@ export interface MessageMeta {
   agentId?: string;
   /** 来源 Feature（reminder 等消息时填写） */
   source?: string;
+  /** 消息语义标签（透传到 EnrichedMessage） */
+  tag?: string;
 }
 
 /**

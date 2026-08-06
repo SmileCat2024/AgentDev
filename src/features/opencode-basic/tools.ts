@@ -4,6 +4,7 @@
  */
 
 import { createTool } from '../../core/tool.js';
+import { withDisplay } from '../../core/tool-result-display.js';
 import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
 import { glob } from 'glob';
 import { spawn } from 'child_process';
@@ -598,12 +599,15 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       // ignore
     }
 
-    return {
-      filePath: resolvedFilePath,
-      existed: exists,
-      diff,
-      message: `File ${exists ? 'updated' : 'created'} successfully`
-    };
+    return withDisplay(
+      JSON.stringify({
+        filePath: resolvedFilePath,
+        existed: exists,
+        lines: content.split('\n').length,
+        message: `File ${exists ? 'updated' : 'created'} successfully`,
+      }),
+      { filePath: resolvedFilePath, existed: exists, diff }
+    );
   }
   });
 }
@@ -1196,14 +1200,16 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       // ignore
     }
 
-    return {
-      filePath: resolvedFilePath,
-      diff,
-      additions,
-      deletions,
-      message: warning ?? 'Edit applied successfully',
-      ...(warning && { warning })
-    };
+    return withDisplay(
+      JSON.stringify({
+        filePath: resolvedFilePath,
+        additions,
+        deletions,
+        message: warning ?? 'Edit applied successfully',
+        ...(warning && { warning }),
+      }),
+      { filePath: resolvedFilePath, diff, additions, deletions }
+    );
   }
   });
 }
@@ -1481,8 +1487,18 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
           // ripgrep 将匹配结果输出到 stdout，错误信息到 stderr
         });
 
-        child.on('error', (err) => reject(err));
+        // 支持取消
+        const onSearchAbort = () => child.kill();
+        if (context?.signal) {
+          context.signal.addEventListener('abort', onSearchAbort, { once: true });
+        }
+
+        child.on('error', (err) => {
+          context?.signal?.removeEventListener('abort', onSearchAbort);
+          reject(err);
+        });
         child.on('close', (code) => {
+          context?.signal?.removeEventListener('abort', onSearchAbort);
           if (context?.signal?.aborted) {
             return reject(new Error('Search was aborted'));
           }
@@ -1492,17 +1508,10 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
           }
           resolve(Buffer.concat(chunks).toString('utf-8'));
         });
-
-        // 支持取消
-        if (context?.signal) {
-          context.signal.addEventListener('abort', () => {
-            child.kill();
-          });
-        }
       });
 
       const lines = stdout.trim().split(/\r?\n/);
-      const matches: Array<{ path: string; lineNum: number; lineText: string; modTime: number }> = [];
+      const matches: Array<{ path: string; lineNum: number; lineText: string }> = [];
 
       for (const line of lines) {
         if (!line) continue;
@@ -1514,21 +1523,15 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         const lineNum = parseInt(lineNumStr, 10);
         const lineText = lineTextParts.join('|');
 
-        try {
-          const stats = await stat(filePath);
-          matches.push({
-            path: filePath,
-            lineNum,
-            lineText: lineText.length > MAX_LINE_LENGTH ? lineText.substring(0, MAX_LINE_LENGTH) + '...' : lineText,
-            modTime: stats.mtimeMs
-          });
-        } catch {
-          // File may not exist, skip
-        }
+        matches.push({
+          path: filePath,
+          lineNum,
+          lineText: lineText.length > MAX_LINE_LENGTH ? lineText.substring(0, MAX_LINE_LENGTH) + '...' : lineText,
+        });
       }
 
-      // 按修改时间排序
-      matches.sort((a, b) => b.modTime - a.modTime);
+      // 按文件路径 + 行号排序
+      matches.sort((a, b) => a.path === b.path ? a.lineNum - b.lineNum : a.path < b.path ? -1 : 1);
 
       const truncated = matches.length > SEARCH_LIMIT;
       const finalMatches = truncated ? matches.slice(0, SEARCH_LIMIT) : matches;

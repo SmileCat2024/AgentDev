@@ -257,14 +257,21 @@ export class ToolExecutor {
           if (signal.aborted) {
             throw new ToolInterruptError();
           }
-          // 创建 abort 监听 Promise
+          // 创建 abort 监听 Promise，并在 race 结束后清理 listener
+          let removeAbortListener: (() => void) | undefined;
           const abortPromise = new Promise<never>((_, reject) => {
-            signal.addEventListener('abort', () => reject(new ToolInterruptError()), { once: true });
+            const onAbort = () => reject(new ToolInterruptError());
+            signal.addEventListener('abort', onAbort, { once: true });
+            removeAbortListener = () => signal.removeEventListener('abort', onAbort);
           });
-          data = await Promise.race([
-            tool.execute(call.arguments, toolContext),
-            abortPromise,
-          ]);
+          try {
+            data = await Promise.race([
+              tool.execute(call.arguments, toolContext),
+              abortPromise,
+            ]);
+          } finally {
+            removeAbortListener?.();
+          }
         } else {
           data = await tool.execute(call.arguments, toolContext);
         }

@@ -604,19 +604,13 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
   let receivedMessageStart = false;
   let receivedMessageStop = false;
 
-  // 创建 signal abort 监听 Promise，用于 race 中断 reader.read()
-  const createAbortPromise = (): Promise<never> => new Promise<never>((_, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    const onAbort = () => {
-      signal!.removeEventListener('abort', onAbort);
-      reader.cancel().catch(() => {});
-      reject(new DOMException('Aborted', 'AbortError'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  // 只注册一次 abort listener，用于中断 reader.read()。
+  // 旧实现在 while 循环每次迭代中创建新的 abort Promise 并注册 listener，
+  // 导致正常完成时 listener 累积不释放（MaxListenersExceededWarning）。
+  const onStreamAbort = () => reader.cancel().catch(() => {});
+  if (signal && !signal.aborted) {
+    signal.addEventListener('abort', onStreamAbort, { once: true });
+  }
 
   const applyEvent = (event: AnthropicStreamEvent): void => {
     if (event.type === 'message_start') receivedMessageStart = true;
@@ -650,10 +644,15 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
 
   try {
     while (true) {
-      // 用 Promise.race 让 reader.read() 可被 signal 中断
-      const { value, done } = signal
-        ? await Promise.race([reader.read(), createAbortPromise()])
-        : await reader.read();
+      // signal 已中断则立即抛出
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      const { value, done } = await reader.read();
+      // reader.read() 可能被 abort 中断后返回，检查是否需要提前退出
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -676,6 +675,9 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
     if (e instanceof Error && e.name === 'AbortError') throw e;
     throw e;
+  } finally {
+    // 确保移除 abort listener，避免泄漏
+    signal?.removeEventListener('abort', onStreamAbort);
   }
 
   // 处理缓冲区中最后的残余数据

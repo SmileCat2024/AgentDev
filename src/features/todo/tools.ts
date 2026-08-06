@@ -128,7 +128,6 @@ export class TodoToolFactory {
     const self = this;
     return createTool({
       name: 'task_list',
-      parallelizable: true,
       description: `列出任务列表中的所有任务摘要。
 
 使用时机：
@@ -175,7 +174,6 @@ export class TodoToolFactory {
     const self = this;
     return createTool({
       name: 'task_get',
-      parallelizable: true,
       description: `获取指定任务的详细信息。
 
 使用时机：

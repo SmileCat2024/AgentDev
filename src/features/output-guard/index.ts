@@ -17,7 +17,8 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
+import { mkdir, writeFile } from 'fs/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -51,6 +52,8 @@ export interface OutputGuardConfig {
   fieldLimit?: number;
   /** 按工具名覆盖配置 */
   toolOverrides?: Record<string, { hardLimit?: number; fieldLimit?: number }>;
+  /** 工作目录，用于持久化截断内容（默认 process.cwd()） */
+  workdir?: string;
 }
 
 // ========== Feature 实现 ==========
@@ -74,6 +77,7 @@ export class OutputGuardFeature implements AgentFeature {
     this.config = {
       hardLimit: config.hardLimit ?? DEFAULT_HARD_LIMIT,
       fieldLimit: config.fieldLimit ?? DEFAULT_FIELD_LIMIT,
+      workdir: config.workdir ?? process.cwd(),
       toolOverrides: config.toolOverrides ?? {},
     };
   }
@@ -161,12 +165,19 @@ export class OutputGuardFeature implements AgentFeature {
       truncatedLength: truncateResult.truncatedLength,
     });
 
+    // 持久化完整输出到磁盘，并将文件路径注入截断结果
+    const finalOutput = await this.persistAndAnnotate(
+      truncateResult.output,
+      truncateResult.strategy,
+      resultStr,
+      truncateResult.originalLength,
+      toolName,
+    );
+
     // 返回截断后的结果
-    // 保持原始结构：如果原来是 string 就返回 string，如果原来是 object 就返回截断后的 string
-    // （截断后无法保证还原为 object，统一返回 string）
     return {
       ...result,
-      result: truncateResult.output,
+      result: finalOutput,
     };
   }
 
@@ -178,5 +189,76 @@ export class OutputGuardFeature implements AgentFeature {
       hardLimit: override?.hardLimit ?? this.config.hardLimit,
       fieldLimit: override?.fieldLimit ?? this.config.fieldLimit,
     };
+  }
+
+  /**
+   * 将完整输出持久化到磁盘，并在截断结果中注入文件路径引用。
+   *
+   * - JSON 结果：在顶层对象中注入 `_outputGuard` 字段（保持 JSON 合法性）
+   * - 文本结果：在头部插入提示行（与 shell 工具风格一致）
+   *
+   * 如果落盘失败（权限、磁盘满等），不注入路径引用，截断结果照常返回。
+   */
+  private async persistAndAnnotate(
+    truncatedOutput: string,
+    strategy: string,
+    fullOutput: string,
+    originalLength: number,
+    toolName: string,
+  ): Promise<string> {
+    // 尝试落盘
+    let filePath: string | null = null;
+    try {
+      const tempDir = join(this.config.workdir, '.agentdev', 'temp');
+      const now = new Date();
+      const ts = now.getFullYear().toString() +
+        String(now.getMonth() + 1).padStart(2, '0') +
+        String(now.getDate()).padStart(2, '0') + '-' +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0') +
+        String(now.getSeconds()).padStart(2, '0');
+      const suffix = Math.random().toString(36).slice(2, 8);
+      const safeToolName = toolName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
+      const fileName = `tool-output-${safeToolName}-${ts}-${suffix}.log`;
+      filePath = join(tempDir, fileName);
+
+      await mkdir(tempDir, { recursive: true });
+      await writeFile(filePath, fullOutput, 'utf-8');
+    } catch (err) {
+      this.logger?.error('Failed to persist truncated output', { error: String(err) });
+      filePath = null;
+    }
+
+    // 落盘失败，原样返回截断结果
+    if (!filePath) return truncatedOutput;
+
+    const totalKB = Math.round(originalLength / 1024);
+
+    // 根据截断策略决定注入方式
+    const isJsonStrategy = strategy === 'json-fields' || strategy === 'json-array';
+
+    if (isJsonStrategy) {
+      // JSON 结果：在顶层注入 _outputGuard 字段
+      try {
+        const parsed = JSON.parse(truncatedOutput);
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsed._outputGuard = {
+            fullOutputPath: filePath,
+            originalSize: originalLength,
+            originalSizeKB: totalKB,
+          };
+          return JSON.stringify(parsed);
+        }
+      } catch {
+        // 截断后不是合法 JSON（理论上不应发生，但防御性处理）
+      }
+      // 如果 JSON 注入失败，回退到文本方式
+    }
+
+    // 文本结果：在头部插入提示
+    const notice =
+      `[OutputGuard: full output (${totalKB}KB) saved to: ${filePath}]\n` +
+      `Use the read tool with offset/limit to access specific portions.\n`;
+    return notice + truncatedOutput;
   }
 }

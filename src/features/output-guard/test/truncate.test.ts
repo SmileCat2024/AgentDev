@@ -14,6 +14,9 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   truncateOutput,
   truncateJsonNode,
@@ -24,6 +27,7 @@ import {
   DEFAULT_HARD_LIMIT,
   DEFAULT_FIELD_LIMIT,
 } from '../truncate.js';
+import { OutputGuardFeature } from '../index.js';
 
 // ========== 辅助函数 ==========
 
@@ -691,5 +695,135 @@ describe('不崩溃保证', () => {
     const b64 = 'SGVsbG8gV29ybGQ='.repeat(2000);
     const result = truncateOutput(b64, { hardLimit: 2000 });
     assert.strictEqual(result.truncated, true);
+  });
+});
+
+// ============================================================================
+// 持久化与路径注入测试
+// ============================================================================
+
+describe('OutputGuard persistAndAnnotate', () => {
+  // 由于 persistAndAnnotate 是 OutputGuardFeature 的私有方法，
+  // 这里通过集成测试验证：截断后输出中包含文件路径引用。
+  // 需要实际 Feature 实例和临时目录。
+
+  function makeFeature(workdir) {
+    return new OutputGuardFeature({ workdir, hardLimit: 2000, fieldLimit: 500 });
+  }
+
+  function makeCtx(result, toolName = 'test_tool') {
+    return {
+      toolName,
+      call: { name: toolName, arguments: {} },
+      result: { success: true, result },
+      step: 0,
+    };
+  }
+
+  it('JSON 结果截断后注入 _outputGuard 字段', async () => {
+    const dir = join(tmpdir(), 'og-test-' + Math.random().toString(36).slice(2));
+    const feature = makeFeature(dir);
+    const hugeJson = JSON.stringify({ data: 'X'.repeat(5000) });
+    const returned = await feature.handleToolResultTransform(makeCtx(hugeJson));
+    assert.ok(returned, '应返回截断结果');
+
+    const parsed = JSON.parse(returned.result);
+    assert.ok(parsed._outputGuard, '应包含 _outputGuard 字段');
+    assert.ok(parsed._outputGuard.fullOutputPath, '应有文件路径');
+    assert.strictEqual(typeof parsed._outputGuard.originalSize, 'number');
+
+    // 验证文件确实存在且包含完整原始内容
+    const filePath = parsed._outputGuard.fullOutputPath;
+    assert.strictEqual(existsSync(filePath), true, '文件应存在');
+    const savedContent = readFileSync(filePath, 'utf-8');
+    assert.strictEqual(savedContent, hugeJson, '保存的内容应等于原始完整输出');
+
+    // JSON 整体仍合法
+    assert.strictEqual(isValidJson(returned.result), true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('纯文本结果截断后在头部插入路径提示', async () => {
+    const dir = join(tmpdir(), 'og-test-' + Math.random().toString(36).slice(2));
+    const feature = makeFeature(dir);
+    const hugeText = Array.from({ length: 200 }, (_, i) => `Line ${i}: ${'A'.repeat(50)}`).join('\n');
+    const returned = await feature.handleToolResultTransform(makeCtx(hugeText));
+    assert.ok(returned, '应返回截断结果');
+
+    // 头部应包含 OutputGuard 提示行
+    assert.ok(returned.result.includes('OutputGuard'), '应包含 OutputGuard 标记');
+    assert.ok(returned.result.includes('saved to:'), '应包含 saved to 提示');
+
+    // 提取路径并验证文件
+    const match = returned.result.match(/saved to: (.+?)\]/);
+    assert.ok(match, '应能提取文件路径');
+    const filePath = match[1];
+    assert.strictEqual(existsSync(filePath), true, '文件应存在');
+    const savedContent = readFileSync(filePath, 'utf-8');
+    assert.strictEqual(savedContent, hugeText, '保存的内容应等于原始完整输出');
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('数组型 JSON 截断后 _outputGuard 正确注入', async () => {
+    const dir = join(tmpdir(), 'og-test-' + Math.random().toString(36).slice(2));
+    const feature = makeFeature(dir);
+    // 注意：顶层是数组的 JSON，_outputGuard 无法注入到数组中
+    // 应回退到文本提示方式
+    const hugeArrayJson = JSON.stringify(
+      Array.from({ length: 200 }, (_, i) => ({ id: i, data: 'X'.repeat(100) }))
+    );
+    const returned = await feature.handleToolResultTransform(makeCtx(hugeArrayJson));
+    assert.ok(returned, '应返回截断结果');
+
+    // 数组 JSON 被截断后可能是对象型（如果有外层 wrapper）或文本
+    // 检查是否至少包含路径信息
+    const hasPath = returned.result.includes('_outputGuard') ||
+                     returned.result.includes('OutputGuard');
+    assert.ok(hasPath, '应包含路径信息（JSON 字段或文本提示）');
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('落盘失败时仍返回截断结果（不崩溃）', async () => {
+    // 使用包含非法字符的路径，确保 mkdir 失败
+    const badDir = join(tmpdir(), 'og-file-blocker-' + Math.random().toString(36).slice(2));
+    // 先创建一个文件，然后用它作为父目录（无法 mkdir）
+    const { writeFileSync } = await import('fs');
+    writeFileSync(badDir, 'blocker');
+    const feature = makeFeature(join(badDir, 'sub'));
+    const hugeText = 'A'.repeat(5000);
+    const returned = await feature.handleToolResultTransform(makeCtx(hugeText));
+    assert.ok(returned, '即使落盘失败也应返回截断结果');
+    assert.ok(returned.result.length < hugeText.length, '结果应被截断');
+    // 不应包含路径提示（因为落盘失败）
+    assert.ok(!returned.result.includes('saved to:'), '落盘失败不应有路径提示');
+    rmSync(badDir, { recursive: true, force: true });
+  });
+
+  it('短输出不触发持久化（不创建文件）', async () => {
+    const dir = join(tmpdir(), 'og-test-' + Math.random().toString(36).slice(2));
+    const feature = makeFeature(dir);
+    const short = 'hello';
+    const returned = await feature.handleToolResultTransform(makeCtx(short));
+    assert.strictEqual(returned, undefined, '短输出应返回 undefined');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('文件名包含工具名且 sanitized', async () => {
+    const dir = join(tmpdir(), 'og-test-' + Math.random().toString(36).slice(2));
+    const feature = makeFeature(dir);
+    const hugeText = 'A'.repeat(5000);
+    const returned = await feature.handleToolResultTransform(
+      makeCtx(hugeText, 'lsp/find_references')
+    );
+    assert.ok(returned);
+    const match = returned.result.match(/saved to: (.+?)\]/);
+    if (match) {
+      const fileName = match[1].split(/[\\/]/).pop();
+      assert.ok(fileName.startsWith('tool-output-lsp_find_references-'),
+        `文件名应包含 sanitized 工具名, got: ${fileName}`);
+    }
+    rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -33,8 +33,9 @@ import type { Tool } from '../../core/types.js';
 import { loadAllMCPConfigs, loadMCPConfigFromInput } from '../../mcp/config.js';
 import { MCPConnectionManager } from '../../mcp/connection-manager.js';
 import { mountMCPToolsFromConfig } from '../../mcp/mount.js';
+import { discoverGatewayServers, gatewayServersToConfig } from '../../mcp/gateway-client.js';
 import type { MCPClient } from '../../mcp/client.js';
-import type { MCPConfig } from '../../mcp/types.js';
+import type { MCPConfig, MCPServerConfig } from '../../mcp/types.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -53,6 +54,8 @@ export interface MCPFeatureConfig {
   scanAgentdevDir?: boolean;
   /** 额外加载的 MCP 配置文件列表 */
   extraConfigFiles?: string[];
+  /** 是否自动连接 Claw 托管的共享 MCP 网关服务器，默认 true */
+  enableGateway?: boolean;
 }
 
 /**
@@ -123,6 +126,12 @@ export class MCPFeature implements AgentFeature {
             accept: '.json',
             maxItems: 5,
           },
+          enableGateway: {
+            type: 'boolean',
+            title: '启用 Claw MCP 网关',
+            description: '自动连接 Claw 主进程托管的共享 MCP 服务器。启用后，所有会话共享同一份 MCP server 连接，无需各自启动。',
+            default: true,
+          },
         },
       },
     };
@@ -142,6 +151,7 @@ export class MCPFeature implements AgentFeature {
       extraConfigFiles: Array.isArray(config.extraConfigFiles)
         ? config.extraConfigFiles.filter((value): value is string => typeof value === 'string' && value.length > 0)
         : [],
+      enableGateway: config.enableGateway === undefined ? true : config.enableGateway !== false,
     };
   }
 
@@ -180,11 +190,32 @@ export class MCPFeature implements AgentFeature {
    */
   async getAsyncTools(ctx: FeatureInitContext): Promise<Tool[]> {
     const config = this.resolveRuntimeConfig(ctx);
-    if (!config) {
+    const featureConfig = this.resolveFeatureConfig(ctx.featureConfig);
+
+    // Discover Claw-hosted gateway servers (if enabled)
+    let gatewayServers: Record<string, MCPServerConfig> = {};
+    if (featureConfig.enableGateway) {
+      const discovery = await discoverGatewayServers();
+      if (discovery.servers.length > 0) {
+        gatewayServers = gatewayServersToConfig(discovery, this.options.excludeServers);
+      }
+    }
+
+    // Merge traditional configs with gateway-discovered servers
+    const hasServers = (config?.servers && Object.keys(config.servers).length > 0) || Object.keys(gatewayServers).length > 0;
+    if (!hasServers) {
       return [];
     }
 
-    const result = await mountMCPToolsFromConfig(config, {
+    const mergedConfig: MCPConfig = {
+      enabled: true,
+      servers: {
+        ...(config?.servers || {}),
+        ...gatewayServers,
+      },
+    };
+
+    const result = await mountMCPToolsFromConfig(mergedConfig, {
       manager: this.manager,
       clients: this.clients,
       onError: (serverId, error) => {

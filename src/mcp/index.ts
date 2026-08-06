@@ -22,6 +22,14 @@ export { MCPConnectionState } from './types.js';
 
 // 连接管理
 export { MCPConnectionManager } from './connection-manager.js';
+
+// Gateway 发现
+export {
+  discoverGatewayServers,
+  gatewayServersToConfig,
+  type GatewayServerInfo,
+  type GatewayDiscoveryResult,
+} from './gateway-client.js';
 export {
   MCPClient,
   createMCPTool,

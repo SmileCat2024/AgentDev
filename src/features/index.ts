@@ -90,3 +90,18 @@ export type {
 // LSP Feature
 export { LspFeature } from './lsp/index.js';
 export type { LspFeatureConfig } from './lsp/index.js';
+
+// OutputGuard Feature
+export { OutputGuardFeature } from './output-guard/index.js';
+export type { OutputGuardConfig } from './output-guard/index.js';
+export {
+  truncateOutput,
+  truncateJsonNode,
+  shrinkArray,
+  tryJsonTruncate,
+  truncateByLines,
+  truncateHeadTail,
+  DEFAULT_HARD_LIMIT,
+  DEFAULT_FIELD_LIMIT,
+} from './output-guard/truncate.js';
+export type { TruncateOptions, TruncateResult } from './output-guard/truncate.js';

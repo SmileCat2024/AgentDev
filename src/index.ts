@@ -124,7 +124,7 @@ export type {
 // 重新导出核心功能模块
 export { getPackageInfoFromSource } from './core/feature.js';
 export type { FeatureManifestDefinition, FeatureManifestSettingProperty } from './core/feature.js';
-export { CallStart, CallFinish, StepStart, StepFinish, ToolUse, ToolFinished } from './core/hooks-decorator.js';
+export { CallStart, CallFinish, StepStart, StepFinish, ToolUse, ToolFinished, ToolResultTransform } from './core/hooks-decorator.js';
 export type {
   CallStartContext,
   CallFinishContext,
@@ -132,6 +132,7 @@ export type {
   StepFinishedContext,
   StepFinishDecisionContext,
   ToolFinishedDecisionContext,
+  ToolResultTransformContext,
 } from './core/lifecycle.js';
 export type { CallFinishReason } from './core/lifecycle.js';
 

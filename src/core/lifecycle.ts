@@ -4,7 +4,7 @@
  */
 
 import type { ToolCall, Tool, LLMResponse, Message } from './types.js';
-import { type Context } from './context.js';
+import { type Context, type ToolExecResult } from './context.js';
 import type { Agent } from './agent.js';
 import type { AgentFeature } from './feature.js';
 
@@ -58,6 +58,9 @@ export enum CoreLifecycle {
 
   /** 工具使用后 */
   ToolFinished = 'ToolFinished',
+
+  /** 工具结果变换（结果写入 context 前，可修改结果） */
+  ToolResultTransform = 'ToolResultTransform',
 }
 
 // ========== 决策状态定义 ==========
@@ -367,4 +370,24 @@ export interface StepFinishDecisionContext extends StepFinishedContext {
 export interface ToolFinishedDecisionContext extends ToolResult {
   /** 刚才执行的工具名称 */
   toolName: string;
+}
+
+/**
+ * 工具结果变换上下文（反向钩子）
+ *
+ * 在工具执行完成、结果写入 context 之前，允许 Feature 对结果进行变换。
+ * 典型用途：输出截断（OutputGuard）、脱敏、格式清理等。
+ *
+ * 钩子返回 undefined 表示不修改；返回 ToolExecResult 表示用新结果替换。
+ * 多个钩子按注册顺序链式执行，前一个钩子的输出作为后一个钩子的输入。
+ */
+export interface ToolResultTransformContext {
+  /** 工具名称 */
+  toolName: string;
+  /** 工具调用 */
+  call: ToolCall;
+  /** 当前结果（可能已被前一个变换钩子修改） */
+  result: ToolExecResult;
+  /** 当前步骤序号 */
+  step: number;
 }

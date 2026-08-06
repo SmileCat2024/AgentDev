@@ -51,7 +51,7 @@ export interface LogContextRef {
   feature?: string;
   lifecycle?: string;
   hookMethod?: string;
-  hookKind?: 'forward' | 'reverse';
+  hookKind?: 'forward' | 'reverse' | 'transform';
   sourceFile?: string;
   sourceLine?: number;
   tags?: string[];
@@ -276,6 +276,13 @@ export interface Message {
   /** 图片附件（user 消息：用户输入的图片；tool 消息：工具返回的图片），多模态输入 */
   images?: ImageInput[];
   /**
+   * 前端展示数据（仅 tool 消息）。
+   *
+   * 当工具使用 withDisplay() 分离返回时，display 携带富数据（如 diff），
+   * 仅供前端渲染，不注入 LLM 上下文。LLM 只看到 content 中的精简文本。
+   */
+  display?: unknown;
+  /**
    * 消息来源标记（仅 system 消息使用）。
    *
    * - undefined：agent 自身的系统提示词（由 templateResolver 生成），
@@ -496,14 +503,14 @@ export interface HookEntryMetadata {
   featureName: string;
   methodName: string;
   lifecycle: string;
-  kind: 'decision' | 'notify';
+  kind: 'decision' | 'notify' | 'transform';
   source?: HookSourceLocation;
   description?: string;
 }
 
 export interface HookLifecycleSnapshot {
   lifecycle: string;
-  kind: 'decision' | 'notify';
+  kind: 'decision' | 'notify' | 'transform';
   entries: HookEntryMetadata[];
 }
 
@@ -1037,7 +1044,8 @@ export type DecisionContext =
   | import('./lifecycle.js').ToolContext
   | import('./lifecycle.js').ToolResult
   | import('./lifecycle.js').StepFinishDecisionContext
-  | import('./lifecycle.js').ToolFinishedDecisionContext;
+  | import('./lifecycle.js').ToolFinishedDecisionContext
+  | import('./lifecycle.js').ToolResultTransformContext;
 
 // ========== UDS 通信类型 ==========
 

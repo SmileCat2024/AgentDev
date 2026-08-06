@@ -114,7 +114,9 @@ export class HooksRegistry {
         lifecycle,
         kind: lifecycle === CoreLifecycle.StepFinish || lifecycle === CoreLifecycle.ToolUse
           ? 'decision' as const
-          : 'notify' as const,
+          : lifecycle === CoreLifecycle.ToolResultTransform
+            ? 'transform' as const
+            : 'notify' as const,
         source: hook.source,
         description: typeof (hook.feature as any).getHookDescription === 'function'
           ? (hook.feature as any).getHookDescription(lifecycle, hook.methodName)
@@ -125,7 +127,9 @@ export class HooksRegistry {
         lifecycle,
         kind: lifecycle === CoreLifecycle.StepFinish || lifecycle === CoreLifecycle.ToolUse
           ? 'decision' as const
-          : 'notify' as const,
+          : lifecycle === CoreLifecycle.ToolResultTransform
+            ? 'transform' as const
+            : 'notify' as const,
         entries,
       };
     });
@@ -249,6 +253,79 @@ export class HooksRegistry {
    */
   async executeVoid(lifecycle: CoreLifecycle, context: DecisionContext): Promise<void> {
     await this.execute(lifecycle, context);
+  }
+
+  /**
+   * 执行数据变换钩子（链式，返回变换后的数据）
+   *
+   * 每个钩子接收上下文（其中包含当前 result），返回新的 result 替换之。
+   * 返回 undefined 表示不修改，继续传递当前值。
+   * 某个钩子抛异常时跳过该钩子，继续传递当前值（不中断链）。
+   *
+   * @param lifecycle 生命周期类型（应为 ToolResultTransform）
+   * @param initialResult 初始结果
+   * @param buildContext 根据当前结果构建上下文的函数
+   * @returns 变换后的结果
+   */
+  async executeTransform<T>(
+    lifecycle: CoreLifecycle,
+    initialResult: T,
+    buildContext: (current: T) => DecisionContext,
+  ): Promise<T> {
+    const hooks = this.hooks.get(lifecycle);
+
+    if (!hooks || hooks.length === 0) {
+      return initialResult;
+    }
+
+    let current = initialResult;
+
+    for (const { feature, methodName, source } of hooks) {
+      try {
+        const method = (feature as any)[methodName];
+        if (typeof method !== 'function') {
+          console.warn(
+            `[HooksRegistry] 变换钩子方法 ${methodName} 在 Feature ${feature.name} 中不存在`
+          );
+          continue;
+        }
+
+        const ctx = buildContext(current);
+        const returned = await runWithLogScope({
+          feature: feature.name,
+          lifecycle,
+          hookMethod: methodName,
+          hookKind: 'transform',
+          sourceFile: source?.file,
+          sourceLine: source?.line,
+          namespace: 'agent.reverse-hook',
+          tags: [
+            'transform-hook',
+            `feature:${feature.name}`,
+            `hook:${lifecycle}`,
+            `hook-method:${methodName}`,
+          ],
+        }, async () => await method.call(feature, ctx));
+
+        if (returned !== undefined) {
+          current = returned as T;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('Transform hook execution failed', {
+          feature: feature.name,
+          lifecycle,
+          methodName,
+          message,
+        });
+        console.error(
+          `[HooksRegistry] 执行变换钩子 ${CoreLifecycle[lifecycle]}#${methodName} 时出错: ${message}`
+        );
+        // 继续传递当前值，不中断链
+      }
+    }
+
+    return current;
   }
 
   /**

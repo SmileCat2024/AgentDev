@@ -1,0 +1,182 @@
+/**
+ * OutputGuard Feature - 工具输出安全网
+ *
+ * 框架级 Feature，通过 @ToolResultTransform 钩子在工具结果写入 context 前进行截断。
+ *
+ * 设计层次：
+ * - Layer 0（工具自截断）：工具在自己的 execute() 中自行截断（如 shell 的 30K）。
+ *   只要结果在 hardLimit 以下，OutputGuard 不会介入。
+ * - Layer 1（安全网）：OutputGuard 在 ToolResultTransform 钩子中捕获超限结果，
+ *   使用级联截断策略（JSON 字段截断 → 行感知 head+tail → 字符 head+tail）。
+ *
+ * @example
+ * ```typescript
+ * import { OutputGuardFeature } from 'agentdev';
+ * const agent = new Agent({ ... }).use(new OutputGuardFeature());
+ * ```
+ */
+
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+import type {
+  AgentFeature,
+  FeatureInitContext,
+  FeatureContext,
+  ContextInjector,
+  PackageInfo,
+  FeatureStateSnapshot,
+} from '../../core/feature.js';
+import type { Tool } from '../../core/types.js';
+import type { ToolResultTransformContext } from '../../core/lifecycle.js';
+import { ToolResultTransform } from '../../core/hooks-decorator.js';
+import type { ToolExecResult } from '../../core/context.js';
+import { getPackageInfoFromSource } from '../../core/feature.js';
+import {
+  truncateOutput,
+  DEFAULT_HARD_LIMIT,
+  DEFAULT_FIELD_LIMIT,
+} from './truncate.js';
+import type { TruncateOptions } from './truncate.js';
+
+// ========== 类型定义 ==========
+
+export interface OutputGuardConfig {
+  /** 总体积硬限制（默认 50000 字符） */
+  hardLimit?: number;
+  /** 单个字符串字段截断长度（默认 5000 字符） */
+  fieldLimit?: number;
+  /** 按工具名覆盖配置 */
+  toolOverrides?: Record<string, { hardLimit?: number; fieldLimit?: number }>;
+}
+
+// ========== Feature 实现 ==========
+
+export class OutputGuardFeature implements AgentFeature {
+  readonly name = 'output-guard';
+  readonly dependencies: string[] = [];
+  readonly source = __filename.replace(/\\/g, '/');
+  readonly description =
+    '工具输出安全网：在工具结果写入 context 前截断超限输出，防止上下文溢出。';
+
+  private readonly config: Required<Omit<OutputGuardConfig, 'toolOverrides'>> & {
+    toolOverrides: Record<string, { hardLimit?: number; fieldLimit?: number }>;
+  };
+
+  private logger?: FeatureInitContext['logger'];
+  private _packageInfo: PackageInfo | null = null;
+  private truncateCount = 0;
+
+  constructor(config: OutputGuardConfig = {}) {
+    this.config = {
+      hardLimit: config.hardLimit ?? DEFAULT_HARD_LIMIT,
+      fieldLimit: config.fieldLimit ?? DEFAULT_FIELD_LIMIT,
+      toolOverrides: config.toolOverrides ?? {},
+    };
+  }
+
+  // ========== AgentFeature 接口实现 ==========
+
+  getTools(): Tool[] {
+    return []; // 纯钩子 Feature，不注册工具
+  }
+
+  getPackageInfo(): PackageInfo | null {
+    if (!this._packageInfo) {
+      this._packageInfo = getPackageInfoFromSource(this.source);
+    }
+    return this._packageInfo;
+  }
+
+  getTemplateNames(): string[] {
+    return [];
+  }
+
+  getContextInjectors(): Map<string | RegExp, ContextInjector> {
+    return new Map();
+  }
+
+  async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    this.logger = ctx.logger;
+    this.logger?.info('OutputGuardFeature initiated', {
+      hardLimit: this.config.hardLimit,
+      fieldLimit: this.config.fieldLimit,
+    });
+  }
+
+  async onDestroy(_ctx: FeatureContext): Promise<void> {
+    this.logger?.info('OutputGuardFeature destroyed', {
+      totalTruncations: this.truncateCount,
+    });
+  }
+
+  captureState(): FeatureStateSnapshot {
+    return { truncateCount: this.truncateCount };
+  }
+
+  restoreState(snapshot: FeatureStateSnapshot): void {
+    const state = snapshot as { truncateCount?: number } | null;
+    this.truncateCount = typeof state?.truncateCount === 'number' ? state.truncateCount : 0;
+  }
+
+  async beforeRollback(_snapshot: FeatureStateSnapshot): Promise<void> {}
+  async afterRollback(_snapshot: FeatureStateSnapshot): Promise<void> {}
+
+  // ========== ToolResultTransform 钩子 ==========
+
+  @ToolResultTransform
+  async handleToolResultTransform(
+    ctx: ToolResultTransformContext,
+  ): Promise<ToolExecResult | undefined> {
+    const { result, toolName } = ctx;
+
+    // 只处理成功的结果（错误结果通常很短）
+    if (!result.success) return undefined;
+
+    // result.result 可能是 string 或 Record<string, any>
+    // 统一转为字符串进行截断判断
+    const rawResult = result.result;
+    const resultStr = typeof rawResult === 'string'
+      ? rawResult
+      : JSON.stringify(rawResult);
+
+    // 获取该工具的配置覆盖
+    const options = this.getOptions(toolName);
+
+    // 执行截断
+    const truncateResult = truncateOutput(resultStr, options);
+
+    // 不超限，不修改
+    if (!truncateResult.truncated) return undefined;
+
+    // 记录截断
+    this.truncateCount++;
+    this.logger?.warn('Tool output truncated', {
+      toolName,
+      strategy: truncateResult.strategy,
+      originalLength: truncateResult.originalLength,
+      truncatedLength: truncateResult.truncatedLength,
+    });
+
+    // 返回截断后的结果
+    // 保持原始结构：如果原来是 string 就返回 string，如果原来是 object 就返回截断后的 string
+    // （截断后无法保证还原为 object，统一返回 string）
+    return {
+      ...result,
+      result: truncateResult.output,
+    };
+  }
+
+  // ========== 内部方法 ==========
+
+  private getOptions(toolName: string): TruncateOptions {
+    const override = this.config.toolOverrides[toolName];
+    return {
+      hardLimit: override?.hardLimit ?? this.config.hardLimit,
+      fieldLimit: override?.fieldLimit ?? this.config.fieldLimit,
+    };
+  }
+}

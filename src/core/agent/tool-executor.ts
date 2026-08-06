@@ -8,11 +8,12 @@ import type { ToolCall, Message, ToolExecutionContext } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
 import type { AgentFeature, ContextInjector } from '../feature.js';
-import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext } from '../lifecycle.js';
+import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext, ToolResultTransformContext } from '../lifecycle.js';
 import type { ToolExecResult } from '../context.js';
 import type { HooksRegistry } from '../hooks-registry.js';
-import { isWithImagesResult } from '../tool-result-images.js';
 import { CoreLifecycle, normalizeDecision, Decision } from '../lifecycle.js';
+import { isWithImagesResult } from '../tool-result-images.js';
+import { isWithDisplayResult } from '../tool-result-display.js';
 import { createLogger, runWithLogScope } from '../logging.js';
 
 const logger = createLogger('agent.tool');
@@ -282,6 +283,12 @@ export class ToolExecutor {
             result: data.text,
             images: data.images,
           };
+        } else if (isWithDisplayResult(data)) {
+          execResult = {
+            success: true,
+            result: data.text,
+            display: data.display,
+          };
         } else {
           execResult = {
             success: true,
@@ -301,6 +308,20 @@ export class ToolExecutor {
           result: { error: result.error },
         };
       }
+
+      // ========== ToolResultTransform 反向钩子（数据变换）==========
+      // 在结果写入 context 前，允许 Feature 对结果进行变换（如截断、脱敏）。
+      // 变换在 ToolFinished 通知之前执行，这样通知钩子看到的是最终结果。
+      execResult = await this.hooksRegistry.executeTransform<ToolExecResult>(
+        CoreLifecycle.ToolResultTransform,
+        execResult,
+        (current) => ({
+          toolName: call.name,
+          call,
+          result: current,
+          step,
+        } satisfies ToolResultTransformContext),
+      );
 
       result.duration = Date.now() - startTime;
 

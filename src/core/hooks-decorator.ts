@@ -17,6 +17,7 @@ import type {
   ToolResult,
   StepFinishDecisionContext,
   ToolFinishedDecisionContext,
+  ToolResultTransformContext,
 } from './lifecycle.js';
 
 // ========== 装饰器元数据 ==========
@@ -54,6 +55,7 @@ const DecisionContextTypeMap: Record<CoreLifecycle, string> = {
   [CoreLifecycle.StepFinish]: 'StepFinishDecisionContext',
   [CoreLifecycle.ToolUse]: 'ToolContext',
   [CoreLifecycle.ToolFinished]: 'ToolFinishedDecisionContext',
+  [CoreLifecycle.ToolResultTransform]: 'ToolResultTransformContext',
 };
 
 // ========== 返回值类型映射 ==========
@@ -65,7 +67,7 @@ const DecisionContextTypeMap: Record<CoreLifecycle, string> = {
  * - 'void': 无返回值或 undefined（仅做处理，不控制流程）
  * - 'DecisionResult': 返回决策结果（有流程控制能力）
  */
-const DecisionReturnTypeMap: Record<CoreLifecycle, 'void' | 'DecisionResult'> = {
+const DecisionReturnTypeMap: Record<CoreLifecycle, 'void' | 'DecisionResult' | 'TransformResult'> = {
   [CoreLifecycle.AgentInitiate]: 'void',
   [CoreLifecycle.AgentDestroy]: 'void',
   [CoreLifecycle.CallStart]: 'void',
@@ -74,6 +76,7 @@ const DecisionReturnTypeMap: Record<CoreLifecycle, 'void' | 'DecisionResult'> = 
   [CoreLifecycle.StepFinish]: 'DecisionResult',  // Step 结束时可以决定是否继续循环
   [CoreLifecycle.ToolUse]: 'DecisionResult',      // 工具使用前可以决定是否阻塞执行
   [CoreLifecycle.ToolFinished]: 'void',           // 工具完成后仅做通知（无流程控制）
+  [CoreLifecycle.ToolResultTransform]: 'TransformResult',  // 工具结果可变换
 };
 
 /**
@@ -294,6 +297,15 @@ export const ToolUse = createHookDecorator(CoreLifecycle.ToolUse);
  */
 export const ToolFinished = createHookDecorator(CoreLifecycle.ToolFinished);
 
+/**
+ * 工具结果变换装饰器
+ *
+ * 标记在工具结果写入 context 前执行的方法
+ * 返回 ToolExecResult | undefined（返回新结果替换，或 undefined 表示不修改）
+ * 多个变换钩子链式执行
+ */
+export const ToolResultTransform = createHookDecorator(CoreLifecycle.ToolResultTransform);
+
 // ========== 导出装饰器元数据访问接口 ==========
 
 /**
@@ -363,6 +375,16 @@ export type ToolUseHook = HookMethod<
  * ToolFinished 反向钩子类型（仅通知）
  */
 export type ToolFinishedHook = HookMethod<ToolFinishedDecisionContext, void | Promise<void>>;
+
+/**
+ * ToolResultTransform 反向钩子类型（数据变换）
+ *
+ * 返回 ToolExecResult 替换当前结果，或返回 undefined 表示不修改。
+ */
+export type ToolResultTransformHook = HookMethod<
+  ToolResultTransformContext,
+  import('./context.js').ToolExecResult | undefined | Promise<import('./context.js').ToolExecResult | undefined>
+>;
 
 // ========== 重新导出决策枚举和类型 ==========
 

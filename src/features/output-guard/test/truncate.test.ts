@@ -731,6 +731,8 @@ describe('OutputGuard persistAndAnnotate', () => {
     assert.ok(parsed._outputGuard, '应包含 _outputGuard 字段');
     assert.ok(parsed._outputGuard.fullOutputPath, '应有文件路径');
     assert.strictEqual(typeof parsed._outputGuard.originalSize, 'number');
+    assert.strictEqual(typeof parsed._outputGuard.originalLines, 'number');
+    assert.ok(parsed._outputGuard.originalLines > 0, '行数应 > 0');
 
     // 验证文件确实存在且包含完整原始内容
     const filePath = parsed._outputGuard.fullOutputPath;
@@ -753,6 +755,7 @@ describe('OutputGuard persistAndAnnotate', () => {
     // 头部应包含 OutputGuard 提示行
     assert.ok(returned.result.includes('OutputGuard'), '应包含 OutputGuard 标记');
     assert.ok(returned.result.includes('saved to:'), '应包含 saved to 提示');
+    assert.ok(returned.result.includes('lines'), '应包含行数信息');
 
     // 提取路径并验证文件
     const match = returned.result.match(/saved to: (.+?)\]/);

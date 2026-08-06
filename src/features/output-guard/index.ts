@@ -233,6 +233,7 @@ export class OutputGuardFeature implements AgentFeature {
     if (!filePath) return truncatedOutput;
 
     const totalKB = Math.round(originalLength / 1024);
+    const totalLines = fullOutput.split('\n').length;
 
     // 根据截断策略决定注入方式
     const isJsonStrategy = strategy === 'json-fields' || strategy === 'json-array';
@@ -246,6 +247,7 @@ export class OutputGuardFeature implements AgentFeature {
             fullOutputPath: filePath,
             originalSize: originalLength,
             originalSizeKB: totalKB,
+            originalLines: totalLines,
           };
           return JSON.stringify(parsed);
         }
@@ -257,7 +259,7 @@ export class OutputGuardFeature implements AgentFeature {
 
     // 文本结果：在头部插入提示
     const notice =
-      `[OutputGuard: full output (${totalKB}KB) saved to: ${filePath}]\n` +
+      `[OutputGuard: full output (${totalKB}KB, ${totalLines} lines) saved to: ${filePath}]\n` +
       `Use the read tool with offset/limit to access specific portions.\n`;
     return notice + truncatedOutput;
   }

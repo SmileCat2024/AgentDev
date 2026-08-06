@@ -734,11 +734,14 @@ describe('OutputGuard persistAndAnnotate', () => {
     assert.strictEqual(typeof parsed._outputGuard.originalLines, 'number');
     assert.ok(parsed._outputGuard.originalLines > 0, '行数应 > 0');
 
-    // 验证文件确实存在且包含完整原始内容
+    // 验证文件确实存在且包含完整原始内容（pretty-printed）
     const filePath = parsed._outputGuard.fullOutputPath;
     assert.strictEqual(existsSync(filePath), true, '文件应存在');
     const savedContent = readFileSync(filePath, 'utf-8');
-    assert.strictEqual(savedContent, hugeJson, '保存的内容应等于原始完整输出');
+    // JSON 被 pretty-print，语义应相同
+    assert.deepStrictEqual(JSON.parse(savedContent), JSON.parse(hugeJson), '保存的内容语义应等于原始完整输出');
+    // pretty-print 后应有正确的多行格式
+    assert.ok(savedContent.split('\n').length > 1, 'pretty-print 后应有多行');
 
     // JSON 整体仍合法
     assert.strictEqual(isValidJson(returned.result), true);

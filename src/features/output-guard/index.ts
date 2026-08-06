@@ -208,6 +208,7 @@ export class OutputGuardFeature implements AgentFeature {
   ): Promise<string> {
     // 尝试落盘
     let filePath: string | null = null;
+    let diskContent = fullOutput;
     try {
       const tempDir = join(this.config.workdir, '.agentdev', 'temp');
       const now = new Date();
@@ -222,8 +223,16 @@ export class OutputGuardFeature implements AgentFeature {
       const fileName = `tool-output-${safeToolName}-${ts}-${suffix}.log`;
       filePath = join(tempDir, fileName);
 
+      // 尝试 pretty-print JSON 以便 read 工具按行分页
+      try {
+        const parsed = JSON.parse(fullOutput);
+        diskContent = JSON.stringify(parsed, null, 2);
+      } catch {
+        // 非 JSON 文本，保持原始换行
+      }
+
       await mkdir(tempDir, { recursive: true });
-      await writeFile(filePath, fullOutput, 'utf-8');
+      await writeFile(filePath, diskContent, 'utf-8');
     } catch (err) {
       this.logger?.error('Failed to persist truncated output', { error: String(err) });
       filePath = null;
@@ -233,7 +242,7 @@ export class OutputGuardFeature implements AgentFeature {
     if (!filePath) return truncatedOutput;
 
     const totalKB = Math.round(originalLength / 1024);
-    const totalLines = fullOutput.split('\n').length;
+    const totalLines = diskContent.split('\n').length;
 
     // 根据截断策略决定注入方式
     const isJsonStrategy = strategy === 'json-fields' || strategy === 'json-array';

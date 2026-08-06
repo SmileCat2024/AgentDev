@@ -167,7 +167,7 @@ export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
             }
           }
 
-          const { success, data } = parseToolResult(msg.content);
+          const { success, data } = parseToolResult(msg.content, msg.display);
           const displayName = getToolDisplayName(toolName);
           const template = getToolRenderTemplate(toolName);
 
@@ -236,7 +236,7 @@ export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
           }
         }
 
-        const { success, data } = parseToolResult(msg.content);
+        const { success, data } = parseToolResult(msg.content, msg.display);
         const displayName = getToolDisplayName(toolName);
         const template = getToolRenderTemplate(toolName);
 
@@ -431,7 +431,7 @@ export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
             }
           }
 
-          const { success, data } = parseToolResult(msg.content);
+          const { success, data } = parseToolResult(msg.content, msg.display);
           const displayName = getToolDisplayName(toolName);
           const template = getToolRenderTemplate(toolName);
           

@@ -286,7 +286,8 @@ export const VIEWER_JS_UI_BASE = `
       return interpolateTemplate(template, data);
     }
 
-    function parseToolResult(content) {
+    function parseToolResult(content, display) {
+      let result;
       try {
         const json = JSON.parse(content);
         if (json && typeof json === 'object' && 'success' in json && 'result' in json) {
@@ -302,12 +303,20 @@ export const VIEWER_JS_UI_BASE = `
                 // Not a JSON string, keep as is
              }
           }
-          return { success: json.success, data: data };
+          result = { success: json.success, data: data };
+        } else {
+          result = { success: true, data: content };
         }
-        return { success: true, data: content };
       } catch (e) {
-        return { success: true, data: content };
+        result = { success: true, data: content };
       }
+      // Merge display-only data (e.g. write tool's diff) that bypassed LLM injection
+      if (display && typeof display === 'object') {
+        result.data = typeof result.data === 'object' && result.data !== null
+          ? Object.assign({}, result.data, display)
+          : Object.assign({}, display);
+      }
+      return result;
     }
 
 `;

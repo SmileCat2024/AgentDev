@@ -530,6 +530,7 @@ export interface FeatureInspectorSnapshot {
     enabled?: boolean;
     renderCall?: string;
     renderResult?: string;
+    parameters?: Record<string, unknown>;
   }>;
 }
 
@@ -545,6 +546,7 @@ export interface HookInspectorSnapshot {
     source?: string;
     renderCall?: string;
     renderResult?: string;
+    parameters?: Record<string, unknown>;
   }>;
 }
 

@@ -45,6 +45,13 @@ function buildFullSnapshot(): HookInspectorSnapshot {
             enabled: true,
             renderCall: 'shell/bash.render',
             renderResult: 'shell/bash.render',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string', description: 'The command to execute' },
+              },
+              required: ['command'],
+            },
           },
         ],
       },
@@ -74,6 +81,12 @@ function buildFullSnapshot(): HookInspectorSnapshot {
         source: 'custom-source',
         renderCall: 'custom/render',
         renderResult: 'custom/render',
+        parameters: {
+          type: 'object',
+          properties: {
+            input: { type: 'string' },
+          },
+        },
       },
     ],
   };
@@ -92,6 +105,11 @@ describe('viewer-html normalizeHookInspector round-trip', () => {
     expect(output.standaloneTools).toHaveLength(1);
     expect(output.standaloneTools[0].name).toBe('custom_tool');
     expect(output.standaloneTools[0].source).toBe('custom-source');
+    expect(output.standaloneTools[0].parameters).toBeDefined();
+    expect(output.standaloneTools[0].parameters).toEqual({
+      type: 'object',
+      properties: { input: { type: 'string' } },
+    });
   });
 
   it('preserves features and their tools through normalize', () => {
@@ -109,6 +127,14 @@ describe('viewer-html normalizeHookInspector round-trip', () => {
     expect(feature.tools).toHaveLength(1);
     expect(feature.tools[0].name).toBe('bash');
     expect(feature.tools[0].renderCall).toBe('shell/bash.render');
+    expect(feature.tools[0].parameters).toBeDefined();
+    expect(feature.tools[0].parameters).toEqual({
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The command to execute' },
+      },
+      required: ['command'],
+    });
   });
 
   it('preserves hooks entries through normalize', () => {
@@ -137,5 +163,17 @@ describe('viewer-html normalizeHookInspector round-trip', () => {
     const output = normalize(input);
 
     expect(output.standaloneTools).toBeUndefined();
+  });
+
+  it('preserves tools without parameters field (graceful undefined)', () => {
+    const sandbox = createInspectorSandbox();
+    const normalize = sandbox.normalizeHookInspector as (s: unknown) => Record<string, unknown>;
+
+    const input = buildFullSnapshot();
+    // 移除 parameters 字段，模拟无 schema 的工具
+    delete input.features[0].tools[0].parameters;
+    const output = normalize(input);
+
+    expect(output.features[0].tools[0].parameters).toBeUndefined();
   });
 });

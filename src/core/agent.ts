@@ -1799,6 +1799,7 @@ class AgentBase {
       renderCall?: string;
       renderResult?: string;
       source?: string;
+      parameters?: Record<string, unknown>;
     }>>();
 
     const summarizeToolDescription = (description: string | undefined): string => {
@@ -1842,6 +1843,7 @@ class AgentBase {
         renderCall,
         renderResult,
         source: entry.source,
+        parameters: entry.tool.parameters,
       });
     }
 
@@ -1892,6 +1894,7 @@ class AgentBase {
       source?: string;
       renderCall?: string;
       renderResult?: string;
+      parameters?: Record<string, unknown>;
     }> = [];
     for (const [sourceKey, tools] of toolEntriesBySource) {
       if (!featureNames.has(sourceKey)) {

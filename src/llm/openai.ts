@@ -63,6 +63,13 @@ export class OpenAILLM implements LLMClient {
               for (const [k, v] of Object.entries(resolveCustomHeaders(customHeaders))) {
                 headers.set(k, v);
               }
+              // The OpenAI SDK has already serialized the body and sets its
+              // own Content-Length.  Once a custom fetch forwards that header
+              // through Undici's ProxyAgent, Undici 7 rejects it before the
+              // request reaches the proxy (UND_ERR_INVALID_ARG).  Let the
+              // final fetch implementation calculate it after header
+              // injection instead.
+              headers.delete('content-length');
               init.headers = headers;
               return globalThis.fetch(input, init);
             },

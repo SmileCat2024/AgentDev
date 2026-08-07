@@ -207,6 +207,45 @@ describe('parseRetryAfter', () => {
 });
 
 describe('OpenAIResponsesLLM fallback', () => {
+  it('removes SDK Content-Length before forwarding a custom-header request', async () => {
+    const originalFetch = globalThis.fetch;
+    let forwardedHeaders: Headers | null = null;
+    globalThis.fetch = async (_input, init) => {
+      forwardedHeaders = new Headers(init?.headers);
+      return new Response('{}', { status: 200 });
+    };
+
+    try {
+      const llm = new OpenAIResponsesLLM(
+        'test-api-key',
+        'gpt-5.6-sol',
+        'https://example.com/backend-api/codex',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [{ key: 'ChatGPT-Account-ID', value: 'acct-test', valueMode: 'static' }],
+        false,
+        'codex',
+      );
+
+      await (llm as any).client.fetch('https://example.com/backend-api/codex/responses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': '2',
+        },
+        body: '{}',
+      });
+
+      expect(forwardedHeaders?.get('content-length')).toBeNull();
+      expect(forwardedHeaders?.get('chatgpt-account-id')).toBe('acct-test');
+      expect(forwardedHeaders?.get('content-type')).toBe('application/json');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('should preserve streamed text when Codex sends a sparse completed snapshot', async () => {
     const llm = new OpenAIResponsesLLM(
       'test-api-key',

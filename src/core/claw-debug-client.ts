@@ -157,7 +157,12 @@ export class ClawDebugClient {
     await this.pushEvent(agentId, 'notification', { notification });
   }
 
-  async requestUserInput(_agentId: string, request: UserInputRequest, timeout: number): Promise<UserInputResponse> {
+  async requestUserInput(
+    _agentId: string,
+    request: UserInputRequest,
+    timeout: number,
+    signal?: AbortSignal,
+  ): Promise<UserInputResponse> {
     const agentId = _agentId;
     const requestId = `input-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     await this.pushEvent(agentId, 'input', {
@@ -172,6 +177,9 @@ export class ClawDebugClient {
     const pollIntervalMs = 400;
 
     while (true) {
+      if (signal?.aborted) {
+        throw this.createAbortError(`User input request for Agent '${agentId}' was cancelled`);
+      }
       if (timeout !== Infinity && Date.now() - startedAt > timeout) {
         throw new Error(`User input timeout after ${timeout}ms`);
       }
@@ -179,7 +187,8 @@ export class ClawDebugClient {
       let response: Response;
       try {
         response = await fetch(
-          `${this.runtimeUrl}/api/agents/${encodeURIComponent(sessionId)}/input-response?requestId=${encodeURIComponent(requestId)}`
+          `${this.runtimeUrl}/api/agents/${encodeURIComponent(sessionId)}/input-response?requestId=${encodeURIComponent(requestId)}`,
+          { signal },
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -196,8 +205,31 @@ export class ClawDebugClient {
         throw new Error(`Input bridge request failed: ${response.status} ${response.statusText} ${text}`);
       }
 
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      await this.delay(pollIntervalMs, signal);
     }
+  }
+
+  private delay(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(this.createAbortError('Operation was cancelled'));
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(this.createAbortError('Operation was cancelled'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private createAbortError(message: string): Error {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
   }
 
   private async pushLifecycle(agentId: string, payload: Record<string, unknown>): Promise<void> {

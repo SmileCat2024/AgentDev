@@ -12,7 +12,7 @@
  * - 幂等性：已截断结果不重复截断
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';

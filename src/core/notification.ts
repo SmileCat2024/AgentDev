@@ -6,58 +6,110 @@
  * - 提供通知发送接口
  * - 管理通知上下文（当前 Agent ID）
  * - 节流高频通知
+ *
+ * 上下文隔离机制：
+ * 使用 AsyncLocalStorage 实现 per-call 上下文隔离，
+ * 确保同进程内多个并发的 Agent.onCall() 调用各自的通知路由正确。
+ * 旧的全局 set/clear API 作为向后兼容 fallback 保留。
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Notification, NotificationCategory, LLMPhase } from './types.js';
 import { DebugHub } from './debug-hub.js';
 
-// ========== 模块级状态 ==========
+// ========== AsyncLocalStorage 上下文 ==========
+
+interface NotificationScope {
+  agentId: string;
+  lastNotificationTime: number;
+  lastLLMPhase: string | null;
+}
+
+const notificationAls = new AsyncLocalStorage<NotificationScope>();
 
 /**
- * 当前通知上下文的 Agent ID
+ * 在通知作用域中执行函数。
+ *
+ * 使用 AsyncLocalStorage 实现 per-call 上下文隔离，
+ * 确保同进程内多个并发的 Agent.onCall() 调用各自的通知路由正确。
+ * 在此作用域内调用的 emitNotification 会自动使用作用域的 agentId。
+ *
+ * @param agentId 当前调用的 Agent ID
+ * @param fn 在作用域内执行的函数
+ * @returns fn 的返回值
  */
-let currentAgentId: string | null = null;
+export function runWithNotificationScope<T>(agentId: string, fn: () => T): T {
+  return notificationAls.run(
+    { agentId, lastNotificationTime: 0, lastLLMPhase: null },
+    fn,
+  );
+}
+
+// ========== 模块级 fallback（向后兼容） ==========
+
+let _fallbackAgentId: string | null = null;
+let _fallbackLastTime: number = 0;
+let _fallbackLastPhase: string | null = null;
 
 /**
- * 节流控制：上次发送通知的时间戳
+ * 持久化的 fallback scope 对象，字段代理到模块级变量。
+ * 仅在无 ALS scope 时使用。
  */
-let lastNotificationTime: number = 0;
+const _fallbackScope: NotificationScope = {
+  get agentId() { return _fallbackAgentId!; },
+  get lastNotificationTime() { return _fallbackLastTime; },
+  set lastNotificationTime(v: number) { _fallbackLastTime = v; },
+  get lastLLMPhase() { return _fallbackLastPhase; },
+  set lastLLMPhase(v: string | null) { _fallbackLastPhase = v; },
+};
 
 /**
- * 节流间隔（毫秒）
+ * 获取当前活跃的通知上下文。
+ * 优先返回 ALS scope，回退到模块级 fallback。
  */
+function getActiveScope(): NotificationScope | null {
+  const als = notificationAls.getStore();
+  if (als) return als;
+  if (_fallbackAgentId) return _fallbackScope;
+  return null;
+}
+
+// ========== 节流 ==========
+
 const THROTTLE_INTERVAL = 100;
-
-/**
- * 上次通知的 LLM 阶段，用于检测阶段转换
- */
-let lastLLMPhase: string | null = null;
 
 // ========== 公开 API ==========
 
 /**
- * 设置通知上下文
+ * 设置通知上下文（向后兼容）
+ *
+ * @deprecated 使用 runWithNotificationScope 替代。
+ * 此函数仅设置模块级 fallback，不影响 ALS scope。
+ *
  * @param agentId Agent ID
  */
 export function _setNotificationAgent(agentId: string): void {
-  currentAgentId = agentId;
+  _fallbackAgentId = agentId;
 }
 
 /**
- * 清除通知上下文
+ * 清除通知上下文（向后兼容）
+ *
+ * @deprecated 使用 runWithNotificationScope 替代。
+ * 此函数仅清除模块级 fallback。
  */
 export function _clearNotificationAgent(): void {
-  currentAgentId = null;
-  // 重置节流状态
-  lastNotificationTime = 0;
-  lastLLMPhase = null;
+  _fallbackAgentId = null;
+  _fallbackLastTime = 0;
+  _fallbackLastPhase = null;
 }
 
 /**
- * 获取当前通知上下文的 Agent ID
+ * 获取当前通知上下文的 Agent ID。
+ * 优先返回 ALS scope 的 agentId，回退到模块级 fallback。
  */
 export function _getCurrentNotificationAgent(): string | null {
-  return currentAgentId;
+  return notificationAls.getStore()?.agentId ?? _fallbackAgentId;
 }
 
 /**
@@ -65,7 +117,8 @@ export function _getCurrentNotificationAgent(): string | null {
  * @param notification 通知对象
  */
 export function emitNotification(notification: Notification): void {
-  if (!currentAgentId) {
+  const scope = getActiveScope();
+  if (!scope) {
     // 没有通知上下文，静默忽略
     return;
   }
@@ -82,30 +135,30 @@ export function emitNotification(notification: Notification): void {
   if (notificationType === 'llm.char_count') {
     const data = notification.data as Record<string, unknown> | undefined;
     const phase = typeof data?.phase === 'string' ? data.phase : '';
-    if (phase && phase !== lastLLMPhase) {
+    if (phase && phase !== scope.lastLLMPhase) {
       phaseTransition = true;
-      lastLLMPhase = phase;
+      scope.lastLLMPhase = phase;
     }
   }
 
   // 节流：状态类通知需要节流，事件类通知不需要
   // 阶段转换也绕过节流
   if (notification.category === 'state' && !bypassThrottle && !phaseTransition) {
-    const timeSinceLast = now - lastNotificationTime;
+    const timeSinceLast = now - scope.lastNotificationTime;
     if (timeSinceLast < THROTTLE_INTERVAL) {
       // 跳过此次通知
       return;
     }
-    lastNotificationTime = now;
+    scope.lastNotificationTime = now;
   } else if (phaseTransition) {
     // 阶段转换绕过节流，但仍需更新 lastNotificationTime
     // 否则紧随其后的同 phase 通知也会因为 timeSinceLast 过大而绕过
-    lastNotificationTime = now;
+    scope.lastNotificationTime = now;
   }
 
   // 推送到 DebugHub
   const debugHub = DebugHub.getInstance();
-  debugHub.pushNotification(currentAgentId, notification);
+  debugHub.pushNotification(scope.agentId, notification);
 }
 
 // ========== 通知构造函数 ==========

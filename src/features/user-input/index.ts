@@ -62,6 +62,7 @@ export class UserInputFeature implements AgentFeature {
 
   private defaultTimeout: number;
   private nextDraftInput = '';
+  private _agentId: string | null = null;
 
   /**
    * 缓存包信息
@@ -112,12 +113,16 @@ export class UserInputFeature implements AgentFeature {
     // 直接获取 DebugHub 实例
     const debugHub = DebugHub.getInstance();
 
-    // 获取当前注册的 agentId（从 DebugHub）
-    const agentId = debugHub.getCurrentAgentId();
+    // 使用 install 时保存的 agentId，而非全局 getCurrentAgentId()
+    const agentId = this._agentId;
     const capabilities = debugHub.getCapabilities();
 
     if (!agentId) {
-      throw new Error('Agent ID not available. UserInputFeature requires withViewer() to be called first.');
+      throw new Error('Agent ID not available. UserInputFeature requires onInitiate() to be called first.');
+    }
+
+    if (!debugHub.isAgentRegistered(agentId) || !debugHub.isConnected()) {
+      throw new Error('Interactive input is not attached. Call withViewer() before requesting user input.');
     }
 
     if (!capabilities.interactiveInput) {
@@ -345,11 +350,18 @@ export class UserInputFeature implements AgentFeature {
     ];
   }
 
-  async onInitiate(_ctx: FeatureInitContext): Promise<void> {
-    // 不再需要保存 agentId，直接从 DebugHub 获取
+  async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    // 保存 agentId，后续 requestUserInputEvent 使用此 ID 而非全局 getCurrentAgentId()
+    this._agentId = ctx.agentId;
   }
 
   async onDestroy(_ctx: FeatureContext): Promise<void> {
-    // 清理资源（如有）
+    if (this._agentId) {
+      DebugHub.getInstance().cancelInputRequests(
+        this._agentId,
+        `UserInputFeature for Agent '${this._agentId}' was destroyed`,
+      );
+      this._agentId = null;
+    }
   }
 }

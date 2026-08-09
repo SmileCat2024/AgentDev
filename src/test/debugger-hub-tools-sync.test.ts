@@ -1,10 +1,11 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { createTool } from '../core/tool.js';
 import { Agent } from '../core/agent.js';
-import type { AgentFeature } from '../core/feature.js';
+import type { AgentFeature, FeatureInitContext } from '../core/feature.js';
 import type { LLMClient, LLMResponse, Message, Tool } from '../core/types.js';
 import { DebugHub } from '../core/debug-hub.js';
 import { ViewerWorker } from '../core/viewer-worker.js';
+import { UserInputFeature } from '../features/user-input/index.js';
 
 function getTestUdsPath(): string {
   if (process.platform === 'win32') {
@@ -41,6 +42,23 @@ class ToggleFeature implements AgentFeature {
         },
       }),
     ];
+  }
+}
+
+class BrokenFeature implements AgentFeature {
+  readonly name = 'broken';
+
+  getTools(): Tool[] {
+    throw new Error('broken feature preparation');
+  }
+}
+
+class IdentityCaptureFeature implements AgentFeature {
+  readonly name = 'identity-capture';
+  initiatedAgentId: string | undefined;
+
+  async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    this.initiatedAgentId = ctx.agentId;
   }
 }
 
@@ -107,6 +125,74 @@ describe('Debugger hub tools sync', () => {
     });
 
     await agent.dispose();
+  });
+
+  it('should register the viewer identity before feature initialization', async () => {
+    const identityFeature = new IdentityCaptureFeature();
+    const identityAgent = new TestAgent({
+      llm: new NoopLLM(),
+      name: 'IdentityInitAgent',
+    }).use(identityFeature);
+
+    const registeredAgentId = (identityAgent as any).agentId as string;
+    expect(registeredAgentId).toBeDefined();
+
+    // Feature preparation is also reachable before Viewer attachment through
+    // snapshot/session APIs. It must receive the same stable runtime identity.
+    await identityAgent.createSessionSnapshot('before-viewer');
+    expect(identityFeature.initiatedAgentId).toBe(registeredAgentId);
+
+    await identityAgent.withViewer('IdentityInitAgent', 0, false);
+    expect((identityAgent as any).agentId).toBe(registeredAgentId);
+
+    await identityAgent.dispose();
+  });
+
+  it('should roll back Viewer registration when feature preparation fails', async () => {
+    const brokenAgent = new TestAgent({
+      llm: new NoopLLM(),
+      name: 'BrokenAttachAgent',
+    }).use(new BrokenFeature());
+    const runtimeId = (brokenAgent as any).agentId as string;
+
+    await expect(brokenAgent.withViewer('BrokenAttachAgent', 0, false))
+      .rejects.toThrow('broken feature preparation');
+
+    expect(DebugHub.getInstance().getAgentList().some(info => info.id === runtimeId)).toBe(false);
+    expect((brokenAgent as any).debugEnabled).toBe(false);
+    await brokenAgent.dispose();
+  });
+
+  it('should isolate concurrent user input requests for two live Agents', async () => {
+    const inputA = new UserInputFeature();
+    const inputB = new UserInputFeature();
+    const agentA = new TestAgent({ llm: new NoopLLM(), name: 'InputAgentA' }).use(inputA);
+    const agentB = new TestAgent({ llm: new NoopLLM(), name: 'InputAgentB' }).use(inputB);
+
+    await agentA.withViewer('InputAgentA', 0, false);
+    await agentB.withViewer('InputAgentB', 0, false);
+
+    const agentAId = (agentA as any).agentId as string;
+    const agentBId = (agentB as any).agentId as string;
+    expect(agentAId).not.toBe(agentBId);
+
+    const pendingA = inputA.getUserInputEvent('input A');
+    const pendingB = inputB.getUserInputEvent('input B');
+
+    await waitFor(() => {
+      const requestsA = (worker as any).agentSessions.get(agentAId)?.pendingInputRequests;
+      const requestsB = (worker as any).agentSessions.get(agentBId)?.pendingInputRequests;
+      return requestsA?.size === 1 && requestsB?.size === 1;
+    });
+
+    expect(worker.submitUserTurn(agentAId, { text: 'answer A' }).success).toBe(true);
+    expect(worker.submitUserTurn(agentBId, { text: 'answer B' }).success).toBe(true);
+
+    await expect(pendingA).resolves.toMatchObject({ kind: 'text', text: 'answer A' });
+    await expect(pendingB).resolves.toMatchObject({ kind: 'text', text: 'answer B' });
+
+    await agentA.dispose();
+    await agentB.dispose();
   });
 
   it('should reflect pre-disabled tools before the first call', async () => {

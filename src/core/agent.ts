@@ -17,6 +17,7 @@ import { ToolRegistry } from './tool.js';
 import { Context, type ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
+import { runWithNotificationScope } from './notification.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
 import type { CallContinuationRequest } from './continuation.js';
 import {
@@ -91,7 +92,8 @@ class AgentBase {
   protected templateLoader: TemplateLoader;
   protected persistentContext?: Context;
   protected debugHub?: DebugHub;
-  protected agentId?: string;
+  /** Stable process-local identity; Viewer attachment reuses this exact ID. */
+  protected readonly agentId: string;
   protected debugEnabled: boolean = false;
 
   // 子代理相关
@@ -149,6 +151,7 @@ class AgentBase {
 
   constructor(config: AgentConfig) {
     installConsoleBridge();
+    this.agentId = DebugHub.getInstance().allocateAgentId();
     this.config = config;
     this.llm = config.llm;
     this.maxTurns = config.maxTurns ?? 10;
@@ -268,14 +271,6 @@ class AgentBase {
     // 清理上次 onCall 遗留的 continuation request
     this._continuationRequest = null;
 
-    // 设置通知上下文
-    try {
-      const { _setNotificationAgent } = await import('./notification.js');
-      _setNotificationAgent(this.agentId!);
-    } catch {
-      // 通知模块不可用，忽略
-    }
-
     // ========== Call Start ==========
     const context = this.persistentContext ?? new Context();
     // Ensure persistentContext points to the active context immediately,
@@ -298,7 +293,8 @@ class AgentBase {
 
     const agentName = this.config.name || this.constructor.name;
 
-    return await runWithLogScope({
+    return runWithNotificationScope(this.agentId!, () =>
+      runWithLogScope({
       agentId: this.agentId,
       agentName,
       callIndex: this._callIndex,
@@ -503,16 +499,10 @@ class AgentBase {
          // 不清理 _abortController，让它保持可用以便 interrupt 调用
          // 下次 onCall 会创建新的 AbortController 并覆盖旧的
 
-         // 清除通知上下文
-         try {
-           const { _clearNotificationAgent } = await import('./notification.js');
-           _clearNotificationAgent();
-         } catch {
-           // 通知模块不可用，忽略
-         }
-       }
-    });
-  }
+        }
+     })
+    );
+   }
 
   /**
    * 启用可视化查看器
@@ -529,9 +519,6 @@ class AgentBase {
     if (!this.debugHub.getCurrentAgentId()) {
       await this.debugHub.start(port, openBrowser);
     }
-
-    // 确保 Feature 工具已注册（包括 SubAgentFeature 等提供的工具）
-    await this.ensureFeatureTools();
 
     // 收集 Feature 模板信息（使用新的统一方式）
     const featureTemplates: Record<string, string> = {};
@@ -557,28 +544,44 @@ class AgentBase {
       }
     }
 
-    this.agentId = this.debugHub.registerAgent(
+    const wasRegistered = this.debugHub.isAgentRegistered(this.agentId);
+    const registeredAgentId = this.debugHub.registerAgent(
       this,
       name || this.constructor.name,
       featureTemplates,
       this.buildHookInspectorSnapshot(),
       this.buildOverviewSnapshot(),
-      options?.projectRoot ?? this.config.projectRoot
+      options?.projectRoot ?? this.config.projectRoot,
+      this.agentId,
     );
-    this.syncRegisteredToolsToDebug();
-    this.pushInspectorSnapshot();
-    for (const feature of this.features.values()) {
-      const maybePushSnapshot = (feature as any).pushDebugSnapshot;
-      if (typeof maybePushSnapshot === 'function') {
-        try {
-          maybePushSnapshot.call(feature, this.agentId);
-        } catch (error) {
-          console.warn(`[Agent] Feature '${feature.name}' debug snapshot push failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (registeredAgentId !== this.agentId) {
+      throw new Error(`DebugHub registered unexpected Agent ID '${registeredAgentId}'`);
+    }
+
+    try {
+      await this.ensureFeatureTools();
+
+      this.syncRegisteredToolsToDebug();
+      this.pushInspectorSnapshot();
+      for (const feature of this.features.values()) {
+        const maybePushSnapshot = (feature as any).pushDebugSnapshot;
+        if (typeof maybePushSnapshot === 'function') {
+          try {
+            maybePushSnapshot.call(feature, this.agentId);
+          } catch (error) {
+            console.warn(`[Agent] Feature '${feature.name}' debug snapshot push failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
       }
-    }
-    if (this.persistentContext) {
-      this.pushToDebug(this.persistentContext.getAll());
+      if (this.persistentContext) {
+        this.pushToDebug(this.persistentContext.getAll());
+      }
+    } catch (error) {
+      if (!wasRegistered) {
+        this.debugHub.unregisterAgent(this.agentId);
+      }
+      this.debugEnabled = wasRegistered;
+      throw error;
     }
 
     return this;
@@ -1099,7 +1102,7 @@ class AgentBase {
       if (feature.onDestroy) {
         try {
           await feature.onDestroy({
-            agentId: this.agentId || '',
+            agentId: this.agentId,
             config: this.config,
             getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
               return this.features.get(featureName) as T | undefined;
@@ -1114,6 +1117,7 @@ class AgentBase {
     // 注销 DebugHub
     if (this.debugEnabled && this.agentId && this.debugHub) {
       this.debugHub.unregisterAgent(this.agentId);
+      this.debugEnabled = false;
     }
 
     // 重置状态
@@ -1187,7 +1191,7 @@ class AgentBase {
     if (typeof feature.onDestroy === 'function') {
       try {
         feature.onDestroy({
-          agentId: this.agentId || '',
+          agentId: this.agentId,
           config: this.config,
           getFeature: <T extends AgentFeature>(name: string): T | undefined => {
             return this.features.get(name) as T | undefined;
@@ -1361,7 +1365,7 @@ class AgentBase {
 
     // 为每个 Feature 创建独立的 initContext
     const initContext: FeatureInitContext = {
-      agentId: this.agentId || '',
+      agentId: this.agentId,
       config: this.config,
       logger: featureLogger,
       featureConfig: this.config.features?.[name],

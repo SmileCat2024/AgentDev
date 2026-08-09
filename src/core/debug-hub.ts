@@ -44,6 +44,14 @@ interface AgentData {
   agent: Agent;
 }
 
+interface PendingInputRequest {
+  agentId: string;
+  resolve: (response: UserInputResponse) => void;
+  reject: (error: Error) => void;
+  timer?: NodeJS.Timeout;
+  abortController?: AbortController;
+}
+
 export class DebugHub {
   private static instance: DebugHub;
   private readonly transportMode: 'viewer-worker' | 'claw';
@@ -55,12 +63,13 @@ export class DebugHub {
   private nextId: number = 1;
   private readonly processId: string;  // 进程唯一标识
 
-  // 输入请求回调映射：requestId → resolver
-  private pendingInputRequests = new Map<string, (response: UserInputResponse) => void>();
+  // 输入请求回调映射：requestId → owned request lifecycle
+  private pendingInputRequests = new Map<string, PendingInputRequest>();
   // @deprecated (2026-07-25) — supplement mechanism removed; no caller sets
   // this handler. Kept for backward compatibility; safe to remove.
   private queuedInputHandler?: (agentId: string, input: { id: string; text: string; timestamp: number; images?: ImageInput[] }) => void | Promise<void>;
-  private interruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
+  private interruptHandlers = new Map<string, (agentId: string, clearQueue: boolean) => void | Promise<void>>();
+  private globalInterruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
 
   // 活跃的输入请求元数据（用于重连恢复）：agentId → requestInfo
   private activeInputRequests = new Map<string, {
@@ -84,9 +93,6 @@ export class DebugHub {
 
   // 注册锁（防止并发竞争）
   private registrationLock: boolean = false;
-
-  // 待发送的消息队列（连接建立前）
-  private messageQueue: DebugHubIPCMessage[] = [];
 
   // 重连机制
   private reconnectTimer?: NodeJS.Timeout;
@@ -116,6 +122,14 @@ export class DebugHub {
       DebugHub.instance = new DebugHub();
     }
     return DebugHub.instance;
+  }
+
+  /**
+   * 为 Agent 分配进程内稳定且唯一的运行时 ID。
+   * 分配不等于注册；同一 ID 可在后续 Viewer attach/re-attach 时复用。
+   */
+  allocateAgentId(): string {
+    return `agent-${this.nextId++}-${this.processId}`;
   }
 
   // ========== 公开 API ==========
@@ -335,7 +349,8 @@ export class DebugHub {
     featureTemplates?: Record<string, string>,
     hookInspector?: HookInspectorSnapshot,
     overview?: AgentOverviewSnapshot,
-    projectRoot?: string
+    projectRoot?: string,
+    reservedAgentId?: string,
   ): string {
     // 等待注册锁
     while (this.registrationLock) {
@@ -345,11 +360,15 @@ export class DebugHub {
 
     try {
       const resolvedProjectRoot = projectRoot || process.cwd();
-      const id = `agent-${this.nextId++}-${this.processId}`;
+      const id = reservedAgentId || this.allocateAgentId();
+      const existing = this.agents.get(id);
+      if (existing && existing.agent !== agent) {
+        throw new Error(`Agent ID '${id}' is already registered by another Agent instance`);
+      }
       const info: AgentInfo = {
         id,
         name: name || agent.constructor.name,
-        registeredAt: Date.now(),
+        registeredAt: existing?.info.registeredAt ?? Date.now(),
         projectRoot: resolvedProjectRoot,
       };
 
@@ -402,6 +421,10 @@ export class DebugHub {
    * @param agentId Agent ID
    */
   unregisterAgent(agentId: string): void {
+    this.interruptHandlers.delete(agentId);
+    this.cancelInputRequests(agentId, `Agent '${agentId}' was unregistered`);
+    this.activeInputRequests.delete(agentId);
+
     const deleted = this.agents.delete(agentId);
     if (deleted) {
       this.agentFeatureTemplates.delete(agentId);
@@ -560,6 +583,10 @@ export class DebugHub {
     return this.currentAgentId;
   }
 
+  isAgentRegistered(agentId: string): boolean {
+    return this.agents.has(agentId);
+  }
+
   getTransportMode(): 'viewer-worker' | 'claw' {
     return this.transportMode;
   }
@@ -576,8 +603,32 @@ export class DebugHub {
     this.queuedInputHandler = handler;
   }
 
-  setInterruptHandler(handler?: (agentId: string, clearQueue: boolean) => void | Promise<void>): void {
-    this.interruptHandler = handler;
+  setInterruptHandler(
+    agentIdOrHandler: string | ((agentId: string, clearQueue: boolean) => void | Promise<void>) | undefined,
+    handler?: (agentId: string, clearQueue: boolean) => void | Promise<void>,
+  ): () => void {
+    if (typeof agentIdOrHandler === 'string') {
+      // per-agent 注册
+      if (handler) {
+        this.interruptHandlers.set(agentIdOrHandler, handler);
+        return () => {
+          if (this.interruptHandlers.get(agentIdOrHandler) === handler) {
+            this.interruptHandlers.delete(agentIdOrHandler);
+          }
+        };
+      } else {
+        this.interruptHandlers.delete(agentIdOrHandler);
+        return () => {};
+      }
+    } else {
+      // 旧式全局 fallback
+      this.globalInterruptHandler = agentIdOrHandler;
+      return () => {
+        if (this.globalInterruptHandler === agentIdOrHandler) {
+          this.globalInterruptHandler = undefined;
+        }
+      };
+    }
   }
 
   /**
@@ -666,29 +717,39 @@ export class DebugHub {
     timeout: number = Infinity,
   ): Promise<UserInputResponse> {
     if (this.transportMode === 'claw') {
-      return this.clawClient?.requestUserInput(agentId, request, timeout)
-        ?? Promise.reject(new Error('Claw client is not available'));
+      if (!this.clawClient) {
+        return Promise.reject(new Error('Claw client is not available'));
+      }
+      const localRequestId = `claw-input-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const abortController = new AbortController();
+      return new Promise((resolve, reject) => {
+        this.pendingInputRequests.set(localRequestId, {
+          agentId,
+          resolve,
+          reject,
+          abortController,
+        });
+        this.clawClient!.requestUserInput(agentId, request, timeout, abortController.signal)
+          .then(response => this.settleInputRequest(localRequestId, { response }))
+          .catch(error => this.settleInputRequest(localRequestId, {
+            error: error instanceof Error ? error : new Error(String(error)),
+          }));
+      });
     }
 
     const requestId = `input-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     return new Promise((resolve, reject) => {
-      // 设置超时定时器（仅在 timeout 为有限数值时）
-      let timer: NodeJS.Timeout | undefined;
+      const pending: PendingInputRequest = { agentId, resolve, reject };
       if (timeout !== Infinity) {
-        timer = setTimeout(() => {
-          this.pendingInputRequests.delete(requestId);
-          this.activeInputRequests.delete(agentId); // 清除活跃请求记录
-          reject(new Error(`User input timeout after ${timeout}ms`));
+        pending.timer = setTimeout(() => {
+          this.settleInputRequest(requestId, {
+            error: new Error(`User input timeout after ${timeout}ms`),
+          });
         }, timeout);
       }
 
-      // 存储 resolve 函数
-      this.pendingInputRequests.set(requestId, (response: UserInputResponse) => {
-        if (timer) clearTimeout(timer);
-        this.activeInputRequests.delete(agentId); // 清除活跃请求记录
-        resolve(response);
-      });
+      this.pendingInputRequests.set(requestId, pending);
 
       // 记录活跃请求（用于重连恢复）
       this.activeInputRequests.set(agentId, {
@@ -732,12 +793,6 @@ export class DebugHub {
         this.clientReady = true;
         this.reconnectAttempts = 0; // 重置重连计数
         console.log(`[DebugHub] 已连接到 ViewerWorker: ${this.udsPath}`);
-
-        // 发送队列中的消息
-        for (const msg of this.messageQueue) {
-          this.sendViaUDS(msg);
-        }
-        this.messageQueue = [];
 
         // 关键：重新注册所有 Agent（用于重连后恢复状态）
         this.reregisterAllAgents();
@@ -795,13 +850,11 @@ export class DebugHub {
 
       // 处理用户输入响应
       case 'input-response': {
-        const resolver = this.pendingInputRequests.get(msg.requestId);
-        if (resolver) {
-          resolver(msg.response ?? {
+        if (this.pendingInputRequests.has(msg.requestId)) {
+          this.settleInputRequest(msg.requestId, { response: msg.response ?? {
             kind: 'text',
             text: msg.input,
-          });
-          this.pendingInputRequests.delete(msg.requestId);
+          } });
         } else {
           console.warn(`[DebugHub] 未知输入响应: ${msg.requestId}`);
         }
@@ -829,8 +882,10 @@ export class DebugHub {
         } else {
           console.warn(`[DebugHub] Agent 不支持中断: ${msg.agentId}`);
         }
-        if (this.interruptHandler) {
-          Promise.resolve(this.interruptHandler(msg.agentId, msg.clearQueue === true)).catch((error) => {
+        const specificHandler = this.interruptHandlers.get(msg.agentId);
+        const effectiveHandler = specificHandler ?? this.globalInterruptHandler;
+        if (effectiveHandler) {
+          Promise.resolve(effectiveHandler(msg.agentId, msg.clearQueue === true)).catch((error) => {
             console.error('[DebugHub] interruptHandler 执行失败:', error);
           });
         }
@@ -998,6 +1053,43 @@ export class DebugHub {
       this.udsClient.write(JSON.stringify(msg) + '\n');
     }
     // 未连接时丢弃消息，不再队列（避免内存泄漏）
+  }
+
+  /** Cancel every input request owned by one Agent. Safe to call repeatedly. */
+  cancelInputRequests(agentId: string, reason: string = `Agent '${agentId}' input was cancelled`): void {
+    for (const [requestId, pending] of this.pendingInputRequests) {
+      if (pending.agentId !== agentId) continue;
+      pending.abortController?.abort();
+      this.settleInputRequest(requestId, { error: this.createAbortError(reason) });
+    }
+    this.activeInputRequests.delete(agentId);
+  }
+
+  private settleInputRequest(
+    requestId: string,
+    outcome: { response: UserInputResponse } | { error: Error },
+  ): void {
+    const pending = this.pendingInputRequests.get(requestId);
+    if (!pending) return;
+
+    this.pendingInputRequests.delete(requestId);
+    if (pending.timer) clearTimeout(pending.timer);
+    const active = this.activeInputRequests.get(pending.agentId);
+    if (active?.requestId === requestId) {
+      this.activeInputRequests.delete(pending.agentId);
+    }
+
+    if ('response' in outcome) {
+      pending.resolve(outcome.response);
+    } else {
+      pending.reject(outcome.error);
+    }
+  }
+
+  private createAbortError(message: string): Error {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
   }
 
   /**

@@ -37,6 +37,7 @@ export class HooksRegistry {
     feature: AgentFeature;
     methodName: string;
     source?: { file?: string; line?: number; column?: number; display: string };
+    enabled: boolean;
   }>>();
 
   /**
@@ -61,6 +62,7 @@ export class HooksRegistry {
           feature,
           methodName: trimmed,
           source: metadata.hookSources.get(`${lifecycle}:${trimmed}`),
+          enabled: true,
         });
       }
     }
@@ -101,8 +103,41 @@ export class HooksRegistry {
     feature: AgentFeature;
     methodName: string;
     source?: { file?: string; line?: number; column?: number; display: string };
+    enabled: boolean;
   }> {
     return this.hooks.get(lifecycle) || [];
+  }
+
+  /**
+   * 禁用钩子（运行时跳过执行，不影响注册状态）
+   *
+   * @returns 是否成功（钩子存在且之前为启用状态）
+   */
+  disableHook(lifecycle: CoreLifecycle, featureName: string, methodName: string): boolean {
+    const hooks = this.hooks.get(lifecycle);
+    if (!hooks) return false;
+
+    const entry = hooks.find(h => h.feature.name === featureName && h.methodName === methodName);
+    if (!entry || !entry.enabled) return false;
+
+    entry.enabled = false;
+    return true;
+  }
+
+  /**
+   * 启用钩子
+   *
+   * @returns 是否成功（钩子存在且之前为禁用状态）
+   */
+  enableHook(lifecycle: CoreLifecycle, featureName: string, methodName: string): boolean {
+    const hooks = this.hooks.get(lifecycle);
+    if (!hooks) return false;
+
+    const entry = hooks.find(h => h.feature.name === featureName && h.methodName === methodName);
+    if (!entry || entry.enabled) return false;
+
+    entry.enabled = true;
+    return true;
   }
 
   getSnapshot(): HookLifecycleSnapshot[] {
@@ -121,6 +156,7 @@ export class HooksRegistry {
         description: typeof (hook.feature as any).getHookDescription === 'function'
           ? (hook.feature as any).getHookDescription(lifecycle, hook.methodName)
           : undefined,
+        enabled: hook.enabled,
       }));
 
       return {
@@ -143,14 +179,22 @@ export class HooksRegistry {
    * @returns 执行结果
    */
   async execute(lifecycle: CoreLifecycle, context: DecisionContext): Promise<HookExecutionResult> {
-    const hooks = this.hooks.get(lifecycle);
+    const allHooks = this.hooks.get(lifecycle);
 
-    if (!hooks || hooks.length === 0) {
+    if (!allHooks || allHooks.length === 0) {
+      return { handled: false };
+    }
+
+    // 入口快照：冻结本次 dispatch 的有效钩子
+    // mid-dispatch 的 enable/disable 不影响本次执行，从下一次生命周期触发生效
+    const activeHooks = allHooks.filter(h => h.enabled);
+
+    if (activeHooks.length === 0) {
       return { handled: false };
     }
 
     // 按顺序执行所有钩子
-    for (const { feature, methodName, source } of hooks) {
+    for (const { feature, methodName, source } of activeHooks) {
       try {
         const method = (feature as any)[methodName];
         if (typeof method !== 'function') {
@@ -272,15 +316,22 @@ export class HooksRegistry {
     initialResult: T,
     buildContext: (current: T) => DecisionContext,
   ): Promise<T> {
-    const hooks = this.hooks.get(lifecycle);
+    const allHooks = this.hooks.get(lifecycle);
 
-    if (!hooks || hooks.length === 0) {
+    if (!allHooks || allHooks.length === 0) {
+      return initialResult;
+    }
+
+    // 入口快照：冻结本次 dispatch 的有效钩子
+    const activeHooks = allHooks.filter(h => h.enabled);
+
+    if (activeHooks.length === 0) {
       return initialResult;
     }
 
     let current = initialResult;
 
-    for (const { feature, methodName, source } of hooks) {
+    for (const { feature, methodName, source } of activeHooks) {
       try {
         const method = (feature as any)[methodName];
         if (typeof method !== 'function') {

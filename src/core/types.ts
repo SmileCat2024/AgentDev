@@ -506,6 +506,8 @@ export interface HookEntryMetadata {
   kind: 'decision' | 'notify' | 'transform';
   source?: HookSourceLocation;
   description?: string;
+  /** 是否启用。false 表示被运行时禁用。缺省视为 true（向后兼容）。 */
+  enabled?: boolean;
 }
 
 export interface HookLifecycleSnapshot {

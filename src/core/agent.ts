@@ -1317,6 +1317,38 @@ class AgentBase {
     return tools.every(t => this.tools.isEnabled(t.name));
   }
 
+  // ========== 反向钩子运行时控制 ==========
+
+  /**
+   * 禁用指定的反向钩子
+   *
+   * @example
+   * agent.disableHook('ToolUse', 'audit', 'onToolUse')
+   */
+  disableHook(lifecycle: string, featureName: string, methodName: string): this {
+    const lc = lifecycle as CoreLifecycle;
+    if (this.hooksRegistry.disableHook(lc, featureName, methodName)) {
+      console.log(`[Agent] 已禁用钩子 ${lifecycle}:${featureName}.${methodName}`);
+      this.pushInspectorSnapshot();
+    }
+    return this;
+  }
+
+  /**
+   * 启用指定的反向钩子
+   *
+   * @example
+   * agent.enableHook('ToolUse', 'audit', 'onToolUse')
+   */
+  enableHook(lifecycle: string, featureName: string, methodName: string): this {
+    const lc = lifecycle as CoreLifecycle;
+    if (this.hooksRegistry.enableHook(lc, featureName, methodName)) {
+      console.log(`[Agent] 已启用钩子 ${lifecycle}:${featureName}.${methodName}`);
+      this.pushInspectorSnapshot();
+    }
+    return this;
+  }
+
   /**
    * 按名称获取已挂载的 Feature 实例
    */

@@ -1481,7 +1481,7 @@ class AgentBase {
 
   /**
    * 收集所有 Feature 自带的 skills
-   * 约定：Feature 目录下存在 skills/ 目录则自动发现
+   * 约定：Feature source 同级目录下存在 skills/ 目录则自动发现
    */
   private async collectFeatureSkills(): Promise<SkillMetadata[]> {
     const collected: SkillMetadata[] = [];
@@ -1492,19 +1492,8 @@ class AgentBase {
 
       const filePath = feature.source.startsWith('file://')
         ? fileURLToPath(feature.source) : feature.source;
-      const featureDir = dirname(filePath);
-
-      // 候选1: source 同级/skills（内置 Feature: dist/features/{name}/skills/）
-      const candidate1 = join(featureDir, 'skills');
-      // 候选2: 包根/skills（独立 npm 包: {pkgRoot}/skills/）
-      const pkgInfo = feature.getPackageInfo?.();
-      const candidate2 = pkgInfo ? join(pkgInfo.root, 'skills') : null;
-
-      const skillsDir = existsSync(candidate1)
-        ? candidate1
-        : (candidate2 && existsSync(candidate2) ? candidate2 : null);
-
-      if (!skillsDir) continue;
+      const skillsDir = join(dirname(filePath), 'skills');
+      if (!existsSync(skillsDir)) continue;
 
       const found = await discover({ dir: skillsDir });
       if (found.length > 0) {

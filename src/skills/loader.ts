@@ -8,6 +8,7 @@ import { resolve, isAbsolute, join, normalize, dirname, isAbsolute as pathIsAbso
 import { existsSync } from 'fs';
 import type { SkillMetadata, SkillsOptions } from './types.js';
 import { cwd as processCwd } from 'process';
+import yaml from 'js-yaml';
 
 /**
  * 解析 SKILL.md 文件的 YAML frontmatter
@@ -28,32 +29,21 @@ function parseSkillFrontmatter(content: string, path: string): SkillMetadata | n
 
   const frontmatterStr = content.slice(3, frontmatterEnd).trim();
 
-  // 简单解析 YAML（只需提取 name 和 description）
-  const nameMatch = frontmatterStr.match(/^name:\s*(.+)$/m);
-  const descriptionMatch = frontmatterStr.match(/^description:\s*(.+)$/m);
-
-  if (!nameMatch || !descriptionMatch) {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = yaml.load(frontmatterStr) as Record<string, unknown>;
+  } catch {
     return null;
   }
 
-  const name = nameMatch[1].trim();
-  const description = descriptionMatch[1].trim();
+  if (!parsed || typeof parsed !== 'object') return null;
 
-  // 移除可能的引号
-  const cleanValue = (value: string): string => {
-    value = value.trim();
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      return value.slice(1, -1);
-    }
-    return value;
-  };
+  const name = typeof parsed.name === 'string' ? parsed.name.trim() : null;
+  const description = typeof parsed.description === 'string' ? parsed.description.trim() : null;
 
-  return {
-    name: cleanValue(name),
-    description: cleanValue(description),
-    path,
-  };
+  if (!name || !description) return null;
+
+  return { name, description, path };
 }
 
 /**

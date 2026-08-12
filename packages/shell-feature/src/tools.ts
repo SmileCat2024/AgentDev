@@ -240,7 +240,6 @@ export async function runShellCommand(
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let timedOut = false;
 
     const timeoutMs = Math.min(options.timeoutMs || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
@@ -261,7 +260,17 @@ export async function runShellCommand(
     const killChild = () => {
       try {
         if (process.platform === 'win32') {
-          spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          killer.once('error', (error) => {
+            console.warn(`[shell] taskkill failed for PID=${child.pid}:`, error);
+            child.kill('SIGKILL');
+          });
+          killer.once('close', (code) => {
+            if (code !== 0) {
+              console.warn(`[shell] taskkill exited with code ${code} for PID=${child.pid}; killing the direct child`);
+              child.kill('SIGKILL');
+            }
+          });
         } else {
           process.kill(-child.pid!, 'SIGKILL');
         }
@@ -270,25 +279,43 @@ export async function runShellCommand(
       }
     };
 
-    const onAbort = () => {
-      console.log(`[shell] signal abort detected, killing child PID=${child.pid}`);
-      killChild();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onAbort);
     };
 
-    // Timeout timer
-    const timeoutId = setTimeout(() => {
+    const rejectInterrupted = (message: string) => {
       if (settled) return;
-      timedOut = true;
-      console.log(`[shell] command timed out after ${timeoutMs}ms, killing PID=${child.pid}`);
+      settled = true;
+      cleanup();
       killChild();
+      const error: any = new Error(message);
+      error.name = 'AbortError';
+      reject(error);
+    };
+
+    const onAbort = () => {
+      console.log(`[shell] signal abort detected, killing child PID=${child.pid}`);
+      rejectInterrupted('Command interrupted');
+    };
+
+    // A timeout must settle the tool call itself. Waiting for `close` here makes
+    // a failed or delayed taskkill look like a successful timeout while the call
+    // remains blocked indefinitely.
+    timeoutId = setTimeout(() => {
+      if (settled) return;
+      console.log(`[shell] command timed out after ${timeoutMs}ms, killing PID=${child.pid}`);
+      settled = true;
+      cleanup();
+      killChild();
+      reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
 
     if (signal) {
       if (signal.aborted) {
-        clearTimeout(timeoutId);
-        const err: any = new Error('Command interrupted before execution');
-        err.name = 'AbortError';
-        reject(err);
+        rejectInterrupted('Command interrupted before execution');
         return;
       }
       signal.addEventListener('abort', onAbort, { once: true });
@@ -314,15 +341,6 @@ export async function runShellCommand(
         .join('\n')
         .trim();
 
-      if (timedOut) {
-        const combined = [stdout, cleanStderr].filter(Boolean).join('\n\n--- stderr ---\n');
-        processOutputWithPersistence(combined, workdir).then(truncated => {
-          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s\n\n${truncated}`));
-        }).catch(() => {
-          reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`));
-        });
-        return;
-      }
 
       if (signal?.aborted) {
         const err: any = new Error('Command interrupted');

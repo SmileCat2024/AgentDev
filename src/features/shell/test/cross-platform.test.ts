@@ -16,7 +16,7 @@ import { join } from 'path';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 
-import { findGitBashPath } from '../tools.js';
+import { findGitBashPath, runShellCommand } from '../tools.js';
 import { findPowerShellPath } from '../powershell.js';
 import { ShellFeature } from '../index.js';
 
@@ -101,6 +101,35 @@ describe('findPowerShellPath', () => {
     // If pwsh is installed, it returns its path; otherwise null.
     const result = findPowerShellPath('/nonexistent/pwsh-' + Date.now());
     expect(result === null || typeof result === 'string').toBe(true);
+  });
+});
+
+// ── Shell command lifecycle ──────────────────────────────────
+
+describe('runShellCommand lifecycle', () => {
+  it('rejects at the timeout rather than waiting for the child close event', async () => {
+    const startedAt = Date.now();
+
+    const bashPath = findGitBashPath();
+    if (!bashPath) return;
+
+    await expect(runShellCommand('sleep 2', { bashPath, timeoutMs: 50 }))
+      .rejects.toThrow('Command timed out after 0s');
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it('settles immediately when its AbortSignal is aborted', async () => {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const bashPath = findGitBashPath();
+    if (!bashPath) return;
+    const command = runShellCommand('sleep 2', { bashPath, timeoutMs: 10_000 }, controller.signal);
+
+    controller.abort();
+
+    await expect(command).rejects.toMatchObject({ name: 'AbortError', message: 'Command interrupted' });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });
 

@@ -136,7 +136,20 @@ export interface AgentFeature {
   readonly name: string;
   /** 依赖的其他 Feature */
   readonly dependencies?: string[];
-  /** 可选：用于调试器展示的源码位置 */
+  /**
+   * Feature 源文件路径（import.meta.url）。
+   *
+   * 既是调试器展示的源码位置，也是框架自动发现 Feature 自带资源的唯一锚点。
+   *
+   * 约定：Feature 的所有静态资源放在 source 文件的同级目录下。
+   * 框架会自动扫描 `dirname(source)/skills/` 发现内置 skill 并注入系统提示词。
+   * 其他资源（图片、模板等）由 Feature 代码通过 import.meta.url 自行解析。
+   *
+   * 标准写法（由 create-feature 脚手架自动生成）：
+   * ```typescript
+   * readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+   * ```
+   */
   readonly source?: string;
   /** 可选：用于调试器展示的 Feature 描述 */
   readonly description?: string;

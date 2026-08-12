@@ -32,9 +32,9 @@ describe('UserInputFeature', () => {
   // ========== 工具注册 ==========
 
   describe('getTools()', () => {
-    it('should return 2 tools', () => {
+    it('should return 1 tool', () => {
       const tools = feature.getTools();
-      expect(tools).toHaveLength(2);
+      expect(tools).toHaveLength(1);
     });
 
     it('should register ask_user_choice', () => {
@@ -42,22 +42,9 @@ describe('UserInputFeature', () => {
       expect(tools.map(t => t.name)).toContain('ask_user_choice');
     });
 
-    it('should register ask_user_choices', () => {
-      const tools = feature.getTools();
-      expect(tools.map(t => t.name)).toContain('ask_user_choices');
-    });
-
     it('should have required parameters for ask_user_choice', () => {
       const tools = feature.getTools();
       const tool = tools.find(t => t.name === 'ask_user_choice')!;
-      expect(tool.parameters.required).toContain('prompt');
-      expect(tool.parameters.required).toContain('question');
-      expect(tool.parameters.required).toContain('options');
-    });
-
-    it('should have required parameters for ask_user_choices', () => {
-      const tools = feature.getTools();
-      const tool = tools.find(t => t.name === 'ask_user_choices')!;
       expect(tool.parameters.required).toContain('prompt');
       expect(tool.parameters.required).toContain('questions');
     });

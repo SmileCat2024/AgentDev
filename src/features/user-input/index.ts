@@ -230,72 +230,7 @@ export class UserInputFeature implements AgentFeature {
     return [
       createTool({
         name: 'ask_user_choice',
-        description: '向用户展示 1 道选择题，让用户点击或用键盘选择 1~4 个选项之一；可允许用户选择“其他”并输入自定义内容。',
-        parameters: {
-          type: 'object',
-          properties: {
-            prompt: {
-              type: 'string',
-              description: '选择卡片的总说明，简要说明为什么需要用户决策。'
-            },
-            question: {
-              type: 'string',
-              description: '要问用户的具体问题。'
-            },
-            options: {
-              type: 'array',
-              description: '1~4 个可选项。',
-              minItems: 1,
-              maxItems: 4,
-              items: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string', description: '稳定选项 ID。' },
-                  label: { type: 'string', description: '选项显示文本。' },
-                  description: { type: 'string', description: '可选的补充说明。' },
-                  allowSupplement: { type: 'boolean', description: '是否允许用户在选择此选项后补充自由文本。' },
-                  supplementRequired: { type: 'boolean', description: '补充文本是否为必填（仅 allowSupplement 为 true 时有效）。' },
-                  supplementLabel: { type: 'string', description: '补充文本输入框的标签。' },
-                  supplementPlaceholder: { type: 'string', description: '补充文本输入框的占位提示。' }
-                },
-                required: ['id', 'label']
-              }
-            },
-            allowCustom: {
-              type: 'boolean',
-              description: '是否显示一个额外自定义选项，允许用户输入想说的话。'
-            },
-            customLabel: {
-              type: 'string',
-              description: '自定义选项的显示文本，例如“都不是，我想补充”。'
-            },
-            customPlaceholder: {
-              type: 'string',
-              description: '自定义输入框占位提示。'
-            }
-          },
-          required: ['prompt', 'question', 'options']
-        },
-        execute: async (args) => {
-          const { prompt, question, options, allowCustom, customLabel, customPlaceholder } = args as {
-            prompt: string; question: string; options: ChoiceToolQuestionInput['options'];
-            allowCustom?: boolean; customLabel?: string; customPlaceholder?: string;
-          };
-          const choices = await this.requestUserChoices(prompt, [{
-            id: 'question',
-            question,
-            options,
-            allowCustom,
-            customLabel,
-            customPlaceholder,
-          }]);
-          return { choices, choice: choices[0] ?? null };
-        },
-        render: choiceToolRender,
-      }),
-      createTool({
-        name: 'ask_user_choices',
-        description: '一次向用户展示多道选择题。每题有 1~4 个选项，可各自允许自定义输入；用户完成一道后会直接进入下一道。',
+        description: '向用户展示 1 道或多道选择题，让用户点击或用键盘选择选项；可允许用户选择"其他"并输入自定义内容。展示多道时，用户完成一道后直接进入下一道。',
         parameters: {
           type: 'object',
           properties: {
@@ -305,7 +240,7 @@ export class UserInputFeature implements AgentFeature {
             },
             questions: {
               type: 'array',
-              description: '一组选择题。每道题必须有 1~4 个选项。',
+              description: '一组选择题（至少 1 道）。每道题必须有 1~4 个选项。',
               minItems: 1,
               items: {
                 type: 'object',

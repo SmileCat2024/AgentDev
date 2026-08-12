@@ -68,7 +68,7 @@ export const DEBUGGER_MCP_TOOL_DEFINITIONS = [
   },
   {
     name: 'query_logs',
-    description: 'Query structured debugger-hub logs. Always prefer adding filters such as level, namespace, feature, lifecycle, time range, search, limit, and offset. If you call this without narrowing parameters, the server truncates the response to a large safety cap and returns truncation guidance so you can continue with refined parameters.',
+    description: 'Query structured logs. Prefer adding filters to narrow results; unfiltered queries are auto-truncated.',
   },
 ] as const;
 
@@ -248,19 +248,19 @@ export class DebuggerMCPServer {
 
     server.registerTool('query_logs', {
       title: 'Query Logs',
-      description: 'Query structured logs that were successfully delivered to the debugger hub. Use filters such as level, namespace, feature, lifecycle, from/to, search, limit, and offset to keep the result focused. If you omit narrowing parameters, the server automatically truncates the response to a large cap and returns explicit truncation guidance so you can continue with refined parameters. Logs emitted while the debugger was disconnected fall back to local console output and do not appear here.',
+      description: 'Query structured logs. Use filters to narrow results; unfiltered queries are auto-truncated with guidance to refine.',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID, "current", "self", or omitted. Use this to narrow the result to one agent.'),
+        agentId: z.string().optional().describe('Agent ID, "current", or "self". Omit for current.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
-        scope: z.enum(['current', 'all']).optional().describe('Query the current agent or all visible agents. "all" can be large, so pair it with filters or limit.'),
+        scope: z.enum(['current', 'all']).optional().describe('Scope: "current" or "all". Use filters with "all".'),
         level: z.string().optional().describe('Exact log level filter, for example "error" or "warn".'),
         namespace: z.string().optional().describe('Substring match on the log namespace.'),
         feature: z.string().optional().describe('Exact feature name filter.'),
         lifecycle: z.string().optional().describe('Exact lifecycle / hook stage filter.'),
         from: z.number().int().optional().describe('Inclusive start timestamp in ms.'),
         to: z.number().int().optional().describe('Inclusive end timestamp in ms.'),
-        limit: z.number().int().positive().max(500).optional().describe(`Maximum number of logs to return. When omitted on an otherwise unbounded query, the server applies a default cap of ${QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT} and marks the response as truncated.`),
-        offset: z.number().int().min(0).optional().describe('Pagination offset. Use together with limit to continue from a truncated or paged result.'),
+        limit: z.number().int().positive().max(500).optional().describe(`Max logs to return (1-500). Defaults to ${QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT} on unfiltered queries.`),
+        offset: z.number().int().min(0).optional().describe('Pagination offset. Use with limit to continue paged results.'),
         search: z.string().optional().describe('Substring search over the log message and serialized JSON payload/context.'),
       }),
     }, async (args, extra) => {
@@ -558,12 +558,11 @@ export function createDebuggerAgentDetails(
   connected: boolean
 ): DebuggerAgentDetails {
   const summary = createDebuggerAgentSummary(session, connected);
-  const pendingInputRequests = (session as any).pendingInputRequests as Map<string, unknown> | undefined;
   return {
     ...summary,
     projectRoot: session.projectRoot,
     currentStateType: session.currentState?.type || null,
-    pendingInputCount: pendingInputRequests?.size || 0,
+    pendingInputCount: session.inputLease ? 1 : 0,
     hookInspector: session.hookInspector,
   };
 }

@@ -218,6 +218,62 @@ describe('LLM Hot Swap (setLLM)', () => {
     expect(pushedOverview.modelName).toBe('model-b');
   });
 
+  it('should reflect full LLMMeta (contextLength/compressRatio/presetName) in pushed Overview Snapshot', async () => {
+    const llmA = new MockLLM('model-a');
+    const llmB = new MockLLM('model-b');
+
+    const agent = new TestAgent({ llm: llmA, name: 'MetaOverviewAgent', maxTurns: 1 });
+
+    let pushedOverview: any = null;
+    const mockDebugHub = {
+      updateAgentOverview(_agentId: string, overview: any): void {
+        pushedOverview = overview;
+      },
+    };
+    (agent as any).debugHub = mockDebugHub;
+    (agent as any).debugEnabled = true;
+    (agent as any).agentId = 'test-meta-overview-agent';
+
+    agent.setLLM(llmB, {
+      modelName: 'model-b',
+      contextLength: 200000,
+      compressRatio: 70,
+      presetName: 'big-context',
+      thinkingEffort: 'high',
+    });
+
+    expect(pushedOverview).not.toBeNull();
+    expect(pushedOverview.modelName).toBe('model-b');
+    expect(pushedOverview.presetName).toBe('big-context');
+    expect(pushedOverview.thinkingEffort).toBe('high');
+    expect(pushedOverview.contextLength).toBe(200000);
+    expect(pushedOverview.compressRatio).toBe(70);
+  });
+
+  it('should omit contextLength/compressRatio from Overview when meta lacks them', async () => {
+    const llmA = new MockLLM('model-a');
+
+    const agent = new TestAgent({ llm: llmA, name: 'NoCtxOverviewAgent', maxTurns: 1 });
+
+    let pushedOverview: any = null;
+    const mockDebugHub = {
+      updateAgentOverview(_agentId: string, overview: any): void {
+        pushedOverview = overview;
+      },
+    };
+    (agent as any).debugHub = mockDebugHub;
+    (agent as any).debugEnabled = true;
+    (agent as any).agentId = 'test-no-ctx-overview-agent';
+
+    // setLLM with only modelName — no contextLength/compressRatio
+    agent.setLLM(llmA, { modelName: 'model-a' });
+
+    expect(pushedOverview).not.toBeNull();
+    expect(pushedOverview.modelName).toBe('model-a');
+    expect(pushedOverview.contextLength).toBeUndefined();
+    expect(pushedOverview.compressRatio).toBeUndefined();
+  });
+
   it('should update SystemContext SYSTEM_CURRENT_MODEL when meta.modelName provided', async () => {
     const llmA = new MockLLM('model-a');
     const llmB = new MockLLM('model-b');

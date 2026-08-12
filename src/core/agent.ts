@@ -1883,6 +1883,12 @@ class AgentBase {
       ...(this._llmMeta.thinkingEffort != null
         ? { thinkingEffort: this._llmMeta.thinkingEffort }
         : {}),
+      ...(typeof this._llmMeta.contextLength === 'number' && this._llmMeta.contextLength > 0
+        ? { contextLength: this._llmMeta.contextLength }
+        : {}),
+      ...(typeof this._llmMeta.compressRatio === 'number' && this._llmMeta.compressRatio > 0
+        ? { compressRatio: this._llmMeta.compressRatio }
+        : {}),
     };
   }
 

@@ -570,6 +570,10 @@ export interface AgentOverviewSnapshot {
   presetName?: string;
   /** 可选：当前 LLM 实例的思考强度（由 agent 实例注入，用于 UI 状态同步） */
   thinkingEffort?: string | null;
+  /** 可选：当前模型的上下文窗口长度（由 agent 实例注入，用于 UI 用量条实时同步） */
+  contextLength?: number;
+  /** 可选：当前模型的压缩阈值百分比（由 agent 实例注入，用于 UI 用量条实时同步） */
+  compressRatio?: number;
 }
 
 export interface TodoTaskSnapshot {

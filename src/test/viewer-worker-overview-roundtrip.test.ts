@@ -86,6 +86,10 @@ function buildFullOverview(): AgentOverviewSnapshot {
       lastErrorMessage: null,
     },
     modelName: 'gpt-4-test',
+    presetName: 'gpt-4-test-preset',
+    thinkingEffort: 'high',
+    contextLength: 128000,
+    compressRatio: 75,
   };
 }
 
@@ -168,5 +172,28 @@ describe('ViewerWorker overview round-trip', () => {
     expect(call.cacheHitRequests).toBe(1);
     expect(call.startTime).toBe(1700000001000);
     expect(call.endTime).toBe(1700000002000);
+  });
+
+  it('preserves all agent-injected model fields through round-trip', () => {
+    // These fields are injected by Agent.buildOverviewSnapshot() from _llmMeta.
+    // They must survive the ViewerWorker write → read pipeline so the frontend
+    // context bar can reflect model hot-swaps in real time. Historically
+    // contextLength/compressRatio were missing from the snapshot entirely;
+    // this test locks them down alongside modelName/presetName/thinkingEffort.
+    const worker = new ViewerWorker(0, false, getTestUdsPath());
+    const agentId = 'overview-model-fields-agent';
+    worker.getOrCreateSession(agentId, 'Overview Model Fields');
+
+    worker.handleUpdateAgentOverview({ agentId, overview: buildFullOverview() });
+
+    const res = createMockRes();
+    worker.handleGetAgentOverview({} as any, res as any, agentId);
+
+    const output = res.getJson();
+    expect(output.modelName).toBe('gpt-4-test');
+    expect(output.presetName).toBe('gpt-4-test-preset');
+    expect(output.thinkingEffort).toBe('high');
+    expect(output.contextLength).toBe(128000);
+    expect(output.compressRatio).toBe(75);
   });
 });

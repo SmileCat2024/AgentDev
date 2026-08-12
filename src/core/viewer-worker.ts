@@ -173,8 +173,9 @@ class ViewerWorker {
       console.log(`[Viewer Worker] 新的 UDS 客户端连接: ${clientId}, 当前连接数: ${this.udsClients.size}`);
 
       let buffer = '';
-      socket.on('data', (data: Buffer) => {
-        buffer += data.toString();
+      socket.setEncoding('utf8');
+      socket.on('data', (data: string) => {
+        buffer += data;
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
@@ -557,6 +558,7 @@ class ViewerWorker {
    */
   public handleSetCurrentAgentHttp(req: IncomingMessage, res: ServerResponse): void {
     let body = '';
+    req.setEncoding('utf8');
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
@@ -1010,6 +1012,7 @@ class ViewerWorker {
    */
   private handlePostInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
     let body = '';
+    req.setEncoding('utf8');
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
@@ -1130,6 +1133,7 @@ class ViewerWorker {
 
   private handlePostUserTurn(req: IncomingMessage, res: ServerResponse, agentId: string): void {
     let body = '';
+    req.setEncoding('utf8');
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {
@@ -1237,6 +1241,7 @@ class ViewerWorker {
    */
   private handleQueueInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
     let body = '';
+    req.setEncoding('utf8');
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       try {

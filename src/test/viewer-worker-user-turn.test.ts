@@ -144,7 +144,8 @@ describe('ViewerWorker user-turn contract', () => {
   it('exposes the same delivery contract through the HTTP handler', () => {
     const { worker, session, agentId } = createWorker();
     session.inputLease = { requestId: 'http-input', prompt: '请输入', timestamp: Date.now() };
-    const req = new EventEmitter();
+    const req = new EventEmitter() as EventEmitter & { setEncoding: (encoding: BufferEncoding) => void };
+    req.setEncoding = () => {};
     let status = 0;
     let body = '';
     const res = {

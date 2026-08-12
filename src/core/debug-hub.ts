@@ -840,8 +840,9 @@ export class DebugHub {
         resolve();
       });
 
-      socket.on('data', (data: Buffer) => {
-        this.workerReadBuffer += data.toString();
+      socket.setEncoding('utf8');
+      socket.on('data', (data: string) => {
+        this.workerReadBuffer += data;
         const lines = this.workerReadBuffer.split('\n');
         this.workerReadBuffer = lines.pop() ?? '';
         for (const line of lines) {

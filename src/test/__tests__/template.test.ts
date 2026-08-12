@@ -14,12 +14,13 @@ import type { AgentFeature } from '../../core/feature.js';
 // ============================================================
 
 describe('DataSourceRegistry', () => {
+  let registry: DataSourceRegistry;
+
   beforeEach(() => {
-    DataSourceRegistry.clear();
+    registry = new DataSourceRegistry();
   });
 
   afterEach(() => {
-    DataSourceRegistry.clear();
     vi.restoreAllMocks();
   });
 
@@ -30,14 +31,14 @@ describe('DataSourceRegistry', () => {
         getData: () => [],
         renderItem: () => '',
       };
-      DataSourceRegistry.register(renderer);
-      expect(DataSourceRegistry.get('test')).toBe(renderer);
-      expect(DataSourceRegistry.has('test')).toBe(true);
+      registry.register(renderer);
+      expect(registry.get('test')).toBe(renderer);
+      expect(registry.has('test')).toBe(true);
     });
 
     it('should return undefined for unregistered key', () => {
-      expect(DataSourceRegistry.get('nonexistent')).toBeUndefined();
-      expect(DataSourceRegistry.has('nonexistent')).toBe(false);
+      expect(registry.get('nonexistent')).toBeUndefined();
+      expect(registry.has('nonexistent')).toBe(false);
     });
   });
 
@@ -47,109 +48,109 @@ describe('DataSourceRegistry', () => {
       const first = { name: 'dup', getData: () => [], renderItem: () => 'first' };
       const second = { name: 'dup', getData: () => [], renderItem: () => 'second' };
 
-      DataSourceRegistry.register(first);
-      DataSourceRegistry.register(second);
+      registry.register(first);
+      registry.register(second);
 
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('"dup"')
       );
-      expect(DataSourceRegistry.get('dup')?.renderItem('', '' as PlaceholderContext)).toBe('second');
+      expect(registry.get('dup')?.renderItem('', '' as PlaceholderContext)).toBe('second');
     });
   });
 
   describe('unregister', () => {
     it('should unregister a data source and return true', () => {
-      DataSourceRegistry.register({ name: 'temp', getData: () => [], renderItem: () => '' });
-      expect(DataSourceRegistry.unregister('temp')).toBe(true);
-      expect(DataSourceRegistry.has('temp')).toBe(false);
+      registry.register({ name: 'temp', getData: () => [], renderItem: () => '' });
+      expect(registry.unregister('temp')).toBe(true);
+      expect(registry.has('temp')).toBe(false);
     });
 
     it('should return false when unregistering unknown name', () => {
-      expect(DataSourceRegistry.unregister('unknown')).toBe(false);
+      expect(registry.unregister('unknown')).toBe(false);
     });
   });
 
   describe('names', () => {
     it('should list all registered data source names', () => {
-      DataSourceRegistry.register({ name: 'a', getData: () => [], renderItem: () => '' });
-      DataSourceRegistry.register({ name: 'b', getData: () => [], renderItem: () => '' });
-      expect(DataSourceRegistry.names().sort()).toEqual(['a', 'b']);
+      registry.register({ name: 'a', getData: () => [], renderItem: () => '' });
+      registry.register({ name: 'b', getData: () => [], renderItem: () => '' });
+      expect(registry.names().sort()).toEqual(['a', 'b']);
     });
 
     it('should return empty array when nothing registered', () => {
-      expect(DataSourceRegistry.names()).toEqual([]);
+      expect(registry.names()).toEqual([]);
     });
   });
 
   describe('render', () => {
     it('should render items joined by newline', async () => {
-      DataSourceRegistry.register({
+      registry.register({
         name: 'items',
         getData: () => [{ id: 1 }, { id: 2 }, { id: 3 }],
         renderItem: (item) => `Item ${item.id}`,
       });
-      const result = await DataSourceRegistry.render('items', 'tmpl', {});
+      const result = await registry.render('items', 'tmpl', {});
       expect(result).toBe('Item 1\nItem 2\nItem 3');
     });
 
     it('should support async getData', async () => {
-      DataSourceRegistry.register({
+      registry.register({
         name: 'async-items',
         getData: async () => [{ v: 'x' }],
         renderItem: (item) => item.v,
       });
-      const result = await DataSourceRegistry.render('async-items', 'tmpl', {});
+      const result = await registry.render('async-items', 'tmpl', {});
       expect(result).toBe('x');
     });
 
     it('should return empty string for unknown data source', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const result = await DataSourceRegistry.render('ghost', 'tmpl', {});
+      const result = await registry.render('ghost', 'tmpl', {});
       expect(result).toBe('');
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('ghost'));
     });
 
     it('should return empty string when data source is disabled', async () => {
-      DataSourceRegistry.register({
+      registry.register({
         name: 'disabled',
         getData: () => [{ v: 1 }],
         renderItem: () => 'should not appear',
         isEnabled: () => false,
       });
-      const result = await DataSourceRegistry.render('disabled', 'tmpl', {});
+      const result = await registry.render('disabled', 'tmpl', {});
       expect(result).toBe('');
     });
 
     it('should return empty string when getData returns empty array', async () => {
-      DataSourceRegistry.register({
+      registry.register({
         name: 'empty',
         getData: () => [],
         renderItem: () => 'x',
       });
-      const result = await DataSourceRegistry.render('empty', 'tmpl', {});
+      const result = await registry.render('empty', 'tmpl', {});
       expect(result).toBe('');
     });
 
     it('should return empty string when getData returns null/undefined', async () => {
-      DataSourceRegistry.register({
+      registry.register({
         name: 'nullish',
         getData: () => null as any,
         renderItem: () => 'x',
       });
-      const result = await DataSourceRegistry.render('nullish', 'tmpl', {});
+      const result = await registry.render('nullish', 'tmpl', {});
       expect(result).toBe('');
     });
 
     it('should pass context to getData and renderItem', async () => {
       const getDataSpy = vi.fn(() => [{ val: 1 }]);
       const renderItemSpy = vi.fn(() => 'rendered');
-      DataSourceRegistry.register({
+      registry.register({
         name: 'ctx',
         getData: getDataSpy,
         renderItem: renderItemSpy,
       });
       const ctx = { foo: 'bar' };
-      await DataSourceRegistry.render('ctx', 'template', ctx);
+      await registry.render('ctx', 'template', ctx);
       expect(getDataSpy).toHaveBeenCalledWith(ctx);
       expect(renderItemSpy).toHaveBeenCalledWith({ val: 1 }, 'template', ctx);
     });
@@ -157,9 +158,9 @@ describe('DataSourceRegistry', () => {
 
   describe('clear', () => {
     it('should clear all registered sources', () => {
-      DataSourceRegistry.register({ name: 'a', getData: () => [], renderItem: () => '' });
-      DataSourceRegistry.clear();
-      expect(DataSourceRegistry.names()).toEqual([]);
+      registry.register({ name: 'a', getData: () => [], renderItem: () => '' });
+      registry.clear();
+      expect(registry.names()).toEqual([]);
     });
   });
 });
@@ -169,18 +170,20 @@ describe('DataSourceRegistry', () => {
 // ============================================================
 
 describe('createListRenderer', () => {
-  beforeEach(() => DataSourceRegistry.clear());
-  afterEach(() => DataSourceRegistry.clear());
+  let registry: DataSourceRegistry;
+  beforeEach(() => { registry = new DataSourceRegistry(); });
+  afterEach(() => { registry.clear(); });
 
   it('should create a renderer with default renderItem that merges item into context', () => {
     const renderer = createListRenderer({
       name: 'tasks',
       getData: () => [{ title: 'A', priority: 'high' }],
     });
-    DataSourceRegistry.register(renderer);
+    registry.register(renderer);
 
     // Use TemplateComposer to verify data source integration
     const composer = new TemplateComposer().add({ tasks: '- {{title}} ({{priority}})' });
+    composer.setDataSourceRegistry(registry);
 
     return composer.render().then(result => {
       expect(result.content).toBe('- A (high)');
@@ -193,9 +196,9 @@ describe('createListRenderer', () => {
       getData: () => [{ x: 1 }],
       renderItem: (item) => `custom-${item.x}`,
     });
-    DataSourceRegistry.register(renderer);
+    registry.register(renderer);
 
-    return DataSourceRegistry.render('custom', 'tmpl', {}).then(result => {
+    return registry.render('custom', 'tmpl', {}).then(result => {
       expect(result).toBe('custom-1');
     });
   });
@@ -206,9 +209,9 @@ describe('createListRenderer', () => {
       getData: () => [{ x: 1 }],
       mergeItem: false,
     });
-    DataSourceRegistry.register(renderer);
+    registry.register(renderer);
 
-    return DataSourceRegistry.render('no-merge', '{{x}}', {}).then(result => {
+    return registry.render('no-merge', '{{x}}', {}).then(result => {
       // x is not merged into context, so {{x}} resolves to empty
       expect(result).toBe('');
     });
@@ -220,9 +223,9 @@ describe('createListRenderer', () => {
       getData: () => [{ x: 1 }],
       mergeItem: false,
     });
-    DataSourceRegistry.register(renderer);
+    registry.register(renderer);
 
-    return DataSourceRegistry.render('this-ref', '{{this.x}}', {}).then(result => {
+    return registry.render('this-ref', '{{this.x}}', {}).then(result => {
       expect(result).toBe('1');
     });
   });
@@ -410,16 +413,15 @@ describe('TemplateComposer', () => {
   });
 
   describe('render - data source integration', () => {
-    beforeEach(() => DataSourceRegistry.clear());
-    afterEach(() => DataSourceRegistry.clear());
-
     it('should render using registered data source', async () => {
-      DataSourceRegistry.register({
+      const registry = new DataSourceRegistry();
+      registry.register({
         name: 'skills',
         getData: () => [{ name: ' cooking', desc: 'Cook things' }],
         renderItem: (item) => `- ${item.name}: ${item.desc}`,
       });
       const c = new TemplateComposer().add({ skills: 'irrelevant template' });
+      c.setDataSourceRegistry(registry);
       const result = await c.render();
       expect(result.content).toBe('-  cooking: Cook things');
     });

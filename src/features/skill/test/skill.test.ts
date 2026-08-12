@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SkillFeature } from '../index.js';
 import { invokeSkillTool } from '../tools.js';
+import { TemplateComposer } from '../../../template/composer.js';
+import { DataSourceRegistry } from '../../../template/data-source.js';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -187,6 +189,44 @@ describe('SkillFeature', () => {
     });
   });
 
+  describe('session-scoped discovery', () => {
+    it('resolves relative skill directories from each Agent workspace', async () => {
+      const firstWorkspace = join(tempDir, 'first-workspace');
+      const secondWorkspace = join(tempDir, 'second-workspace');
+      for (const [workspace, name] of [[firstWorkspace, 'first-skill'], [secondWorkspace, 'second-skill']] as const) {
+        const skillDir = join(workspace, 'skills', name);
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} description\n---\n`);
+      }
+
+      const first = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
+      const second = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
+      const firstRegistry = new DataSourceRegistry();
+      const secondRegistry = new DataSourceRegistry();
+      const init = (workspaceDir: string, registry: DataSourceRegistry) => ({
+        agentId: 'test',
+        config: { workspaceDir } as any,
+        logger: console as any,
+        getFeature: () => undefined,
+        registerTool: () => {},
+        dataSourceRegistry: registry,
+      });
+      await first.onInitiate(init(firstWorkspace, firstRegistry));
+      await second.onInitiate(init(secondWorkspace, secondRegistry));
+
+      expect(first.getSkills().map(skill => skill.name)).toEqual(['first-skill']);
+      expect(second.getSkills().map(skill => skill.name)).toEqual(['second-skill']);
+
+      // Each Agent's registry is independent — no cross-session leakage
+      const firstComposer = new TemplateComposer().add({ skills: '- {{name}}' });
+      firstComposer.setDataSourceRegistry(firstRegistry);
+      const secondComposer = new TemplateComposer().add({ skills: '- {{name}}' });
+      secondComposer.setDataSourceRegistry(secondRegistry);
+      await expect(firstComposer.render()).resolves.toMatchObject({ content: '- first-skill' });
+      await expect(secondComposer.render()).resolves.toMatchObject({ content: '- second-skill' });
+    });
+  });
+
   // ========== invoke_skill tool execution ==========
 
   describe('invoke_skill tool execution', () => {
@@ -270,10 +310,45 @@ describe('SkillFeature', () => {
         logger: console as any,
         getFeature: () => undefined,
         registerTool: () => {},
+        dataSourceRegistry: new DataSourceRegistry(),
       });
 
       const skills = f.getSkills();
       expect(skills.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should parse SKILL.md with colons in multi-line description via YAML fallback', async () => {
+      // Simulates a common frontmatter pattern where description contains
+      // "Key: value" patterns (e.g. "Use when:", "Covers:") that break YAML parsing.
+      const skillsDir = join(tempDir, '.agentdev', 'skills');
+      const skillDir = join(skillsDir, 'harmonyos-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        '---\n' +
+        'name: harmonyos-skill\n' +
+        'description: HarmonyOS development. Use when: writing ArkTS code.\n' +
+        '  Covers: declarative UI, ArkTS language. Triggers on: HarmonyOS,\n' +
+        '  OpenHarmony, ArkUI.\n' +
+        '---\n\n# HarmonyOS Skill\nContent here.',
+      );
+
+      const f = new SkillFeature({ scanAgentdevDir: true });
+      await f.onInitiate({
+        agentId: 'test',
+        config: { workspaceDir: tempDir } as any,
+        logger: console as any,
+        getFeature: () => undefined,
+        registerTool: () => {},
+        dataSourceRegistry: new DataSourceRegistry(),
+      });
+
+      const skills = f.getSkills();
+      expect(skills).toHaveLength(1);
+      expect(skills[0].name).toBe('harmonyos-skill');
+      expect(skills[0].description).toContain('HarmonyOS development');
+      expect(skills[0].description).toContain('Use when');
+      expect(skills[0].description).toContain('ArkUI');
     });
   });
 });

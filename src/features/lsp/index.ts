@@ -154,6 +154,11 @@ export class LspFeature implements AgentFeature {
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
     this.logger = ctx.logger;
 
+    // 从 Agent 的 workspaceDir 更新 workdir（覆盖构造函数的默认值）
+    if (ctx.config?.workspaceDir) {
+      this.config.workdir = ctx.config.workspaceDir;
+    }
+
     if (ctx.featureConfig && typeof ctx.featureConfig === 'object') {
       const fc = ctx.featureConfig as Record<string, unknown>;
 
@@ -311,7 +316,7 @@ export class LspFeature implements AgentFeature {
       const serverConfig = this.config.servers?.[server.id];
       if (serverConfig?.disabled) continue;
       if (server.extensions.length && !server.extensions.includes(extension)) continue;
-      const root = await server.root(file);
+      const root = await server.root(file, this.config.workdir);
       if (root) return true;
     }
     return false;
@@ -350,7 +355,7 @@ export class LspFeature implements AgentFeature {
       if (serverConfig?.disabled) continue;
       if (server.extensions.length && !server.extensions.includes(extension)) continue;
 
-      const root = await server.root(file);
+      const root = await server.root(file, this.config.workdir);
       if (!root) continue;
 
       const key = root + server.id;

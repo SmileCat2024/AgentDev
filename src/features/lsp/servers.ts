@@ -296,7 +296,7 @@ export const Bash: ServerInfo = {
     execBinary: 'bash-language-server', execArgs: ['start'],
     runtimePackage: 'bash-language-server', runtimeArgs: ['start'],
   },
-  root: async () => process.cwd(),
+  root: async (_file, workspaceDir) => workspaceDir,
   extensions: ['.sh', '.bash', '.zsh', '.ksh'],
   async spawn(root, config) {
     return resolveSpawn(this.defaults, config, root);
@@ -310,7 +310,7 @@ export const Yaml: ServerInfo = {
     execBinary: 'yaml-language-server', execArgs: ['--stdio'],
     runtimePackage: 'yaml-language-server', runtimeArgs: ['--stdio'],
   },
-  root: async () => process.cwd(),
+  root: async (_file, workspaceDir) => workspaceDir,
   extensions: ['.yaml', '.yml'],
   async spawn(root, config) {
     return resolveSpawn(this.defaults, config, root);
@@ -324,7 +324,7 @@ export const Json: ServerInfo = {
     execBinary: 'vscode-json-language-server', execArgs: ['--stdio'],
     runtimePackage: 'vscode-languageserver-json', runtimeArgs: ['--stdio'],
   },
-  root: async () => process.cwd(),
+  root: async (_file, workspaceDir) => workspaceDir,
   extensions: ['.json', '.jsonc'],
   async spawn(root, config) {
     return resolveSpawn(this.defaults, config, root);
@@ -338,7 +338,7 @@ export const Html: ServerInfo = {
     execBinary: 'vscode-html-language-server', execArgs: ['--stdio'],
     runtimePackage: 'vscode-languageserver-html', runtimeArgs: ['--stdio'],
   },
-  root: async () => process.cwd(),
+  root: async (_file, workspaceDir) => workspaceDir,
   extensions: ['.html', '.htm'],
   async spawn(root, config) {
     return resolveSpawn(this.defaults, config, root);
@@ -352,7 +352,7 @@ export const Css: ServerInfo = {
     execBinary: 'vscode-css-language-server', execArgs: ['--stdio'],
     runtimePackage: 'vscode-languageserver-css', runtimeArgs: ['--stdio'],
   },
-  root: async () => process.cwd(),
+  root: async (_file, workspaceDir) => workspaceDir,
   extensions: ['.css', '.scss', '.less'],
   async spawn(root, config) {
     return resolveSpawn(this.defaults, config, root);

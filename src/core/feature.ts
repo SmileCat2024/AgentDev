@@ -40,6 +40,8 @@ export interface FeatureInitContext {
   getFeature<T extends AgentFeature>(name: string): T | undefined;
   /** 注册工具 */
   registerTool(tool: Tool): void;
+  /** Agent 级数据源注册表（per-Agent 实例，非进程全局） */
+  dataSourceRegistry: import('../template/data-source.js').DataSourceRegistry;
 }
 
 /**

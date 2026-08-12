@@ -15,7 +15,6 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import type {
   AgentFeature,
   FeatureInitContext,
@@ -27,17 +26,13 @@ import type {
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import { invokeSkillTool } from './tools.js';
-import { discover, discoverMulti } from '../../skills/loader.js';
+import { discoverMulti } from '../../skills/loader.js';
 import type { SkillMetadata, SkillsOptions } from '../../skills/types.js';
-import { join as pathJoin, resolve, isAbsolute } from 'path';
-import { cwd } from 'process';
-import { DataSourceRegistry } from '../../template/data-source.js';
 import type { PlaceholderContext } from '../../template/types.js';
 import { PlaceholderResolver } from '../../template/resolver.js';
 
 // ESM 中获取 __filename
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 /**
  * Skill Feature 配置类型
@@ -100,14 +95,17 @@ export class SkillFeature implements AgentFeature {
 
   constructor(input?: SkillFeatureInput) {
     if (typeof input === 'string') {
-      this.skillsDir = isAbsolute(input) ? input : resolve(cwd(), input);
+      // Relative paths must remain unresolved until onInitiate, when the
+      // session-scoped workspaceDir is available. Resolving here would bind a
+      // shared runtime to its host process cwd instead.
+      this.skillsDir = input;
     } else if (input && typeof input === 'object') {
       this.skillsDir = input.dir;
       this.scanAgentdevDir = input.scanAgentdevDir ?? true;
       this.scanClaudeDir = input.scanClaudeDir ?? false;
       this.extraDirs = Array.isArray(input.extraDirs) ? input.extraDirs.filter(Boolean) : [];
     } else {
-      this.skillsDir = pathJoin(cwd(), '.agentdev', 'skills');
+      this.skillsDir = undefined;
     }
   }
 
@@ -239,12 +237,11 @@ export class SkillFeature implements AgentFeature {
       }
     }
 
-    // 注册 skills 数据源到全局注册中心
-    DataSourceRegistry.register({
+    // 注册 skills 数据源到 Agent 级注册表（per-Agent 实例，非进程全局）
+    ctx.dataSourceRegistry.register({
       name: 'skills',
       getData: () => this.skills,
       renderItem: (skill: SkillMetadata, template: string, context: PlaceholderContext) => {
-        // 将 skill 的属性合并到 context
         const skillContext: PlaceholderContext = {
           ...context,
           name: skill.name,

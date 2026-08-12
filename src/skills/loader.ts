@@ -32,7 +32,19 @@ function parseSkillFrontmatter(content: string, path: string): SkillMetadata | n
   let parsed: Record<string, unknown>;
   try {
     parsed = yaml.load(frontmatterStr) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    // YAML 解析失败（常见于多行 description 中含 "key: value" 模式，
+    // 如 "Use when:" 被 YAML 误解为映射条目）。
+    // 尝试 fallback：逐行提取 name 和 description。
+    const fallback = parseFrontmatterFallback(frontmatterStr, path);
+    if (fallback) {
+      console.warn(
+        `[skills/loader] YAML frontmatter parse failed for ${path}, used fallback parser. ` +
+        `Consider quoting multi-line descriptions or using block scalar (|).` +
+        (err instanceof Error ? ` Error: ${err.message.split('\n')[0]}` : '')
+      );
+      return fallback;
+    }
     return null;
   }
 
@@ -43,6 +55,47 @@ function parseSkillFrontmatter(content: string, path: string): SkillMetadata | n
 
   if (!name || !description) return null;
 
+  return { name, description, path };
+}
+
+/**
+ * Fallback frontmatter 解析器
+ *
+ * 当 js-yaml 因格式问题（如多行 description 中的冒号）解析失败时，
+ * 使用逐行匹配提取 name 和 description 字段。
+ * description 的值会被拼接为单行文本（空格分隔续行）。
+ */
+function parseFrontmatterFallback(frontmatterStr: string, path: string): SkillMetadata | null {
+  const lines = frontmatterStr.split('\n');
+  let name: string | null = null;
+  let description: string | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const nameMatch = line.match(/^name:\s*(.+)$/);
+    if (nameMatch && !name) {
+      name = nameMatch[1].trim();
+      continue;
+    }
+    const descMatch = line.match(/^description:\s*(.*)$/);
+    if (descMatch && !description) {
+      // 收集 description 值和所有缩进的续行
+      const descParts: string[] = [];
+      if (descMatch[1].trim()) descParts.push(descMatch[1].trim());
+      for (let j = i + 1; j < lines.length; j++) {
+        const nextLine = lines[j];
+        // 续行以空格开头（缩进）；顶格行是新 key，停止收集
+        if (/^\s/.test(nextLine)) {
+          descParts.push(nextLine.trim());
+        } else {
+          break;
+        }
+      }
+      description = descParts.join(' ').trim();
+    }
+  }
+
+  if (!name || !description) return null;
   return { name, description, path };
 }
 

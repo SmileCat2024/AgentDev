@@ -64,6 +64,13 @@ describe('SERVERS registry', () => {
     }
   });
 
+  it('uses the feature workdir for markerless language servers', async () => {
+    const workspaceDir = '/session-specific-workdir';
+    for (const serverId of ['bash', 'yaml', 'json', 'html', 'css']) {
+      expect(await SERVERS[serverId].root('/unrelated/file', workspaceDir)).toBe(workspaceDir);
+    }
+  });
+
   it('all expected server IDs are present', () => {
     const expectedIds = [
       'typescript', 'pyright', 'gopls', 'rust-analyzer', 'clangd',

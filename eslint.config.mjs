@@ -66,6 +66,26 @@ export default tseslint.config(
     },
   },
 
+  // ===== Feature / Agent 禁止 process.cwd() =====
+  // 共享进程模式下 process.cwd() 恒为 Claw 根目录，不是会话工作目录。
+  // Feature 应通过 ctx.config.workspaceDir（onInitiate）或构造函数的
+  // workspaceDir 参数获取工作目录。构造函数中的 || process.cwd() 回退
+  // 属于可接受的防御性默认值（onInitiate 会覆盖），设为 warn 而非 error。
+  {
+    files: ['src/features/**/*.ts', 'src/agents/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'warn',
+        {
+          selector: "CallExpression[callee.object.name='process'][callee.property.name='cwd']",
+          message:
+            'Avoid process.cwd() in Feature/Agent code — it returns the Claw root, not the session workspace. ' +
+            'Use ctx.config.workspaceDir (in onInitiate) or the workspaceDir constructor parameter instead.',
+        },
+      ],
+    },
+  },
+
   // ===== 忽略 =====
   {
     ignores: [

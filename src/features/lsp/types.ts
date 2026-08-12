@@ -73,8 +73,11 @@ export interface ServerHandle {
 
 /**
  * Root function type for finding project root
+ *
+ * workspaceDir 是必传参数：调用方（LspFeature）始终从 this.config.workdir
+ * 传入 Agent 的工作目录。这从类型层面禁止 server 实现回退到 process.cwd()。
  */
-export type RootFunction = (file: string) => Promise<string | undefined>;
+export type RootFunction = (file: string, workspaceDir: string) => Promise<string | undefined>;
 
 /**
  * Server info definition

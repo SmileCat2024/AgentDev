@@ -49,6 +49,7 @@ import type {
   SubAgentInterruptContext,
 } from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
+import { DataSourceRegistry } from '../template/data-source.js';
 import { TemplateLoader } from '../template/loader.js';
 import { discover } from '../skills/loader.js';
 import type { SkillMetadata } from '../skills/types.js';
@@ -151,6 +152,9 @@ class AgentBase {
   private toolExecutor?: ToolExecutor;
   private reactRunner?: ReActLoopRunner;
 
+  /** Agent 级数据源注册表（per-Agent 实例，非进程全局） */
+  private _dataSourceRegistry = new DataSourceRegistry();
+
   // ========== LLM 热切换 ==========
   /** 与 LLMClient 实例解耦的模型元数据 */
   private _llmMeta: LLMMeta = {};
@@ -178,11 +182,7 @@ class AgentBase {
       undefined, // systemContext 将在 setSystemContext 中设置
       templateComposer,
       this.templateLoader,
-      () => {
-        // 回调：从 SkillFeature 获取 skills
-        const skillFeature = this.features.get('skill') as any;
-        return skillFeature?.getSkills ? skillFeature.getSkills() : [];
-      }
+      this._dataSourceRegistry
     );
 
     // 注册工具
@@ -1477,6 +1477,7 @@ class AgentBase {
         return this.features.get(featureName) as T | undefined;
       },
       registerTool: (tool) => this.tools.register(tool, name),
+      dataSourceRegistry: this._dataSourceRegistry,
     };
 
     if (feature.getTools) {

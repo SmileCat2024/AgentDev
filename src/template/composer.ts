@@ -6,7 +6,7 @@
 import type { TemplateSource, PlaceholderContext, TemplateResult } from './types.js';
 import { TemplateLoader } from './loader.js';
 import { PlaceholderResolver } from './resolver.js';
-import { DataSourceRegistry } from './data-source.js';
+import type { DataSourceRegistry } from './data-source.js';
 
 /**
  * 模板片段类型
@@ -25,9 +25,19 @@ export class TemplateComposer {
   private parts: TemplatePart[] = [];
   private separator: string = '';
   private loader: TemplateLoader;
+  private _dataSourceRegistry?: DataSourceRegistry;
 
   constructor(loader?: TemplateLoader) {
     this.loader = loader ?? new TemplateLoader();
+  }
+
+  /**
+   * 设置 Agent 级数据源注册表实例
+   * 由 TemplateResolver 在渲染前调用，嵌套 composer 会自动继承。
+   */
+  setDataSourceRegistry(registry?: DataSourceRegistry): this {
+    this._dataSourceRegistry = registry;
+    return this;
   }
 
   // ========== 核心拼接 API ==========
@@ -222,11 +232,15 @@ export class TemplateComposer {
       }
 
       case 'dataSource':
-        // 使用数据源注册中心渲染
-        return await DataSourceRegistry.render(part.name, part.template, context);
+        // 使用 Agent 级数据源注册表渲染（per-Agent 实例，非进程全局）
+        if (this._dataSourceRegistry) {
+          return await this._dataSourceRegistry.render(part.name, part.template, context);
+        }
+        return '';
 
       case 'composer': {
-        // 嵌套组合器，递归渲染
+        // 嵌套组合器，递归渲染（继承父级数据源注册表）
+        part.composer.setDataSourceRegistry(this._dataSourceRegistry);
         const result = await part.composer.render(context);
         sources.push(...result.sources);
         return result.content;

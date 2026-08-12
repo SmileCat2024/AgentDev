@@ -55,15 +55,19 @@ export interface DataSourceRenderer<T = any> {
 }
 
 /**
- * 数据源注册中心
+ * 数据源注册中心（per-Agent 实例）
+ *
+ * 历史上此类是 static（进程全局），在共享进程模式下多个 Agent 实例
+ * 会互相覆盖数据源。现已改为实例化：每个 Agent 持有独立的注册表，
+ * 由 FeatureInitContext.dataSourceRegistry 传递给各 Feature。
  */
 export class DataSourceRegistry {
-  private static sources = new Map<string, DataSourceRenderer>();
+  private sources = new Map<string, DataSourceRenderer>();
 
   /**
    * 注册数据源
    */
-  static register(renderer: DataSourceRenderer): void {
+  register(renderer: DataSourceRenderer): void {
     if (this.sources.has(renderer.name)) {
       console.warn(`[DataSourceRegistry] Data source "${renderer.name}" is being overridden.`);
     }
@@ -73,28 +77,28 @@ export class DataSourceRegistry {
   /**
    * 注销数据源
    */
-  static unregister(name: string): boolean {
+  unregister(name: string): boolean {
     return this.sources.delete(name);
   }
 
   /**
    * 获取数据源
    */
-  static get(name: string): DataSourceRenderer | undefined {
+  get(name: string): DataSourceRenderer | undefined {
     return this.sources.get(name);
   }
 
   /**
    * 检查数据源是否存在
    */
-  static has(name: string): boolean {
+  has(name: string): boolean {
     return this.sources.has(name);
   }
 
   /**
    * 获取所有已注册的数据源名称
    */
-  static names(): string[] {
+  names(): string[] {
     return Array.from(this.sources.keys());
   }
 
@@ -105,7 +109,7 @@ export class DataSourceRegistry {
    * @param context 渲染上下文
    * @returns 渲染后的字符串
    */
-  static async render(
+  async render(
     name: string,
     template: string,
     context: PlaceholderContext = {}
@@ -136,7 +140,7 @@ export class DataSourceRegistry {
   /**
    * 清空所有数据源（主要用于测试）
    */
-  static clear(): void {
+  clear(): void {
     this.sources.clear();
   }
 }

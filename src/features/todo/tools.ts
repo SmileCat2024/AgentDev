@@ -1,11 +1,18 @@
 /**
  * Todo Feature 工具定义
  *
- * 提供 5 个任务管理工具：task_create, task_list, task_get, task_update, task_clear
+ * 提供 4 个任务管理工具：task_create, task_list, task_update, task_clear
+ *
+ * 设计要点：
+ * - execute 返回 withDisplay(精简文本, 丰富 display 数据)
+ * - 模型只看到精简确认（如 { ok, taskId, status }）
+ * - 前端通过 display 数据渲染完整卡片（如任务列表）
+ * - 真正的完整任务列表在 StepFinish 时注入一次，而非每次 create 重复
  */
 
 import type { Tool } from '../../core/types.js';
 import { createTool } from '../../core/tool.js';
+import { withDisplay } from '../../core/tool-result-display.js';
 import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus } from './types.js';
 
 /**
@@ -13,60 +20,32 @@ import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus } from './ty
  * 用于创建 Todo 工具，需要传入 Feature 实例来访问任务数据
  */
 export class TodoToolFactory {
-  /**
-   * 获取任务列表的方法（由 Feature 提供）
-   */
   private getTaskFn: (taskId: string) => TodoTask | undefined;
-
-  /**
-   * 创建任务的方法（由 Feature 提供）
-   */
   private createTaskFn: (
     subject: string,
     description: string,
-    activeForm: string,
     options?: { metadata?: Record<string, unknown> }
   ) => TodoTask;
-
-  /**
-   * 列出任务的方法（由 Feature 提供）
-   */
   private listTasksFn: (filter?: { status?: TaskStatus }) => TodoTaskSummary[];
-
-  /**
-   * 更新任务的方法（由 Feature 提供）
-   */
   private updateTaskFn: (taskId: string, updates: TodoTaskUpdate) => TodoTask | undefined;
-
-  /**
-   * 清空任务的方法（由 Feature 提供）
-   */
-  private clearTasksFn: () => void;
-
-  /**
-   * 获取任务数量的方法（由 Feature 提供）
-   */
-  private getTasksCountFn: () => number;
+  private clearTasksFn: () => number;
 
   constructor(options: {
     getTask: (taskId: string) => TodoTask | undefined;
     createTask: (
       subject: string,
       description: string,
-      activeForm: string,
       options?: { metadata?: Record<string, unknown> }
     ) => TodoTask;
     listTasks: (filter?: { status?: TaskStatus }) => TodoTaskSummary[];
     updateTask: (taskId: string, updates: TodoTaskUpdate) => TodoTask | undefined;
-    clearTasks: () => void;
-    getTasksCount: () => number;
+    clearTasks: () => number;
   }) {
     this.getTaskFn = options.getTask;
     this.createTaskFn = options.createTask;
     this.listTasksFn = options.listTasks;
     this.updateTaskFn = options.updateTask;
     this.clearTasksFn = options.clearTasks;
-    this.getTasksCountFn = options.getTasksCount;
   }
 
   /**
@@ -86,37 +65,37 @@ export class TodoToolFactory {
 
 任务字段：
 - subject: 简短可执行的标题，使用祈使句形式（如 "修复认证漏洞"）
-- description: 详细描述，包括上下文和验收标准
-- activeForm: 进行时形式，显示在进度加载中（如 "正在修复认证漏洞"）
+- description: 详细描述，包括上下文和验收标准（可选）
 
 重要说明：
-- 必须提供 activeForm，subject 应该是祈使句形式（"执行任务"），activeForm 应该是进行时形式（"正在执行任务"）
+- subject 应该是祈使句形式（"执行任务"）
+- description 是可选的，简单任务不需要填写
 - 创建后任务状态为 pending，可以通过 task_update 更新为 in_progress、completed 或 deleted（取消并保留记录）`,
       parameters: {
         type: 'object',
         properties: {
           subject: { type: 'string', description: '简短的任务标题，使用祈使句形式（如 "运行测试"）' },
           description: { type: 'string', description: '详细的任务描述，包括上下文、具体步骤和验收标准' },
-          activeForm: { type: 'string', description: '进行时形式，用于显示任务进行中的状态（如 "正在运行测试"）' },
-          metadata: { type: 'object', description: '可选的元数据信息', additionalProperties: true },
         },
-        required: ['subject', 'description', 'activeForm'],
+        required: ['subject'],
       },
       render: { call: 'task-create', result: 'task-create' },
-      execute: ({ subject, description, activeForm, metadata }) => {
-        const task = self.createTaskFn(subject, description, activeForm, { metadata });
-        return Promise.resolve({
-          task: {
-            id: task.id,
-            subject: task.subject,
-            description: task.description,
-            activeForm: task.activeForm,
-            status: task.status,
-            blockedBy: task.blockedBy,
+      execute: ({ subject, description = '' }) => {
+        const task = self.createTaskFn(subject, description);
+        // 模型只看极简确认；前端通过 display 看到完整信息
+        return Promise.resolve(withDisplay(
+          JSON.stringify({ ok: true, taskId: task.id, status: task.status }),
+          {
+            task: {
+              id: task.id,
+              subject: task.subject,
+              description: task.description || '',
+              status: task.status,
+            },
+            allTasks: self.listTasksFn(),
+            message: `任务已创建，ID: ${task.id}`,
           },
-          allTasks: self.listTasksFn(),
-          message: `任务已创建，ID: ${task.id}`,
-        });
+        ));
       },
     });
   }
@@ -132,15 +111,12 @@ export class TodoToolFactory {
 
 使用时机：
 - 查看当前所有任务的状态
-- 找到下一个可执行的任务（blockedBy 为空的任务）
 - 了解整体进度
 
 返回信息：
 - id: 任务标识符
 - subject: 简短描述
-- status: 任务状态（pending/in_progress/completed/deleted）
-- owner: 负责人（如果已分配）
-- blockedBy: 阻塞此任务的其他任务 ID 列表`,
+- status: 任务状态（pending/in_progress/completed/deleted）`,
       parameters: {
         type: 'object',
         properties: {
@@ -162,47 +138,10 @@ export class TodoToolFactory {
           completed: tasks.filter(t => t.status === 'completed').length,
           cancelled: tasks.filter(t => t.status === 'deleted').length,
         };
-        return Promise.resolve({ tasks, summary });
-      },
-    });
-  }
-
-  /**
-   * 创建 task_get 工具
-   */
-  createGetTool(): Tool {
-    const self = this;
-    return createTool({
-      name: 'task_get',
-      description: `获取指定任务的详细信息。
-
-使用时机：
-- 开始工作前了解任务的完整描述和上下文
-- 查看任务的依赖关系（blocks 和 blockedBy）
-- 确认任务是否可以开始执行（检查 blockedBy 是否为空）`,
-      parameters: {
-        type: 'object',
-        properties: {
-          taskId: { type: 'string', description: '任务 ID' },
-        },
-        required: ['taskId'],
-      },
-      render: { call: 'task-get', result: 'task-get' },
-      execute: ({ taskId }) => {
-        const task = self.getTaskFn(taskId);
-        if (!task) {
-          return Promise.resolve({ error: `任务不存在: ${taskId}` });
-        }
-        return Promise.resolve({
-          id: task.id,
-          subject: task.subject,
-          description: task.description,
-          activeForm: task.activeForm,
-          status: task.status,
-          owner: task.owner,
-          blocks: task.blocks,
-          blockedBy: task.blockedBy,
-        });
+        return Promise.resolve(withDisplay(
+          JSON.stringify({ tasks }),
+          { tasks, summary },
+        ));
       },
     });
   }
@@ -223,9 +162,9 @@ export class TodoToolFactory {
 2. 标记任务完成：将 status 设置为 "completed"
 3. 取消任务并保留记录：将 status 设置为 "deleted"
 
-依赖关系管理：
-- addBlocks: 添加此任务阻塞的其他任务 ID
-- addBlockedBy: 添加阻塞此任务的其他任务 ID`,
+任务字段：
+- subject: 简短可执行的标题，使用祈使句形式（如 "执行任务"）
+- description: 详细描述，包括上下文和验收标准`,
       parameters: {
         type: 'object',
         properties: {
@@ -237,11 +176,6 @@ export class TodoToolFactory {
           },
           subject: { type: 'string', description: '新的任务标题' },
           description: { type: 'string', description: '新的任务描述' },
-          activeForm: { type: 'string', description: '新的进行时形式' },
-          owner: { type: 'string', description: '任务负责人' },
-          addBlocks: { type: 'array', items: { type: 'string' }, description: '添加此任务阻塞的其他任务 ID' },
-          addBlockedBy: { type: 'array', items: { type: 'string' }, description: '添加阻塞此任务的其他任务 ID' },
-          metadata: { type: 'object', description: '元数据', additionalProperties: true },
         },
         required: ['taskId'],
       },
@@ -249,16 +183,17 @@ export class TodoToolFactory {
       execute: ({ taskId, ...updates }) => {
         const task = self.updateTaskFn(taskId, updates);
         if (!task) {
-          return Promise.resolve({ error: `任务不存在: ${taskId}` });
+          return Promise.resolve({ ok: false, error: `任务 ${taskId} 不存在` });
         }
-        return Promise.resolve({
-          id: task.id,
-          subject: task.subject,
-          status: task.status,
-          owner: task.owner,
-          blockedBy: task.blockedBy,
-          message: `任务 ${taskId} 已更新`,
-        });
+        return Promise.resolve(withDisplay(
+          JSON.stringify({ ok: true, taskId: task.id, status: task.status }),
+          {
+            id: task.id,
+            subject: task.subject,
+            status: task.status,
+            message: `任务 ${taskId} 已更新`,
+          },
+        ));
       },
     });
   }
@@ -279,9 +214,11 @@ export class TodoToolFactory {
       },
       render: { call: 'task-clear', result: 'task-clear' },
       execute: () => {
-        const count = self.getTasksCountFn();
-        self.clearTasksFn();
-        return Promise.resolve({ message: `已取消未完成任务；当前保留 ${count} 条历史记录` });
+        const cancelledCount = self.clearTasksFn();
+        return Promise.resolve(withDisplay(
+          JSON.stringify({ ok: true, cancelledCount }),
+          { message: `已取消 ${cancelledCount} 个未完成任务` },
+        ));
       },
     });
   }
@@ -293,7 +230,6 @@ export class TodoToolFactory {
     return [
       this.createCreateTool(),
       this.createListTool(),
-      this.createGetTool(),
       this.createUpdateTool(),
       this.createClearTool(),
     ];

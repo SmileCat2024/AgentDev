@@ -7,6 +7,7 @@
  * 重构说明：
  * - 使用反向钩子装饰器实现提醒逻辑
  * - 不再需要在 Agent 中重写 onStepStart/onStepFinished
+ * - 每个发生 Todo 写操作的 Step 结束后，自动注入一次最新完整任务列表
  */
 
 import { fileURLToPath } from 'url';
@@ -21,8 +22,8 @@ import type {
 } from '../../core/feature.js';
 import type { Context } from '../../core/context.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
-import { StepStart, StepFinish } from '../../core/hooks-decorator.js';
-import type { StepStartContext, StepFinishDecisionContext } from '../../core/lifecycle.js';
+import { StepStart, StepFinish, CallStart } from '../../core/hooks-decorator.js';
+import type { StepStartContext, StepFinishDecisionContext, CallStartContext } from '../../core/lifecycle.js';
 import { Decision } from '../../core/lifecycle.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
 import type { Tool } from '../../core/types.js';
@@ -34,6 +35,11 @@ import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TodoFeature
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+/** StepFinish 注入的任务列表体积上限 */
+const MAX_INJECT_TASKS = 20;
+const MAX_SUBJECT_LENGTH = 160;
+const MAX_DESCRIPTION_LENGTH = 500;
 
 /**
  * TodoFeature 实现
@@ -79,11 +85,10 @@ export class TodoFeature implements AgentFeature {
     // 初始化工具工厂
     this.toolFactory = new TodoToolFactory({
       getTask: (taskId) => this.getTask(taskId),
-      createTask: (subject, description, activeForm, options) => this.createTask(subject, description, activeForm, options),
+      createTask: (subject, description, options) => this.createTask(subject, description, options),
       listTasks: (filter) => this.listTasks(filter),
       updateTask: (taskId, updates) => this.updateTask(taskId, updates),
       clearTasks: () => this.clearTasks(),
-      getTasksCount: () => this.tasks.size,
     });
   }
 
@@ -106,7 +111,6 @@ export class TodoFeature implements AgentFeature {
     return [
       'task-create',
       'task-list',
-      'task-get',
       'task-update',
       'task-clear',
     ];
@@ -155,7 +159,20 @@ export class TodoFeature implements AgentFeature {
       reminderInjected?: boolean;
     };
 
-    this.tasks = new Map((state.tasks ?? []).map(task => [task.id, task]));
+    // 白名单重建：仅保留新 schema 字段，丢弃旧 session 中可能存在的
+    // activeForm/owner/blocks/blockedBy 等已删除字段
+    this.tasks = new Map((state.tasks ?? []).map(task => [
+      task.id,
+      {
+        id: task.id,
+        subject: task.subject,
+        description: task.description,
+        status: task.status,
+        metadata: task.metadata,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+      },
+    ]));
     this.counter = typeof state.counter === 'number' ? state.counter : 0;
     this.reminderContent = typeof state.reminderContent === 'string'
       ? state.reminderContent
@@ -179,10 +196,10 @@ export class TodoFeature implements AgentFeature {
 
   getHookDescription(lifecycle: string, methodName: string): string | undefined {
     if (lifecycle === 'StepStart' && methodName === 'checkAndInjectReminder') {
-      return '在每轮开始时检查提醒阈值；连续多轮未使用 todo 工具时注入系统提醒。';
+      return '在每轮开始时检查提醒阈值；连续多轮未使用 todo 工具时注入系统提醒（含当前/下一任务状态）。';
     }
     if (lifecycle === 'StepFinish' && methodName === 'recordToolUsage') {
-      return '在每轮结束后统计是否使用了 todo 工具，用于更新下轮提醒计数。';
+      return '统计 todo 工具使用并更新计数；若本轮有写操作，向 Context 注入一次最新完整任务列表。';
     }
     return undefined;
   }
@@ -195,7 +212,7 @@ export class TodoFeature implements AgentFeature {
    * 触发时机：每轮 ReAct 迭代开始时
    * 处理逻辑：
    * 1. 检查连续未使用 todo 工具的轮次
-   * 2. 达到阈值时注入 reminder 系统消息
+   * 2. 达到阈值时注入 reminder 系统消息（包含当前/下一任务状态）
    * 3. 防止重复注入
    */
   @StepStart
@@ -206,24 +223,57 @@ export class TodoFeature implements AgentFeature {
     // 检查是否需要注入 reminder
     if (this.consecutiveNoTodoTurns >= threshold && !this.reminderInjected) {
       console.log('[TodoFeature] Threshold reached, injecting reminder');
-      ctx.context.add({ role: 'system', content: this.reminderContent });
+      ctx.context.add({ role: 'system', content: this.buildDynamicReminder() });
       this.reminderInjected = true;
     }
   }
 
   /**
+   * Call 开始时注入简短任务状态
+   *
+   * 触发时机：每次用户发送新消息、Agent 开始处理时
+   * 处理逻辑：
+   * 1. 首次调用跳过（还没有任务）
+   * 2. 无待执行任务时跳过
+   * 3. 有待执行任务时注入简短的"当前/下一项"状态
+   * 4. 重置 no-todo 计数器（新一轮用户交互）
+   */
+  @CallStart
+  async onCallStart(ctx: CallStartContext): Promise<void> {
+    // 首次调用不注入
+    if (ctx.isFirstCall) return;
+
+    // 检查是否有待执行任务
+    const hasActiveTasks = Array.from(this.tasks.values()).some(
+      t => t.status === 'pending' || t.status === 'in_progress'
+    );
+    if (!hasActiveTasks) return;
+
+    // 注入简短任务状态
+    ctx.context.add({ role: 'system', content: this.buildCallStartBrief() });
+
+    // 重置计数器（新的用户消息代表新一轮交互）
+    this.consecutiveNoTodoTurns = 0;
+    this.reminderInjected = false;
+
+    console.log('[TodoFeature] CallStart: injected brief task status, reset counter');
+  }
+
+  /**
    * Step 结束时记录是否使用了 todo 工具
    *
-   * 触发时机：每轮 ReAct 迭代结束时
+   * 触发时机：每轮 ReAct 迭代结束时（工具结果已写入 Context 后）
    * 处理逻辑：
    * 1. 检查本轮是否使用了 todo 工具
-   * 2. 使用了则重置计数器，未使用则计数器+1
-   * 3. 返回 Continue 使用默认行为
+   * 2. 若有写操作（create/update/clear），向 Context 追加一次最新完整任务列表
+   * 3. 使用了则重置计数器，未使用则计数器+1
+   * 4. 返回 Continue 使用默认行为
    */
   @StepFinish
   async recordToolUsage(ctx: StepFinishDecisionContext): Promise<DecisionResult> {
     const toolCalls = ctx.llmResponse.toolCalls ?? [];
     const usedTodoTool = toolCalls.some((call: { name: string }) => this.isTodoTool(call.name));
+    const wroteTodo = toolCalls.some((call: { name: string }) => this.isTodoWriteTool(call.name));
 
     if (usedTodoTool) {
       // 使用了 todo 工具，重置计数器
@@ -235,6 +285,18 @@ export class TodoFeature implements AgentFeature {
       this.consecutiveNoTodoTurns++;
       const threshold = this.getCurrentThreshold();
       console.log(`[TodoFeature] No todo tool, counter=${this.consecutiveNoTodoTurns}/${threshold}`);
+    }
+
+    // 若本轮有 Todo 写操作，注入一次最新完整任务列表
+    if (wroteTodo) {
+      const planContext = this.buildCurrentTaskPlanContext();
+      ctx.context.addSystemMessage(
+        planContext,
+        ctx.callIndex,
+        this.name,
+        'todo-current-plan',
+      );
+      console.log('[TodoFeature] Injected current task plan after write operations');
     }
 
     // 返回 Continue 使用默认行为
@@ -268,20 +330,15 @@ export class TodoFeature implements AgentFeature {
    */
   createTask(
     subject: string,
-    description: string,
-    activeForm: string,
-    options?: { owner?: string; metadata?: Record<string, unknown> }
+    description: string = '',
+    options?: { metadata?: Record<string, unknown> }
   ): TodoTask {
     this.counter++;
     const task: TodoTask = {
       id: String(this.counter),
       subject,
-      description,
-      activeForm,
+      description: description || undefined,
       status: 'pending',
-      blocks: [],
-      blockedBy: [],
-      owner: options?.owner,
       metadata: options?.metadata,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -311,25 +368,26 @@ export class TodoFeature implements AgentFeature {
       id: task.id,
       subject: task.subject,
       status: task.status,
-      owner: task.owner,
-      blockedBy: task.blockedBy,
     }));
   }
 
   /**
    * 更新任务
+   *
+   * 允许更新的字段：status, subject, description（模型工具可见）。
+   * metadata 不在模型工具 schema 中，但内部代码（如 ControlledTodoFeature）
+   * 需要通过它记录终态时间戳等生命周期数据。
    */
-  updateTask(taskId: string, updates: TodoTaskUpdate): TodoTask | undefined {
+  updateTask(taskId: string, updates: TodoTaskUpdate & { metadata?: Record<string, unknown> }): TodoTask | undefined {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
 
-    if (updates.addBlocks) {
-      task.blocks = [...new Set([...task.blocks, ...updates.addBlocks])];
+    const allowedFields: string[] = ['status', 'subject', 'description', 'metadata'];
+    for (const field of allowedFields) {
+      if (updates[field as keyof typeof updates] !== undefined) {
+        (task as unknown as Record<string, unknown>)[field] = updates[field as keyof typeof updates];
+      }
     }
-    if (updates.addBlockedBy) {
-      task.blockedBy = [...new Set([...task.blockedBy, ...updates.addBlockedBy])];
-    }
-    Object.assign(task, updates);
     task.updatedAt = Date.now();
 
     this.pushDebugSnapshot();
@@ -337,26 +395,32 @@ export class TodoFeature implements AgentFeature {
   }
 
   /**
-   * 清空所有任务
+   * 清空所有未完成任务，返回被取消的任务数量
    */
-  clearTasks(): void {
+  clearTasks(): number {
     const now = Date.now();
+    let count = 0;
     for (const task of this.tasks.values()) {
       if (task.status === 'pending' || task.status === 'in_progress') {
         task.status = 'deleted';
         task.updatedAt = now;
+        count++;
       }
     }
     this.pushDebugSnapshot();
+    return count;
   }
 
   getPlanSnapshot(): TodoPlanSnapshot {
     const tasks = Array.from(this.tasks.values())
       .map(task => ({
-        ...task,
-        blocks: Array.isArray(task.blocks) ? task.blocks.slice() : [],
-        blockedBy: Array.isArray(task.blockedBy) ? task.blockedBy.slice() : [],
+        id: task.id,
+        subject: task.subject,
+        description: task.description || '',
+        status: task.status,
         metadata: task.metadata && typeof task.metadata === 'object' ? { ...task.metadata } : undefined,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
       }))
       .sort((left, right) => left.createdAt - right.createdAt || Number(left.id) - Number(right.id));
     return {
@@ -370,22 +434,133 @@ export class TodoFeature implements AgentFeature {
         inProgress: tasks.filter(task => task.status === 'in_progress').length,
         completed: tasks.filter(task => task.status === 'completed').length,
         cancelled: tasks.filter(task => task.status === 'deleted').length,
-        blocked: tasks.filter(task => (task.status === 'pending' || task.status === 'in_progress') && task.blockedBy.length > 0).length,
       },
     };
   }
 
   // ========== 私有方法 ==========
 
-  /** 判断是否是 todo 工具 */
+  /** 判断是否是 todo 工具（读或写） */
   private isTodoTool(name: string): boolean {
     return name === 'task_create' || name === 'task_list' ||
-      name === 'task_get' || name === 'task_update' || name === 'task_clear';
+      name === 'task_update' || name === 'task_clear';
+  }
+
+  /** 判断是否是 todo 写工具（仅 task_create 触发完整列表注入） */
+  private isTodoWriteTool(name: string): boolean {
+    return name === 'task_create';
+  }
+
+  /** 截断文本到指定长度 */
+  private truncate(text: string, maxLength: number): string {
+    if (text.length <= maxLength) return text;
+    return text.slice(0, maxLength) + '…';
+  }
+
+  /**
+   * 构建 StepFinish 注入的最新完整任务列表文本
+   * 仅包含 active tasks（pending + in_progress），按 createdAt 升序
+   */
+  private buildCurrentTaskPlanContext(): string {
+    const activeTasks = Array.from(this.tasks.values())
+      .filter(task => task.status === 'pending' || task.status === 'in_progress')
+      .sort((a, b) => a.createdAt - b.createdAt || Number(a.id) - Number(b.id));
+
+    if (activeTasks.length === 0) {
+      return '当前没有待执行任务。若当前工作仍需多步跟踪，可创建任务。不要向用户提及此内部提示。';
+    }
+
+    const visible = activeTasks.slice(0, MAX_INJECT_TASKS);
+    const omitted = activeTasks.length - visible.length;
+
+    const lines: string[] = ['[当前任务计划]'];
+    for (const task of visible) {
+      const subject = this.truncate(task.subject, MAX_SUBJECT_LENGTH);
+      const desc = task.description ? this.truncate(task.description, MAX_DESCRIPTION_LENGTH) : '';
+      lines.push(`- #${task.id} [${task.status}] ${subject}`);
+      if (desc) {
+        lines.push(`  ${desc}`);
+      }
+    }
+    if (omitted > 0) {
+      lines.push(`（其余 ${omitted} 项未展示；如需查看全部计划，请使用 task_list。）`);
+    }
+    lines.push('');
+    lines.push('请以此列表作为当前任务计划继续推进；任务开始、完成、调整或取消时，使用 Todo 工具同步状态。');
+    lines.push('不要向用户提及此内部提示。');
+
+    return lines.join('\n');
+  }
+
+  /**
+   * 构建动态 reminder 文本
+   * 如果有 active tasks，包含"当前"和"下一项"信息
+   * 否则回退到默认温和提醒
+   */
+  private buildDynamicReminder(): string {
+    const activeTasks = Array.from(this.tasks.values())
+      .filter(task => task.status === 'pending' || task.status === 'in_progress')
+      .sort((a, b) => a.createdAt - b.createdAt || Number(a.id) - Number(b.id));
+
+    if (activeTasks.length === 0) {
+      // 无待执行任务，使用自定义模板或默认提醒
+      return this.reminderContent || this.getDefaultReminder();
+    }
+
+    const currentTask = activeTasks.find(t => t.status === 'in_progress');
+    const nextTask = activeTasks.find(t => t.status === 'pending');
+
+    const lines: string[] = ['[任务状态提醒]'];
+    if (currentTask) {
+      lines.push(`当前：#${currentTask.id} ${currentTask.subject}`);
+    } else {
+      lines.push('当前：无');
+    }
+    if (nextTask) {
+      lines.push(`下一项：#${nextTask.id} ${nextTask.subject}`);
+    } else {
+      lines.push('下一项：无');
+    }
+    lines.push('');
+    // 拼接自定义模板尾部或默认提醒文本
+    const tail = this.reminderContent || this.getDefaultReminder();
+    lines.push(tail);
+
+    return lines.join('\n');
   }
 
   /** 获取默认 reminder 内容 */
   private getDefaultReminder(): string {
-    return '最近没有使用任务工具。如果你正在处理需要跟踪进度的任务，考虑使用 `task_create` 添加新任务，使用 `task_update`更新任务状态（开始时设置为 in_progress，完成时设置为 completed）。如果任务列表已过时，也可以考虑清理。仅在与当前工作相关时使用这些工具。这只是温和的提醒——如果不适用请忽略。务必注意：绝不要向用户提及此提醒。';
+    return '最近没有更新任务状态。若该计划仍适用，请在开始、完成、调整或取消任务时使用 Todo 工具同步状态；若计划已不适用，可清理未完成任务。仅在与当前工作相关时使用这些工具。这只是温和的提醒——如果不适用请忽略。务必注意：绝不要向用户提及此提醒。';
+  }
+
+  /**
+   * 构建 CallStart 简短任务状态
+   * 仅包含"当前/下一项"两行，不附带催促语
+   */
+  private buildCallStartBrief(): string {
+    const activeTasks = Array.from(this.tasks.values())
+      .filter(task => task.status === 'pending' || task.status === 'in_progress')
+      .sort((a, b) => a.createdAt - b.createdAt || Number(a.id) - Number(b.id));
+
+    const currentTask = activeTasks.find(t => t.status === 'in_progress');
+    const nextTask = activeTasks.find(t => t.status === 'pending');
+
+    const lines: string[] = ['[任务状态]'];
+    if (currentTask) {
+      lines.push(`当前：#${currentTask.id} ${currentTask.subject}`);
+    } else {
+      lines.push('当前：无');
+    }
+    if (nextTask) {
+      lines.push(`下一项：#${nextTask.id} ${nextTask.subject}`);
+    } else {
+      lines.push('下一项：无');
+    }
+    lines.push('');
+    lines.push('请根据当前任务计划继续推进。不要向用户提及此内部提示。');
+
+    return lines.join('\n');
   }
 }
 

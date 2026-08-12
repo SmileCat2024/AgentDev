@@ -15,19 +15,11 @@ export interface TodoTask {
   id: string;
   /** 任务标题（祈使句） */
   subject: string;
-  /** 详细描述 */
-  description: string;
-  /** 进行时形式（用于进度显示） */
-  activeForm: string;
+  /** 详细描述（可选） */
+  description?: string;
   /** 任务状态 */
   status: TaskStatus;
-  /** 负责人（Agent ID） */
-  owner?: string;
-  /** 此任务阻塞的其他任务 ID */
-  blocks: string[];
-  /** 阻塞此任务的其他任务 ID */
-  blockedBy: string[];
-  /** 元数据 */
+  /** 元数据（内部生命周期数据，不暴露给模型工具） */
   metadata?: Record<string, unknown>;
   /** 创建时间 */
   createdAt: number;
@@ -42,11 +34,6 @@ export interface TodoTaskUpdate {
   status?: TaskStatus;
   subject?: string;
   description?: string;
-  activeForm?: string;
-  owner?: string;
-  metadata?: Record<string, unknown>;
-  addBlocks?: string[];
-  addBlockedBy?: string[];
 }
 
 /**
@@ -56,8 +43,6 @@ export interface TodoTaskSummary {
   id: string;
   subject: string;
   status: TaskStatus;
-  owner?: string;
-  blockedBy: string[];
 }
 
 /**

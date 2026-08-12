@@ -43,11 +43,7 @@ function buildFullPlan(): TodoPlanSnapshot {
         id: 'task-1',
         subject: '已完成任务',
         description: 'desc-1',
-        activeForm: '正在完成任务一',
         status: 'completed',
-        owner: 'agent-A',
-        blocks: ['task-2'],
-        blockedBy: [],
         metadata: { finishedAt: 1700000001000 },
         createdAt: 1700000000000,
         updatedAt: 1700000001000,
@@ -56,11 +52,7 @@ function buildFullPlan(): TodoPlanSnapshot {
         id: 'task-2',
         subject: '进行中任务',
         description: 'desc-2',
-        activeForm: '正在执行任务二',
         status: 'in_progress',
-        owner: '',
-        blocks: [],
-        blockedBy: ['task-1'],
         metadata: {},
         createdAt: 1700000002000,
         updatedAt: 1700000002000,
@@ -72,7 +64,6 @@ function buildFullPlan(): TodoPlanSnapshot {
       inProgress: 1,
       completed: 1,
       cancelled: 0,
-      blocked: 0,
     },
     interruptTargetId: 'task-2',
   };
@@ -115,9 +106,52 @@ describe('ViewerWorker todo plan round-trip', () => {
     expect(output.tasks[0].status).toBe('completed');
     expect(output.tasks[0].metadata.finishedAt).toBe(1700000001000);
     expect(output.tasks[1].id).toBe('task-2');
-    expect(output.tasks[1].blockedBy).toEqual(['task-1']);
+    expect(output.tasks[1].status).toBe('in_progress');
     expect(output.summary.total).toBe(2);
     expect(output.summary.inProgress).toBe(1);
+  });
+
+  it('strips old schema fields (activeForm/owner/blocks/blockedBy) during normalize', () => {
+    const worker = new ViewerWorker(0, false, getTestUdsPath());
+    const agentId = 'roundtrip-strip-agent';
+    worker.getOrCreateSession(agentId, 'Strip Old Fields');
+
+    // Feed a plan with old fields that should be stripped
+    const oldPlan = {
+      feature: 'todo' as const,
+      updatedAt: 1700000000000,
+      counter: 1,
+      tasks: [{
+        id: 'task-old',
+        subject: 'Old task',
+        description: 'desc',
+        activeForm: 'Doing old task',
+        status: 'pending',
+        owner: 'agent-A',
+        blocks: ['task-2'],
+        blockedBy: ['task-3'],
+        metadata: {},
+        createdAt: 1700000000000,
+        updatedAt: 1700000000000,
+      }],
+      summary: { total: 1, pending: 1, inProgress: 0, completed: 0, cancelled: 0 },
+      interruptTargetId: null,
+    };
+
+    worker.handleUpdateTodoPlan({ agentId, plan: oldPlan as any });
+
+    const res = createMockRes();
+    worker.handleGetAgentTodoPlan({} as any, res as any, agentId);
+
+    const output = res.getJson();
+    const task = output.tasks[0];
+    expect(task.id).toBe('task-old');
+    expect(task.subject).toBe('Old task');
+    // Old fields should be stripped
+    expect(task).not.toHaveProperty('activeForm');
+    expect(task).not.toHaveProperty('owner');
+    expect(task).not.toHaveProperty('blocks');
+    expect(task).not.toHaveProperty('blockedBy');
   });
 
   it('returns null interruptTargetId when not set', () => {

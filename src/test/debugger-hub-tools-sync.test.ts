@@ -163,14 +163,19 @@ describe('Debugger hub tools sync', () => {
     await brokenAgent.dispose();
   });
 
-  it('should isolate concurrent user input requests for two live Agents', async () => {
+  it('should await one host connection barrier before registering concurrent Agents', async () => {
     const inputA = new UserInputFeature();
     const inputB = new UserInputFeature();
     const agentA = new TestAgent({ llm: new NoopLLM(), name: 'InputAgentA' }).use(inputA);
     const agentB = new TestAgent({ llm: new NoopLLM(), name: 'InputAgentB' }).use(inputB);
 
-    await agentA.withViewer('InputAgentA', 0, false);
-    await agentB.withViewer('InputAgentB', 0, false);
+    // Shared-process mode starts both logical sessions while the host UDS
+    // connection is still being established. Both registrations must wait for
+    // the same connection barrier; the second one may not be silently dropped.
+    await Promise.all([
+      agentA.withViewer('InputAgentA', 0, false),
+      agentB.withViewer('InputAgentB', 0, false),
+    ]);
 
     const agentAId = (agentA as any).agentId as string;
     const agentBId = (agentB as any).agentId as string;
@@ -180,9 +185,9 @@ describe('Debugger hub tools sync', () => {
     const pendingB = inputB.getUserInputEvent('input B');
 
     await waitFor(() => {
-      const requestsA = (worker as any).agentSessions.get(agentAId)?.pendingInputRequests;
-      const requestsB = (worker as any).agentSessions.get(agentBId)?.pendingInputRequests;
-      return requestsA?.size === 1 && requestsB?.size === 1;
+      const leaseA = (worker as any).agentSessions.get(agentAId)?.inputLease;
+      const leaseB = (worker as any).agentSessions.get(agentBId)?.inputLease;
+      return !!leaseA && !!leaseB;
     });
 
     expect(worker.submitUserTurn(agentAId, { text: 'answer A' }).success).toBe(true);

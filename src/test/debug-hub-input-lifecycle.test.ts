@@ -36,4 +36,18 @@ describe('DebugHub input request lifecycle', () => {
     hub.unregisterAgent(agentAId);
     hub.unregisterAgent(agentBId);
   });
+
+  it('enforces one input lease per Agent', async () => {
+    const hub = DebugHub.getInstance();
+    const fakeAgent = { constructor: { name: 'SingleLease' } } as any;
+    const agentId = hub.registerAgent(fakeAgent, 'SingleLease');
+    const first = hub.requestUserInputEvent(agentId, { prompt: 'first' });
+
+    await expect(hub.requestUserInputEvent(agentId, { prompt: 'second' }))
+      .rejects.toThrow('already has an active user input lease');
+
+    hub.cancelInputRequests(agentId, 'test cleanup');
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    hub.unregisterAgent(agentId);
+  });
 });

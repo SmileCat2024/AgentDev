@@ -110,6 +110,14 @@ class AgentBase {
     injector: ContextInjector;
   }> = [];
   private featureToolsReady: boolean = false;
+  private featureToolsReadyPromise?: Promise<void>;
+
+  // 同一 Agent 实例维护单条会话状态链，因此 call 必须按提交顺序执行。
+  // 队列始终被错误吸收，避免一次失败阻塞后续调用。
+  private _callQueue: Promise<void> = Promise.resolve();
+  private _activeCallPromise?: Promise<void>;
+  private _lifecycleState: 'active' | 'disposing' | 'disposed' = 'active';
+  private _disposePromise?: Promise<void>;
 
   // 反向钩子注册表
   private hooksRegistry = new HooksRegistry();
@@ -262,11 +270,43 @@ class AgentBase {
   }
 
   /**
-   * 唯一的公开入口 - 执行 Agent
+   * 唯一的公开入口 - 执行 Agent。
+   *
+   * 同一实例的会话状态不可并发访问；后续调用会按提交顺序排队。
    */
   async onCall(input: string, images?: ImageInput[]): Promise<string> {
+    if (this._lifecycleState !== 'active') {
+      throw new Error('Agent is disposing or has been disposed');
+    }
+
+    const queuedCall = this._callQueue.then(async () => {
+      if (this._lifecycleState !== 'active') {
+        throw new Error('Agent is disposing or has been disposed');
+      }
+
+      const execution = this.executeCall(input, images);
+      const completion = execution.then(() => undefined, () => undefined);
+      this._activeCallPromise = completion;
+      try {
+        return await execution;
+      } finally {
+        if (this._activeCallPromise === completion) {
+          this._activeCallPromise = undefined;
+        }
+      }
+    });
+
+    // 保持内部队列可继续推进，即使某个 call 失败。
+    this._callQueue = queuedCall.then(() => undefined, () => undefined);
+    return queuedCall;
+  }
+
+  private async executeCall(input: string, images?: ImageInput[]): Promise<string> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
+    if (this._lifecycleState !== 'active') {
+      throw new Error('Agent is disposing or has been disposed');
+    }
 
     // 清理上次 onCall 遗留的 continuation request
     this._continuationRequest = null;
@@ -516,9 +556,10 @@ class AgentBase {
     this.debugHub = DebugHub.getInstance();
     this.debugEnabled = true;
 
-    if (!this.debugHub.getCurrentAgentId()) {
-      await this.debugHub.start(port, openBrowser);
-    }
+    // `currentAgentId` belongs to Viewer focus and says nothing about whether
+    // this host process has a usable transport. Every Agent attachment joins
+    // the same DebugHub connection barrier; start() is idempotent once ready.
+    await this.debugHub.start(port, openBrowser);
 
     // 收集 Feature 模板信息（使用新的统一方式）
     const featureTemplates: Record<string, string> = {};
@@ -655,8 +696,8 @@ class AgentBase {
    * 会触发 AbortController，在下一个检查点（step 间或 tool 执行中）优雅停止
    * 返回 true 表示成功触发中断，false 表示当前没有正在运行的 call
    */
-   interrupt(): boolean {
-    if (this._abortController && !this._abortController.signal.aborted) {
+  interrupt(): boolean {
+    if (this.isRunning() && this._abortController && !this._abortController.signal.aborted) {
       this._abortController.abort(new Error('Interrupted by user'));
       this.logger.info('Interrupt triggered', { callIndex: this._callIndex });
       return true;
@@ -1084,6 +1125,22 @@ class AgentBase {
    * 清理资源
    */
   async dispose(): Promise<void> {
+    if (this._disposePromise) {
+      return this._disposePromise;
+    }
+
+    this._lifecycleState = 'disposing';
+    this._disposePromise = this.disposeInternal();
+    return this._disposePromise;
+  }
+
+  private async disposeInternal(): Promise<void> {
+    // 已开始的 call 先中断，再等待活动调用和已排队调用收敛。
+    // 排队调用会在开始前观察到 disposing 状态并明确失败。
+    this.interrupt();
+    await this._activeCallPromise;
+    await this._callQueue;
+
     // 触发 onDestroy 钩子（SubAgentFeature 的清理会在 Feature.onDestroy 中处理）
     const context = this.persistentContext ?? new Context();
 
@@ -1124,6 +1181,7 @@ class AgentBase {
     this._initialized = false;
     this.persistentContext = undefined;
     this._callCheckpoints = [];
+    this._lifecycleState = 'disposed';
   }
 
   // ========== Feature 系统 ==========
@@ -1361,25 +1419,39 @@ class AgentBase {
    */
   private async ensureFeatureTools(): Promise<void> {
     if (this.featureToolsReady) return;
+    if (this.featureToolsReadyPromise) {
+      return this.featureToolsReadyPromise;
+    }
 
-    // 预收集所有 Feature 自带的 skills，在 onInitiate 之前注入 SkillFeature
-    const featureSkills = await this.collectFeatureSkills();
-    if (featureSkills.length > 0) {
-      const skillFeature = this.features.get('skill') as any;
-      if (skillFeature?.addFeatureSkills) {
-        skillFeature.addFeatureSkills(featureSkills);
+    const initialization = (async () => {
+      // 预收集所有 Feature 自带的 skills，在 onInitiate 之前注入 SkillFeature
+      const featureSkills = await this.collectFeatureSkills();
+      if (featureSkills.length > 0) {
+        const skillFeature = this.features.get('skill') as any;
+        if (skillFeature?.addFeatureSkills) {
+          skillFeature.addFeatureSkills(featureSkills);
+        }
+      }
+
+      for (const [name, feature] of this.features) {
+        await this.initSingleFeature(name, feature);
+      }
+
+      // 子类可在此 hook 中注册额外工具（如统一代理工具）
+      await this.onFeatureToolsReady();
+
+      this.featureToolsReady = true;
+      this.pushInspectorSnapshot();
+    })();
+
+    this.featureToolsReadyPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.featureToolsReadyPromise === initialization) {
+        this.featureToolsReadyPromise = undefined;
       }
     }
-
-    for (const [name, feature] of this.features) {
-      await this.initSingleFeature(name, feature);
-    }
-
-    // 子类可在此 hook 中注册额外工具（如统一代理工具）
-    await this.onFeatureToolsReady();
-
-    this.featureToolsReady = true;
-    this.pushInspectorSnapshot();
   }
 
   /**

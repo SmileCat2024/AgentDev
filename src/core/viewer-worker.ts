@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -998,17 +998,8 @@ class ViewerWorker {
       return;
     }
 
-    const pendingRequests = ((session as any).pendingInputRequests as Map<string, any>) || new Map();
-    const requests = Array.from(pendingRequests.entries()).map(([requestId, data]) => ({
-      requestId,
-      prompt: data.prompt,
-      placeholder: data.placeholder,
-      initialValue: data.initialValue,
-      actions: data.actions,
-      mode: data.mode,
-      questions: data.questions,
-      timestamp: data.timestamp,
-    }));
+    const lease = session.inputLease;
+    const requests = lease ? [{ ...lease }] : [];
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(requests));
@@ -1025,10 +1016,8 @@ class ViewerWorker {
         const { requestId, input, response } = JSON.parse(body);
 
         const session = this.agentSessions.get(agentId);
-        const pendingRequests = session
-          ? (session as any).pendingInputRequests as Map<string, any> | undefined
-          : undefined;
-        if (!session || !pendingRequests?.has(requestId)) {
+        const lease = session?.inputLease;
+        if (!session || !lease || lease.requestId !== requestId) {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Request not found or expired' }));
           return;
@@ -1050,7 +1039,7 @@ class ViewerWorker {
         }
 
         // IPC 接管成功后再移除请求，避免“HTTP 成功但消息未发送”的假成功。
-        pendingRequests.delete(requestId);
+        delete session.inputLease;
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ success: true }));
@@ -1064,7 +1053,7 @@ class ViewerWorker {
   /**
    * 提交一个不绑定 requestId 的新用户回合。
    *
-   * pendingInputRequests 与 queuedInputs 都由 ViewerWorker 持有，因此仲裁必须
+   * inputLease 与 queuedInputs 都由 ViewerWorker 持有，因此仲裁必须
    * 在这里原子完成，不能由宿主先 GET 再 POST 拼接，否则会产生 TOCTOU 竞态。
    */
   public submitUserTurn(agentId: string, input: UserTurnInput): UserTurnSubmissionResult {
@@ -1095,10 +1084,8 @@ class ViewerWorker {
       };
     }
 
-    const pendingRequests = (session as any).pendingInputRequests as Map<string, any> | undefined;
-    const pendingEntries = pendingRequests ? Array.from(pendingRequests.entries()) : [];
-    const conflictingRequest = pendingEntries.find(([, request]) => request?.mode === 'choices');
-    if (conflictingRequest) {
+    const lease = session.inputLease;
+    if (lease?.mode === 'choices') {
       return {
         success: false,
         code: 'input_mode_conflict',
@@ -1107,11 +1094,8 @@ class ViewerWorker {
       };
     }
 
-    const textRequest = pendingEntries
-      .find(([, request]) => request?.mode !== 'choices');
-
-    if (textRequest) {
-      const [requestId] = textRequest;
+    if (lease) {
+      const requestId = lease.requestId;
       const response = this.createTextInputResponse(input);
       if (!this.forwardInputResponse(agentId, session, requestId, input.text, response)) {
         return {
@@ -1120,7 +1104,7 @@ class ViewerWorker {
           error: 'Agent runtime is not connected',
         };
       }
-      pendingRequests!.delete(requestId);
+      delete session.inputLease;
       return {
         success: true,
         delivery: 'input',
@@ -1130,16 +1114,8 @@ class ViewerWorker {
       };
     }
 
-    // 只有活跃 call 会在 step/call 边界消费队列。空闲且没有 input request
-    // 时接受队列会制造永久悬挂，因此明确拒绝，让来源侧保留输入并重试。
-    if (session.callActive !== true) {
-      return {
-        success: false,
-        code: 'runtime_not_accepting_input',
-        error: 'Agent runtime has no active call or compatible input request',
-      };
-    }
-
+    // 这是 runtime 的会话邮箱，不依赖 callActive。它承接新建/恢复会话中
+    // “前端已可编辑、输入循环尚未开放 lease”这一正常启动阶段的首条消息。
     const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef);
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
@@ -1516,25 +1492,26 @@ class ViewerWorker {
 
     // 恢复活跃的输入请求（用于重连后恢复输入框）
     if (activeInputRequest) {
-      let pendingRequests = (session as any).pendingInputRequests as Map<string, any>;
-      if (!pendingRequests) {
-        pendingRequests = new Map();
-        (session as any).pendingInputRequests = pendingRequests;
-      }
-
-      // 重新存储请求
-      pendingRequests.set(activeInputRequest.requestId, {
+      // 连接重建是状态对账而不是追加：DebugHub 给出的 lease 是这个 Agent
+      // 唯一仍有本地 resolver 的输入所有者，旧连接遗留的租约必须被替换。
+      session.inputLease = {
+        requestId: activeInputRequest.requestId,
         prompt: activeInputRequest.prompt,
         placeholder: activeInputRequest.placeholder,
         initialValue: activeInputRequest.initialValue,
         actions: activeInputRequest.actions,
+        mode: activeInputRequest.mode,
+        questions: activeInputRequest.questions,
         timestamp: activeInputRequest.timestamp,
-      });
+      };
 
       // 如果有活跃输入请求，自动切换到该 Agent（确保前端能看到输入框）
       this.currentAgentId = agentId;
 
       console.log(`[Viewer Worker] 恢复活跃输入请求: ${activeInputRequest.requestId}，切换到 Agent: ${agentId}`);
+    } else {
+      // 注册快照是完整事实来源；没有 lease 就不能保留旧连接的输入卡。
+      delete session.inputLease;
     }
 
     // 首个 Agent 自动成为当前（如果没有活跃输入请求的情况）
@@ -1637,7 +1614,6 @@ class ViewerWorker {
         inProgress: 0,
         completed: 0,
         cancelled: 0,
-        blocked: 0,
       },
       interruptTargetId: null,
     };
@@ -1655,11 +1631,7 @@ class ViewerWorker {
       id: String(task.id ?? ''),
       subject: String(task.subject ?? ''),
       description: String(task.description ?? ''),
-      activeForm: String(task.activeForm ?? ''),
       status: normalizeStatus(task.status),
-      owner: typeof task.owner === 'string' ? task.owner : undefined,
-      blocks: Array.isArray(task.blocks) ? task.blocks.map(String) : [],
-      blockedBy: Array.isArray(task.blockedBy) ? task.blockedBy.map(String) : [],
       metadata: task.metadata && typeof task.metadata === 'object' ? task.metadata : undefined,
       createdAt: typeof task.createdAt === 'number' ? task.createdAt : 0,
       updatedAt: typeof task.updatedAt === 'number' ? task.updatedAt : 0,
@@ -1676,7 +1648,6 @@ class ViewerWorker {
         inProgress: typeof summary.inProgress === 'number' ? summary.inProgress : tasks.filter(t => t.status === 'in_progress').length,
         completed: typeof summary.completed === 'number' ? summary.completed : tasks.filter(t => t.status === 'completed').length,
         cancelled: typeof summary.cancelled === 'number' ? summary.cancelled : tasks.filter(t => t.status === 'deleted').length,
-        blocked: typeof summary.blocked === 'number' ? summary.blocked : tasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && t.blockedBy.length > 0).length,
       },
       interruptTargetId: typeof plan.interruptTargetId === 'string' ? plan.interruptTargetId : null,
     };
@@ -2192,16 +2163,9 @@ class ViewerWorker {
 
     this.updateSessionActivity(agentId);
 
-    // 初始化 pendingInputRequests（如不存在）
-    let pendingRequests = (session as any).pendingInputRequests as Map<string, any>;
-    if (!pendingRequests) {
-      pendingRequests = new Map();
-      (session as any).pendingInputRequests = pendingRequests;
-    }
-
     // 活跃 call 最后一次 drain 与 call.finish 之间仍可能有新输入入队。
     // 下一次兼容的文本请求出现时在框架层接力，封闭这个生命周期竞态。
-    if (pendingRequests.size === 0 && msg.mode !== 'choices' && session.queuedInputs.length > 0) {
+    if (!session.inputLease && msg.mode !== 'choices' && session.queuedInputs.length > 0) {
       const queuedInput = session.queuedInputs[0];
       const response = this.createTextInputResponse(queuedInput);
       if (this.forwardInputResponse(agentId, session, requestId, queuedInput.text, response)) {
@@ -2211,8 +2175,10 @@ class ViewerWorker {
       }
     }
 
-    // 存储请求
-    pendingRequests.set(requestId, {
+    // 输入请求是覆盖式的唯一 lease；同一 Agent 永远不会在 Worker 中累积
+    // 多张可提交卡片。DebugHub 端也持有同样的不变量以防并发来源。
+    const lease: InputLease = {
+      requestId,
       prompt,
       placeholder: msg.placeholder,
       initialValue: (msg as any).initialValue,
@@ -2220,9 +2186,10 @@ class ViewerWorker {
       mode: msg.mode,
       questions: msg.questions,
       timestamp: Date.now(),
-    });
+    };
+    session.inputLease = lease;
 
-    console.log(`[Viewer Worker] Input request 已存储: ${requestId}, 当前队列大小: ${pendingRequests.size}`);
+    console.log(`[Viewer Worker] Input lease 已存储: ${requestId}`);
   }
 
   /**

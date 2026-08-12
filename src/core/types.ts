@@ -576,11 +576,7 @@ export interface TodoTaskSnapshot {
   id: string;
   subject: string;
   description: string;
-  activeForm: string;
   status: 'pending' | 'in_progress' | 'completed' | 'deleted';
-  owner?: string;
-  blocks: string[];
-  blockedBy: string[];
   metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
@@ -592,7 +588,6 @@ export interface TodoPlanSummary {
   inProgress: number;
   completed: number;
   cancelled: number;
-  blocked: number;
 }
 
 export interface TodoPlanSnapshot {
@@ -632,8 +627,24 @@ export interface AgentSession {
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
   todoPlan?: TodoPlanSnapshot;
+  /**
+   * 唯一的活动输入租约。一个 Agent 实例在任意时刻只能由一个输入请求
+   * 消费用户回复；这是跨 reconnect / 多进程路由的归属锚点。
+   */
+  inputLease?: InputLease;
   // 运行期间排队等待的用户输入（用于输入框常驻 + 队列注入）
   queuedInputs: QueuedInput[];
+}
+
+export interface InputLease {
+  requestId: string;
+  prompt: string;
+  placeholder?: string;
+  initialValue?: string;
+  actions?: UserInputAction[];
+  mode?: UserInputRequestMode;
+  questions?: UserInputQuestion[];
+  timestamp: number;
 }
 
 /**
@@ -655,7 +666,8 @@ export interface QueuedInput {
  * 一个不绑定具体 input request 的新用户回合。
  *
  * ViewerWorker 会原子决定：若存在兼容的文本 input request，则直接响应；
- * 否则在没有互斥交互请求时加入运行中队列。
+ * 否则进入该已连接 runtime 的会话邮箱，等待下一次兼容的文本输入租约。
+ * 这覆盖新建/恢复会话在输入循环尚未打开的启动窗口，不依赖 callActive。
  */
 export interface UserTurnInput {
   text: string;

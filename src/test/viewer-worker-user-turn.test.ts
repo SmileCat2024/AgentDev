@@ -22,9 +22,7 @@ function createWorker(agentId = 'user-turn-agent') {
 describe('ViewerWorker user-turn contract', () => {
   it('atomically resolves a compatible pending text request', () => {
     const { worker, session, agentId } = createWorker();
-    (session as any).pendingInputRequests = new Map([
-      ['input-waiting', { prompt: '请输入', mode: 'text' }],
-    ]);
+    session.inputLease = { requestId: 'input-waiting', prompt: '请输入', mode: 'text', timestamp: Date.now() };
     const writes: string[] = [];
     (worker as any).udsClients.set('client-1', {
       write(message: string) { writes.push(message); },
@@ -44,7 +42,7 @@ describe('ViewerWorker user-turn contract', () => {
       source: 'generative-ui',
       sourceRef: 'event-1',
     });
-    expect((session as any).pendingInputRequests.size).toBe(0);
+    expect(session.inputLease).toBeUndefined();
     expect(session.queuedInputs).toHaveLength(0);
     expect(writes).toHaveLength(1);
     const delivered = JSON.parse(writes[0]);
@@ -73,20 +71,16 @@ describe('ViewerWorker user-turn contract', () => {
     });
   });
 
-  it('rejects an idle runtime instead of accepting an input that cannot be consumed', () => {
+  it('stores a startup turn in the runtime mailbox before a lease opens', () => {
     const { worker, session, agentId } = createWorker();
 
     const result = worker.submitUserTurn(agentId, {
-      text: 'do not leave me stuck',
+      text: 'first message after resume',
       source: 'generative-ui',
     });
 
-    expect(result).toEqual({
-      success: false,
-      code: 'runtime_not_accepting_input',
-      error: 'Agent runtime has no active call or compatible input request',
-    });
-    expect(session.queuedInputs).toHaveLength(0);
+    expect(result).toMatchObject({ success: true, delivery: 'queued', queueLength: 1 });
+    expect(session.queuedInputs).toMatchObject([{ text: 'first message after resume' }]);
   });
 
   it('hands a late queued turn to the next compatible input request', () => {
@@ -112,7 +106,7 @@ describe('ViewerWorker user-turn contract', () => {
     });
 
     expect(session.queuedInputs).toHaveLength(0);
-    expect((session as any).pendingInputRequests.size).toBe(0);
+    expect(session.inputLease).toBeUndefined();
     const delivered = JSON.parse(writes[0]);
     expect(delivered.requestId).toBe('next-input');
     expect(delivered.response.text).toBe('arrived during call shutdown');
@@ -123,9 +117,7 @@ describe('ViewerWorker user-turn contract', () => {
 
   it('rejects a new text turn while an incompatible choice request is pending', () => {
     const { worker, session, agentId } = createWorker();
-    (session as any).pendingInputRequests = new Map([
-      ['choice-waiting', { prompt: '请选择', mode: 'choices' }],
-    ]);
+    session.inputLease = { requestId: 'choice-waiting', prompt: '请选择', mode: 'choices', timestamp: Date.now() };
 
     const result = worker.submitUserTurn(agentId, {
       text: 'must not get stuck',
@@ -141,25 +133,17 @@ describe('ViewerWorker user-turn contract', () => {
     expect(session.queuedInputs).toHaveLength(0);
   });
 
-  it('gives an incompatible request precedence when pending requests overlap', () => {
+  it('replaces a stale lease instead of accumulating multiple input cards', () => {
     const { worker, session, agentId } = createWorker();
-    (session as any).pendingInputRequests = new Map([
-      ['text-waiting', { prompt: '请输入', mode: 'text' }],
-      ['choice-waiting', { prompt: '请选择', mode: 'choices' }],
-    ]);
+    worker.handleRequestInput({ agentId, requestId: 'old-text', prompt: 'old', mode: 'text' });
+    worker.handleRequestInput({ agentId, requestId: 'current-choice', prompt: 'new', mode: 'choices' });
 
-    const result = worker.submitUserTurn(agentId, { text: 'new turn' });
-
-    expect(result.success).toBe(false);
-    expect(result.code).toBe('input_mode_conflict');
-    expect((session as any).pendingInputRequests.size).toBe(2);
+    expect(session.inputLease).toMatchObject({ requestId: 'current-choice', mode: 'choices' });
   });
 
   it('exposes the same delivery contract through the HTTP handler', () => {
     const { worker, session, agentId } = createWorker();
-    (session as any).pendingInputRequests = new Map([
-      ['http-input', { prompt: '请输入' }],
-    ]);
+    session.inputLease = { requestId: 'http-input', prompt: '请输入', timestamp: Date.now() };
     const req = new EventEmitter();
     let status = 0;
     let body = '';

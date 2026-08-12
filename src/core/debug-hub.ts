@@ -90,6 +90,8 @@ export class DebugHub {
   private workerPort: number | null = null;
   private clientReady: boolean = false;
   private stopped: boolean = false;
+  /** Shared connection barrier for every Agent hosted by this process. */
+  private connectionPromise?: Promise<void>;
 
   // 注册锁（防止并发竞争）
   private registrationLock: boolean = false;
@@ -140,6 +142,21 @@ export class DebugHub {
    * @param openBrowser 是否自动打开浏览器（默认 true，已废弃参数）
    */
   async start(port: number = 2026, openBrowser: boolean = true): Promise<void> {
+    if (this.clientReady) return;
+    if (this.connectionPromise) return this.connectionPromise;
+
+    const pending = this.startInternal(port, openBrowser);
+    this.connectionPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.connectionPromise === pending) {
+        this.connectionPromise = undefined;
+      }
+    }
+  }
+
+  private async startInternal(port: number, openBrowser: boolean): Promise<void> {
     this.stopped = false;
     if (this.transportMode === 'claw') {
       this.workerPort = port;
@@ -151,12 +168,8 @@ export class DebugHub {
         console.warn(`[DebugHub] 无法连接到 Claw runtime: ${(err as Error).message}`);
         console.warn('[DebugHub] 调试功能将被禁用。请先启动 AgentDevClaw runtime。');
         this.clientReady = false;
+        throw err;
       }
-      return;
-    }
-
-    if (this.udsClient) {
-      console.log(`[DebugHub] 已连接到 ViewerWorker`);
       return;
     }
 
@@ -180,6 +193,9 @@ export class DebugHub {
         console.warn(`[DebugHub] 无法启动 ViewerWorker: ${(spawnErr as Error).message}`);
         console.warn(`[DebugHub] 调试功能将被禁用。请手动运行 'agentdev-viewer' 启动调试服务器。`);
         this.clientReady = false;
+        // A Viewer-backed Agent cannot safely continue without its transport:
+        // registration/input messages would otherwise be silently discarded.
+        throw spawnErr;
       }
     }
   }
@@ -716,6 +732,11 @@ export class DebugHub {
     request: UserInputRequest,
     timeout: number = Infinity,
   ): Promise<UserInputResponse> {
+    // 输入是每个 Agent 的单一租约，不允许多个 Promise 同时争抢下一次回复。
+    if (this.activeInputRequests.has(agentId)) {
+      return Promise.reject(new Error(`Agent '${agentId}' already has an active user input lease`));
+    }
+
     if (this.transportMode === 'claw') {
       if (!this.clawClient) {
         return Promise.reject(new Error('Claw client is not available'));
@@ -728,6 +749,16 @@ export class DebugHub {
           resolve,
           reject,
           abortController,
+        });
+        this.activeInputRequests.set(agentId, {
+          requestId: localRequestId,
+          prompt: request.prompt,
+          placeholder: request.placeholder,
+          initialValue: request.initialValue,
+          actions: request.actions,
+          mode: request.mode,
+          questions: request.questions,
+          timestamp: Date.now(),
         });
         this.clawClient!.requestUserInput(agentId, request, timeout, abortController.signal)
           .then(response => this.settleInputRequest(localRequestId, { response }))
@@ -786,9 +817,10 @@ export class DebugHub {
    */
   private async connectToWorker(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.udsClient = connect(this.udsPath);
+      const socket = connect(this.udsPath);
+      this.udsClient = socket;
 
-      this.udsClient.on('connect', () => {
+      socket.on('connect', () => {
         this.workerReadBuffer = '';
         this.clientReady = true;
         this.reconnectAttempts = 0; // 重置重连计数
@@ -808,7 +840,7 @@ export class DebugHub {
         resolve();
       });
 
-      this.udsClient.on('data', (data: Buffer) => {
+      socket.on('data', (data: Buffer) => {
         this.workerReadBuffer += data.toString();
         const lines = this.workerReadBuffer.split('\n');
         this.workerReadBuffer = lines.pop() ?? '';
@@ -823,13 +855,20 @@ export class DebugHub {
         }
       });
 
-      this.udsClient.on('error', (err: Error) => {
+      socket.on('error', (err: Error) => {
+        if (this.udsClient === socket) {
+          this.udsClient = undefined;
+          this.clientReady = false;
+        }
         reject(new Error(`连接 ViewerWorker 失败 (${this.udsPath}): ${err.message}\n请先启动 ViewerWorker 服务器`));
       });
 
-      this.udsClient.on('close', () => {
+      socket.on('close', () => {
         this.workerReadBuffer = '';
         this.clientReady = false;
+        if (this.udsClient === socket) {
+          this.udsClient = undefined;
+        }
         console.warn('[DebugHub] 与 ViewerWorker 的连接已断开');
 
         if (!this.stopped) {
@@ -1096,7 +1135,12 @@ export class DebugHub {
    * 发送消息到 Worker
    */
   private sendToWorker(msg: DebugHubIPCMessage): void {
-    if (!this.udsClient) {
+    if (!this.udsClient || !this.clientReady) {
+      // Do not present this as a delivered message. Stateful registrations and
+      // input leases are reconciled by re-registerAllAgents on reconnect;
+      // this warning keeps non-replayable debug updates observable instead of
+      // silently pretending the transport accepted them.
+      console.warn(`[DebugHub] ViewerWorker transport is not ready; deferred state will reconcile on reconnect (message=${msg.type})`);
       return;
     }
     this.sendViaUDS(msg);

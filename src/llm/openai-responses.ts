@@ -8,7 +8,7 @@
 import OpenAI from 'openai';
 import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '../core/config.js';
 import { OPENAI_THINKING_EFFORTS } from '../core/config.js';
-import type { LLMClient, LLMResponse, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '../core/types.js';
+import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '../core/types.js';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
@@ -166,7 +166,7 @@ export class OpenAIResponsesLLM implements LLMClient {
 
         let content = '';
         let reasoning = '';
-        let charCount = 0;
+        let currentPhase: LLMPhase = 'content';
         let stopReason: string | null = null;
         let usageInfo: UsageInfo | null = null;
         let completedSnapshot: ResponsesSnapshot | null = null;
@@ -185,8 +185,8 @@ export class OpenAIResponsesLLM implements LLMClient {
             case 'response.output_text.delta': {
               const delta = String(event.delta || '');
               if (delta) {
+                currentPhase = 'content';
                 content += delta;
-                charCount += delta.length;
               }
               break;
             }
@@ -196,6 +196,7 @@ export class OpenAIResponsesLLM implements LLMClient {
             }
             case 'response.function_call_arguments.delta': {
               const key = String(event.item_id || event.output_index);
+              currentPhase = 'tool_calling';
               if (!functionCalls.has(key)) {
                 functionCalls.set(key, {
                   call_id: '',
@@ -223,6 +224,7 @@ export class OpenAIResponsesLLM implements LLMClient {
               const item = event.item || {};
               if (item.type === 'function_call') {
                 const key = String(item.id || event.output_index);
+                currentPhase = 'tool_calling';
                 functionCalls.set(key, {
                   call_id: String(item.call_id || ''),
                   name: String(item.name || ''),
@@ -249,8 +251,8 @@ export class OpenAIResponsesLLM implements LLMClient {
                 } else {
                   entry.summary[entry.summary.length - 1] += delta;
                 }
+                currentPhase = 'thinking';
                 reasoning += delta;
-                charCount += delta.length;
               }
               break;
             }
@@ -263,8 +265,8 @@ export class OpenAIResponsesLLM implements LLMClient {
               const entry = reasoningItems.get(key)!;
               if (text) {
                 entry.summary = [text];
+                currentPhase = 'thinking';
                 reasoning += text;
-                charCount += text.length;
               }
               break;
             }
@@ -277,8 +279,8 @@ export class OpenAIResponsesLLM implements LLMClient {
               const entry = reasoningItems.get(key)!;
               if (text) {
                 entry.summary = [text];
+                currentPhase = 'thinking';
                 reasoning += text;
-                charCount += text.length;
               }
               break;
             }
@@ -303,14 +305,13 @@ export class OpenAIResponsesLLM implements LLMClient {
 
           try {
             const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
-            const currentPhase: 'thinking' | 'content' | 'tool_calling' = functionCalls.size > 0
-              ? 'tool_calling'
-              : reasoning
-                ? 'thinking'
-                : 'content';
-            if (charCount > 0 || functionCalls.size > 0) {
+            // 各 phase 独立计数：正文阶段不应延续思考阶段的累计值
+            const phaseCharCount = currentPhase === 'thinking' ? reasoning.length : content.length;
+            if (phaseCharCount > 0 || functionCalls.size > 0) {
               const toolNames = Array.from(functionCalls.values()).map(fc => fc.name).filter(Boolean);
-              emitNotification(createLLMCharCount(charCount, currentPhase, {
+              emitNotification(createLLMCharCount(phaseCharCount, currentPhase, {
+                thinkingChars: reasoning.length,
+                contentChars: content.length,
                 toolCallCount: functionCalls.size,
                 ...(toolNames.length > 0 ? { streamToolNames: toolNames } : {}),
               }));

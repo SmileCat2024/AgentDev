@@ -186,7 +186,6 @@ export class OpenAILLM implements LLMClient {
         let content = '';
         let reasoning = '';
         let currentPhase: LLMPhase = 'content';
-        let charCount = 0;
 
         // 累积 tool_calls
         interface AccumulatedToolCall {
@@ -237,11 +236,9 @@ export class OpenAILLM implements LLMClient {
           if (rawDelta.reasoning_content) {
             currentPhase = 'thinking';
             reasoning += rawDelta.reasoning_content;
-            charCount += rawDelta.reasoning_content.length;
           } else if (delta.content) {
             currentPhase = 'content';
             content += delta.content;
-            charCount += delta.content.length;
           }
 
           if (delta.tool_calls) {
@@ -267,9 +264,13 @@ export class OpenAILLM implements LLMClient {
 
           try {
             const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
-            if (charCount > 0 || accumulatedToolCalls.size > 0) {
+            // 各 phase 独立计数：正文阶段不应延续思考阶段的累计值
+            const phaseCharCount = currentPhase === 'thinking' ? reasoning.length : content.length;
+            if (phaseCharCount > 0 || accumulatedToolCalls.size > 0) {
               const toolNames = Array.from(accumulatedToolCalls.values()).map(tc => tc.name).filter(Boolean);
-              emitNotification(createLLMCharCount(charCount, currentPhase, {
+              emitNotification(createLLMCharCount(phaseCharCount, currentPhase, {
+                thinkingChars: reasoning.length,
+                contentChars: content.length,
                 toolCallCount: accumulatedToolCalls.size,
                 ...(toolNames.length > 0 ? { streamToolNames: toolNames } : {}),
               }));

@@ -612,6 +612,10 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
     signal.addEventListener('abort', onStreamAbort, { once: true });
   }
 
+  // 各 phase 独立计数：正文阶段不应延续思考阶段的累计值
+  const phaseCharCount = (phase: LLMPhase): number =>
+    phase === 'thinking' ? reasoning.length : content.length;
+
   const applyEvent = (event: AnthropicStreamEvent): void => {
     if (event.type === 'message_start') receivedMessageStart = true;
     if (event.type === 'message_stop') receivedMessageStop = true;
@@ -665,7 +669,14 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
         if (event) {
           applyEvent(event);
           const toolNames = Array.from(pendingToolUses.values()).map(t => t.name).filter(Boolean);
-          await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size, toolNames);
+          await emitAnthropicProgress(
+            phaseCharCount(currentPhase),
+            currentPhase,
+            pendingToolUses.size,
+            toolNames,
+            reasoning.length,
+            content.length,
+          );
         }
         sep = findDoubleNewlineIndex(buffer);
       }
@@ -686,7 +697,14 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
     if (event) {
       applyEvent(event);
       const toolNames = Array.from(pendingToolUses.values()).map(t => t.name).filter(Boolean);
-      await emitAnthropicProgress(charCount, currentPhase, pendingToolUses.size, toolNames);
+      await emitAnthropicProgress(
+        phaseCharCount(currentPhase),
+        currentPhase,
+        pendingToolUses.size,
+        toolNames,
+        reasoning.length,
+        content.length,
+      );
     }
   }
 
@@ -828,12 +846,16 @@ async function emitAnthropicProgress(
   phase: LLMPhase,
   toolCallCount: number,
   toolNames?: string[],
+  thinkingChars?: number,
+  contentChars?: number,
 ): Promise<void> {
   try {
     const { emitNotification, createLLMCharCount } = await import('../core/notification.js');
     if (charCount > 0 || toolCallCount > 0) {
       emitNotification(createLLMCharCount(charCount, phase, {
         toolCallCount,
+        ...(typeof thinkingChars === 'number' ? { thinkingChars } : {}),
+        ...(typeof contentChars === 'number' ? { contentChars } : {}),
         ...(Array.isArray(toolNames) && toolNames.length > 0 ? { streamToolNames: toolNames } : {}),
       }));
     }

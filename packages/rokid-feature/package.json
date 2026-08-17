@@ -1,0 +1,47 @@
+{
+  "name": "@agentdev/rokid-bot",
+  "version": "0.1.0",
+  "description": "rokid-bot feature for AgentDev — bridge to Rokid glasses via WebSocket",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "agentdev-feature.json"
+  ],
+  "scripts": {
+    "build": "tsup && npm run copy-assets",
+    "dev": "tsup --watch",
+    "copy-assets": "node scripts/copy-assets.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "tsup": {
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": "esm",
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
+  },
+  "peerDependencies": {
+    "agentdev": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10",
+    "agentdev": "file:../..",
+    "tsup": "^8.3.5",
+    "typescript": "^5.3.3"
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "rokid-bot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "feishu-bot",
+  "name": "feishu-bot",
+  "version": "0.1.0",
+  "description": "feishu-bot feature for AgentDev",
+  "tags": [
+    "agentdev",
+    "feature",
+    "feishu-bot"
+  ],
+  "entry": "dist/index.js",
+  "homepage": "",
+  "repository": "",
+  "agentdev": {
+    "compatible": ">=0.1.0"
+  },
+  "featureTypes": [
+    "control"
+  ],
+  "compatibility": {
+    "rollback": false,
+    "tags": [
+      "no-rollback"
+    ]
+  },
+  "requirements": {
+    "platforms": [],
+    "node": "",
+    "external": [],
+    "services": []
+  }
+}

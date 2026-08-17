@@ -1,0 +1,48 @@
+{
+  "name": "@agentdev/weixin-bot",
+  "version": "0.2.0",
+  "description": "weixin-bot feature for AgentDev",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "agentdev-feature.json"
+  ],
+  "scripts": {
+    "build": "tsup && npm run copy-assets",
+    "dev": "tsup --watch",
+    "copy-assets": "node scripts/copy-assets.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "tsup": {
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": "esm",
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
+  },
+  "peerDependencies": {
+    "agentdev": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "agentdev": "file:../..",
+    "tsup": "^8.3.5",
+    "typescript": "^5.3.3"
+  },
+  "keywords": [
+    "agentdev",
+    "feature",
+    "weixin-bot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@types/qrcode": "^1.5.6",
+    "open": "^11.0.0",
+    "qrcode": "^1.5.4"
+  }
+}

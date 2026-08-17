@@ -88,10 +88,13 @@ desktop/nul
 
 # 特定于项目的目录
 docs/
-.agentdev/
-packages/
 config/
-CLAUDE.md
+# agent 运行时数据不入库；skills 是需要版本化的指导文档
+.agentdev/*
+!.agentdev/skills/
+# feature 包：源码入库，锁文件与打包产物不入库
+packages/*/package-lock.json
+*.tgz
 pyproject.toml
 requirements.txt
 uv.lock

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "weixin-bot",
+  "name": "weixin-bot",
+  "version": "0.2.0",
+  "description": "weixin-bot feature for AgentDev",
+  "tags": [
+    "agentdev",
+    "feature",
+    "weixin-bot"
+  ],
+  "entry": "dist/index.js",
+  "homepage": "",
+  "repository": "",
+  "agentdev": {
+    "compatible": ">=0.1.0"
+  },
+  "featureTypes": [
+    "control"
+  ],
+  "compatibility": {
+    "rollback": false,
+    "tags": [
+      "no-rollback"
+    ]
+  },
+  "requirements": {
+    "platforms": [],
+    "node": "",
+    "external": [],
+    "services": []
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "rokid-bot",
+  "name": "rokid-bot",
+  "version": "0.1.0",
+  "description": "rokid-bot feature for AgentDev — bridge to Rokid glasses via WebSocket",
+  "tags": [
+    "agentdev",
+    "feature",
+    "rokid-bot"
+  ],
+  "entry": "dist/index.js",
+  "homepage": "",
+  "repository": "",
+  "agentdev": {
+    "compatible": ">=0.1.0"
+  },
+  "featureTypes": [
+    "control"
+  ],
+  "compatibility": {
+    "rollback": false,
+    "tags": [
+      "no-rollback"
+    ]
+  },
+  "requirements": {
+    "platforms": [],
+    "node": "",
+    "external": [],
+    "services": []
+  }
+}

@@ -332,6 +332,13 @@ export class ToolExecutor {
 
       result.duration = Date.now() - startTime;
 
+      // feature 事件流（C 项）：tool.executed 事件（scope 提供 feature/toolName context）
+      logger.info(`tool ${call.name} executed`, {
+        event: 'tool.executed',
+        durationMs: result.duration,
+        success: result.success,
+      });
+
       try {
         const { emitNotification, createToolComplete } = await import('../notification.js');
         emitNotification(createToolComplete(call.name, result.success, result.duration));

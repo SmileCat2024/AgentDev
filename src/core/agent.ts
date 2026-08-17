@@ -20,6 +20,7 @@ import { createLogger, installConsoleBridge, runWithLogScope } from './logging.j
 import { runWithNotificationScope } from './notification.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
 import { loadFeatureModule, type FeatureReloadResult } from './feature-reload.js';
+import { preflightAssembly } from './feature-preflight.js';
 import type { CallContinuationRequest } from './continuation.js';
 import {
   getDefaultSessionStore,
@@ -86,6 +87,19 @@ type CallRollbackCheckpoint = CallRollbackSnapshotV2;
 // 基础类（不含生命周期钩子）
 class AgentBase {
   protected readonly logger = createLogger('agent.runtime');
+
+  /**
+   * feature 事件流 logger（C 项）：生命周期事件必须自带 agentId/agentName
+   * （mount/remove/reload 常在 onCall 之外调用，日志 scope 中没有 agent 上下文）
+   */
+  private featureEventLogger(featureName: string) {
+    return this.logger.child({
+      namespace: 'agent.features',
+      feature: featureName,
+      agentId: this.agentId,
+      agentName: this.config?.name || this.constructor.name,
+    });
+  }
   // ========== 属性 ==========
 
   protected llm: AgentConfig['llm'];
@@ -1266,7 +1280,10 @@ class AgentBase {
     if (count > 0) {
       this.syncRegisteredToolsToDebug();
     }
-    console.log(`[Agent] 已移除 Feature '${featureName}'（${count} 个工具 + hooks + feature 实例）`);
+    this.featureEventLogger(featureName).info(
+      `feature '${featureName}' removed (${count} tools + hooks + feature instance)`,
+      { event: 'feature.removed', toolCount: count }
+    );
     this.pushInspectorSnapshot();
 
     return this;
@@ -1294,7 +1311,10 @@ class AgentBase {
     }
 
     if (count > 0) {
-      console.log(`[Agent] 已启用 Feature '${featureName}' 的 ${count} 个工具`);
+      this.featureEventLogger(featureName).info(
+        `feature '${featureName}' tools enabled (${count})`,
+        { event: 'feature.tool_state_changed', action: 'enabled', toolCount: count }
+      );
       this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
     }
@@ -1324,7 +1344,10 @@ class AgentBase {
     }
 
     if (count > 0) {
-      console.log(`[Agent] 已禁用 Feature '${featureName}' 的 ${count} 个工具`);
+      this.featureEventLogger(featureName).info(
+        `feature '${featureName}' tools disabled (${count})`,
+        { event: 'feature.tool_state_changed', action: 'disabled', toolCount: count }
+      );
       this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
     }
@@ -1354,7 +1377,10 @@ class AgentBase {
     }
 
     if (count > 0) {
-      console.log(`[Agent] 已移除 Feature '${featureName}' 的 ${count} 个工具`);
+      this.featureEventLogger(featureName).info(
+        `feature '${featureName}' tools removed (${count})`,
+        { event: 'feature.tool_state_changed', action: 'removed', toolCount: count }
+      );
       this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
     }
@@ -1389,7 +1415,17 @@ class AgentBase {
   disableHook(lifecycle: string, featureName: string, methodName: string): this {
     const lc = lifecycle as CoreLifecycle;
     if (this.hooksRegistry.disableHook(lc, featureName, methodName)) {
-      console.log(`[Agent] 已禁用钩子 ${lifecycle}:${featureName}.${methodName}`);
+      this.logger.child({
+        namespace: 'agent.features',
+        feature: featureName,
+        agentId: this.agentId,
+        agentName: this.config?.name || this.constructor.name,
+        lifecycle,
+        hookMethod: methodName,
+      }).info(
+        `hook ${lifecycle}:${featureName}.${methodName} disabled`,
+        { event: 'feature.hook_state_changed', action: 'disabled' }
+      );
       this.pushInspectorSnapshot();
     }
     return this;
@@ -1404,7 +1440,17 @@ class AgentBase {
   enableHook(lifecycle: string, featureName: string, methodName: string): this {
     const lc = lifecycle as CoreLifecycle;
     if (this.hooksRegistry.enableHook(lc, featureName, methodName)) {
-      console.log(`[Agent] 已启用钩子 ${lifecycle}:${featureName}.${methodName}`);
+      this.logger.child({
+        namespace: 'agent.features',
+        feature: featureName,
+        agentId: this.agentId,
+        agentName: this.config?.name || this.constructor.name,
+        lifecycle,
+        hookMethod: methodName,
+      }).info(
+        `hook ${lifecycle}:${featureName}.${methodName} enabled`,
+        { event: 'feature.hook_state_changed', action: 'enabled' }
+      );
       this.pushInspectorSnapshot();
     }
     return this;
@@ -1547,7 +1593,23 @@ class AgentBase {
    * await agent.mountFeature(new SomeFeature());
    */
   async mountFeature(feature: AgentFeature): Promise<this> {
+    // 装配预检（工作项 D）：增量挂载点拦截 error 级问题（policy 冲突等）。
+    // warning 不阻断（如工具重名覆盖可能是既有语义）。
+    const nextAssembly = [...this.features.values(), feature];
+    const preflight = preflightAssembly(nextAssembly);
+    const errors = preflight.issues.filter(i => i.severity === 'error');
+    if (errors.length > 0) {
+      throw new Error(
+        `mountFeature preflight failed for '${feature.name}':\n` +
+          errors.map(e => `  [${e.check}] ${e.message}`).join('\n'),
+      );
+    }
+
     this.use(feature);
+    this.featureEventLogger(feature.name).info(
+      `feature '${feature.name}' mounted${this.featureToolsReady ? ' (immediate init)' : ' (deferred to first call)'}`,
+      { event: 'feature.mounted', toolCount: feature.getTools?.()?.length ?? 0 }
+    );
 
     // agent 尚未初始化，feature 会在首次 ensureFeatureTools 时统一处理
     if (!this.featureToolsReady) {
@@ -1557,7 +1619,6 @@ class AgentBase {
     // agent 已初始化，立即对新 feature 执行完整初始化
     await this.initSingleFeature(feature.name, feature);
     this.pushInspectorSnapshot();
-    console.log(`[Agent] Dynamically mounted feature '${feature.name}' (tools + hooks initialized)`);
     return this;
   }
 
@@ -1647,6 +1708,10 @@ class AgentBase {
         );
       }
       const message = error instanceof Error ? error.message : String(error);
+      this.featureEventLogger(featureName).warn(
+        `feature '${featureName}' reload failed at stage '${stage}', previous instance restored`,
+        { event: 'feature.reload_reverted', reason: `${stage}: ${message}`, durationMs: Date.now() - startedAt }
+      );
       throw new Error(
         `Feature '${featureName}' reload failed at stage '${stage}': ${message}. ` +
           'Previous instance has been restored.',
@@ -1700,6 +1765,12 @@ class AgentBase {
     } catch (error) {
       rollback('mount', error);
     }
+
+    const reloadDurationMs = Date.now() - startedAt;
+    this.featureEventLogger(featureName).info(
+      `feature '${featureName}' reloaded in ${reloadDurationMs}ms (state ${stateTransferred ? 'transferred' : 'not transferred'})`,
+      { event: 'feature.reloaded', durationMs: reloadDurationMs, stateTransferred }
+    );
 
     return {
       featureName,

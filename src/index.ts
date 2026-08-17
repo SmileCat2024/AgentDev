@@ -124,6 +124,13 @@ export type {
 // 重新导出核心功能模块
 export { getPackageInfoFromSource } from './core/feature.js';
 export type { FeatureManifestDefinition, FeatureManifestSettingProperty } from './core/feature.js';
+export { preflightAssembly } from './core/feature-preflight.js';
+export type {
+  PreflightCheck,
+  PreflightIssue,
+  PreflightAssembly,
+  PreflightResult,
+} from './core/feature-preflight.js';
 export {
   readHookDeclarations,
   validateHookDeclarations,

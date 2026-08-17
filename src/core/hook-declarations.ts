@@ -78,6 +78,8 @@ export interface HookDeclarationIssue {
   code: HookDeclarationIssueCode;
   /** 含修复建议的完整描述 */
   message: string;
+  /** 跨 feature 检查（如 duplicate_policy）涉及的全部 feature 名 */
+  involvedFeatures?: string[];
 }
 
 // ========== kind 与 lifecycle 的合法组合 ==========
@@ -257,6 +259,7 @@ export function validatePolicyUniqueness(features: AgentFeature[]): HookDeclarat
       method: list[0].method,
       code: 'duplicate_policy',
       message: `lifecycle '${lifecycle}' 上出现了 ${list.length} 个 policy guard：${names}。一次装配中每个 lifecycle 至多一个 policy。修复：保留一个 policy，其余改为 role: 'advisor'（advisor 在 policy 之后执行，不具裁决优先权）。`,
+      involvedFeatures: list.map(p => p.feature),
     });
   }
 

@@ -249,7 +249,18 @@ export class HooksRegistry {
             `hook:${lifecycle}`,
             `hook-method:${methodName}`,
           ],
-        }, async () => await method.call(feature, context));
+        }, async () => {
+          const startedAt = Date.now();
+          try {
+            return await method.call(feature, context);
+          } finally {
+            // feature 事件流（C 项）：hook.invoked 事件，context 由本 scope 提供
+            logger.info(`${feature.name}.${methodName} invoked (${lifecycle})`, {
+              event: 'hook.invoked',
+              durationMs: Date.now() - startedAt,
+            });
+          }
+        });
 
         // observe / transform 条目：返回值由框架直接丢弃。
         // 消灭已知坑：void 钩子意外返回 'approve' 字符串静默短路同批观察者。
@@ -394,7 +405,18 @@ export class HooksRegistry {
             `hook:${lifecycle}`,
             `hook-method:${methodName}`,
           ],
-        }, async () => await method.call(feature, ctx));
+        }, async () => {
+          const startedAt = Date.now();
+          try {
+            return await method.call(feature, ctx);
+          } finally {
+            // feature 事件流（C 项）：hook.invoked 事件
+            logger.info(`${feature.name}.${methodName} invoked (${lifecycle})`, {
+              event: 'hook.invoked',
+              durationMs: Date.now() - startedAt,
+            });
+          }
+        });
 
         if (returned !== undefined) {
           current = returned as T;

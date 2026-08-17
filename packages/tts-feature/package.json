@@ -10,8 +10,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && npm run copy-assets",
     "dev": "tsup --watch",
+    "copy-assets": "node scripts/copy-assets.mjs",
     "prepublishOnly": "npm run build"
   },
   "tsup": {

@@ -89,9 +89,12 @@ desktop/nul
 # 特定于项目的目录
 docs/
 config/
-# agent 运行时数据不入库；skills 是需要版本化的指导文档
+# agent 运行时数据不入库；仅版本化项目自有的指导 skills
 .agentdev/*
 !.agentdev/skills/
+.agentdev/skills/*
+!.agentdev/skills/agentdev-feature-guide/
+!.agentdev/skills/agentdev-feature-packaging/
 # feature 包：源码入库，锁文件与打包产物不入库
 packages/*/package-lock.json
 *.tgz

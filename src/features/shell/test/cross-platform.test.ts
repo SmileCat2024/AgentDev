@@ -1,3 +1,4 @@
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 /**
  * Tests for Shell Feature cross-platform behavior
  *
@@ -284,8 +285,8 @@ describe('ShellFeature metadata', () => {
     expect(feature.name).toBe('shell');
   });
 
-  it('should have no dependencies', () => {
-    expect(feature.dependencies).toEqual([]);
+  it('declares no inject dependencies', () => {
+    expect(readInjectDeclarations(feature)).toEqual([]);
   });
 
   it('should have a description', () => {

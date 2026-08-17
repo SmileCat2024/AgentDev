@@ -51,7 +51,7 @@ export interface LogContextRef {
   feature?: string;
   lifecycle?: string;
   hookMethod?: string;
-  hookKind?: 'forward' | 'reverse' | 'transform';
+  hookKind?: 'forward' | 'observe' | 'guard' | 'transform';
   sourceFile?: string;
   sourceLine?: number;
   tags?: string[];
@@ -503,7 +503,10 @@ export interface HookEntryMetadata {
   featureName: string;
   methodName: string;
   lifecycle: string;
-  kind: 'decision' | 'notify' | 'transform';
+  /** 三原语（observe / guard / transform），由静态声明或装饰器路径推导 */
+  kind: 'observe' | 'guard' | 'transform';
+  /** guard 角色（policy 先于 advisor 执行）。仅 kind='guard' 条目存在。 */
+  role?: 'policy' | 'advisor';
   source?: HookSourceLocation;
   description?: string;
   /** 是否启用。false 表示被运行时禁用。缺省视为 true（向后兼容）。 */
@@ -512,7 +515,8 @@ export interface HookEntryMetadata {
 
 export interface HookLifecycleSnapshot {
   lifecycle: string;
-  kind: 'decision' | 'notify' | 'transform';
+  /** 生命周期级三原语汇总：桶内有 guard → guard，有 transform → transform，否则 observe */
+  kind: 'observe' | 'guard' | 'transform';
   entries: HookEntryMetadata[];
 }
 

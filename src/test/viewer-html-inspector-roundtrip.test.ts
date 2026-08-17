@@ -59,14 +59,14 @@ function buildFullSnapshot(): HookInspectorSnapshot {
     hooks: [
       {
         lifecycle: 'StepFinish',
-        kind: 'decision',
+        kind: 'guard',
         entries: [
           {
             order: 0,
             featureName: 'todo',
             methodName: 'recordToolUsage',
             lifecycle: 'StepFinish',
-            kind: 'decision',
+            kind: 'guard',
             description: 'Check interrupt target',
           },
         ],
@@ -148,7 +148,7 @@ describe('viewer-html normalizeHookInspector round-trip', () => {
     // 所以输出 hooks 数组会比输入更长。但输入中已有的 lifecycle 条目应原样保留。
     const stepFinishGroup = output.hooks.find((h: any) => h.lifecycle === 'StepFinish');
     expect(stepFinishGroup).toBeDefined();
-    expect(stepFinishGroup.kind).toBe('decision');
+    expect(stepFinishGroup.kind).toBe('guard');
     expect(stepFinishGroup.entries).toHaveLength(1);
     expect(stepFinishGroup.entries[0].featureName).toBe('todo');
     expect(stepFinishGroup.entries[0].description).toBe('Check interrupt target');

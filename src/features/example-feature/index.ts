@@ -8,13 +8,14 @@ import type {
   ContextInjector,
   PackageInfo,
 } from '../../core/feature.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import type { Tool } from '../../core/types.js';
 import type {
   CallStartContext,
   StepFinishDecisionContext,
   ToolContext,
 } from '../../core/lifecycle.js';
-import { CallStart, StepFinish, ToolUse } from '../../core/hooks-decorator.js';
 import { Decision } from '../../core/lifecycle.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import { createExampleTool } from './tools.js';
@@ -28,8 +29,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export class ExampleFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    handleCallStart: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
+    validateExampleTool: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard' as const, role: 'advisor' as const },
+    handleStepFinish: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard' as const, role: 'advisor' as const },
+  };
   readonly name = 'example-feature';
-  readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '示范用 Feature 骨架：展示工具、模板、上下文注入、回滚快照和反向钩子的标准写法。';
 
@@ -69,7 +75,7 @@ export class ExampleFeature implements AgentFeature {
   }
 
   /**
-   * 内部 helper 比直接在装饰器和工具里散改字段更容易维护。
+   * 内部 helper 比直接在钩子和工具里散改字段更容易维护。
    * 如果 Feature 很简单，也可以不抽这些方法。
    */
   private appendNote(note: string): void {
@@ -188,7 +194,6 @@ export class ExampleFeature implements AgentFeature {
     });
   }
 
-  @CallStart
   async handleCallStart(ctx: CallStartContext): Promise<void> {
     this.runtime.lastInput = ctx.agent?.getUserInput() ?? ctx.input;
 
@@ -210,7 +215,6 @@ export class ExampleFeature implements AgentFeature {
     // }
   }
 
-  @ToolUse
   async validateExampleTool(ctx: ToolContext): Promise<typeof Decision.Continue | typeof Decision.Deny> {
     if (ctx.call.name !== 'example_tool') {
       return Decision.Continue;
@@ -237,7 +241,6 @@ export class ExampleFeature implements AgentFeature {
     return Decision.Continue;
   }
 
-  @StepFinish
   async handleStepFinish(ctx: StepFinishDecisionContext): Promise<typeof Decision.Continue> {
     // 典型用法：
     // - 统计本轮是否命中特定工具

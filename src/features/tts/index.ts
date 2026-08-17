@@ -2,7 +2,7 @@
  * TTSFeature - 文本朗读功能模块
  *
  * 提供：
- * 1. @StepFinish 钩子：在每个 step 结束时自动朗读模型输出
+ * 1. StepFinish 钩子：在每个 step 结束时自动朗读模型输出
  *    - 包括工具调用轮和非工具调用轮
  *    - 只要有 assistant 文本回复就会朗读
  *    - 默认自动播放音频（使用 pygame）
@@ -63,8 +63,9 @@ import type {
   FeatureStateSnapshot,
   PackageInfo,
 } from '../../core/feature.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
-import { StepFinish } from '../../core/hooks-decorator.js';
 import type { StepFinishedContext } from '../../core/lifecycle.js';
 import type {
   TTSFeatureConfig,
@@ -103,8 +104,11 @@ function getDefaultPythonPath(workspaceDir?: string): string {
 // ========== TTSFeature 实现 ==========
 
 export class TTSFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    speakOnStepFinish: { lifecycle: CoreLifecycle.StepFinish, kind: 'observe' as const },
+  };
   readonly name = 'tts';
-  readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
   readonly description = '提供文本朗读能力，支持在非工具调用轮自动朗读模型输出。';
 
@@ -394,13 +398,12 @@ except ImportError as e:
     return null;
   }
 
-  // ========== 反向钩子（装饰器）==========
+  // ========== 反向钩子（static hooks 声明）==========
 
   /**
    * 在每个 step 结束时自动朗读模型输出
    * 包括工具调用轮和非工具调用轮
    */
-  @StepFinish
   async speakOnStepFinish(ctx: StepFinishedContext): Promise<void> {
     const triggers = this.config.triggers;
     if (!triggers?.autoEnabled || !this.state.enabled) {
@@ -408,7 +411,7 @@ except ImportError as e:
     }
 
     // 检查是否应该触发（可选）
-    // 这里我们总是尝试朗读，因为 @StepFinish 在每个 step 结束时都会调用
+    // 这里我们总是尝试朗读，因为 StepFinish 在每个 step 结束时都会调用
 
     // 提取正文
     const text = this.extractMainResponse(ctx);

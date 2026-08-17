@@ -22,6 +22,31 @@ import { cloneMessages } from './message.js';
 import { ContextQuery } from './context-query.js';
 
 /**
+ * 深拷贝 enriched 消息（tags/parsed 独立副本）。
+ */
+function cloneEnrichedMessages(messages: EnrichedMessage[]): EnrichedMessage[] {
+  return messages.map(message => ({
+    ...message,
+    tags: [...message.tags],
+    parsed: { ...message.parsed },
+  }));
+}
+
+/**
+ * 深拷贝 tombstone 条目。
+ */
+function cloneTombstone(entry: ContextTombstoneEntry): ContextTombstoneEntry {
+  return {
+    id: entry.id,
+    boundary: { ...entry.boundary },
+    removedMessageCount: entry.removedMessageCount,
+    truncatedAt: entry.truncatedAt,
+    removedMessages: cloneMessages(entry.removedMessages),
+    removedEnrichedMessages: cloneEnrichedMessages(entry.removedEnrichedMessages),
+  };
+}
+
+/**
  * 工具执行结果（用于 addToolMessage）
  */
 export interface ToolExecResult {
@@ -43,6 +68,8 @@ export interface ContextSnapshot {
   enrichedMessages?: EnrichedMessage[];
   sequence?: number;
   generation?: number;
+  /** 截断归档（tombstone）。旧快照可能没有该字段，加载时视为空归档。 */
+  tombstones?: ContextTombstoneEntry[];
 }
 
 /**
@@ -60,6 +87,32 @@ export interface ContextBoundaryV2 {
   enrichedMessagesLength: number;
   sequence: number;
   generation: number;
+}
+
+/**
+ * Tombstone 摘要 — 轻量元数据，不含消息内容。
+ */
+export interface ContextTombstoneSummary {
+  /** 单调递增的 tombstone ID（同一 Context 实例内唯一） */
+  id: number;
+  /** 截断恢复到的边界 */
+  boundary: ContextBoundaryV2;
+  /** 被截断的消息条数 */
+  removedMessageCount: number;
+  /** 截断发生时间（ISO 字符串） */
+  truncatedAt: string;
+}
+
+/**
+ * Tombstone 完整条目 — 含被截断的消息内容。
+ *
+ * rollback 截断不再物理丢失内容：被截尾部进入 tombstone 归档，
+ * 可查询（listTombstones / getTombstone），在 Context 仍处于该边界时
+ * 可完整恢复（restoreTombstone）。
+ */
+export interface ContextTombstoneEntry extends ContextTombstoneSummary {
+  removedMessages: Message[];
+  removedEnrichedMessages: EnrichedMessage[];
 }
 
 export class Context {
@@ -81,6 +134,13 @@ export class Context {
    * - restore：使用 snapshot 携带的 generation，否则递增
    */
   private generation: number = 0;
+
+  /**
+   * 截断归档（tombstone）。append-only：clear/apply/restore 不清空，
+   * 只有 restore(snapshot) 采用快照携带的归档。
+   */
+  private tombstones: ContextTombstoneEntry[] = [];
+  private tombstoneSeq: number = 0;
 
   /**
    * 添加一条消息
@@ -159,13 +219,10 @@ export class Context {
     return {
       version: 2,
       messages: cloneMessages(this.messages),
-      enrichedMessages: this.enrichedMessages.map(message => ({
-        ...message,
-        tags: [...message.tags],
-        parsed: { ...message.parsed },
-      })),
+      enrichedMessages: cloneEnrichedMessages(this.enrichedMessages),
       sequence: this.sequence,
       generation: this.generation,
+      tombstones: this.tombstones.map(cloneTombstone),
     };
   }
 
@@ -184,14 +241,14 @@ export class Context {
   restore(snapshot: ContextSnapshot): this {
     this.messages = cloneMessages(snapshot.messages);
     this.enrichedMessages = snapshot.enrichedMessages
-      ? snapshot.enrichedMessages.map(message => ({
-          ...message,
-          tags: [...message.tags],
-          parsed: { ...message.parsed },
-        }))
+      ? cloneEnrichedMessages(snapshot.enrichedMessages)
       : [];
     this.sequence = snapshot.sequence ?? this.enrichedMessages.length;
     this.generation = snapshot.generation ?? this.generation + 1;
+    this.tombstones = snapshot.tombstones
+      ? snapshot.tombstones.map(cloneTombstone)
+      : [];
+    this.tombstoneSeq = this.tombstones.reduce((max, t) => Math.max(max, t.id), 0);
     this.rebuildIndexes();
     return this;
   }
@@ -529,10 +586,30 @@ export class Context {
    * 这是合法的 rollback 操作：generation 保持不变，
    * 截断后同一 lineage 的旧 boundary 仍然可以继续使用。
    *
+   * 被截尾部进入 tombstone 归档（不物理丢失）：
+   * 通过 listTombstones() / getTombstone() 查询，
+   * Context 仍处于该边界时可通过 restoreTombstone() 完整恢复。
+   *
    * @throws 如果 boundary 与当前 Context 不兼容（generation 不匹配或长度越界）。
    */
   truncateToBoundary(boundary: ContextBoundaryV2): void {
     this.assertBoundaryCompatible(boundary);
+
+    const removedMessages = this.messages.slice(boundary.messagesLength);
+    const removedEnrichedMessages = this.enrichedMessages.slice(
+      boundary.enrichedMessagesLength,
+    );
+
+    if (removedMessages.length > 0 || removedEnrichedMessages.length > 0) {
+      this.tombstones.push({
+        id: ++this.tombstoneSeq,
+        boundary: { ...boundary },
+        truncatedAt: new Date().toISOString(),
+        removedMessageCount: removedMessages.length,
+        removedMessages: cloneMessages(removedMessages),
+        removedEnrichedMessages: cloneEnrichedMessages(removedEnrichedMessages),
+      });
+    }
 
     this.messages = this.messages.slice(0, boundary.messagesLength);
     this.enrichedMessages = this.enrichedMessages.slice(
@@ -540,6 +617,77 @@ export class Context {
       boundary.enrichedMessagesLength,
     );
     this.sequence = boundary.sequence;
+    this.rebuildIndexes();
+  }
+
+  // ========== Tombstone 归档（诚实反悔：被截内容不物理丢失） ==========
+
+  /**
+   * 列出 tombstone 摘要（不含消息内容）。
+   */
+  listTombstones(): ContextTombstoneSummary[] {
+    return this.tombstones.map(entry => ({
+      id: entry.id,
+      boundary: { ...entry.boundary },
+      removedMessageCount: entry.removedMessageCount,
+      truncatedAt: entry.truncatedAt,
+    }));
+  }
+
+  /**
+   * 按 ID 取回 tombstone 完整内容（深拷贝，修改返回值不影响归档）。
+   */
+  getTombstone(id: number): ContextTombstoneEntry | undefined {
+    const entry = this.tombstones.find(t => t.id === id);
+    return entry ? cloneTombstone(entry) : undefined;
+  }
+
+  /**
+   * 从 tombstone 恢复被截尾部。
+   *
+   * 仅当 Context 仍精确处于该 tombstone 的边界时允许
+   * （generation、两个数组长度、sequence 全部匹配）——此时恢复是
+   * 截断的精确逆操作，不破坏 lineage。
+   *
+   * 恢复后 sequence 续接被截尾部的最大序号，generation 不变。
+   *
+   * @throws 如果 Context 已离开该边界（例如截断后追加了新消息）。
+   *         此时内容仍可通过 getTombstone() 提取，由调用方决定如何重组。
+   */
+  restoreTombstone(id: number): void {
+    const entry = this.tombstones.find(t => t.id === id);
+    if (!entry) {
+      throw new Error(`Tombstone ${id} not found`);
+    }
+
+    const b = entry.boundary;
+    const atBoundary =
+      b.generation === this.generation &&
+      b.messagesLength === this.messages.length &&
+      b.enrichedMessagesLength === this.enrichedMessages.length &&
+      b.sequence === this.sequence;
+
+    if (!atBoundary) {
+      throw new Error(
+        `Cannot restore tombstone ${id}: context is no longer at the tombstone boundary ` +
+          `(boundary: generation=${b.generation}, messagesLength=${b.messagesLength}, ` +
+          `enrichedMessagesLength=${b.enrichedMessagesLength}, sequence=${b.sequence}; ` +
+          `current: generation=${this.generation}, messagesLength=${this.messages.length}, ` +
+          `enrichedMessagesLength=${this.enrichedMessages.length}, sequence=${this.sequence}). ` +
+          'Extract the content via getTombstone() instead.',
+      );
+    }
+
+    this.messages = [...this.messages, ...cloneMessages(entry.removedMessages)];
+    this.enrichedMessages = [
+      ...this.enrichedMessages,
+      ...cloneEnrichedMessages(entry.removedEnrichedMessages),
+    ];
+    const lastRestored =
+      entry.removedEnrichedMessages[entry.removedEnrichedMessages.length - 1];
+    if (lastRestored) {
+      this.sequence = lastRestored.sequence + 1;
+    }
     this.rebuildIndexes();
   }
 }

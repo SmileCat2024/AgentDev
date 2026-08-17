@@ -3,8 +3,8 @@
  *
  * 独立 Feature，无侵入地接入 AgentDev 的 checkpoint/rollback 体系：
  *
- * - @ToolUse 反向钩子：在 write/edit 执行前自动备份文件
- * - @CallStart 反向钩子：在每轮用户输入时创建快照
+ * - ToolUse 反向钩子：在 write/edit 执行前自动备份文件
+ * - CallStart 反向钩子：在每轮用户输入时创建快照
  * - captureState/restoreState：与 Agent 的 CallRollback 集成（仅恢复内存状态）
  * - rewindToSnapshot / rewindToLastSnapshot：用户显式触发的文件回退
  *
@@ -21,11 +21,13 @@
 
 import { fileURLToPath } from 'url'
 import { randomUUID } from 'crypto'
+import { Decision } from '../../core/lifecycle.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import type { AgentFeature, FeatureStateSnapshot, FeatureInitContext, FeatureContext, PackageInfo } from '../../core/feature.js'
 import { getPackageInfoFromSource } from '../../core/feature.js'
 import type { ToolContext } from '../../core/lifecycle.js'
 import type { DecisionResult } from '../../core/lifecycle.js'
-import { ToolUse, CallStart, Decision } from '../../core/hooks-decorator.js'
 import {
   createInitialState,
   trackEdit,
@@ -49,8 +51,12 @@ export type SnapshotInfo = {
 }
 
 export class FileHistoryFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    trackFileEdits: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard' as const, role: 'advisor' as const },
+    onCallStart: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
+  };
   readonly name = 'file-history'
-  readonly dependencies: string[] = []
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/')
   readonly description = '追踪文件修改历史，支持代码回退到任意轮次的状态。'
 
@@ -91,12 +97,11 @@ export class FileHistoryFeature implements AgentFeature {
   // ========== 反向钩子 ==========
 
   /**
-   * @ToolUse 反向钩子：在 write/edit 工具执行前备份文件
+   * ToolUse 反向钩子：在 write/edit 工具执行前备份文件
    *
-   * 在所有 Feature 的 @ToolUse 钩子中，本钩子只关注 write/edit 两个工具，
+   * 在所有 Feature 的 ToolUse 钩子中，本钩子只关注 write/edit 两个工具，
    * 其余一律放行 (Decision.Continue)。
    */
-  @ToolUse
   async trackFileEdits(ctx: ToolContext): Promise<DecisionResult> {
     if (!this.state) return Decision.Continue
 
@@ -124,12 +129,11 @@ export class FileHistoryFeature implements AgentFeature {
   }
 
   /**
-   * @CallStart 反向钩子：每轮用户输入时创建文件快照
+   * CallStart 反向钩子：每轮用户输入时创建文件快照
    *
    * 第一次 CallStart 创建空快照，后续 CallStart 检测已追踪文件是否有变化，
    * 有变化的创建新版本备份。
    */
-  @CallStart
   async onCallStart(_ctx: any): Promise<void> {
     if (!this.state) return
 

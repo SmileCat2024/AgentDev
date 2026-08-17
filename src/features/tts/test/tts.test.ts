@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 
 describe('TTSFeature', () => {
   it('should import and instantiate without errors', async () => {
@@ -6,7 +7,7 @@ describe('TTSFeature', () => {
     const feature = new TTSFeature();
 
     expect(feature.name).toBe('tts');
-    expect(feature.dependencies).toHaveLength(0);
+    expect(readInjectDeclarations(feature)).toEqual([]);
     expect(feature.description).toBeTruthy();
   });
 

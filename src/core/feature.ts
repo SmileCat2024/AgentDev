@@ -136,8 +136,19 @@ export interface FeatureManifestDefinition {
 export interface AgentFeature {
   /** Feature 名称 */
   readonly name: string;
-  /** 依赖的其他 Feature */
-  readonly dependencies?: string[];
+  /**
+   * 依赖的其他 Feature（装配时拓扑排序，工作项 A3）。
+   *
+   * 声明位置在类的静态属性上（实例字段无法装配时静态读取）：
+   * ```typescript
+   * class MyFeature implements AgentFeature {
+   *   name = 'my-feature';
+   *   static inject = ['storage'];
+   * }
+   * ```
+   * 读取与校验见 feature-graph.ts（readInjectDeclarations / resolveFeatureOrder）。
+   */
+  // （接口本身不声明静态成员；inject 约定见上方文档）
   /**
    * Feature 源文件路径（import.meta.url）。
    *
@@ -283,9 +294,9 @@ export interface AgentFeature {
    */
   getHookDescription?(lifecycle: string, methodName: string): string | undefined;
 
-  // ========== 反向钩子通过装饰器注册，无需接口声明 ==========
-  // 使用 hooks-decorator.ts 中提供的装饰器来标记反向钩子方法
-  // 例如：@ToolFinished, @LLMFinish, @StepFinish 等
+  // ========== 反向钩子通过 static hooks 静态声明注册，无需接口声明 ==========
+  // 见 hook-declarations.ts：static hooks = { methodName: { lifecycle, kind, role? } }
+  // 例如：ToolFinished, LLMFinish, StepFinish 等生命周期
 }
 
 // ========== 辅助函数 ==========

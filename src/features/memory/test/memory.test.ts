@@ -1,3 +1,4 @@
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MemoryFeature } from '../index.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
@@ -26,9 +27,9 @@ describe('MemoryFeature', () => {
       expect(feature.name).toBe('memory');
     });
 
-    it('should have no dependencies', () => {
+    it('declares no inject dependencies', () => {
       feature = new MemoryFeature({ workspaceDir: tempDir });
-      expect(feature.dependencies).toEqual([]);
+      expect(readInjectDeclarations(feature)).toEqual([]);
     });
 
     it('should default to CLAUDE.md and AGENT.md', () => {

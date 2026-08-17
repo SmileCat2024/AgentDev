@@ -4,13 +4,15 @@
  * 提供子代理创建、管理、消息回传等完整能力
  *
  * 重构说明：
- * - 使用装饰器实现反向钩子
+ * - 使用 static hooks 静态声明实现反向钩子
  * - 移除旧的方法（handleNoToolCalls, handleWait, consumeMessages）
- * - 通过 @ToolFinished 和 @StepFinish 装饰器实现子代理等待机制
+ * - 通过 ToolFinished 和 StepFinish 钩子（静态声明）实现子代理等待机制
  */
 
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import type { ToolFinishedHook, StepFinishHook } from '../../core/hook-declarations.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
 import type { Agent } from '../../core/agent.js';
 import type { Context } from '../../core/context.js';
 import type {
@@ -25,13 +27,8 @@ import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import type { ToolCall } from '../../core/types.js';
 import type { SubAgentStatus } from '../../core/lifecycle.js';
-import {
-  ToolFinished,
-  StepFinish,
-} from '../../core/hooks-decorator.js';
-import type { ToolFinishedHook, StepFinishHook } from '../../core/hooks-decorator.js';
 import type { ToolFinishedDecisionContext, StepFinishDecisionContext } from '../../core/lifecycle.js';
-import { Decision } from '../../core/lifecycle.js';
+import { CoreLifecycle, Decision, type DecisionResult } from '../../core/lifecycle.js';
 import { AgentPool } from './pool.js';
 import { SubAgentToolFactory } from './tools.js';
 
@@ -47,13 +44,17 @@ const __dirname = dirname(__filename);
  * 提供子代理创建、管理、消息回传等完整能力
  *
  * 重构说明：
- * - 使用装饰器实现反向钩子
- * - @ToolFinished: 处理 wait 工具完成后的等待逻辑
- * - @StepFinish: 处理无工具调用时的子代理等待逻辑
+ * - 使用 static hooks 静态声明实现反向钩子
+ * - ToolFinished: 处理 wait 工具完成后的等待逻辑
+ * - StepFinish: 处理无工具调用时的子代理等待逻辑
  */
 export class SubAgentFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    handleWaitTool: { lifecycle: CoreLifecycle.ToolFinished, kind: 'observe' as const },
+    handleNoToolCalls: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard' as const, role: 'advisor' as const },
+  };
   readonly name = 'subagent';
-  readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '提供子代理创建、等待与消息回传能力，让主循环可以协同多个代理工作。';
 
@@ -155,7 +156,7 @@ export class SubAgentFeature implements AgentFeature {
     return undefined;
   }
 
-  // ========== 反向钩子（使用装饰器）==========
+  // ========== 反向钩子（static hooks 声明）==========
 
   /**
    * 处理 wait 工具
@@ -170,7 +171,6 @@ export class SubAgentFeature implements AgentFeature {
    *
    * 注意：这是纯通知钩子（void），流程控制通过 await 阻塞实现
    */
-  @ToolFinished
   async handleWaitTool(ctx: ToolFinishedDecisionContext): Promise<void> {
     // 1. 只处理 wait 工具
     if (ctx.toolName !== 'wait') {
@@ -203,8 +203,7 @@ export class SubAgentFeature implements AgentFeature {
    * 4. 消息插入到主代理 context
    * 5. 返回 Approve（重启 ReAct 循环）
    */
-  @StepFinish
-  async handleNoToolCalls(ctx: StepFinishDecisionContext): Promise<import('../../core/hooks-decorator.js').DecisionResult> {
+  async handleNoToolCalls(ctx: StepFinishDecisionContext): Promise<DecisionResult> {
     // 只在无工具调用时处理
     if (ctx.llmResponse.toolCalls && ctx.llmResponse.toolCalls.length > 0) {
       return Decision.Continue;

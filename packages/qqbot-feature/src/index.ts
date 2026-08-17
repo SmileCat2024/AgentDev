@@ -10,9 +10,11 @@
  * 使用 `@sliverp/qqbot/standalone` 独立接入
  */
 
+import { CoreLifecycle } from 'agentdev';
+import type { HookDeclarations } from 'agentdev';
 import type { Tool } from 'agentdev';
 import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from 'agentdev';
-import { getPackageInfoFromSource, CallStart } from 'agentdev';
+import { getPackageInfoFromSource } from 'agentdev';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
@@ -171,6 +173,10 @@ function buildQQChannelSystemMessage(request: QQBotInboundRequest): string {
 // ============ QQBotFeature ============
 
 export class QQBotFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    handleCallStart: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
+  };
   readonly name = 'qqbot';
   readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
@@ -230,7 +236,7 @@ export class QQBotFeature implements AgentFeature {
 
   /**
    * 创建自定义 adapter：控制 deliver + flush 顺序
-   * system prompt 注入由 @CallStart 钩子完成，不在这里处理
+   * system prompt 注入由 CallStart 钩子完成，不在这里处理
    */
   private createMediaAdapter(): QQBotAgentAdapter {
     const self = this;
@@ -241,7 +247,7 @@ export class QQBotFeature implements AgentFeature {
       async handleMessage(ctx: QQBotAgentHandleMessageContext): Promise<void> {
         const { request, deliver } = ctx;
 
-        // 设置当前 turn 上下文（供 upload_attachment 和 @CallStart 使用）
+        // 设置当前 turn 上下文（供 upload_attachment 和 CallStart 使用）
         self._currentTurnCtx = { account: ctx.account, request };
         self._pendingMedia = [];
 
@@ -254,7 +260,7 @@ export class QQBotFeature implements AgentFeature {
             return;
           }
 
-          // 直接传用户原始文本，system prompt 由 @CallStart 钩子注入
+          // 直接传用户原始文本，system prompt 由 CallStart 钩子注入
           const response = await self.agentRef.onCall(request.text);
           const responseText = typeof response === 'string' ? response : '';
 
@@ -446,12 +452,11 @@ export class QQBotFeature implements AgentFeature {
   // ========== AgentFeature 接口 ==========
 
   /**
-   * @CallStart 钩子：在每轮 onCall 开始时注入 QQ 渠道环境 system 消息
+   * CallStart 钩子：在每轮 onCall 开始时注入 QQ 渠道环境 system 消息
    *
    * 仅在 _currentTurnCtx 存在时（即消息来自 QQ Gateway）生效。
    * 通过 context.add() 注入独立的 system 消息块，不篡改用户输入。
    */
-  @CallStart
   async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any }): Promise<void> {
     if (!this._currentTurnCtx) return;
 

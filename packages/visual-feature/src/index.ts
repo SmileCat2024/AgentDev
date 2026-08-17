@@ -51,9 +51,10 @@ import type {
   FeatureStateSnapshot,
   PackageInfo,
 } from 'agentdev';
+import { CoreLifecycle } from 'agentdev';
+import type { HookDeclarations } from 'agentdev';
 import type { Tool } from 'agentdev';
 import { getPackageInfoFromSource } from 'agentdev';
-import { CallStart } from 'agentdev';
 import type { CallStartContext } from 'agentdev';
 import type {
   WindowInfo,
@@ -102,6 +103,10 @@ function getDefaultPythonPath(workspaceDir?: string): string {
 // ========== VisualFeature 实现 ==========
 
 export class VisualFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    injectWindowInfo: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
+  };
   readonly name = 'visual';
   readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
@@ -510,7 +515,6 @@ except ImportError as e:
    * - 第一次：全量注入（所有窗口 + 所有缓存）
    * - 后续：只注入变化部分（窗口状态变化 + 新的分析结果）
    */
-  @CallStart
   async injectWindowInfo(ctx: CallStartContext): Promise<void> {
     if (!this.config.enableWindowInfo) {
       return;

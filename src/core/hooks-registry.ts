@@ -6,7 +6,13 @@
 
 import type { AgentFeature } from './feature.js';
 import { CoreLifecycle, Decision, type DecisionResult, normalizeDecision } from './lifecycle.js';
-import { getDecoratorMetadata } from './hooks-decorator.js';
+import {
+  readHookDeclarations,
+  validateHookDeclarations,
+  issuesToError,
+  type HookKind,
+  type GuardRole,
+} from './hook-declarations.js';
 import type { DecisionContext, HookLifecycleSnapshot } from './types.js';
 import { createLogger, runWithLogScope } from './logging.js';
 
@@ -26,6 +32,17 @@ export interface HookExecutionResult {
   metadata?: Record<string, any>;
 }
 
+export interface RegisteredHook {
+  feature: AgentFeature;
+  methodName: string;
+  source?: { file?: string; line?: number; column?: number; display: string };
+  enabled: boolean;
+  /** 三原语：来自静态声明（static hooks） */
+  kind: HookKind;
+  /** guard 角色（policy 先于 advisor）。仅 kind='guard' 条目存在。 */
+  role?: GuardRole;
+}
+
 /**
  * 钩子注册表
  *
@@ -33,38 +50,57 @@ export interface HookExecutionResult {
  */
 export class HooksRegistry {
   /** 生命周期 → Feature 映射 → 方法名 */
-  private hooks = new Map<CoreLifecycle, Array<{
-    feature: AgentFeature;
-    methodName: string;
-    source?: { file?: string; line?: number; column?: number; display: string };
-    enabled: boolean;
-  }>>();
+  private hooks = new Map<CoreLifecycle, Array<RegisteredHook>>();
 
   /**
    * 从 Feature 收集反向钩子
    *
+   * 唯一入口：静态声明（static hooks）。
+   * 没有声明 = 没有反向钩子，不存在第二条注册路径。
+   * 声明校验失败直接抛错——装配错误不许运行时碰运气。
+   *
    * @param feature Feature 实例
    */
   collectFromFeature(feature: AgentFeature): void {
-    const metadata = getDecoratorMetadata(feature);
+    const declarations = readHookDeclarations(feature);
 
-    for (const [lifecycle, methodNameOrList] of metadata.hookDecisions.entries()) {
-      if (!this.hooks.has(lifecycle)) {
-        this.hooks.set(lifecycle, []);
-      }
-      const hookList = this.hooks.get(lifecycle)!;
+    if (Object.keys(declarations).length === 0) {
+      return;
+    }
 
-      // 支持多个方法（用逗号分隔）
-      const methodNames = methodNameOrList.split(',');
-      for (const methodName of methodNames) {
-        const trimmed = methodName.trim();
-        hookList.push({
-          feature,
-          methodName: trimmed,
-          source: metadata.hookSources.get(`${lifecycle}:${trimmed}`),
-          enabled: true,
-        });
+    const issues = validateHookDeclarations(feature);
+    if (issues.length > 0) {
+      throw issuesToError(issues);
+    }
+
+    // policy 唯一性防守（覆盖 mountFeature 动态挂载场景；
+    // 全量装配路径由 validatePolicyUniqueness 在 ensureFeatureTools 前置校验）
+    for (const [method, decl] of Object.entries(declarations)) {
+      if (decl.kind !== 'guard' || decl.role !== 'policy') continue;
+      const existing = (this.hooks.get(decl.lifecycle) || [])
+        .find(h => h.kind === 'guard' && h.role === 'policy' && h.feature !== feature);
+      if (existing) {
+        throw issuesToError([{
+          feature: feature.name,
+          method,
+          code: 'duplicate_policy',
+          message: `lifecycle '${decl.lifecycle}' 已有 '${existing.feature.name}#${existing.methodName}' 注册为 policy guard，'${feature.name}#${method}' 不能再次注册。修复：保留一个 policy，其余改为 role: 'advisor'。`,
+        }]);
       }
+    }
+
+    for (const [method, decl] of Object.entries(declarations)) {
+      if (!this.hooks.has(decl.lifecycle)) {
+        this.hooks.set(decl.lifecycle, []);
+      }
+      this.hooks.get(decl.lifecycle)!.push({
+        feature,
+        methodName: method,
+        source: undefined,
+        enabled: true,
+        kind: decl.kind,
+        role: decl.role,
+      });
     }
   }
 
@@ -99,12 +135,7 @@ export class HooksRegistry {
    * @param lifecycle 生命周期类型
    * @returns 钩子列表
    */
-  get(lifecycle: CoreLifecycle): Array<{
-    feature: AgentFeature;
-    methodName: string;
-    source?: { file?: string; line?: number; column?: number; display: string };
-    enabled: boolean;
-  }> {
+  get(lifecycle: CoreLifecycle): Array<RegisteredHook> {
     return this.hooks.get(lifecycle) || [];
   }
 
@@ -142,16 +173,14 @@ export class HooksRegistry {
 
   getSnapshot(): HookLifecycleSnapshot[] {
     return Object.values(CoreLifecycle).map((lifecycle) => {
-      const entries = (this.hooks.get(lifecycle) || []).map((hook, index) => ({
+      const registered = this.hooks.get(lifecycle) || [];
+      const entries = registered.map((hook, index) => ({
         order: index + 1,
         featureName: hook.feature.name,
         methodName: hook.methodName,
         lifecycle,
-        kind: lifecycle === CoreLifecycle.StepFinish || lifecycle === CoreLifecycle.ToolUse
-          ? 'decision' as const
-          : lifecycle === CoreLifecycle.ToolResultTransform
-            ? 'transform' as const
-            : 'notify' as const,
+        kind: hook.kind,
+        role: hook.role,
         source: hook.source,
         description: typeof (hook.feature as any).getHookDescription === 'function'
           ? (hook.feature as any).getHookDescription(lifecycle, hook.methodName)
@@ -161,11 +190,8 @@ export class HooksRegistry {
 
       return {
         lifecycle,
-        kind: lifecycle === CoreLifecycle.StepFinish || lifecycle === CoreLifecycle.ToolUse
-          ? 'decision' as const
-          : lifecycle === CoreLifecycle.ToolResultTransform
-            ? 'transform' as const
-            : 'notify' as const,
+        // 生命周期级三原语汇总（桶内有 guard → guard，有 transform → transform，否则 observe）
+        kind: summarizeLifecycleKind(registered.map(h => h.kind)),
         entries,
       };
     });
@@ -193,8 +219,13 @@ export class HooksRegistry {
       return { handled: false };
     }
 
+    // 三原语顺序法则（工作项 A1）：
+    // - guard：policy 先于 advisor（组内保持注册序）
+    // - observe：无序（框架按注册序执行仅为日志可复现）
+    const orderedHooks = orderHooks(activeHooks);
+
     // 按顺序执行所有钩子
-    for (const { feature, methodName, source } of activeHooks) {
+    for (const { feature, methodName, source, kind } of orderedHooks) {
       try {
         const method = (feature as any)[methodName];
         if (typeof method !== 'function') {
@@ -208,7 +239,7 @@ export class HooksRegistry {
           feature: feature.name,
           lifecycle,
           hookMethod: methodName,
-          hookKind: 'reverse',
+          hookKind: kind,
           sourceFile: source?.file,
           sourceLine: source?.line,
           namespace: 'agent.reverse-hook',
@@ -220,7 +251,14 @@ export class HooksRegistry {
           ],
         }, async () => await method.call(feature, context));
 
-        // 处理返回值
+        // observe / transform 条目：返回值由框架直接丢弃。
+        // 消灭已知坑：void 钩子意外返回 'approve' 字符串静默短路同批观察者。
+        // （transform 的正确调度是 executeTransform 链式执行）
+        if (kind !== 'guard') {
+          continue;
+        }
+
+        // guard：处理返回值
         if (result !== undefined) {
           const decision = normalizeDecision(result);
 
@@ -388,6 +426,37 @@ export class HooksRegistry {
 }
 
 // ========== 工具函数 ==========
+
+/**
+ * guard 顺序法则：policy 先于 advisor，组内保持注册序（稳定分区）。
+ *
+ * observe/transform 条目不参与裁决，排在 guard 之后保持注册序
+ * （observe 无序；transform 不应出现在 execute() 调度中）。
+ */
+export function orderHooks(hooks: Array<RegisteredHook>): Array<RegisteredHook> {
+  const policies: Array<RegisteredHook> = [];
+  const advisors: Array<RegisteredHook> = [];
+  const rest: Array<RegisteredHook> = [];
+
+  for (const hook of hooks) {
+    if (hook.kind === 'guard' && hook.role === 'policy') {
+      policies.push(hook);
+    } else if (hook.kind === 'guard') {
+      advisors.push(hook);
+    } else {
+      rest.push(hook);
+    }
+  }
+
+  return [...policies, ...advisors, ...rest];
+}
+
+/** 生命周期级三原语汇总：桶内有 guard → guard，有 transform → transform，否则 observe */
+function summarizeLifecycleKind(kinds: Array<RegisteredHook['kind']>): HookKind {
+  if (kinds.some(k => k === 'guard')) return 'guard';
+  if (kinds.some(k => k === 'transform')) return 'transform';
+  return 'observe';
+}
 
 /**
  * 创建全局钩子注册表

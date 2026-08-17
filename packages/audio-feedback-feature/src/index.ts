@@ -8,8 +8,9 @@ import type {
   FeatureInitContext,
   FeatureStateSnapshot,
 } from 'agentdev';
+import { CoreLifecycle } from 'agentdev';
+import type { HookDeclarations } from 'agentdev';
 import type { CallFinishContext } from 'agentdev';
-import { CallFinish } from 'agentdev';
 import type {
   AudioFeedbackConfig,
   AudioFeedbackRuntimeState,
@@ -26,6 +27,10 @@ const __dirname = dirname(__filename);
  * 在每次 call 完成时播放音频反馈，提供愉悦的交互体验
  */
 export class AudioFeedbackFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    playAudioOnCallFinish: { lifecycle: CoreLifecycle.CallFinish, kind: 'observe' as const },
+  };
   readonly name = 'audio-feedback';
   readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
@@ -237,7 +242,6 @@ export class AudioFeedbackFeature implements AgentFeature {
    * - interrupted / api_error / error / exception / max_steps → 失败音
    * - continuation → 不播放（call 暂停续接，非真正结束）
    */
-  @CallFinish
   async playAudioOnCallFinish(ctx: CallFinishContext): Promise<void> {
     if (!this.runtime.enabled) {
       return;

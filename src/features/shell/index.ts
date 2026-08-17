@@ -46,7 +46,6 @@ interface ResolvedShellConfig {
  */
 export class ShellFeature implements AgentFeature {
   readonly name = 'shell';
-  readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '提供 Bash/PowerShell 命令执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 

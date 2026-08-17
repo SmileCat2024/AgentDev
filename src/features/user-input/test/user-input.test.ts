@@ -1,3 +1,4 @@
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { UserInputFeature } from '../index.js';
 
@@ -15,8 +16,8 @@ describe('UserInputFeature', () => {
       expect(feature.name).toBe('user-input');
     });
 
-    it('should have no dependencies', () => {
-      expect(feature.dependencies).toEqual([]);
+    it('declares no inject dependencies', () => {
+      expect(readInjectDeclarations(feature)).toEqual([]);
     });
 
     it('should have empty template names', () => {

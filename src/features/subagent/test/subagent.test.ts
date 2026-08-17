@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SubAgentFeature, AgentPool } from '../index.js';
 import { SubAgentToolFactory } from '../tools.js';
 import { Decision } from '../../../core/lifecycle.js';
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 
 describe('SubAgentFeature', () => {
   let feature: SubAgentFeature;
@@ -17,8 +18,8 @@ describe('SubAgentFeature', () => {
       expect(feature.name).toBe('subagent');
     });
 
-    it('should have no dependencies', () => {
-      expect(feature.dependencies).toEqual([]);
+    it('declares no inject dependencies', () => {
+      expect(readInjectDeclarations(feature)).toEqual([]);
     });
 
     it('should have correct description', () => {

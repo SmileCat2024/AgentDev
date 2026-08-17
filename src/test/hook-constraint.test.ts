@@ -1,154 +1,139 @@
 /**
- * 测试反向钩子约束
+ * 测试静态声明的多钩子约束
  *
- * 验证：
- * 1. 非流程控制型钩子（void）可以在同一 Feature 内修饰多个方法
- * 2. 流程控制型钩子（DecisionResult）在同一 Feature 内只能修饰一个方法
- *
- * 注意：vitest 使用 esbuild 转译，不支持实验性装饰器语法（@Decorator）。
- * 这里使用 applyMethodDecorator 手动应用，与 hook-constraint-verify.test.ts 保持一致。
+ * 验证（static hooks 唯一入口后）：
+ * 1. 同一 Feature 内多个 observe 钩子按声明序注册与执行
+ * 2. 同一 Feature 内多个 guard（policy/advisor）按原语法则排序执行
+ * 3. 装饰器时代的"decision 钩子单例约束"由声明模型取代：
+ *    裁决权唯一性由跨 feature 的 policy 唯一性校验保证
+ *    （见 hook-declarations.test.ts 的 duplicate_policy 用例）
  */
 
 import { describe, it, expect } from 'vitest';
-import { StepFinish, ToolFinished, StepStart, ToolUse, Decision } from '../core/hooks-decorator.js';
 import { HooksRegistry } from '../core/hooks-registry.js';
-import { CoreLifecycle } from '../core/lifecycle.js';
+import { CoreLifecycle, Decision } from '../core/lifecycle.js';
 import type { AgentFeature } from '../core/feature.js';
+import type { HookDeclarations } from '../core/hook-declarations.js';
 import type {
   StepFinishDecisionContext,
-  ToolFinishedDecisionContext,
   StepStartContext,
   ToolContext,
 } from '../core/lifecycle.js';
 
-function applyMethodDecorator(
-  decorator: (target: any, propertyKey: string, descriptor: PropertyDescriptor) => PropertyDescriptor,
-  target: any,
-  propertyKey: string,
-): void {
-  const descriptor = Object.getOwnPropertyDescriptor(target, propertyKey);
-  expect(descriptor).toBeDefined();
-  Object.defineProperty(target, propertyKey, decorator(target, propertyKey, descriptor!));
+function withDeclarations<T extends new (...args: any[]) => InstanceType<T>>(
+  ctor: T,
+  declarations: HookDeclarations,
+): T {
+  (ctor as any).hooks = declarations;
+  return ctor;
 }
 
-describe('反向钩子约束测试', () => {
-  describe('流程控制型钩子（单例约束）', () => {
-    it('StepFinish 在同一 Feature 内只能使用一次', () => {
-      class InvalidFeature implements AgentFeature {
-        name = 'InvalidFeature';
+describe('静态声明多钩子约束', () => {
+  it('同一 Feature 内多个 observe 钩子按声明序注册并执行', async () => {
+    const registry = new HooksRegistry();
+    const executionOrder: string[] = [];
 
-        async handler1(_ctx: StepFinishDecisionContext) {
-          return Decision.Approve;
-        }
+    class MultiObserveFeature implements AgentFeature {
+      name = 'MultiObserveFeature';
 
-        async handler2(_ctx: StepFinishDecisionContext) {
-          return Decision.Deny;
-        }
-      }
-
-      applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler1');
-
-      expect(() => {
-        applyMethodDecorator(StepFinish, InvalidFeature.prototype, 'handler2');
-      }).toThrow(/只能使用一次/);
+      async firstHook(_ctx: StepStartContext) { executionOrder.push('first'); }
+      async secondHook(_ctx: StepStartContext) { executionOrder.push('second'); }
+      async thirdHook(_ctx: StepStartContext) { executionOrder.push('third'); }
+    }
+    withDeclarations(MultiObserveFeature, {
+      firstHook: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
+      secondHook: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
+      thirdHook: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
     });
 
-    it('ToolUse 在同一 Feature 内只能使用一次', () => {
-      class InvalidFeature implements AgentFeature {
-        name = 'InvalidFeature';
+    registry.collectFromFeature(new MultiObserveFeature());
 
-        async handler1(_ctx: ToolContext) {
-          return Decision.Approve;
-        }
+    const hooks = registry.get(CoreLifecycle.StepStart);
+    expect(hooks).toHaveLength(3);
+    expect(hooks.map(h => h.methodName)).toEqual(['firstHook', 'secondHook', 'thirdHook']);
 
-        async handler2(_ctx: ToolContext) {
-          return Decision.Deny;
-        }
-      }
-
-      applyMethodDecorator(ToolUse, InvalidFeature.prototype, 'handler1');
-
-      expect(() => {
-        applyMethodDecorator(ToolUse, InvalidFeature.prototype, 'handler2');
-      }).toThrow(/只能使用一次/);
+    await registry.executeVoid(CoreLifecycle.StepStart, {
+      step: 0, callIndex: 0, input: 'test', context: {} as any,
     });
+
+    expect(executionOrder).toEqual(['first', 'second', 'third']);
   });
 
-  describe('非流程控制型钩子（允许多个）', () => {
-    it('StepStart 可以在同一 Feature 内修饰多个方法', () => {
-      class ValidFeature implements AgentFeature {
-        name = 'ValidFeature';
+  it('同一 Feature 内 policy 先于 advisor 执行（跨钩子原语法则）', async () => {
+    const registry = new HooksRegistry();
+    const executionOrder: string[] = [];
 
-        async logStepStart(_ctx: StepStartContext) {}
-        async trackMetrics(_ctx: StepStartContext) {}
-      }
+    // advisor 声明在前，policy 声明在后——执行仍应 policy 先行
+    class MixedGuardFeature implements AgentFeature {
+      name = 'MixedGuardFeature';
 
-      expect(() => {
-        applyMethodDecorator(StepStart, ValidFeature.prototype, 'logStepStart');
-        applyMethodDecorator(StepStart, ValidFeature.prototype, 'trackMetrics');
-        new ValidFeature();
-      }).not.toThrow();
+      async advisorCheck(_ctx: ToolContext) { executionOrder.push('advisor'); return Decision.Continue; }
+      async policyCheck(_ctx: ToolContext) { executionOrder.push('policy'); return Decision.Continue; }
+    }
+    withDeclarations(MixedGuardFeature, {
+      advisorCheck: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard', role: 'advisor' },
+      policyCheck: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard', role: 'policy' },
     });
 
-    it('ToolFinished 可以在同一 Feature 内修饰多个方法', () => {
-      class ValidFeature implements AgentFeature {
-        name = 'ValidFeature';
+    registry.collectFromFeature(new MixedGuardFeature());
 
-        async logToolFinished(_ctx: ToolFinishedDecisionContext) {}
-        async validateToolFinished(_ctx: ToolFinishedDecisionContext) {}
-      }
-
-      expect(() => {
-        applyMethodDecorator(ToolFinished, ValidFeature.prototype, 'logToolFinished');
-        applyMethodDecorator(ToolFinished, ValidFeature.prototype, 'validateToolFinished');
-        new ValidFeature();
-      }).not.toThrow();
+    await registry.executeDecision(CoreLifecycle.ToolUse, {
+      call: {} as any, tool: {} as any, step: 0, input: '', context: {} as any,
+      getFeature: () => undefined,
     });
+
+    expect(executionOrder).toEqual(['policy', 'advisor']);
   });
 
-  describe('HooksRegistry 多方法注册测试', () => {
-    it('应该正确注册和执行多个非流程控制型钩子', async () => {
-      const registry = new HooksRegistry();
-      const executionOrder: string[] = [];
+  it('guard 与 observe 混挂同一 lifecycle：guard 先裁决，observe 收尾', async () => {
+    const registry = new HooksRegistry();
+    const executionOrder: string[] = [];
 
-      class MultiHookFeature implements AgentFeature {
-        name = 'MultiHookFeature';
+    class MixedKindFeature implements AgentFeature {
+      name = 'MixedKindFeature';
 
-        async firstHook(_ctx: StepStartContext) {
-          executionOrder.push('first');
-        }
-
-        async secondHook(_ctx: StepStartContext) {
-          executionOrder.push('second');
-        }
-
-        async thirdHook(_ctx: StepStartContext) {
-          executionOrder.push('third');
-        }
-      }
-
-      applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'firstHook');
-      applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'secondHook');
-      applyMethodDecorator(StepStart, MultiHookFeature.prototype, 'thirdHook');
-
-      const feature = new MultiHookFeature();
-      registry.collectFromFeature(feature);
-
-      const hooks = registry.get(CoreLifecycle.StepStart);
-      expect(hooks.length).toBe(3);
-      expect(hooks[0].methodName).toBe('firstHook');
-      expect(hooks[1].methodName).toBe('secondHook');
-      expect(hooks[2].methodName).toBe('thirdHook');
-
-      // 执行钩子验证顺序
-      await registry.executeVoid(CoreLifecycle.StepStart, {
-        step: 0,
-        callIndex: 0,
-        input: 'test',
-        context: {} as any,
-      });
-
-      expect(executionOrder).toEqual(['first', 'second', 'third']);
+      async observeUse(_ctx: ToolContext) { executionOrder.push('observe'); }
+      async guardUse(_ctx: ToolContext) { executionOrder.push('guard'); return Decision.Continue; }
+    }
+    withDeclarations(MixedKindFeature, {
+      observeUse: { lifecycle: CoreLifecycle.ToolUse, kind: 'observe' },
+      guardUse: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard', role: 'advisor' },
     });
+
+    registry.collectFromFeature(new MixedKindFeature());
+
+    const result = await registry.executeDecision(CoreLifecycle.ToolUse, {
+      call: {} as any, tool: {} as any, step: 0, input: '', context: {} as any,
+      getFeature: () => undefined,
+    });
+
+    expect(result).toBe(Decision.Continue);
+    expect(executionOrder).toEqual(['guard', 'observe']);
+  });
+
+  it('StepFinish guard 返回 Deny 终止循环', async () => {
+    const registry = new HooksRegistry();
+    const observed: string[] = [];
+
+    class StopFeature implements AgentFeature {
+      name = 'StopFeature';
+
+      async observeStep(_ctx: StepFinishDecisionContext) { observed.push('observe'); }
+      async stopLoop(_ctx: StepFinishDecisionContext) { return Decision.Deny; }
+    }
+    withDeclarations(StopFeature, {
+      observeStep: { lifecycle: CoreLifecycle.StepFinish, kind: 'observe' },
+      stopLoop: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard', role: 'policy' },
+    });
+
+    registry.collectFromFeature(new StopFeature());
+
+    const decision = await registry.executeDecision(CoreLifecycle.StepFinish, {
+      step: 0, input: '', context: {} as any, getFeature: () => undefined,
+    } as any);
+
+    expect(decision).toEqual({ action: Decision.Deny });
+    // policy 先执行并 Deny → 短路整批，同批 observe 不再执行
+    expect(observed).toEqual([]);
   });
 });

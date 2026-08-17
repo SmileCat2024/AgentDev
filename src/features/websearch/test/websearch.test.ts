@@ -1,3 +1,4 @@
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSearchFeature } from '../index.js';
 import { createWebFetchTool } from '../tools.js';
@@ -15,9 +16,9 @@ describe('WebSearchFeature', () => {
       expect(f.name).toBe('websearch');
     });
 
-    it('should have no dependencies', () => {
+    it('declares no inject dependencies', () => {
       const f = new WebSearchFeature();
-      expect(f.dependencies).toEqual([]);
+      expect(readInjectDeclarations(f)).toEqual([]);
     });
 
     it('should have correct description', () => {

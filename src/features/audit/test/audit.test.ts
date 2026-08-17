@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AuditFeature } from '../index.js';
 import { Decision } from '../../../core/lifecycle.js';
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 
 describe('AuditFeature', () => {
   let feature: AuditFeature;
@@ -21,8 +22,8 @@ describe('AuditFeature', () => {
       expect(feature.name).toBe('audit');
     });
 
-    it('should have no dependencies', () => {
-      expect(feature.dependencies).toEqual([]);
+    it('declares no inject dependencies', () => {
+      expect(readInjectDeclarations(feature)).toEqual([]);
     });
 
     it('should have correct description', () => {

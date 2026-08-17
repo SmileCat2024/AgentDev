@@ -21,8 +21,9 @@ import type {
   FeatureInitContext,
   FeatureContext,
 } from '../../core/feature.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import type { Tool } from '../../core/types.js';
-import { ToolUse } from '../../core/hooks-decorator.js';
 import type { ToolContext } from '../../core/lifecycle.js';
 import { Decision } from '../../core/lifecycle.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
@@ -123,8 +124,11 @@ export interface AuditFeatureConfig {
  * 在工具执行前进行安全审计，拦截危险的 bash 命令
  */
 export class AuditFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    auditBashCommand: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard' as const, role: 'advisor' as const },
+  };
   readonly name = 'audit';
-  readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\\\/g, '/');
   readonly description = '在工具执行前审计高风险 shell 命令，必要时阻断执行。';
 
@@ -204,7 +208,7 @@ export class AuditFeature implements AgentFeature {
     return undefined;
   }
 
-  // ========== 反向钩子（装饰器）==========
+  // ========== 反向钩子（static hooks 声明）==========
 
   /**
    * 工具使用前审计
@@ -215,7 +219,6 @@ export class AuditFeature implements AgentFeature {
    * 2. 调用 LLM 审计命令安全性
    * 3. 恶意则拒绝执行，安全则允许
    */
-  @ToolUse
   async auditBashCommand(ctx: ToolContext): Promise<DecisionResult> {
     // 未启用审计，直接通过
     if (!this.config.enabled) {

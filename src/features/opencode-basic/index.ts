@@ -17,9 +17,11 @@
 import { fileURLToPath } from 'url';
 import { resolve } from 'path';
 import { promises as fs } from 'fs';
+import { Decision } from '../../core/lifecycle.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import type { AgentFeature, FeatureStateSnapshot, PackageInfo } from '../../core/feature.js';
 import type { ToolContext } from '../../core/lifecycle.js';
-import { ToolUse, Decision } from '../../core/hooks-decorator.js';
 import type { FeatureInitContext } from '../../core/feature.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
@@ -46,8 +48,11 @@ export interface OpencodeBasicFeatureConfig {
  * OpencodeBasic Feature - 基础文件操作工具集
  */
 export class OpencodeBasicFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    validateWriteOperation: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard' as const, role: 'advisor' as const },
+  };
   readonly name = 'opencode-basic';
-  readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '提供读写文件、编辑、列目录、glob 和 grep 等基础工程化工具。包含"先读后写"安全保护机制。';
 
@@ -126,7 +131,6 @@ export class OpencodeBasicFeature implements AgentFeature {
    * - 记录 read 操作的文件路径
    * - 验证 write / edit 操作是否已先读取（write 创建的新文件自动豁免）
    */
-  @ToolUse
   async validateWriteOperation(ctx: ToolContext): Promise<DecisionResult> {
     const toolName = ctx.call.name;
 

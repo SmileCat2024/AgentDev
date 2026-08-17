@@ -14,7 +14,7 @@ import type {
   CompatHookName,
   CompatHookHandlerMap,
 } from './types.js';
-import type { Tool } from 'agentdev';
+import type { Tool, ToolResultValue } from 'agentdev';
 import type { Context } from 'agentdev';
 import { createLogger } from 'agentdev';
 
@@ -157,7 +157,7 @@ export function createCompatApi(
             messages: [], // 会在执行时填充
             call: { id: '', name: tool.name, arguments: args } as any,
           };
-          return tool.execute({ args, context: compatContext });
+          return (await tool.execute({ args, context: compatContext })) as ToolResultValue;
         },
       };
 

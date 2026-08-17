@@ -11,9 +11,10 @@
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, isAbsolute } from 'path';
+import { CoreLifecycle } from 'agentdev';
+import type { HookDeclarations } from 'agentdev';
 import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot, FeatureManifestDefinition } from 'agentdev';
 import { getPackageInfoFromSource } from 'agentdev';
-import { CallStart } from 'agentdev';
 
 export interface MemoryFeatureConfig {
   /** 读取 CLAUDE.md 的工作目录 */
@@ -25,6 +26,10 @@ export interface MemoryFeatureConfig {
 }
 
 export class MemoryFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    injectCLAUDEContent: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
+  };
   readonly name = 'memory';
   readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
@@ -122,7 +127,6 @@ export class MemoryFeature implements AgentFeature {
   /**
    * CallStart 钩子：仅在首次对话开始时注入文档内容
    */
-  @CallStart
   async injectCLAUDEContent(
     ctx: import('agentdev').CallStartContext
   ): Promise<void> {

@@ -6,6 +6,8 @@
 
 import { fileURLToPath } from 'url';
 import { resolve } from 'path';
+import { CoreLifecycle } from 'agentdev';
+import type { HookDeclarations } from 'agentdev';
 import type { AgentFeature, FeatureInitContext, FeatureContext } from 'agentdev';
 import type { Tool } from 'agentdev';
 import { type ToolRegistry } from 'agentdev';
@@ -26,7 +28,7 @@ import {
 import { createCompatApi, createPluginLogger } from './api.js';
 import { CompatHookRegistry } from './registry.js';
 import { DiagnosticsCollector } from './diagnostics.js';
-import { ToolUse, ToolFinished, Decision } from 'agentdev';
+import { Decision } from 'agentdev';
 import type { ToolContext, ToolResult } from 'agentdev';
 
 /**
@@ -35,6 +37,11 @@ import type { ToolContext, ToolResult } from 'agentdev';
  * 加载 OpenClaw 风格插件并将它们转换为 AgentDev 能力
  */
 export class PluginCompatFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    handleBeforeToolCall: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard' as const, role: 'advisor' as const },
+    handleAfterToolCall: { lifecycle: CoreLifecycle.ToolFinished, kind: 'observe' as const },
+  };
   name = 'plugin-compat';
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
   readonly description = '加载 OpenClaw 风格插件，并把插件工具与兼容钩子桥接到 AgentDev。';
@@ -219,7 +226,7 @@ export class PluginCompatFeature implements AgentFeature {
       throw new Error(`Tool not found: ${name}`);
     }
 
-    return tool.execute(params);
+    return tool.execute(params as Record<string, unknown>);
   }
 
   /**
@@ -263,7 +270,6 @@ export class PluginCompatFeature implements AgentFeature {
    *
    * 在工具执行前调用兼容插件的 before_tool_call 钩子
    */
-  @ToolUse
   async handleBeforeToolCall(ctx: ToolContext): Promise<typeof Decision.Deny | typeof Decision.Continue> {
     if (!this.compatHookRegistry.has('before_tool_call')) {
       return Decision.Continue;
@@ -297,7 +303,6 @@ export class PluginCompatFeature implements AgentFeature {
    *
    * 在工具执行后调用兼容插件的 after_tool_call 钩子
    */
-  @ToolFinished
   async handleAfterToolCall(result: ToolResult): Promise<void> {
     if (!this.compatHookRegistry.has('after_tool_call')) {
       return;

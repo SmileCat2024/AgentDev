@@ -1,7 +1,7 @@
 /**
  * OutputGuard Feature - 工具输出安全网
  *
- * 框架级 Feature，通过 @ToolResultTransform 钩子在工具结果写入 context 前进行截断。
+ * 框架级 Feature，通过 ToolResultTransform 钩子在工具结果写入 context 前进行截断。
  *
  * 设计层次：
  * - Layer 0（工具自截断）：工具在自己的 execute() 中自行截断（如 shell 的 30K）。
@@ -31,9 +31,10 @@ import type {
   PackageInfo,
   FeatureStateSnapshot,
 } from '../../core/feature.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import type { Tool } from '../../core/types.js';
 import type { ToolResultTransformContext } from '../../core/lifecycle.js';
-import { ToolResultTransform } from '../../core/hooks-decorator.js';
 import type { ToolExecResult } from '../../core/context.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import {
@@ -59,8 +60,11 @@ export interface OutputGuardConfig {
 // ========== Feature 实现 ==========
 
 export class OutputGuardFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    handleToolResultTransform: { lifecycle: CoreLifecycle.ToolResultTransform, kind: 'transform' as const },
+  };
   readonly name = 'output-guard';
-  readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
   readonly description =
     '工具输出安全网：在工具结果写入 context 前截断超限输出，防止上下文溢出。';
@@ -131,7 +135,6 @@ export class OutputGuardFeature implements AgentFeature {
 
   // ========== ToolResultTransform 钩子 ==========
 
-  @ToolResultTransform
   async handleToolResultTransform(
     ctx: ToolResultTransformContext,
   ): Promise<ToolExecResult | undefined> {

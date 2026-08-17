@@ -7,30 +7,29 @@
  * 3. mid-dispatch 快照语义（竞态安全）
  * 4. getSnapshot 包含 enabled 字段
  * 5. 生命周期（collectFromFeature 默认启用）
+ *
+ * fixture 一律使用静态声明（static hooks，唯一注册入口）。
  */
 
 import { describe, it, expect } from 'vitest';
-import { StepStart, ToolUse, StepFinish, Decision } from '../core/hooks-decorator.js';
 import { HooksRegistry } from '../core/hooks-registry.js';
-import { CoreLifecycle } from '../core/lifecycle.js';
+import { CoreLifecycle, Decision } from '../core/lifecycle.js';
 import type { AgentFeature } from '../core/feature.js';
+import type { HookDeclarations } from '../core/hook-declarations.js';
 import type {
   StepStartContext,
   ToolContext,
-  StepFinishDecisionContext,
 } from '../core/lifecycle.js';
 
-function applyMethodDecorator(
-  decorator: (target: any, propertyKey: string, descriptor: PropertyDescriptor) => PropertyDescriptor,
-  target: any,
-  propertyKey: string,
-): void {
-  const descriptor = Object.getOwnPropertyDescriptor(target, propertyKey);
-  expect(descriptor).toBeDefined();
-  Object.defineProperty(target, propertyKey, decorator(target, propertyKey, descriptor!));
+function withDeclarations<T extends new (...args: any[]) => InstanceType<T>>(
+  ctor: T,
+  declarations: HookDeclarations,
+): T {
+  (ctor as any).hooks = declarations;
+  return ctor;
 }
 
-// ========== 辅助：创建带装饰器的 Feature ==========
+// ========== 辅助：创建带静态声明的 Feature ==========
 
 function makeNotifyFeature(name: string, methodName: string, sideEffect: () => void) {
   class TestFeature implements AgentFeature {
@@ -39,7 +38,9 @@ function makeNotifyFeature(name: string, methodName: string, sideEffect: () => v
       sideEffect();
     }
   }
-  applyMethodDecorator(StepStart, TestFeature.prototype, methodName as any);
+  withDeclarations(TestFeature, {
+    [methodName]: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
+  });
   return new TestFeature();
 }
 
@@ -50,7 +51,27 @@ function makeDecisionFeature(name: string, methodName: string, returnValue: any)
       return returnValue;
     }
   }
-  applyMethodDecorator(ToolUse, TestFeature.prototype, methodName as any);
+  withDeclarations(TestFeature, {
+    [methodName]: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard', role: 'advisor' },
+  });
+  return new TestFeature();
+}
+
+function makeTransformFeature(name: string, methodNames: string[], sideEffects: Record<string, () => void>) {
+  class TestFeature implements AgentFeature {
+    name = name;
+  }
+  for (const methodName of methodNames) {
+    (TestFeature.prototype as any)[methodName] = async (_ctx: any) => {
+      sideEffects[methodName]?.();
+      return undefined;
+    };
+  }
+  const declarations: HookDeclarations = {};
+  for (const methodName of methodNames) {
+    declarations[methodName] = { lifecycle: CoreLifecycle.ToolResultTransform, kind: 'transform' };
+  }
+  withDeclarations(TestFeature, declarations);
   return new TestFeature();
 }
 
@@ -73,7 +94,7 @@ describe('HooksRegistry disable/enable', () => {
 
     it('disable decision 钩子后等价于返回 Continue', async () => {
       const registry = new HooksRegistry();
-      // 一个返回 Deny 的 decision 钩子
+      // 一个返回 Deny 的 guard 钩子
       const feature = makeDecisionFeature('BlockFeature', 'onToolUse', Decision.Deny);
       registry.collectFromFeature(feature);
 
@@ -157,16 +178,15 @@ describe('HooksRegistry disable/enable', () => {
 
         // 第一个钩子：在执行期间禁用第二个钩子
         async first(_ctx: StepStartContext) {
-          // 在 first 的 await 期间，禁用 second
-          // 由于 Node.js 单线程，这段同步代码会在 second 之前执行
           registry.disableHook(CoreLifecycle.StepStart, 'MidDispatch', 'second');
         }
 
         async second(_ctx: StepStartContext) {}
       }
-
-      applyMethodDecorator(StepStart, MidDispatchFeature.prototype, 'first' as any);
-      applyMethodDecorator(StepStart, MidDispatchFeature.prototype, 'second' as any);
+      withDeclarations(MidDispatchFeature, {
+        first: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
+        second: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
+      });
 
       const feature = new MidDispatchFeature();
       // 用 spy 追踪 second 是否被调用
@@ -196,9 +216,10 @@ describe('HooksRegistry disable/enable', () => {
         async first(_ctx: StepStartContext) { calls.push('first'); }
         async second(_ctx: StepStartContext) { calls.push('second'); }
       }
-
-      applyMethodDecorator(StepStart, TwoHookFeature.prototype, 'first' as any);
-      applyMethodDecorator(StepStart, TwoHookFeature.prototype, 'second' as any);
+      withDeclarations(TwoHookFeature, {
+        first: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
+        second: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' },
+      });
 
       registry.collectFromFeature(new TwoHookFeature());
 
@@ -223,28 +244,10 @@ describe('HooksRegistry disable/enable', () => {
       const registry = new HooksRegistry();
       const transformedBy: string[] = [];
 
-      class TransformFeature implements AgentFeature {
-        name = 'TransformFeat';
-        async transformA(_ctx: any) {
-          transformedBy.push('A');
-          return undefined; // 不修改
-        }
-        async transformB(_ctx: any) {
-          transformedBy.push('B');
-          return undefined;
-        }
-      }
-
-      // ToolResultTransform 是非 decision 钩子，允许多个
-      // 手动注册元数据
-      const proto = TransformFeature.prototype;
-      const constructor = proto.constructor as any;
-      if (!constructor._hookDecisions) {
-        constructor._hookDecisions = new Map();
-      }
-      constructor._hookDecisions.set(CoreLifecycle.ToolResultTransform, 'transformA,transformB');
-
-      const feature = new TransformFeature();
+      const feature = makeTransformFeature('TransformFeat', ['transformA', 'transformB'], {
+        transformA: () => transformedBy.push('A'),
+        transformB: () => transformedBy.push('B'),
+      });
       registry.collectFromFeature(feature);
 
       // 禁用 transformB
@@ -291,7 +294,7 @@ describe('HooksRegistry disable/enable', () => {
       registry.collectFromFeature(feature);
 
       const hooks = registry.get(CoreLifecycle.StepStart);
-      expect(hooks.length).toBe(1);
+      expect(hooks).toHaveLength(1);
       expect(hooks[0].enabled).toBe(true);
     });
 
@@ -328,23 +331,10 @@ describe('HooksRegistry disable/enable', () => {
     it('被禁用的 transform 钩子不修改数据', async () => {
       const registry = new HooksRegistry();
 
-      class TransformFeature implements AgentFeature {
-        name = 'TransformFeat';
-        async doubleIt(_ctx: any) {
-          return undefined; // 简化：不实际修改
-        }
-      }
-
-      const proto = TransformFeature.prototype;
-      const constructor = proto.constructor as any;
-      if (!constructor._hookDecisions) {
-        constructor._hookDecisions = new Map();
-      }
-      constructor._hookDecisions.set(CoreLifecycle.ToolResultTransform, 'doubleIt');
-
-      const feature = new TransformFeature();
       let transformCalled = false;
-      (feature as any).doubleIt = () => { transformCalled = true; return undefined; };
+      const feature = makeTransformFeature('TransformFeat', ['doubleIt'], {
+        doubleIt: () => { transformCalled = true; },
+      });
 
       registry.collectFromFeature(feature);
       registry.disableHook(CoreLifecycle.ToolResultTransform, 'TransformFeat', 'doubleIt');

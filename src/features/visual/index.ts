@@ -51,9 +51,10 @@ import type {
   FeatureStateSnapshot,
   PackageInfo,
 } from '../../core/feature.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import type { Tool } from '../../core/types.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
-import { CallStart } from '../../core/hooks-decorator.js';
 import type { CallStartContext } from '../../core/lifecycle.js';
 import type {
   WindowInfo,
@@ -102,8 +103,11 @@ function getDefaultPythonPath(workspaceDir?: string): string {
 // ========== VisualFeature 实现 ==========
 
 export class VisualFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    injectWindowInfo: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
+  };
   readonly name = 'visual';
-  readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
   readonly description = '提供窗口截图、视觉理解和当前工作区状态注入能力。';
 
@@ -496,7 +500,7 @@ except ImportError as e:
     }
   }
 
-  // ========== 反向钩子（装饰器）==========
+  // ========== 反向钩子（static hooks 声明）==========
 
   /**
    * 处理 /visual 命令并注入窗口信息（增量版本）
@@ -510,7 +514,6 @@ except ImportError as e:
    * - 第一次：全量注入（所有窗口 + 所有缓存）
    * - 后续：只注入变化部分（窗口状态变化 + 新的分析结果）
    */
-  @CallStart
   async injectWindowInfo(ctx: CallStartContext): Promise<void> {
     if (!this.config.enableWindowInfo) {
       return;

@@ -113,7 +113,6 @@ function createLspTools(feature: LspFeature): Tool[] {
 
 export class LspFeature implements AgentFeature {
   readonly name = 'lsp';
-  readonly dependencies: string[] = [];
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = 'LSP (Language Server Protocol) - 提供代码智能能力：跳转定义、查找引用、悬停提示等';
 

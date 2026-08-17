@@ -1,3 +1,4 @@
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   createInitialState,
@@ -18,9 +19,9 @@ describe('FileHistoryFeature', () => {
       expect(f.name).toBe('file-history');
     });
 
-    it('should have no dependencies', () => {
+    it('declares no inject dependencies', () => {
       const f = new FileHistoryFeature();
-      expect(f.dependencies).toEqual([]);
+      expect(readInjectDeclarations(f)).toEqual([]);
     });
 
     it('should have correct description', () => {

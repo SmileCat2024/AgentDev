@@ -56,7 +56,6 @@ const choiceToolRender = {
 
 export class UserInputFeature implements AgentFeature {
   readonly name = 'user-input';
-  readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
   readonly description = '允许 Agent 通过调试界面向用户发起输入请求并等待回复。';
 

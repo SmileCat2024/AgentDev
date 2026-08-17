@@ -19,6 +19,7 @@ import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import { runWithNotificationScope } from './notification.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
+import { loadFeatureModule, type FeatureReloadResult } from './feature-reload.js';
 import type { CallContinuationRequest } from './continuation.js';
 import {
   getDefaultSessionStore,
@@ -61,6 +62,8 @@ import { fileURLToPath } from 'url';
 import { HookErrorHandling, executeHook } from './agent/hooks-executor.js';
 import { type LifecycleHooks } from './agent/lifecycle-hooks.js';
 import { TemplateResolver } from './agent/template-resolver.js';
+import { resolveFeatureOrder, orderErrorsToError } from './feature-graph.js';
+import { validatePolicyUniqueness, issuesToError } from './hook-declarations.js';
 import { ToolExecutor } from './agent/tool-executor.js';
 import { ReActLoopRunner } from './agent/react-loop.js';
 import type { DebugPusher } from './agent/types.js';
@@ -1424,6 +1427,18 @@ class AgentBase {
     }
 
     const initialization = (async () => {
+      // 装配校验（工作项 A1/A3）：依赖拓扑 + policy 唯一性。
+      // 错误在此处爆出（装配时），不许运行时碰运气。
+      const featureList = Array.from(this.features.values());
+      const { order, errors: orderErrors } = resolveFeatureOrder(featureList);
+      if (orderErrors.length > 0) {
+        throw orderErrorsToError(orderErrors);
+      }
+      const policyIssues = validatePolicyUniqueness(featureList);
+      if (policyIssues.length > 0) {
+        throw issuesToError(policyIssues);
+      }
+
       // 预收集所有 Feature 自带的 skills，在 onInitiate 之前注入 SkillFeature
       const featureSkills = await this.collectFeatureSkills();
       if (featureSkills.length > 0) {
@@ -1433,8 +1448,8 @@ class AgentBase {
         }
       }
 
-      for (const [name, feature] of this.features) {
-        await this.initSingleFeature(name, feature);
+      for (const feature of order) {
+        await this.initSingleFeature(feature.name, feature);
       }
 
       // 子类可在此 hook 中注册额外工具（如统一代理工具）
@@ -1544,6 +1559,198 @@ class AgentBase {
     this.pushInspectorSnapshot();
     console.log(`[Agent] Dynamically mounted feature '${feature.name}' (tools + hooks initialized)`);
     return this;
+  }
+
+  /**
+   * 热载一个 Feature：不重启 Agent、不丢失会话上下文。
+   *
+   * 流程（任一步失败自动回退旧实例）：
+   * 1. captureState 旧实例（removeFeature 会触发 onDestroy，状态须先取出）
+   * 2. removeFeature 卸载旧实例（工具/钩子/injectors）
+   * 3. cache-busting 动态 import 加载新模块代码
+   * 4. 新实例 restoreState 迁移状态（无状态契约则显式标记丢失）
+   * 5. mountFeature 挂载（工具注册 + onInitiate + 钩子收集 + inspector 推送）
+   *
+   * @param featureName 已挂载的 feature 名
+   * @param modulePath 新代码的绝对路径或 file:// URL；
+   *                   缺省时读取旧实例构造器上的静态 reloadPath 声明
+   * @throws mount/import 阶段失败时回退旧实例后重新抛出（错误信息标注失败阶段）
+   */
+  async reloadFeature(featureName: string, modulePath?: string): Promise<FeatureReloadResult> {
+    const startedAt = Date.now();
+    const oldFeature = this.features.get(featureName);
+    if (!oldFeature) {
+      throw new Error(
+        `Feature reload failed: feature '${featureName}' is not mounted. ` +
+          'Mounted features: ' + Array.from(this.features.keys()).join(', '),
+      );
+    }
+
+    const resolvedModulePath = modulePath
+      ?? (oldFeature.constructor as unknown as { reloadPath?: string }).reloadPath;
+    if (!resolvedModulePath) {
+      throw new Error(
+        `Feature reload failed: no modulePath for '${featureName}'. ` +
+          'Pass the module path explicitly, or declare `static reloadPath` on the feature class.',
+      );
+    }
+
+    const oldClassName = oldFeature.constructor.name;
+    const canTransferState =
+      typeof oldFeature.captureState === 'function' &&
+      typeof oldFeature.restoreState === 'function';
+
+    // 捕获旧实例工具的用户决策状态（enabled/disabled/removed）。
+    // removeFeature 会把工具打入 pendingRemoved；register() 尊重该标记
+    // （用户移除决策跨重注册保持），因此 reload 必须在挂载后恢复原状态——
+    // 否则被程序性移除的工具在热载后永久消失。
+    const toolStates = new Map<string, 'enabled' | 'disabled' | 'removed'>();
+    for (const tool of oldFeature.getTools?.() ?? []) {
+      toolStates.set(
+        tool.name,
+        this.tools.isEnabled(tool.name)
+          ? 'enabled'
+          : this.tools.isDisabled(tool.name)
+            ? 'disabled'
+            : 'removed',
+      );
+    }
+
+    // 1. 先取状态（removeFeature 的 onDestroy 可能释放资源）
+    let capturedState: unknown;
+    if (canTransferState) {
+      capturedState = oldFeature.captureState!();
+    } else {
+      this.logger?.warn(
+        `Feature '${featureName}' has no captureState/restoreState contract; ` +
+          'in-memory state will be lost on reload',
+      );
+    }
+
+    // 2. 卸载旧实例
+    this.removeFeature(featureName);
+
+    const rollback = (stage: string, error: unknown): never => {
+      // 回退：旧实例重新挂载 + 状态回灌。回退本身的失败向上抛出（状态已不安全）。
+      try {
+        this.mountFeatureSync(oldFeature);
+        if (canTransferState && capturedState !== undefined) {
+          oldFeature.restoreState!(capturedState);
+        }
+        this.restoreToolStates(toolStates);
+      } catch (rollbackError) {
+        throw new Error(
+          `Feature '${featureName}' reload failed at stage '${stage}', and rollback also failed. ` +
+            `Original error: ${error instanceof Error ? error.message : String(error)}. ` +
+            `Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+          { cause: error },
+        );
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Feature '${featureName}' reload failed at stage '${stage}': ${message}. ` +
+          'Previous instance has been restored.',
+        { cause: error },
+      );
+    };
+
+    // 3. 加载新模块
+    let NewCtor: (new () => AgentFeature) | undefined;
+    try {
+      NewCtor = await loadFeatureModule(resolvedModulePath, oldClassName) as new () => AgentFeature;
+    } catch (error) {
+      rollback('import', error);
+    }
+
+    // 4-5. 新实例 + 状态迁移 + 挂载
+    let newFeature: AgentFeature;
+    try {
+      newFeature = new NewCtor!();
+      if (newFeature.name !== featureName) {
+        throw new Error(
+          `reloaded feature reports name '${newFeature.name}', expected '${featureName}'`,
+        );
+      }
+    } catch (error) {
+      rollback('instantiate', error);
+    }
+
+    // 状态迁移要求新旧双侧都有契约（与 checkpoint.ts 的采集规则一致）
+    const newStateCapable =
+      typeof newFeature!.captureState === 'function' &&
+      typeof newFeature!.restoreState === 'function';
+    let stateTransferred = false;
+    if (newStateCapable && canTransferState && capturedState !== undefined) {
+      try {
+        await newFeature!.restoreState!(capturedState);
+        stateTransferred = true;
+      } catch (error) {
+        rollback('state-transfer', error);
+      }
+    } else if (canTransferState && !newStateCapable) {
+      this.logger?.warn(
+        `Feature '${featureName}' new code drops the captureState/restoreState contract; ` +
+          'previous state could not be transferred',
+      );
+    }
+
+    try {
+      await this.mountFeature(newFeature!);
+      this.restoreToolStates(toolStates);
+    } catch (error) {
+      rollback('mount', error);
+    }
+
+    return {
+      featureName,
+      stateTransferred,
+      rolledBack: false,
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  /**
+   * 恢复工具的用户决策状态（reloadFeature 专用）。
+   *
+   * 新代码注册后，工具名若与旧版本一致，恢复 reload 前的
+   * enabled/disabled/removed 状态；新工具保持注册默认值。
+   */
+  private restoreToolStates(states: Map<string, 'enabled' | 'disabled' | 'removed'>): void {
+    for (const [name, state] of states) {
+      if (state === 'enabled') {
+        this.tools.enable(name);
+      } else if (state === 'disabled') {
+        this.tools.disable(name);
+      } else {
+        this.tools.remove(name);
+      }
+    }
+  }
+
+  /**
+   * mountFeature 的同步回退通道：reloadFeature 失败时恢复旧实例。
+   *
+   * 与 mountFeature 的区别：不做 inspector 推送延迟（立即同步注册），
+   * 供回退路径在抛错前完成恢复。
+   */
+  private mountFeatureSync(feature: AgentFeature): void {
+    this.use(feature);
+    if (this.featureToolsReady) {
+      this.initSingleFeatureSync(feature);
+    }
+  }
+
+  /**
+   * initSingleFeature 的同步变体（回退路径专用，不等待异步初始化）。
+   */
+  private initSingleFeatureSync(feature: AgentFeature): void {
+    if (feature.getTools) {
+      for (const tool of feature.getTools() || []) {
+        this.tools.register(tool, feature.name);
+      }
+    }
+    this.hooksRegistry.collectFromFeature(feature);
+    this.pushInspectorSnapshot();
   }
 
   /**

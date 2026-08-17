@@ -1,3 +1,4 @@
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SkillFeature } from '../index.js';
 import { invokeSkillTool } from '../tools.js';
@@ -28,9 +29,9 @@ describe('SkillFeature', () => {
       expect(f.name).toBe('skill');
     });
 
-    it('should have no dependencies', () => {
+    it('declares no inject dependencies', () => {
       const f = new SkillFeature();
-      expect(f.dependencies).toEqual([]);
+      expect(readInjectDeclarations(f)).toEqual([]);
     });
 
     it('should have correct description', () => {

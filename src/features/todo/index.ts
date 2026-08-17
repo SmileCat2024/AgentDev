@@ -5,7 +5,7 @@
  * 内置智能提醒功能，自动跟踪工具使用并在合适时机注入提醒
  *
  * 重构说明：
- * - 使用反向钩子装饰器实现提醒逻辑
+ * - 使用 static hooks 静态声明反向钩子实现提醒逻辑
  * - 不再需要在 Agent 中重写 onStepStart/onStepFinished
  * - 每个发生 Todo 写操作的 Step 结束后，自动注入一次最新完整任务列表
  */
@@ -20,9 +20,10 @@ import type {
   FeatureStateSnapshot,
   PackageInfo,
 } from '../../core/feature.js';
+import type { HookDeclarations } from '../../core/hook-declarations.js';
+import { CoreLifecycle } from '../../core/lifecycle.js';
 import type { Context } from '../../core/context.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
-import { StepStart, StepFinish, CallStart } from '../../core/hooks-decorator.js';
 import type { StepStartContext, StepFinishDecisionContext, CallStartContext } from '../../core/lifecycle.js';
 import { Decision } from '../../core/lifecycle.js';
 import type { DecisionResult } from '../../core/lifecycle.js';
@@ -48,6 +49,12 @@ const MAX_DESCRIPTION_LENGTH = 500;
  * 使用反向钩子自动处理提醒逻辑，无需在 Agent 中重写钩子方法
  */
 export class TodoFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    checkAndInjectReminder: { lifecycle: CoreLifecycle.StepStart, kind: 'observe' as const },
+    onCallStart: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
+    recordToolUsage: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard' as const, role: 'advisor' as const },
+  };
   readonly name = 'todo';
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '维护任务清单，并在合适的循环时机自动提醒模型更新 todo 状态。';
@@ -204,7 +211,7 @@ export class TodoFeature implements AgentFeature {
     return undefined;
   }
 
-  // ========== 反向钩子（装饰器）==========
+  // ========== 反向钩子（static hooks 声明）==========
 
   /**
    * Step 开始时检查是否需要注入 reminder
@@ -215,7 +222,6 @@ export class TodoFeature implements AgentFeature {
    * 2. 达到阈值时注入 reminder 系统消息（包含当前/下一任务状态）
    * 3. 防止重复注入
    */
-  @StepStart
   async checkAndInjectReminder(ctx: StepStartContext): Promise<void> {
     const threshold = this.getCurrentThreshold();
     console.log(`[TodoFeature] callIndex=${ctx.callIndex}, counter=${this.consecutiveNoTodoTurns}, threshold=${threshold}, injected=${this.reminderInjected}`);
@@ -238,7 +244,6 @@ export class TodoFeature implements AgentFeature {
    * 3. 有待执行任务时注入简短的"当前/下一项"状态
    * 4. 重置 no-todo 计数器（新一轮用户交互）
    */
-  @CallStart
   async onCallStart(ctx: CallStartContext): Promise<void> {
     // 首次调用不注入
     if (ctx.isFirstCall) return;
@@ -269,7 +274,6 @@ export class TodoFeature implements AgentFeature {
    * 3. 使用了则重置计数器，未使用则计数器+1
    * 4. 返回 Continue 使用默认行为
    */
-  @StepFinish
   async recordToolUsage(ctx: StepFinishDecisionContext): Promise<DecisionResult> {
     const toolCalls = ctx.llmResponse.toolCalls ?? [];
     const usedTodoTool = toolCalls.some((call: { name: string }) => this.isTodoTool(call.name));

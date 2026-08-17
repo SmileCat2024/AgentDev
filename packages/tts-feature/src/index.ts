@@ -45,8 +45,9 @@ import type {
   FeatureStateSnapshot,
   PackageInfo,
 } from 'agentdev';
+import { CoreLifecycle } from 'agentdev';
+import type { HookDeclarations } from 'agentdev';
 import { getPackageInfoFromSource } from 'agentdev';
-import { StepFinish } from 'agentdev';
 import type { StepFinishedContext } from 'agentdev';
 import type {
   TTSFeatureConfig,
@@ -67,6 +68,10 @@ const DEFAULT_STYLE_TAGS = '开心 粤语 撒娇';
 // ========== TTSFeature 实现 ==========
 
 export class TTSFeature implements AgentFeature {
+
+  static hooks: HookDeclarations = {
+    speakOnStepFinish: { lifecycle: CoreLifecycle.StepFinish, kind: 'observe' as const },
+  };
   readonly name = 'tts';
   readonly dependencies: string[] = [];
   readonly source = import.meta.url.replace(/^file:\/\/\//, '').replace(/\\/g, '/');
@@ -328,7 +333,6 @@ export class TTSFeature implements AgentFeature {
   /**
    * 在每个 step 结束时自动朗读模型输出
    */
-  @StepFinish
   async speakOnStepFinish(ctx: StepFinishedContext): Promise<void> {
     const triggers = this.config.triggers;
     if (!triggers?.autoEnabled || !this.state.enabled) {

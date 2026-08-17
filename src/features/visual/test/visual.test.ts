@@ -1,3 +1,4 @@
+import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { VisualFeature } from '../index.js';
 
@@ -19,8 +20,8 @@ describe('VisualFeature', () => {
       expect(feature.name).toBe('visual');
     });
 
-    it('should have no dependencies', () => {
-      expect(feature.dependencies).toEqual([]);
+    it('declares no inject dependencies', () => {
+      expect(readInjectDeclarations(feature)).toEqual([]);
     });
 
     it('should have correct description', () => {

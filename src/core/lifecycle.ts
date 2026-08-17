@@ -143,7 +143,7 @@ export interface CallStartContext {
 /**
  * Call 结束原因
  *
- * 让 @CallFinish 钩子能结构化地判断 call 为什么结束，
+ * 让 CallFinish 钩子能结构化地判断 call 为什么结束，
  * 不再需要解析 response 字符串前缀。
  */
 export type CallFinishReason =

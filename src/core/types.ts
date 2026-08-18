@@ -642,6 +642,13 @@ export interface AgentSession {
   inputLease?: InputLease;
   // 运行期间排队等待的用户输入（用于输入框常驻 + 队列注入）
   queuedInputs: QueuedInput[];
+  /**
+   * 外部用户回合的接受策略，注册时声明。
+   * 'standard'（默认）：接受聊天邮箱排队与输入租约。
+   * 'none'：拒绝排队注入；测试沙盒等由宿主进程驱动输入的运行时使用。
+   * 输入租约（interactive input request）不受此策略限制，仍由 feature 控制。
+   */
+  inputPolicy?: 'standard' | 'none';
 }
 
 export interface InputLease {
@@ -740,6 +747,7 @@ export interface RegisterAgentMsg {
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
   activeInputRequest?: ActiveInputRequest; // 活跃的输入请求（用于重连后恢复）
+  inputPolicy?: 'standard' | 'none'; // 外部用户回合接受策略（'none' = 拒绝排队注入）
 }
 
 export interface UpdateAgentInspectorMsg {

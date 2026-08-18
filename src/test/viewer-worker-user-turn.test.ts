@@ -165,4 +165,55 @@ describe('ViewerWorker user-turn contract', () => {
       source: 'test',
     });
   });
+
+  it('stores the input policy declared at registration', () => {
+    const worker = new ViewerWorker(0, false, getTestUdsPath());
+    worker.handleRegisterAgent({
+      agentId: 'sealed-agent',
+      name: 'Sealed Runtime',
+      inputPolicy: 'none',
+    });
+
+    const session = worker.getOrCreateSession('sealed-agent', 'Sealed Runtime');
+    expect(session.inputPolicy).toBe('none');
+
+    // 默认注册不设置策略：外部输入保持既有行为
+    worker.handleRegisterAgent({ agentId: 'open-agent', name: 'Open Runtime' });
+    const openSession = worker.getOrCreateSession('open-agent', 'Open Runtime');
+    expect(openSession.inputPolicy).toBeUndefined();
+  });
+
+  it('rejects queued user turns for runtimes sealed against external input', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputPolicy = 'none';
+    session.callActive = true;
+
+    const result = worker.submitUserTurn(agentId, {
+      text: 'must not enter the mailbox',
+      source: 'chat-composer',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      code: 'runtime_not_accepting_input',
+      error: 'This runtime does not accept external user turns',
+    });
+    expect(session.queuedInputs).toHaveLength(0);
+  });
+
+  it('keeps input leases feature-driven even under a sealed mailbox policy', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputPolicy = 'none';
+    session.inputLease = { requestId: 'feature-requested', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    const result = worker.submitUserTurn(agentId, { text: 'lease reply', source: 'chat-composer' });
+
+    expect(result.success).toBe(true);
+    expect(result.delivery).toBe('input');
+    expect(writes).toHaveLength(1);
+  });
 });

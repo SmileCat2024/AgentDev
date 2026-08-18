@@ -28,7 +28,10 @@ export class WritePolicyFeature implements AgentFeature {
     this.logger = ctx.logger;
   }
 
-  // static hooks: { validate: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard', role: 'policy' } }
+  static hooks = {
+    decideWrite: { lifecycle: CoreLifecycle.ToolUse, kind: 'guard' as const, role: 'policy' as const },
+  };
+
   async decideWrite(ctx: ToolContext): Promise<DecisionResult> {
     if (ctx.call.name !== 'record_update') return Decision.Continue;
 

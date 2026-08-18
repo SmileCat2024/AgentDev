@@ -9,6 +9,7 @@ import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import { discoverGatewayServers, gatewayServersToConfig } from '../../../mcp/gateway-client.js';
+import { MCPFeature } from '../index.js';
 
 let _server: any;
 let _port = 0;
@@ -78,5 +79,25 @@ describe('Gateway discovery', () => {
     };
     const config = gatewayServersToConfig(result, ['a']);
     expect(Object.keys(config)).toEqual(['b']);
+  });
+});
+
+describe('MCPFeature gateway config defaults', () => {
+  it('enables gateway discovery when featureConfig is absent', () => {
+    const feature = new MCPFeature();
+    const resolved = (feature as any).resolveFeatureConfig(undefined);
+    expect(resolved.enableGateway).toBe(true);
+  });
+
+  it('enables gateway discovery for an empty featureConfig object', () => {
+    const feature = new MCPFeature();
+    const resolved = (feature as any).resolveFeatureConfig({});
+    expect(resolved.enableGateway).toBe(true);
+  });
+
+  it('keeps explicit enableGateway=false', () => {
+    const feature = new MCPFeature();
+    const resolved = (feature as any).resolveFeatureConfig({ enableGateway: false });
+    expect(resolved.enableGateway).toBe(false);
   });
 });

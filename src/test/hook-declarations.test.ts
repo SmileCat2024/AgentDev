@@ -128,6 +128,21 @@ describe('validateHookDeclarations', () => {
     expect(issues[0].message).toContain('onGhost');
   });
 
+  it('reports invalid_hooks_shape when static hooks is an array (not an object map)', () => {
+    class F implements AgentFeature {
+      name = 'array-feature';
+      provideTools(): void {}
+    }
+    // 常见误写：数组 + method 字段。旧校验把索引 '0' 当方法名报 method_missing，误导修复方向。
+    (F as any).hooks = [{ lifecycle: CoreLifecycle.CallStart, kind: 'observe', method: 'provideTools' }];
+
+    const issues = validateHookDeclarations(new F());
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('invalid_hooks_shape');
+    expect(issues[0].message).toContain('对象映射');
+    expect(issues[0].message).toContain('static hooks = {}');
+  });
+
   it('reports method_not_function when declared member is not a function', () => {
     class F implements AgentFeature {
       name = 'f';

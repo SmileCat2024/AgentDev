@@ -41,6 +41,7 @@ export interface RegisterClawAgentInput {
   featureTemplates?: Record<string, string>;
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
+  inputPolicy?: 'standard' | 'none';
 }
 
 export class ClawDebugClient {

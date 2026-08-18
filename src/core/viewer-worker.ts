@@ -519,6 +519,7 @@ class ViewerWorker {
       createdAt: session.createdAt,
       messageCount: session.messages.length,
       connected: this.isSessionConnected(session),
+      inputAccepted: session.inputPolicy !== 'none',
     }));
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1119,6 +1120,15 @@ class ViewerWorker {
 
     // 这是 runtime 的会话邮箱，不依赖 callActive。它承接新建/恢复会话中
     // “前端已可编辑、输入循环尚未开放 lease”这一正常启动阶段的首条消息。
+    // 邮箱封禁（inputPolicy 'none'）只拒绝排队注入；feature 驱动的输入租约
+    // 不受影响，仍可正常回复。
+    if (session.inputPolicy === 'none') {
+      return {
+        success: false,
+        code: 'runtime_not_accepting_input',
+        error: 'This runtime does not accept external user turns',
+      };
+    }
     const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef);
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
@@ -1254,8 +1264,17 @@ class ViewerWorker {
 
         const session = this.agentSessions.get(agentId);
         if (!session) {
-          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.writeHead(404);
           res.end(JSON.stringify({ error: 'Agent not found' }));
+          return;
+        }
+        if (session.inputPolicy === 'none') {
+          res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({
+            success: false,
+            code: 'runtime_not_accepting_input',
+            error: 'This runtime does not accept external user turns',
+          }));
           return;
         }
 
@@ -1470,8 +1489,13 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector, overview, activeInputRequest } = msg;
+    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
     const session = this.getOrCreateSession(agentId, name);
+
+    // 外部输入策略（'none' = 拒绝排队注入，如测试沙盒）
+    if (inputPolicy === 'none') {
+      session.inputPolicy = 'none';
+    }
 
     // 存储项目根目录（用于模板文件加载）
     if (projectRoot) {

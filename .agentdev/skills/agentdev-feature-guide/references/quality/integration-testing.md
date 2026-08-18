@@ -109,3 +109,13 @@ events.push('feature-a:tool-use');
 9. dispose 并确认进程能自然退出。
 
 不要只从源码路径运行 smoke test。交付问题通常只在打包结果中出现。
+
+## 与 Agent Studio 验证路线的关系
+
+本文教的 ScriptedLLM 夹具适合框架级回归（确定性、无模型成本）。在 Agent Studio 里开发 Feature 时，等价能力用真实模型 + Test Runtime 获得：
+
+- **工具执行循环 / Hook 顺序断言** → `studio_run_test` 的 `toolCalls` 证据 + 按运行标签 `studio-run:<runId>` 过滤 Runtime 日志（`agent.reverse-hook` 命名空间含每次 `hook.invoked` 与 `decision` 事件），`studio_get_run` 返回完整执行记录；
+- **Hook 是否真实声明并挂载** → Runtime 的 hooks inspector snapshot（`studio-sandbox:<项目>` agent 的 `/hooks`）；
+- **状态恢复** → `studio_stop_runtime` 后再 `studio_start_runtime`，Feature 的 `captureState/restoreState` 随会话自动往返。
+
+两条路线互补：夹具回答"给定输入必产生给定行为"，Studio 回答"真实模型在装配好的环境里会不会正确使用这个 Feature"。

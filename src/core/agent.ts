@@ -19,7 +19,7 @@ import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import { runWithNotificationScope } from './notification.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
-import { loadFeatureModule, type FeatureReloadResult } from './feature-reload.js';
+import { loadFeatureModule, isFeatureInitFailureError, type FeatureReloadOptions, type FeatureReloadResult, type FeatureInitFailureError, type FeatureReloadFailureError } from './feature-reload.js';
 import { preflightAssembly } from './feature-preflight.js';
 import type { CallContinuationRequest } from './continuation.js';
 import {
@@ -568,7 +568,7 @@ class AgentBase {
     name?: string,
     port?: number,
     openBrowser?: boolean,
-    options?: { projectRoot?: string }
+    options?: { projectRoot?: string; inputPolicy?: 'standard' | 'none' }
   ): Promise<this> {
     this.debugHub = DebugHub.getInstance();
     this.debugEnabled = true;
@@ -611,6 +611,7 @@ class AgentBase {
       this.buildOverviewSnapshot(),
       options?.projectRoot ?? this.config.projectRoot,
       this.agentId,
+      options?.inputPolicy,
     );
     if (registeredAgentId !== this.agentId) {
       throw new Error(`DebugHub registered unexpected Agent ID '${registeredAgentId}'`);
@@ -1464,9 +1465,13 @@ class AgentBase {
   }
 
   /**
-   * 确保 Feature 工具已注册
+   * 确保 Feature 工具已注册。
+   *
+   * @param opts.strict 严格模式：feature 的 getAsyncTools / onInitiate 失败
+   *   直接抛出（带 featureInitStage 标记），而非 warn 后继续。供 Test Runtime
+   *   等宿主在启动期显式验证初始化；onCall 内部调用保持默认非严格。
    */
-  private async ensureFeatureTools(): Promise<void> {
+  async ensureFeatureTools(opts?: { strict?: boolean }): Promise<void> {
     if (this.featureToolsReady) return;
     if (this.featureToolsReadyPromise) {
       return this.featureToolsReadyPromise;
@@ -1495,7 +1500,7 @@ class AgentBase {
       }
 
       for (const feature of order) {
-        await this.initSingleFeature(feature.name, feature);
+        await this.initSingleFeature(feature.name, feature, { strict: opts?.strict === true });
       }
 
       // 子类可在此 hook 中注册额外工具（如统一代理工具）
@@ -1519,8 +1524,15 @@ class AgentBase {
    * 为单个 Feature 执行工具注册、onInitiate 和 hooks 收集。
    *
    * 被 ensureFeatureTools() 和 mountFeature() 共用。
+   *
+   * @param opts.strict 严格模式：getAsyncTools / onInitiate 失败直接抛出
+   *   （标记 featureInitStage），而非 warn 后以半初始化状态继续。
    */
-  private async initSingleFeature(name: string, feature: AgentFeature): Promise<void> {
+  private async initSingleFeature(
+    name: string,
+    feature: AgentFeature,
+    opts?: { strict?: boolean },
+  ): Promise<void> {
     const featureLogger = createLogger(`feature.${name}`, {
       agentId: this.agentId,
       agentName: this.config.name || this.constructor.name,
@@ -1559,6 +1571,14 @@ class AgentBase {
         }
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
+        if (opts?.strict) {
+          const initError = new Error(
+            `Feature ${name} failed to load tools: ${errorMsg}`,
+            { cause: error },
+          ) as FeatureInitFailureError;
+          initError.featureInitStage = 'getAsyncTools';
+          throw initError;
+        }
         console.warn(`[Agent] Feature ${name} failed to load tools: ${errorMsg}`);
       }
     }
@@ -1572,6 +1592,14 @@ class AgentBase {
         }, () => feature.onInitiate!(initContext));
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
+        if (opts?.strict) {
+          const initError = new Error(
+            `Feature ${name} onInitiate failed: ${errorMsg}`,
+            { cause: error },
+          ) as FeatureInitFailureError;
+          initError.featureInitStage = 'onInitiate';
+          throw initError;
+        }
         console.warn(`[Agent] Feature ${name} onInitiate failed: ${errorMsg}`);
       }
     }
@@ -1592,7 +1620,7 @@ class AgentBase {
    * @example
    * await agent.mountFeature(new SomeFeature());
    */
-  async mountFeature(feature: AgentFeature): Promise<this> {
+  async mountFeature(feature: AgentFeature, opts?: { strictInit?: boolean }): Promise<this> {
     // 装配预检（工作项 D）：增量挂载点拦截 error 级问题（policy 冲突等）。
     // warning 不阻断（如工具重名覆盖可能是既有语义）。
     const nextAssembly = [...this.features.values(), feature];
@@ -1617,7 +1645,7 @@ class AgentBase {
     }
 
     // agent 已初始化，立即对新 feature 执行完整初始化
-    await this.initSingleFeature(feature.name, feature);
+    await this.initSingleFeature(feature.name, feature, { strict: opts?.strictInit === true });
     this.pushInspectorSnapshot();
     return this;
   }
@@ -1635,9 +1663,16 @@ class AgentBase {
    * @param featureName 已挂载的 feature 名
    * @param modulePath 新代码的绝对路径或 file:// URL；
    *                   缺省时读取旧实例构造器上的静态 reloadPath 声明
-   * @throws mount/import 阶段失败时回退旧实例后重新抛出（错误信息标注失败阶段）
+   * @param opts.strictInit 严格初始化：getAsyncTools / onInitiate 失败视为
+   *                        reload 失败并自动回退（阶段标注 'init'）
+   * @throws mount/import/init 阶段失败时回退旧实例后重新抛出（错误带
+   *         reloadStage / rolledBack 标记，错误信息标注失败阶段）
    */
-  async reloadFeature(featureName: string, modulePath?: string): Promise<FeatureReloadResult> {
+  async reloadFeature(
+    featureName: string,
+    modulePath?: string,
+    opts?: FeatureReloadOptions,
+  ): Promise<FeatureReloadResult> {
     const startedAt = Date.now();
     const oldFeature = this.features.get(featureName);
     if (!oldFeature) {
@@ -1712,11 +1747,14 @@ class AgentBase {
         `feature '${featureName}' reload failed at stage '${stage}', previous instance restored`,
         { event: 'feature.reload_reverted', reason: `${stage}: ${message}`, durationMs: Date.now() - startedAt }
       );
-      throw new Error(
+      const failure = new Error(
         `Feature '${featureName}' reload failed at stage '${stage}': ${message}. ` +
           'Previous instance has been restored.',
         { cause: error },
-      );
+      ) as FeatureReloadFailureError;
+      failure.reloadStage = stage;
+      failure.rolledBack = true;
+      throw failure;
     };
 
     // 3. 加载新模块
@@ -1760,10 +1798,10 @@ class AgentBase {
     }
 
     try {
-      await this.mountFeature(newFeature!);
+      await this.mountFeature(newFeature!, opts?.strictInit ? { strictInit: true } : undefined);
       this.restoreToolStates(toolStates);
     } catch (error) {
-      rollback('mount', error);
+      rollback(isFeatureInitFailureError(error) ? 'init' : 'mount', error);
     }
 
     const reloadDurationMs = Date.now() - startedAt;

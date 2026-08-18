@@ -118,6 +118,34 @@ export class HotReloadFixture {
 }
 `;
 
+// onInitiate 抛错但工具/状态契约齐备：非严格模式下 warn 后照常挂载，
+// 严格模式（strictInit）下应视为 reload 失败并回退。
+const INIT_BROKEN_MODULE = `
+export class HotReloadFixture {
+  constructor() {
+    this.name = 'hot-reload-fixture';
+    this.counter = 0;
+  }
+  getTools() {
+    return [{
+      name: 'hot_tool',
+      description: 'fixture init-broken',
+      execute: async () => 'initbroken:' + this.counter,
+    }];
+  }
+  onInitiate(ctx) { throw new Error('init fails on purpose'); }
+  captureState() { return { counter: this.counter }; }
+  restoreState(state) { this.counter = state.counter; }
+}
+`;
+
+/** 严格模式 mountFeature 用：onInitiate 抛错的独立 feature。 */
+class InitBrokenFeature implements AgentFeature {
+  readonly name = 'init-broken-fixture';
+  getTools(): Tool[] { return []; }
+  onInitiate(): void { throw new Error('mount init fails on purpose'); }
+}
+
 // ========== 测试 ==========
 
 describe('feature reload (B 热载通道)', () => {
@@ -129,6 +157,7 @@ describe('feature reload (B 热载通道)', () => {
     await writeFile(join(fixtureDir, 'fixture-broken.mjs'), V3_MODULE, 'utf-8');
     await writeFile(join(fixtureDir, 'fixture-wrong.mjs'), WRONG_EXPORT_MODULE, 'utf-8');
     await writeFile(join(fixtureDir, 'fixture-nostate.mjs'), NO_STATE_MODULE, 'utf-8');
+    await writeFile(join(fixtureDir, 'fixture-initbroken.mjs'), INIT_BROKEN_MODULE, 'utf-8');
   });
 
   describe('resolveFeatureExport（纯函数）', () => {
@@ -253,6 +282,62 @@ describe('feature reload (B 热载通道)', () => {
 
       expect(agent.getFeatureInstance('hot-reload-fixture')).toBe(old);
       expect(agent.getTools().getAll().find(t => t.name === 'hot_tool')).toBeDefined();
+    });
+  });
+
+  describe('strictInit 严格初始化（init 失败 = reload 失败 + 自动回退）', () => {
+    it('onInitiate 失败时严格 reload 回退旧实例，错误带 reloadStage/rolledBack 标记', async () => {
+      const agent = new ReloadTestAgent();
+      const old = agent.getFeatureInstance('hot-reload-fixture') as HotReloadFixtureV1;
+      old.counter = 9;
+      await agent.onCall('hello');
+
+      let caught: (Error & { reloadStage?: string; rolledBack?: boolean }) | undefined;
+      try {
+        await agent.reloadFeature(
+          'hot-reload-fixture',
+          join(fixtureDir, 'fixture-initbroken.mjs'),
+          { strictInit: true },
+        );
+      } catch (error) {
+        caught = error as typeof caught;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught!.reloadStage).toBe('init');
+      expect(caught!.rolledBack).toBe(true);
+      expect(caught!.message).toMatch(/onInitiate failed: init fails on purpose/);
+
+      // 旧实例回归：同一对象、状态保留、v1 工具可用
+      const current = agent.getFeatureInstance('hot-reload-fixture');
+      expect(current).toBe(old);
+      expect((current as HotReloadFixtureV1).counter).toBe(9);
+      const tool = agent.getTools().getAll().find(t => t.name === 'hot_tool');
+      expect(tool?.description).toBe('fixture v1');
+      await expect(tool!.execute!({} as never)).resolves.toBe('v1:9');
+    });
+
+    it('非严格 reload 同一模块仍成功（保持既有 warn 语义）', async () => {
+      const agent = new ReloadTestAgent();
+      await agent.onCall('hello');
+
+      const result = await agent.reloadFeature(
+        'hot-reload-fixture',
+        join(fixtureDir, 'fixture-initbroken.mjs'),
+      );
+
+      expect(result.rolledBack).toBe(false);
+      const tool = agent.getTools().getAll().find(t => t.name === 'hot_tool');
+      expect(tool?.description).toBe('fixture init-broken');
+    });
+
+    it('mountFeature strictInit：onInitiate 失败直接抛出而非 warn 吞掉', async () => {
+      const agent = new ReloadTestAgent();
+      await agent.onCall('hello');
+
+      await expect(
+        agent.mountFeature(new InitBrokenFeature(), { strictInit: true }),
+      ).rejects.toThrow(/onInitiate failed: mount init fails on purpose/);
     });
   });
 

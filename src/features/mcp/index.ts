@@ -141,6 +141,7 @@ export class MCPFeature implements AgentFeature {
       return {
         scanAgentdevDir: true,
         extraConfigFiles: [],
+        enableGateway: true,
       };
     }
 
@@ -191,9 +192,11 @@ export class MCPFeature implements AgentFeature {
     const config = this.resolveRuntimeConfig(ctx);
     const featureConfig = this.resolveFeatureConfig(ctx.featureConfig);
 
-    // Discover Claw-hosted gateway servers (if enabled)
+    // Discover Claw-hosted gateway servers (if enabled).
+    // An explicit input (config path or config object) pins the server set and
+    // excludes gateway discovery — merging would break that explicit contract.
     let gatewayServers: Record<string, MCPServerConfig> = {};
-    if (featureConfig.enableGateway) {
+    if (featureConfig.enableGateway && !this.input) {
       const discovery = await discoverGatewayServers();
       if (discovery.servers.length > 0) {
         gatewayServers = gatewayServersToConfig(discovery, this.options.excludeServers);

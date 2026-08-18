@@ -62,6 +62,36 @@ export class MyFeature implements AgentFeature {
 
 `kind: 'observe' as const` 中的 `as const` 是 TypeScript 要求（字面量类型收窄），纯 JavaScript 里直接写 `kind: 'observe'` 即可——**JS 与 TS 写法完全等价**。
 
+## JS 与 TS 双态速查
+
+TS 示例中的 `Decision` / `CoreLifecycle` 是字符串枚举，**枚举成员的运行时值就是小写字符串 / 成员名本身**：
+
+| TS 写法 | JS 等价字面量 |
+|---|---|
+| `Decision.Approve` | `'approve'` |
+| `Decision.Deny` | `'deny'` |
+| `Decision.Continue` | `'continue'` |
+| `CoreLifecycle.ToolUse` | `'ToolUse'` |
+| `CoreLifecycle.CallStart` | `'CallStart'` |
+
+`normalizeDecision` 直接接受字符串（`'deny'`）或对象（`{ action: 'deny', reason: '...' }`）两种形态，两者运行时完全等价。
+
+**纯 JavaScript 模块（如 Agent Studio 项目目录下的 `.mjs` Feature）不需要也不应该 `import 'agentdev'`**：新项目目录通常没有可解析的 `node_modules`，import 失败会导致模块加载即 mount 失败。直接写字面量：
+
+```js
+export class MyGuardFeature {
+  static hooks = {
+    guardSpend: { lifecycle: 'ToolUse', kind: 'guard', role: 'policy' },
+  };
+  async guardSpend(ctx) {
+    if (overBudget(ctx)) return { action: 'deny', reason: '预算不足' };
+    return 'continue';
+  }
+}
+```
+
+TS 枚举名（`Decision.Deny`）只是类型层的方便；运行时决策比较用的是小写字符串，写 `'Deny'`（大写）不等于 `'deny'`，不会命中任何决策分支。
+
 ## 三原语：observe / guard / transform
 
 | kind | 语义 | 返回值 | 合法生命周期 |

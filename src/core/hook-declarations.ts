@@ -70,7 +70,8 @@ export type HookDeclarationIssueCode =
   | 'invalid_lifecycle'
   | 'invalid_kind_lifecycle'
   | 'role_on_non_guard'
-  | 'duplicate_policy';
+  | 'duplicate_policy'
+  | 'invalid_hooks_shape';
 
 export interface HookDeclarationIssue {
   feature: string;
@@ -134,6 +135,19 @@ export function readHookDeclarations(feature: AgentFeature): HookDeclarations {
  * 每个问题都是结构化的（feature/method/code），供装配预检直接消费。
  */
 export function validateHookDeclarations(feature: AgentFeature): HookDeclarationIssue[] {
+  // 形状快检：static hooks 必须是「方法名 → 声明」的对象映射。
+  // 数组会被 Object.entries 当作 {'0': ...} 遍历，产生误导性的 method_missing
+  // （指向索引而非真实方法名），这里直接给出形状级错误。
+  const raw = (feature.constructor as any)?.hooks;
+  if (Array.isArray(raw)) {
+    return [{
+      feature: feature.name,
+      method: '(static hooks)',
+      code: 'invalid_hooks_shape',
+      message: `Feature '${feature.name}' 的 static hooks 是数组，但合法形状是对象映射（键=方法名，条目={lifecycle, kind, role?}）。修复示例：static hooks = { onCallStart: { lifecycle: 'CallStart', kind: 'observe' } }；纯工具型 Feature 写 static hooks = {} 或直接省略。`,
+    }];
+  }
+
   const declarations = readHookDeclarations(feature);
   if (Object.keys(declarations).length === 0) return [];
 

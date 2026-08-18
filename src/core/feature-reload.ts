@@ -22,6 +22,32 @@ export interface FeatureReloadResult {
   durationMs: number;
 }
 
+/** reloadFeature 的可选行为开关。 */
+export interface FeatureReloadOptions {
+  /**
+   * 严格初始化：getAsyncTools / onInitiate 失败视为 reload 失败并自动回退，
+   * 而不是 warn 后继续以半初始化状态挂载。默认 false（保持既有语义）。
+   */
+  strictInit?: boolean;
+}
+
+/** initSingleFeature 严格模式抛出的错误标记（reload 据此标注 'init' 阶段）。 */
+export interface FeatureInitFailureError extends Error {
+  featureInitStage: 'getAsyncTools' | 'onInitiate';
+}
+
+export function isFeatureInitFailureError(error: unknown): error is FeatureInitFailureError {
+  return error instanceof Error && 'featureInitStage' in error;
+}
+
+/** reloadFeature 失败回退后重新抛出的错误标记（调用方可结构化消费）。 */
+export interface FeatureReloadFailureError extends Error {
+  /** 失败阶段：import / instantiate / state-transfer / mount / init */
+  reloadStage: string;
+  /** 恒 true：旧实例已恢复 */
+  rolledBack: true;
+}
+
 type FeatureConstructor = new (...args: never[]) => AgentFeature;
 
 function isConstructorLike(value: unknown): value is FeatureConstructor {

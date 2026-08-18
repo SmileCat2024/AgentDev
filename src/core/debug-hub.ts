@@ -92,6 +92,8 @@ export class DebugHub {
   private stopped: boolean = false;
   /** Shared connection barrier for every Agent hosted by this process. */
   private connectionPromise?: Promise<void>;
+  /** headless 运行时（无 ViewerWorker）下每类消息只告警一次，避免刷屏。 */
+  private sendToWorkerWarnedTypes: Set<string> = new Set();
 
   // 注册锁（防止并发竞争）
   private registrationLock: boolean = false;
@@ -104,6 +106,9 @@ export class DebugHub {
 
   // 缓存每个 Agent 的 featureTemplates（用于重连后重新注册）
   private agentFeatureTemplates: Map<string, Record<string, string>> = new Map();
+
+  // 缓存每个 Agent 的外部输入策略（用于重连后重新注册）
+  private agentInputPolicy: Map<string, 'standard' | 'none'> = new Map();
 
   // ========== 单例 ==========
   private constructor() {
@@ -367,6 +372,7 @@ export class DebugHub {
     overview?: AgentOverviewSnapshot,
     projectRoot?: string,
     reservedAgentId?: string,
+    inputPolicy?: 'standard' | 'none',
   ): string {
     // 等待注册锁
     while (this.registrationLock) {
@@ -395,6 +401,11 @@ export class DebugHub {
         this.agentFeatureTemplates.set(id, featureTemplates);
       }
 
+      // 缓存外部输入策略（用于重连后重新注册）
+      if (inputPolicy) {
+        this.agentInputPolicy.set(id, inputPolicy);
+      }
+
       // 首个注册的 Agent 自动成为当前 Agent
       if (this.agents.size === 1) {
         this.currentAgentId = id;
@@ -409,6 +420,7 @@ export class DebugHub {
           featureTemplates,
           hookInspector,
           overview,
+          inputPolicy: inputPolicy || undefined,
         }).catch(error => {
           console.error(`[DebugHub] Claw registerAgent 失败: ${(error as Error).message}`);
         });
@@ -422,6 +434,7 @@ export class DebugHub {
           featureTemplates, // 传递 Feature 模板路径映射
           hookInspector,
           overview,
+          inputPolicy: inputPolicy || undefined,
         });
       }
 
@@ -444,6 +457,7 @@ export class DebugHub {
     const deleted = this.agents.delete(agentId);
     if (deleted) {
       this.agentFeatureTemplates.delete(agentId);
+      this.agentInputPolicy.delete(agentId);
       if (this.transportMode === 'claw') {
         void this.clawClient?.unregisterAgent(agentId).catch(error => {
           console.error(`[DebugHub] Claw unregisterAgent 失败: ${(error as Error).message}`);
@@ -953,6 +967,7 @@ export class DebugHub {
           featureTemplates,
           hookInspector,
           overview,
+          inputPolicy: this.agentInputPolicy.get(id) || undefined,
         }).then(async () => {
           const tools = (data.agent as any).tools;
           if (tools && typeof tools.getEntries === 'function') {
@@ -1008,6 +1023,7 @@ export class DebugHub {
         hookInspector,
         overview,
         activeInputRequest, // 携带活跃输入请求
+        inputPolicy: this.agentInputPolicy.get(id) || undefined,
       });
 
       // 重新注册工具（如果有）
@@ -1140,8 +1156,12 @@ export class DebugHub {
       // Do not present this as a delivered message. Stateful registrations and
       // input leases are reconciled by re-registerAllAgents on reconnect;
       // this warning keeps non-replayable debug updates observable instead of
-      // silently pretending the transport accepted them.
-      console.warn(`[DebugHub] ViewerWorker transport is not ready; deferred state will reconcile on reconnect (message=${msg.type})`);
+      // silently pretending the transport accepted them. Warn once per message
+      // type: headless runtimes (Test Runtime, one-shot agents) never connect.
+      if (!this.sendToWorkerWarnedTypes.has(msg.type)) {
+        this.sendToWorkerWarnedTypes.add(msg.type);
+        console.warn(`[DebugHub] ViewerWorker transport is not ready; deferred state will reconcile on reconnect (message=${msg.type})`);
+      }
       return;
     }
     this.sendViaUDS(msg);

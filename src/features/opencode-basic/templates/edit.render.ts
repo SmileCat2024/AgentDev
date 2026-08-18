@@ -51,3 +51,5 @@ export default {
     }
   }
 } as const satisfies InlineRenderTemplate;
+
+declare const Diff2Html: any;

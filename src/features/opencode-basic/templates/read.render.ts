@@ -90,7 +90,7 @@ export default {
         highlightedLine = escapeHtml(codeLine);
       }
 
-      resultHtml += `<div class="code-read-line"><span class="code-read-line-num">${lineNum}</span><span class="code-read-line-content">${highlightedLine}</span></div>`;
+      resultHtml += `<div class="code-read-line"><span class="code-read-line-num">${lineNum}</span><span class="code-read-content">${highlightedLine}</span></div>`;
     });
 
     resultHtml += '</div>';

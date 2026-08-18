@@ -70,7 +70,7 @@ import { ReActLoopRunner } from './agent/react-loop.js';
 import type { DebugPusher } from './agent/types.js';
 
 // 导入钩子注册表
-import { HooksRegistry, type HookExecutionResult } from './hooks-registry.js';
+import { HooksRegistry, type HookExecutionResult, type HookInvocationObserver } from './hooks-registry.js';
 import { CoreLifecycle, Decision } from './lifecycle.js';
 
 // Re-export ContextSnapshot and HookErrorHandling for convenience
@@ -210,8 +210,11 @@ class AgentBase {
     }
   }
 
-  // ========== 钩子错误处理策略 ==========
+  observeHookInvocations(observer: HookInvocationObserver): () => void {
+    return this.hooksRegistry.observeInvocations(observer);
+  }
 
+  // ========== 钩子错误处理策略 ============
   /**
    * 获取钩子的错误处理策略（可被子类覆盖）
    */

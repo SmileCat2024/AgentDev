@@ -128,6 +128,7 @@ export class ToolExecutor {
 
         const decisionCtx: ToolFinishedDecisionContext = {
           ...result,
+          delivered: errorResult,
           toolName: call.name,
         };
         await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
@@ -204,6 +205,7 @@ export class ToolExecutor {
         // ========== ToolFinished 反向钩子（纯通知）==========
         const decisionCtx: ToolFinishedDecisionContext = {
           ...result,
+          delivered: errorResult,
           toolName: call.name,
         };
         await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);
@@ -356,6 +358,7 @@ export class ToolExecutor {
       // ========== ToolFinished 反向钩子（纯通知）==========
       const decisionCtx: ToolFinishedDecisionContext = {
         ...result,
+        delivered: execResult,
         toolName: call.name,
       };
       await this.hooksRegistry.executeVoid(CoreLifecycle.ToolFinished, decisionCtx);

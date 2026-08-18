@@ -32,6 +32,20 @@ export interface HookExecutionResult {
   metadata?: Record<string, any>;
 }
 
+export interface HookInvocation {
+  featureName: string;
+  methodName: string;
+  lifecycle: CoreLifecycle;
+  kind: HookKind;
+  role?: GuardRole;
+  durationMs: number;
+  decision?: Decision;
+  /** 关联对象（如工具名）：ToolUse/ToolResultTransform 等工具级生命周期携带 */
+  subject?: string;
+}
+
+export type HookInvocationObserver = (invocation: HookInvocation) => void;
+
 export interface RegisteredHook {
   feature: AgentFeature;
   methodName: string;
@@ -51,6 +65,22 @@ export interface RegisteredHook {
 export class HooksRegistry {
   /** 生命周期 → Feature 映射 → 方法名 */
   private hooks = new Map<CoreLifecycle, Array<RegisteredHook>>();
+  private invocationObservers = new Set<HookInvocationObserver>();
+
+  observeInvocations(observer: HookInvocationObserver): () => void {
+    this.invocationObservers.add(observer);
+    return () => this.invocationObservers.delete(observer);
+  }
+
+  private notifyInvocation(invocation: HookInvocation): void {
+    for (const observer of this.invocationObservers) {
+      try {
+        observer(invocation);
+      } catch {
+        // 观察者不得影响 Hook 执行路径。
+      }
+    }
+  }
 
   /**
    * 从 Feature 收集反向钩子
@@ -225,7 +255,7 @@ export class HooksRegistry {
     const orderedHooks = orderHooks(activeHooks);
 
     // 按顺序执行所有钩子
-    for (const { feature, methodName, source, kind } of orderedHooks) {
+    for (const { feature, methodName, source, kind, role } of orderedHooks) {
       try {
         const method = (feature as any)[methodName];
         if (typeof method !== 'function') {
@@ -235,6 +265,7 @@ export class HooksRegistry {
           continue;
         }
 
+        const invocationStartedAt = Date.now();
         const result = await runWithLogScope({
           feature: feature.name,
           lifecycle,
@@ -262,6 +293,20 @@ export class HooksRegistry {
           }
         });
 
+        const decision = kind === 'guard' ? normalizeDecision(result) : undefined;
+        const subject = (context as { toolName?: unknown; call?: { name?: unknown } })?.toolName
+          ?? (context as { call?: { name?: unknown } })?.call?.name;
+        this.notifyInvocation({
+          featureName: feature.name,
+          methodName,
+          lifecycle,
+          kind,
+          role,
+          durationMs: Date.now() - invocationStartedAt,
+          ...(decision ? { decision } : {}),
+          ...(typeof subject === 'string' && subject ? { subject } : {}),
+        });
+
         // observe / transform 条目：返回值由框架直接丢弃。
         // 消灭已知坑：void 钩子意外返回 'approve' 字符串静默短路同批观察者。
         // （transform 的正确调度是 executeTransform 链式执行）
@@ -269,12 +314,8 @@ export class HooksRegistry {
           continue;
         }
 
-        // guard：处理返回值
-        if (result !== undefined) {
-          const decision = normalizeDecision(result);
-
-          // 如果返回 Approve 或 Deny，立即停止并返回
-          if (decision === Decision.Approve || decision === Decision.Deny) {
+        // guard：Approve 或 Deny 立即停止；Continue 继续下一个钩子。
+        if (decision === Decision.Approve || decision === Decision.Deny) {
             logger.info('Reverse hook decided flow', {
               feature: feature.name,
               lifecycle,
@@ -288,9 +329,6 @@ export class HooksRegistry {
               metadata: typeof result === 'object' && result.metadata ? result.metadata : undefined,
             };
           }
-
-          // Continue 继续下一个钩子
-        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error('Reverse hook execution failed', {
@@ -391,6 +429,7 @@ export class HooksRegistry {
         }
 
         const ctx = buildContext(current);
+        const invocationStartedAt = Date.now();
         const returned = await runWithLogScope({
           feature: feature.name,
           lifecycle,
@@ -418,6 +457,15 @@ export class HooksRegistry {
           }
         });
 
+        const transformSubject = (ctx as { toolName?: unknown }).toolName;
+        this.notifyInvocation({
+          featureName: feature.name,
+          methodName,
+          lifecycle,
+          kind: 'transform',
+          durationMs: Date.now() - invocationStartedAt,
+          ...(typeof transformSubject === 'string' && transformSubject ? { subject: transformSubject } : {}),
+        });
         if (returned !== undefined) {
           current = returned as T;
         }

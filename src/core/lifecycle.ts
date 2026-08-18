@@ -233,6 +233,8 @@ export interface ToolContext {
 export interface ToolResult {
   /** 是否成功 */
   success: boolean;
+  /** 经过 ToolResultTransform 后、实际写入模型上下文的最终结果。 */
+  delivered?: ToolExecResult;
   /** 返回数据 */
   data: unknown;
   /** 错误信息（如果失败） */

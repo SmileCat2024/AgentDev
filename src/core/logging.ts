@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'async_hooks';
-import { inspect } from 'util';
+import { format, inspect } from 'util';
 import { DebugHub } from './debug-hub.js';
 import type { DebugLogEntry, LogContextRef, LogLevel, Notification } from './types.js';
 
@@ -27,13 +27,6 @@ interface InternalLogScope extends LogContextRef {
 }
 
 const scopeStorage = new AsyncLocalStorage<InternalLogScope>();
-const rawConsole = {
-  log: console.log.bind(console),
-  info: console.info.bind(console),
-  warn: console.warn.bind(console),
-  error: console.error.bind(console),
-  debug: console.debug.bind(console),
-};
 
 const LOG_LEVEL_WEIGHT: Record<LogLevel, number> = {
   trace: 10,
@@ -46,6 +39,37 @@ const LOG_LEVEL_WEIGHT: Record<LogLevel, number> = {
 let nextLogId = 1;
 let consoleBridgeInstalled = false;
 let bridgeReentry = false;
+
+/**
+ * Delivery contract (single write, dual sink):
+ * - hub connected: push to hub (Web UI / query_logs — visible and
+ *   controllable monitoring surface); stdio mirror is OFF by default so a
+ *   foreground host terminal (e.g. `npm start`) stays quiet.
+ *   Set AGENTDEV_LOG_CONSOLE_MIRROR=on to mirror hub-delivered logs to stdio
+ *   (e.g. watching a hub-attached agent from the CLI).
+ * - hub unavailable / no agent context: stdio only (headless CLI fallback).
+ *
+ * stdio stream routing (AGENTDEV_LOG_STREAM = 'auto' | 'stderr', default auto):
+ * - auto:    trace/debug/info → stdout; warn/error → stderr
+ * - stderr:  ALL levels → stderr. Headless mode treats the agent as an
+ *   auditable component of other software — stdout is reserved exclusively
+ *   for program output/results, logs never pollute it. Headless entry
+ *   scripts are responsible for setting this env.
+ *
+ * Env values are read per call so config changes apply immediately (cheap
+ * process.env lookup).
+ */
+function shouldMirrorConsoleToStdio(): boolean {
+  return (process.env.AGENTDEV_LOG_CONSOLE_MIRROR ?? 'off').trim().toLowerCase() === 'on';
+}
+
+function resolveStdioStream(level: LogLevel): NodeJS.WriteStream {
+  const mode = (process.env.AGENTDEV_LOG_STREAM ?? 'auto').trim().toLowerCase();
+  if (mode === 'stderr') {
+    return process.stderr;
+  }
+  return level === 'warn' || level === 'error' ? process.stderr : process.stdout;
+}
 
 export function installConsoleBridge(): void {
   if (consoleBridgeInstalled) return;
@@ -78,22 +102,10 @@ function bridgeConsole(level: LogLevel, args: unknown[]): void {
 }
 
 function writeRawConsole(level: LogLevel, args: unknown[]): void {
-  switch (level) {
-    case 'warn':
-      rawConsole.warn(...args);
-      break;
-    case 'error':
-      rawConsole.error(...args);
-      break;
-    case 'debug':
-      rawConsole.debug(...args);
-      break;
-    case 'trace':
-    case 'info':
-    default:
-      rawConsole.log(...args);
-      break;
-  }
+  // Direct stream writes bypass any console patching (installConsoleBridge)
+  // and make stream routing testable.
+  const stream = resolveStdioStream(level);
+  stream.write(format(...args) + '\n');
 }
 
 function normalizeConsoleArgs(args: unknown[]): { message: string; data?: unknown } {
@@ -235,12 +247,19 @@ export function emitLog(
 
   const debugHub = DebugHub.getInstance();
   if (debugHub.isConnected()) {
+    const mirror = shouldMirrorConsoleToStdio();
     entry.delivery = {
       hub: true,
-      console: false,
+      console: mirror,
       reason: 'hub',
     };
     debugHub.pushNotification(agentId, createNotification(entry));
+    if (mirror) {
+      writeRawConsole(level, [
+        `[${entry.namespace}] ${entry.message}`,
+        ...(entry.data === undefined ? [] : [entry.data]),
+      ]);
+    }
     return entry;
   }
 
@@ -254,7 +273,10 @@ export function emitLog(
 }
 
 function writeLocalFallback(entry: DebugLogEntry): void {
-  const prefix = `[${entry.namespace}] [local-only:${entry.delivery.reason}] ${entry.message}`;
+  // Headless CLI output doubles as the audit trail for agents running as
+  // components of other software — keep the stdio format clean. The delivery
+  // reason stays available on entry.delivery for programmatic inspection.
+  const prefix = `[${entry.namespace}] ${entry.message}`;
   const args = entry.data === undefined ? [prefix] : [prefix, entry.data];
   writeRawConsole(entry.level, args);
 }

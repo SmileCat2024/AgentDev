@@ -34,6 +34,70 @@ describe('Logging delivery fallback', () => {
     expect(entry.delivery.hub).toBe(false);
     expect(entry.delivery.reason).toBe('hub-unavailable');
   });
+
+  it('routes info to stdout and warn/error to stderr in auto mode', () => {
+    const debugHub = DebugHub.getInstance();
+    debugHub.stop();
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    (process.stdout.write as any) = (chunk: any) => { stdoutLines.push(String(chunk)); return true; };
+    (process.stderr.write as any) = (chunk: any) => { stderrLines.push(String(chunk)); return true; };
+
+    try {
+      runWithLogScope({
+        agentId: 'agent-stream-auto',
+        agentName: 'StreamAuto',
+        namespace: 'agent.test',
+      }, () => {
+        emitLog('info', 'auto info log');
+        emitLog('warn', 'auto warn log');
+      });
+    } finally {
+      (process.stdout.write as any) = originalStdoutWrite;
+      (process.stderr.write as any) = originalStderrWrite;
+    }
+
+    expect(stdoutLines.some((line) => line.includes('auto info log'))).toBe(true);
+    expect(stdoutLines.some((line) => line.includes('auto warn log'))).toBe(false);
+    expect(stderrLines.some((line) => line.includes('auto warn log'))).toBe(true);
+    expect(stderrLines.some((line) => line.includes('auto info log'))).toBe(false);
+  });
+
+  it('routes all levels to stderr when AGENTDEV_LOG_STREAM=stderr (headless audit contract)', () => {
+    const debugHub = DebugHub.getInstance();
+    debugHub.stop();
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    (process.stdout.write as any) = (chunk: any) => { stdoutLines.push(String(chunk)); return true; };
+    (process.stderr.write as any) = (chunk: any) => { stderrLines.push(String(chunk)); return true; };
+
+    process.env.AGENTDEV_LOG_STREAM = 'stderr';
+    try {
+      runWithLogScope({
+        agentId: 'agent-stream-headless',
+        agentName: 'StreamHeadless',
+        namespace: 'agent.test',
+      }, () => {
+        emitLog('info', 'headless info log');
+        emitLog('error', 'headless error log');
+      });
+    } finally {
+      delete process.env.AGENTDEV_LOG_STREAM;
+      (process.stdout.write as any) = originalStdoutWrite;
+      (process.stderr.write as any) = originalStderrWrite;
+    }
+
+    // stdout reserved exclusively for program output/results
+    expect(stdoutLines.some((line) => line.includes('headless'))).toBe(false);
+    expect(stderrLines.some((line) => line.includes('headless info log'))).toBe(true);
+    expect(stderrLines.some((line) => line.includes('headless error log'))).toBe(true);
+  });
 });
 
 describe('Logging delivery hub', () => {
@@ -64,7 +128,7 @@ describe('Logging delivery hub', () => {
     }
   });
 
-  it('should deliver to hub when connected and preserve delivery metadata', async () => {
+  it('should deliver to hub only by default (quiet terminal), preserving delivery metadata', async () => {
     const agentId = debugHub.registerAgent({ kind: 'dummy' }, 'LoggingDeliveryAgent');
 
     await waitFor(() => !!(worker as any).agentSessions.get(agentId));
@@ -87,6 +151,29 @@ describe('Logging delivery hub', () => {
     const session = (worker as any).agentSessions.get(agentId);
     const stored = session.logs.find((entry: { message: string }) => entry.message === 'hub log');
     expect(stored?.delivery?.hub).toBe(true);
+
+    debugHub.unregisterAgent(agentId);
+  });
+
+  it('should mirror hub-delivered logs to console when AGENTDEV_LOG_CONSOLE_MIRROR=on', async () => {
+    const agentId = debugHub.registerAgent({ kind: 'dummy' }, 'LoggingDeliveryMirrorAgent');
+
+    await waitFor(() => !!(worker as any).agentSessions.get(agentId));
+
+    process.env.AGENTDEV_LOG_CONSOLE_MIRROR = 'on';
+    try {
+      const deliveredEntry = runWithLogScope({
+        agentId,
+        agentName: 'LoggingDeliveryMirrorAgent',
+        namespace: 'agent.test',
+      }, () => emitLog('warn', 'mirrored log'));
+
+      expect(deliveredEntry.delivery.hub).toBe(true);
+      expect(deliveredEntry.delivery.console).toBe(true);
+      expect(deliveredEntry.delivery.reason).toBe('hub');
+    } finally {
+      delete process.env.AGENTDEV_LOG_CONSOLE_MIRROR;
+    }
 
     debugHub.unregisterAgent(agentId);
   });

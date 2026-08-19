@@ -98,3 +98,5 @@ export default {
     return resultHtml;
   }
 } as const satisfies InlineRenderTemplate;
+
+declare const hljs: any;

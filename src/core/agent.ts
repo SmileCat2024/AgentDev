@@ -160,6 +160,7 @@ class AgentBase {
 
   // 中断控制：外部可通过 interrupt() 中断正在运行的 onCall
   private _abortController: AbortController | null = null;
+  private _lastCallOutcome: import('./lifecycle.js').CallOutcome | null = null;
 
   // Step 级自动保存配置
   private _stepAutoSave?: { sessionId: string; store: SessionStore };
@@ -295,6 +296,17 @@ class AgentBase {
    * 同一实例的会话状态不可并发访问；后续调用会按提交顺序排队。
    */
   async onCall(input: string, images?: ImageInput[]): Promise<string> {
+    const outcome = await this.onCallDetailed(input, images);
+    return outcome.response;
+  }
+
+  /**
+   * 执行一次 Agent Call 并返回结构化终态。
+   *
+   * `onCall()` 保持字符串返回以兼容既有 Agent；宿主、CLI 与自动化调用
+   * 应使用本方法根据 status/reason/error 判断实际执行结果。
+   */
+  async onCallDetailed(input: string, images?: ImageInput[]): Promise<import('./lifecycle.js').CallOutcome> {
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
     }
@@ -321,7 +333,12 @@ class AgentBase {
     return queuedCall;
   }
 
-  private async executeCall(input: string, images?: ImageInput[]): Promise<string> {
+  /** 最近一次已结束 Call 的结构化终态；没有执行历史时返回 null。 */
+  getLastCallOutcome(): import('./lifecycle.js').CallOutcome | null {
+    return this._lastCallOutcome ? { ...this._lastCallOutcome } : null;
+  }
+
+  private async executeCall(input: string, images?: ImageInput[]): Promise<import('./lifecycle.js').CallOutcome> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
     if (this._lifecycleState !== 'active') {
@@ -422,6 +439,12 @@ class AgentBase {
         emitNotification(createCallStart());
       } catch { /* notification 模块不可用 */ }
 
+      // 会话事件流：turn.started
+      try {
+        const { emitSessionEvent } = await import('./session-events.js');
+        emitSessionEvent({ type: 'turn.started', turn: this._callIndex });
+      } catch { /* session-events 模块不可用 */ }
+
       // 添加用户输入（使用可能被 Feature 修改过的缓存）
       finalInput = this._pendingInput ?? input;
       context.addUserMessage(finalInput, this._callIndex, images);
@@ -446,6 +469,8 @@ class AgentBase {
 
       // 保存上下文
       this.persistentContext = context;
+      const outcome = this.createCallOutcome(result, callStartTime);
+      this._lastCallOutcome = outcome;
 
       // ========== Call Finish（成功）==========
       await executeHook(
@@ -457,6 +482,7 @@ class AgentBase {
           turns: result.turns,
           completed: result.completed,
           finishReason: result.finishReason,
+          outcome,
         }),
         { hookName: 'onCallFinish', input }
       );
@@ -469,20 +495,39 @@ class AgentBase {
         steps: result.turns,
         completed: result.completed,
         finishReason: result.finishReason,
+        outcome,
       });
 
       // 发送 call.finish 通知（成功）
       try {
         const { emitNotification, createCallFinish } = await import('./notification.js');
-        emitNotification(createCallFinish(result.completed, result.finishReason));
+        emitNotification(createCallFinish(outcome));
       } catch { /* notification 模块不可用 */ }
+
+      // 会话事件流：turn.completed / turn.failed
+      try {
+        const { emitSessionEvent, emitTurnCompleted, emitTurnFailed } = await import('./session-events.js');
+        if (result.completed) {
+          const callUsage = this.usageStats.getCallUsage(this._callIndex)?.totalUsage;
+          emitTurnCompleted(
+            this._callIndex,
+            callUsage && {
+              inputTokens: callUsage.inputTokens,
+              outputTokens: callUsage.outputTokens,
+              totalTokens: callUsage.totalTokens,
+            },
+          );
+        } else {
+          emitTurnFailed(this._callIndex, outcome);
+        }
+      } catch { /* session-events 模块不可用 */ }
 
         this.logger.info('Call completed', {
           completed: result.completed,
           turns: result.turns,
           durationMs: Date.now() - callStartTime,
         });
-        return result.finalResponse;
+        return outcome;
 
       } catch (error) {
       // ========== Call Finish（异常）==========
@@ -513,6 +558,17 @@ class AgentBase {
         );
       }
 
+      const outcome: import('./lifecycle.js').CallOutcome = {
+        status: 'failed',
+        reason: 'error',
+        response: errorMsg,
+        steps: this._currentStep + 1,
+        startedAt: callStartTime,
+        finishedAt: Date.now(),
+        error: { category: 'exception', message: errorMsg },
+      };
+      this._lastCallOutcome = outcome;
+
       await executeHook(
         this,
         () => (this as any).onCallFinish({
@@ -521,7 +577,8 @@ class AgentBase {
           response: errorMsg,
           turns: this._currentStep + 1,
           completed: false,
-          finishReason: 'exception',
+          finishReason: outcome.reason,
+          outcome,
         }),
         { hookName: 'onCallFinish', input }
       );
@@ -533,14 +590,21 @@ class AgentBase {
         response: errorMsg,
         steps: this._currentStep + 1,
         completed: false,
-        finishReason: 'exception',
+        finishReason: outcome.reason,
+        outcome,
       });
 
       // 发送 call.finish 通知（异常）
       try {
         const { emitNotification, createCallFinish } = await import('./notification.js');
-        emitNotification(createCallFinish(false, 'exception'));
+        emitNotification(createCallFinish(outcome));
       } catch { /* notification 模块不可用 */ }
+
+      // 会话事件流：turn.failed（异常路径）
+      try {
+        const { emitTurnFailed } = await import('./session-events.js');
+        emitTurnFailed(this._callIndex, outcome);
+      } catch { /* session-events 模块不可用 */ }
 
         this.logger.error('Call failed', {
           error: errorMsg,
@@ -2002,6 +2066,29 @@ class AgentBase {
     }
   }
 
+  private createCallOutcome(
+    result: import('./agent/types.js').ReActResult,
+    startedAt: number,
+  ): import('./lifecycle.js').CallOutcome {
+    const status = result.completed
+      ? 'completed'
+      : result.finishReason === 'cancelled'
+        ? 'cancelled'
+        : result.finishReason === 'continued'
+          ? 'continued'
+          : 'failed';
+    return {
+      status,
+      reason: result.finishReason,
+      response: result.finalResponse,
+      steps: result.turns,
+      startedAt,
+      finishedAt: Date.now(),
+      ...(result.error ? { error: result.error } : {}),
+      ...(result.model ? { model: result.model } : {}),
+    };
+  }
+
   private async captureRuntimeSnapshot(context?: Context, callIndexOverride?: number): Promise<AgentRuntimeSnapshot> {
     await this.ensureFeatureTools();
     return {
@@ -2010,6 +2097,7 @@ class AgentBase {
       context: context?.toJSON(),
       featureStates: captureFeatureSnapshots(this.features),
       usageStats: this.usageStats.toSnapshot(),
+      ...(this._lastCallOutcome ? { lastCallOutcome: this._lastCallOutcome } : {}),
     };
   }
 
@@ -2028,6 +2116,9 @@ class AgentBase {
     if (snapshot.usageStats) {
       this.usageStats.fromSnapshot(snapshot.usageStats);
     }
+
+    // 恢复最近一次 Call 的结构化终态
+    this._lastCallOutcome = snapshot.lastCallOutcome ?? null;
   }
 
   private commitCallCheckpoint(checkpoint: CallRollbackCheckpoint): void {
@@ -2114,6 +2205,7 @@ class AgentBase {
       callIndex: callIndexOverride ?? this._callIndex,
       featureStates: captureFeatureSnapshots(this.features),
       usageStats: this.usageStats.toSnapshot(),
+      ...(this._lastCallOutcome ? { lastCallOutcome: this._lastCallOutcome } : {}),
     };
   }
 

@@ -261,14 +261,21 @@ describe('notification 并发隔离 (AsyncLocalStorage)', () => {
       expect(notif.timestamp).toBeTypeOf('number');
     });
 
-    it('call.finish 通知应完整透传 completed + finishReason', () => {
+    it('call.finish 通知应完整透传 CallOutcome', () => {
       runWithNotificationScope('rt-agent', () => {
-        emitNotification(createCallFinish(false, 'interrupted'));
+        emitNotification(createCallFinish({
+          status: 'cancelled',
+          reason: 'cancelled',
+          response: '',
+          steps: 3,
+          startedAt: 1,
+          finishedAt: 2,
+        }));
       });
 
       const [, notif] = mockPushNotification.mock.calls[0];
       expect(notif.type).toBe('call.finish');
-      expect(notif.data).toMatchObject({ completed: false, finishReason: 'interrupted' });
+      expect(notif.data).toMatchObject({ status: 'cancelled', reason: 'cancelled' });
     });
 
     it('llm.char_count 通知应完整透传 charCount + phase + extras', () => {

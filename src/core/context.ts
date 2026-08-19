@@ -17,9 +17,11 @@ import type {
   MessageTag,
   ParsedContent,
   ImageInput,
+  MessageExecutionMeta,
 } from './types.js';
 import { cloneMessages } from './message.js';
 import { ContextQuery } from './context-query.js';
+import { emitAssistantResponseEvents, emitToolResultEvents } from './session-events.js';
 
 /**
  * 深拷贝 enriched 消息（tags/parsed 独立副本）。
@@ -292,12 +294,19 @@ export class Context {
 
   /**
    * 添加助手响应
+   *
+   * 框架合成消息（错误/截断说明）可通过 execution 字段附带执行终态元数据。
    */
-  addAssistantMessage(response: LLMResponse, turn: number): void {
+  addAssistantMessage(response: LLMResponse & { execution?: MessageExecutionMeta }, turn: number): void {
+    // 会话事件流：reasoning / agent_message / tool_call started
+    emitAssistantResponseEvents(response, turn);
+
     // 从 LLM 响应中提取用量信息，盖戳到 assistant 消息上
     const usage = response.usage
       ? { inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens }
       : undefined;
+    // 框架盖戳的执行终态元数据（错误/截断消息）原样透传到消息上
+    const { execution } = response;
 
     this.addMessage(
       {
@@ -308,6 +317,7 @@ export class Context {
         reasoning: response.reasoning,
         thinkingBlocks: response.thinkingBlocks,
         usage,
+        ...(execution ? { execution } : {}),
       },
       { turn }
     );
@@ -320,6 +330,7 @@ export class Context {
       reasoning: response.reasoning,
       thinkingBlocks: response.thinkingBlocks,
       usage,
+      ...(execution ? { execution } : {}),
     });
   }
 
@@ -327,6 +338,9 @@ export class Context {
    * 添加工具结果
    */
   addToolMessage(call: ToolCall, result: ToolExecResult, turn: number): void {
+    // 会话事件流：tool_call completed
+    emitToolResultEvents(call, result, turn);
+
     const content = JSON.stringify({
       success: result.success,
       result: result.result,

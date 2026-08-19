@@ -2,10 +2,11 @@ import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } 
 import { resolveCustomHeaders } from './custom-headers.js';
 import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo, ImageInput } from '../core/types.js';
 import type { LLMPhase } from '../core/types.js';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
-import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from './retry.js';
+import { classifyAPIError, classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
 import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
+import { emitRetryObservability } from './retry-observability.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
@@ -241,7 +242,14 @@ export class AnthropicLLM implements LLMClient {
         if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(error, status)) {
           const retryAfterMs = parseRetryAfter(response?.headers);
           const delayMs = getRetryDelay(attempt, retryAfterMs);
-          await sleep(delayMs);
+          await emitRetryObservability({
+            attempt,
+            maxRetries: DEFAULT_MAX_RETRIES,
+            delayMs,
+            signal: options?.signal,
+            error,
+            status,
+          });
           continue;
         }
         // 重试耗尽或不可重试 → 分类包装后抛出

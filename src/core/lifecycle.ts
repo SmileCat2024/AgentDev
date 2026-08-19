@@ -141,19 +141,55 @@ export interface CallStartContext {
 }
 
 /**
- * Call 结束原因
- *
- * 让 CallFinish 钩子能结构化地判断 call 为什么结束，
- * 不再需要解析 response 字符串前缀。
+ * 执行单元的终态。它只表达执行是否完成、失败、取消或移交给后续单元；
+ * 不复用模型厂商的 stop reason，也不推断宿主任务的业务状态。
  */
-export type CallFinishReason =
+export type ExecutionStatus = 'completed' | 'failed' | 'cancelled' | 'continued';
+
+/**
+ * 执行终止的框架级原因。
+ *
+ * `reason` 描述生命周期语义，错误来源由 `error.category` 表达，避免一个字段
+ * 同时承担供应商协议、框架控制流和宿主业务状态三种含义。
+ */
+export type ExecutionReason =
   | 'completed'
-  | 'interrupted'
-  | 'api_error'
-  | 'error'
-  | 'max_steps'
-  | 'continuation'
-  | 'exception';
+  | 'cancelled'
+  | 'limit_reached'
+  | 'continued'
+  | 'error';
+
+/** 可序列化的错误事实。category 是稳定的机器分类，message 只供展示。 */
+export interface ExecutionError {
+  category: string;
+  message: string;
+  code?: string;
+  statusCode?: number;
+  retryable?: boolean;
+}
+
+/** 单次模型请求的来源信息；不决定 Call 的终态。 */
+export interface ModelRequestOutcome {
+  providerStopReason?: string | null;
+}
+
+/**
+ * 一次 Agent Call（而非宿主任务）的结构化终态。
+ * 该对象可安全持久化、跨进程传输和用于 JSONL/CLI 消费。
+ */
+export interface CallOutcome {
+  status: ExecutionStatus;
+  reason: ExecutionReason;
+  response: string;
+  steps: number;
+  startedAt: number;
+  finishedAt: number;
+  error?: ExecutionError;
+  model?: ModelRequestOutcome;
+}
+
+/** @deprecated 使用 CallOutcome.reason。保留旧 hook/API 的类型兼容。 */
+export type CallFinishReason = ExecutionReason;
 
 /**
  * Call 结束上下文
@@ -171,6 +207,8 @@ export interface CallFinishContext {
   completed: boolean;
   /** 结束原因 */
   finishReason: CallFinishReason;
+  /** 完整的结构化终态 */
+  outcome: CallOutcome;
 }
 
 // ========== Step 级别 ==========
@@ -325,7 +363,7 @@ export interface SubAgentDestroyContext {
  */
 export interface AgentInterruptContext {
   /** 中断原因 */
-  reason: 'max_steps_reached' | 'error' | 'cancelled';
+  reason: 'limit_reached' | 'error' | 'cancelled';
   /** 当前步骤序号 */
   step: number;
   /** 当前消息上下文 */
@@ -341,7 +379,7 @@ export interface SubAgentInterruptContext {
   /** 子代理类型 */
   type: string;
   /** 中断原因 */
-  reason: 'max_steps_reached' | 'error' | 'cancelled';
+  reason: 'limit_reached' | 'error' | 'cancelled';
   /** 中断时的结果 */
   result: string;
 }

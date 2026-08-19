@@ -10,7 +10,7 @@ import type { ToolCall } from '../types.js';
 import type { ContextInjector } from '../feature.js';
 import type { Message } from '../types.js';
 import type { CallContinuationRequest } from '../continuation.js';
-import type { CallFinishReason } from '../lifecycle.js';
+import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
 
 // 重新导出所有类型，供其他模块使用
 export type { Context } from '../context.js';
@@ -46,6 +46,10 @@ export interface ReActResult {
   continuationRequest?: CallContinuationRequest;
   /** 结束原因 */
   finishReason: CallFinishReason;
+  /** 失败时的结构化错误事实 */
+  error?: CallOutcome['error'];
+  /** 最近一次模型响应的来源信息 */
+  model?: CallOutcome['model'];
 }
 
 /**

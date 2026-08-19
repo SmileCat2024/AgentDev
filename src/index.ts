@@ -12,6 +12,10 @@ export { createTool, ToolRegistry } from './core/tool.js';
 export { DebugHub } from './core/debug-hub.js';
 export { createLogger, installConsoleBridge, runWithLogScope } from './core/logging.js';
 export type { Logger, LoggerBindings } from './core/logging.js';
+export { createLLMRetry } from './core/notification.js';
+export type { LLMRetryData } from './core/notification.js';
+export { subscribeSessionEvents, emitSessionEvent } from './core/session-events.js';
+export type { SessionEvent, SessionItem, SessionEventListener, TurnUsage, TurnFailure } from './core/session-events.js';
 export { FileSessionStore, getDefaultSessionStore } from './core/session-store.js';
 export type {
   AgentRuntimeSnapshot,
@@ -162,7 +166,15 @@ export type {
   ToolFinishedDecisionContext,
   ToolResultTransformContext,
 } from './core/lifecycle.js';
-export type { CallFinishReason } from './core/lifecycle.js';
+export type {
+  CallFinishReason,
+  ExecutionStatus,
+  ExecutionReason,
+  ExecutionError,
+  ModelRequestOutcome,
+  CallOutcome,
+} from './core/lifecycle.js';
+export type { MessageExecutionMeta } from './core/types.js';
 
 export type { ModelConfig, AgentConfigFile, ThinkingEffort } from './core/config.js';
 export { OPENAI_THINKING_EFFORTS, ANTHROPIC_THINKING_EFFORTS } from './core/config.js';

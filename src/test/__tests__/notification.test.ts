@@ -10,16 +10,18 @@ vi.mock('../../core/debug-hub.js', () => ({
 }));
 
 import {
-  _setNotificationAgent,
-  _clearNotificationAgent,
-  _getCurrentNotificationAgent,
   emitNotification,
+  runWithNotificationScope,
   createLLMCharCount,
   createLLMComplete,
   createToolStart,
   createToolComplete,
   createCallStart,
   createCallFinish,
+  createLLMRetry,
+  _setNotificationAgent,
+  _getCurrentNotificationAgent,
+  _clearNotificationAgent,
 } from '../../core/notification.js';
 
 describe('notification', () => {
@@ -210,22 +212,50 @@ describe('notification', () => {
       expect(notif.data).toEqual({});
     });
 
-    it('createCallFinish 应包含 completed 字段', () => {
-      const notif = createCallFinish(true);
+    it('createCallFinish 应携带完整 CallOutcome', () => {
+      const outcome = {
+        status: 'completed',
+        reason: 'completed',
+        response: 'done',
+        steps: 2,
+        startedAt: 1,
+        finishedAt: 2,
+      };
+      const notif = createCallFinish(outcome);
       expect(notif.type).toBe('call.finish');
       expect(notif.category).toBe('state');
-      expect(notif.data).toMatchObject({ completed: true });
+      expect(notif.data).toMatchObject({ status: 'completed', reason: 'completed' });
     });
 
-    it('createCallFinish 带 finishReason 时应包含该字段', () => {
-      const notif = createCallFinish(false, 'interrupted');
-      expect(notif.data).toMatchObject({ completed: false, finishReason: 'interrupted' });
+    it('createCallFinish 失败终态应包含 error 事实', () => {
+      const notif = createCallFinish({
+        status: 'failed',
+        reason: 'error',
+        response: 'API 请求频率超限 (429)，请稍后重试',
+        steps: 1,
+        startedAt: 1,
+        finishedAt: 2,
+        error: { category: 'rate_limit', message: 'API 请求频率超限 (429)，请稍后重试', retryable: true },
+      });
+      expect(notif.data).toMatchObject({
+        status: 'failed',
+        reason: 'error',
+        error: { category: 'rate_limit', retryable: true },
+      });
     });
 
-    it('createCallFinish 不带 finishReason 时不应包含该字段', () => {
-      const notif = createCallFinish(true);
-      const data = notif.data as Record<string, unknown>;
-      expect(data).not.toHaveProperty('finishReason');
+    it('createLLMRetry 应携带重试阶段与退避参数', () => {
+      const notif = createLLMRetry({
+        phase: 'waiting',
+        attempt: 2,
+        maxRetries: 10,
+        delayMs: 800,
+        errorType: 'rate_limit',
+        statusCode: 429,
+      });
+      expect(notif.type).toBe('llm.retry');
+      expect(notif.category).toBe('event');
+      expect(notif.data).toMatchObject({ phase: 'waiting', attempt: 2, delayMs: 800, errorType: 'rate_limit' });
     });
   });
 

@@ -11,6 +11,8 @@ export interface AgentRuntimeSnapshot {
   context?: ContextSnapshot;
   featureStates: FeatureCheckpoint[];
   usageStats?: UsageStatsSnapshot;
+  /** 最近一次已结束 Call 的结构化终态。旧会话缺省为 undefined。 */
+  lastCallOutcome?: import('./lifecycle.js').CallOutcome;
 }
 
 /**
@@ -24,6 +26,7 @@ export interface RuntimeStateWithoutContext {
   callIndex: number;
   featureStates: FeatureCheckpoint[];
   usageStats?: UsageStatsSnapshot;
+  lastCallOutcome?: import('./lifecycle.js').CallOutcome;
 }
 
 /**

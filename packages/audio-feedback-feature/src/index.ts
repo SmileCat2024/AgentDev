@@ -239,15 +239,15 @@ export class AudioFeedbackFeature implements AgentFeature {
    *
    * 根据 finishReason 区分成功 / 失败，播放不同音效：
    * - completed → 成功音
-   * - interrupted / api_error / error / exception / max_steps → 失败音
-   * - continuation → 不播放（call 暂停续接，非真正结束）
+   * - cancelled / limit_reached / error → 失败音
+   * - continued → 不播放（call 暂停续接，非真正结束）
    */
   async playAudioOnCallFinish(ctx: CallFinishContext): Promise<void> {
     if (!this.runtime.enabled) {
       return;
     }
 
-    if (ctx.finishReason === 'continuation') {
+    if (ctx.finishReason === 'continued') {
       return;
     }
 

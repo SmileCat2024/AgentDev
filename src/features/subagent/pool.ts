@@ -299,7 +299,7 @@ export class AgentPool {
    */
   async handleInterrupt(
     agentId: string,
-    reason: 'max_steps_reached' | 'error' | 'cancelled',
+    reason: 'limit_reached' | 'error' | 'cancelled',
     result: string
   ): Promise<void> {
     const timestamp = new Date().toISOString();

@@ -1697,6 +1697,7 @@ class ViewerWorker {
       updatedAt: 0,
       lastErrorType: null,
       lastErrorMessage: null,
+      lastOutcome: null,
     };
   }
 
@@ -1896,13 +1897,26 @@ class ViewerWorker {
         streamToolNames: undefined,
       };
     } else if (notification.type === 'call.finish') {
-      const finishData = (notification.data && typeof notification.data === 'object')
-        ? notification.data as Record<string, unknown>
+      // 结构化终态（CallOutcome）：status/reason/error 由框架产出，
+      // 不再从文本推断；lastError* 与 lastOutcome 一并进入 runtime snapshot。
+      const outcome = (notification.data && typeof notification.data === 'object')
+        ? notification.data as {
+            status?: string;
+            reason?: string;
+            error?: { category?: string; message?: string } | null;
+          }
         : {};
-      const completed = finishData.completed !== false;
+      const status = typeof outcome.status === 'string' ? outcome.status : '';
+      const completed = status === 'completed';
+      const cancelled = status === 'cancelled' || status === 'continued';
+      const nextStage = completed
+        ? 'completed'
+        : cancelled
+          ? 'cancelled'
+          : 'failed';
       session.callActive = false;
       session.runtimeState = {
-        ...this.updateRuntimeStage(runtimeState, completed ? 'completed' : 'failed', notification.timestamp || Date.now()),
+        ...this.updateRuntimeStage(runtimeState, nextStage, notification.timestamp || Date.now()),
         callActive: false,
         activeToolNames: [],
         activeToolCount: 0,
@@ -1910,6 +1924,30 @@ class ViewerWorker {
         retryAttempt: undefined,
         maxRetries: undefined,
         nextRetryDelayMs: undefined,
+        lastErrorType: outcome.error?.category ?? null,
+        lastErrorMessage: outcome.error?.message ?? null,
+        lastOutcome: notification.data as AgentRuntimeSnapshot['lastOutcome'],
+      };
+    } else if (notification.type === 'llm.retry') {
+      // 适配器内部重试观测：waiting → retry_waiting（含退避参数），
+      // requesting → retry_requesting。字段与 retryAttempt/maxRetries/
+      // nextRetryDelayMs 快照字段一一对应。
+      const data = (notification.data && typeof notification.data === 'object')
+        ? notification.data as Record<string, unknown>
+        : {};
+      const phase = data.phase === 'requesting' ? 'retry_requesting' : 'retry_waiting';
+      const attempt = typeof data.attempt === 'number' ? data.attempt : undefined;
+      const maxRetries = typeof data.maxRetries === 'number' ? data.maxRetries : undefined;
+      const delayMs = typeof data.delayMs === 'number' ? data.delayMs : undefined;
+      session.runtimeState = {
+        ...this.updateRuntimeStage(runtimeState, phase, notification.timestamp || Date.now()),
+        callActive: session.callActive === true,
+        ...(attempt !== undefined ? { retryAttempt: attempt } : {}),
+        ...(maxRetries !== undefined ? { maxRetries } : {}),
+        ...(delayMs !== undefined ? { nextRetryDelayMs: delayMs } : {}),
+        ...(typeof data.errorType === 'string'
+          ? { lastErrorType: data.errorType, lastErrorMessage: null }
+          : {}),
       };
     } else if (notification.type === 'llm.char_count') {
       const data = (notification.data && typeof notification.data === 'object')

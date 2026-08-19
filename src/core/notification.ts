@@ -15,6 +15,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Notification, NotificationCategory, LLMPhase } from './types.js';
+import type { CallOutcome } from './lifecycle.js';
 import { DebugHub } from './debug-hub.js';
 
 // ========== AsyncLocalStorage 上下文 ==========
@@ -210,6 +211,37 @@ export function createLLMComplete(totalChars: number): Notification {
   };
 }
 
+/** llm.retry 通知 data：单次模型请求内部的重试过程观测。 */
+export interface LLMRetryData {
+  /** waiting：进入退避等待；requesting：等待结束、即将重发请求 */
+  phase: 'waiting' | 'requesting';
+  /** 即将进行的第几次重试（1-based） */
+  attempt: number;
+  /** 适配器配置的最大重试次数 */
+  maxRetries: number;
+  /** 本次退避等待时长（ms），仅 waiting 阶段有值 */
+  delayMs?: number;
+  /** 分类后的错误类型（APIErrorType） */
+  errorType?: string;
+  /** HTTP 状态码（如有） */
+  statusCode?: number;
+}
+
+/**
+ * 创建 LLM 重试通知（事件类）
+ *
+ * 适配器在自动重试的等待前 / 重发前发射。这是纯观测信号，
+ * 不改变 Call 的执行控制流。
+ */
+export function createLLMRetry(data: LLMRetryData): Notification {
+  return {
+    type: 'llm.retry',
+    category: 'event',
+    timestamp: Date.now(),
+    data: { ...data },
+  };
+}
+
 /**
  * 创建工具开始通知
  * @param toolName 工具名称
@@ -262,13 +294,18 @@ export function createCallStart(): Notification {
 
 /**
  * 创建 Call 结束通知
- * @param completed 是否正常完成（false 表示被中断或出错）
+ *
+ * data 携带完整结构化终态（CallOutcome），消费端（ViewerWorker / 前端 /
+ * 审计）依据 status/reason/error 判断结果，不再解析文本。
  */
-export function createCallFinish(completed: boolean, finishReason?: string): Notification {
+export function createCallFinish(outcome: CallOutcome): Notification {
   return {
     type: 'call.finish',
     category: 'state',
     timestamp: Date.now(),
-    data: { completed, ...(finishReason ? { finishReason } : {}) },
+    data: { ...outcome },
   };
 }
+
+/** call.finish 通知 data 的形状（即 CallOutcome）。 */
+export type CallFinishData = CallOutcome;

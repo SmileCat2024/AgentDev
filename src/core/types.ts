@@ -103,7 +103,8 @@ export type RuntimeStage =
   | 'retry_waiting'
   | 'retry_requesting'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'cancelled';
 
 export interface AgentRuntimeSnapshot {
   stage: RuntimeStage;
@@ -123,6 +124,8 @@ export interface AgentRuntimeSnapshot {
   nextRetryDelayMs?: number;
   lastErrorType?: string | null;
   lastErrorMessage?: string | null;
+  /** 最近一次已结束 Call 的结构化终态。 */
+  lastOutcome?: import('./lifecycle.js').CallOutcome | null;
   updatedAt: number;
 }
 
@@ -310,6 +313,25 @@ export interface Message {
    * 不是单条消息的 token 数。
    */
   usage?: MessageUsage;
+  /**
+   * 执行终态元数据（仅 assistant 消息有值）。
+   *
+   * 框架在写入错误/截断等执行结果消息时盖戳。展示端（Web UI / 查看器）
+   * 应依据此字段渲染终态样式，而不是解析 content 文本前缀；该字段随
+   * 会话快照持久化，重渲染后保持稳定。
+   */
+  execution?: MessageExecutionMeta;
+}
+
+/**
+ * 消息级执行终态摘要（Message.execution）
+ *
+ * CallOutcome 的可序列化子集；不重复 response/steps 等会话级信息。
+ */
+export interface MessageExecutionMeta {
+  status: import('./lifecycle.js').ExecutionStatus;
+  reason: import('./lifecycle.js').ExecutionReason;
+  error?: import('./lifecycle.js').ExecutionError;
 }
 
 /**

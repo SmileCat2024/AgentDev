@@ -10,9 +10,10 @@ import { OPENAI_THINKING_EFFORTS } from '../core/config.js';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import OpenAI from 'openai';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep } from './retry.js';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from './retry.js';
 import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
 import { initHttpClient } from './http-client.js';
+import { emitRetryObservability } from './retry-observability.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
@@ -333,7 +334,14 @@ export class OpenAILLM implements LLMClient {
         if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(error, status)) {
           const retryAfterMs = parseRetryAfter((error as any)?.headers);
           const delayMs = getRetryDelay(attempt, retryAfterMs);
-          await sleep(delayMs);
+          await emitRetryObservability({
+            attempt,
+            maxRetries: DEFAULT_MAX_RETRIES,
+            delayMs,
+            signal: options?.signal,
+            error,
+            status,
+          });
           continue;
         }
         // 重试耗尽或不可重试 → 分类包装后抛出

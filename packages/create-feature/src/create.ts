@@ -11,6 +11,11 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Keep generated Feature projects on the framework version that the scaffold
+// itself was built and tested against. An unconstrained `latest` type surface
+// can disagree with the runtime used by Studio or other consumers.
+const AGENTDEV_COMPAT_VERSION = '^0.2.11';
+
 export interface CreateFeatureProjectOptions {
   /** npm package name, with or without the @agentdev/ scope. */
   featureName: string;
@@ -80,13 +85,13 @@ function generatePackageJson(targetDir: string, packageName: string, featureSlug
       prepublishOnly: 'npm run build'
     },
     peerDependencies: {
-      agentdev: '>=0.1.0'
+      agentdev: AGENTDEV_COMPAT_VERSION
     },
     devDependencies: {
       '@types/node': '^20.11.0',
       tsup: '^8.3.5',
       typescript: '^5.3.3',
-      agentdev: 'latest'
+      agentdev: AGENTDEV_COMPAT_VERSION
     },
     keywords: ['agentdev', 'feature', featureSlug],
     license: 'MIT'

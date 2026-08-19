@@ -11,61 +11,54 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-interface CreateFeatureOptions {
-  name: string;
-  description?: string;
+export interface CreateFeatureProjectOptions {
+  /** npm package name, with or without the @agentdev/ scope. */
+  featureName: string;
+  /** Parent directory for the generated package. Defaults to process.cwd(). */
+  parentDir?: string;
 }
 
 /**
- * 创建 Feature 包
+ * Create a standard AgentDev Feature package without invoking a shell.
+ * The caller owns dependency installation and any subsequent build.
  */
-export async function createFeature(featureName: string): Promise<void> {
-  // 规范化包名
+export async function createFeatureProject(options: CreateFeatureProjectOptions): Promise<{ packageName: string; featureSlug: string; targetDir: string }> {
+  const featureName = String(options?.featureName || '').trim();
+  if (!featureName) throw new Error('Feature name is required.');
   const packageName = featureName.startsWith('@agentdev/')
     ? featureName
     : `@agentdev/${featureName}`;
-
   const featureClass = toPascalCase(featureName.replace('@agentdev/', ''));
   const featureSlug = toKebabCase(featureName.replace('@agentdev/', ''));
-
-  const targetDir = join(process.cwd(), featureSlug);
+  const targetDir = join(options.parentDir || process.cwd(), featureSlug);
 
   if (existsSync(targetDir)) {
     throw new Error(`Directory already exists: ${targetDir}`);
   }
 
-  console.log(`Creating AgentDev Feature: ${packageName}`);
-  console.log(`Target directory: ${targetDir}`);
-
-  // 创建目录结构
   mkdirSync(join(targetDir, 'src'), { recursive: true });
   mkdirSync(join(targetDir, 'src', 'templates'), { recursive: true });
   mkdirSync(join(targetDir, 'scripts'), { recursive: true });
-
-  // 生成 package.json
   generatePackageJson(targetDir, packageName, featureSlug);
-
-  // 生成 tsconfig.json
   generateTsConfig(targetDir);
-
-  // 生成 tsup 配置
   generateTsupConfig(targetDir);
-
-  // 生成 copy-assets 脚本
   generateCopyAssetsScript(targetDir);
-
-  // 生成最基础的 Feature 类
-  generateMinimalFeatureClass(targetDir, featureClass);
-
-  // 生成 README
+  generateMinimalFeatureClass(targetDir, featureClass, featureSlug);
   generateMinimalReadme(targetDir, packageName, featureSlug);
+  return { packageName, featureSlug, targetDir };
+}
 
-  console.log('\n✅ Feature package created successfully!');
+/** Legacy CLI entry point. */
+export async function createFeature(featureName: string): Promise<void> {
+  const result = await createFeatureProject({ featureName });
+  console.log(`Creating AgentDev Feature: ${result.packageName}`);
+  console.log(`Target directory: ${result.targetDir}`);
+  console.log('\nFeature package created successfully!');
   console.log('\nNext steps:');
-  console.log(`  cd ${featureSlug}`);
-  console.log(`  npm install`);
-  console.log(`  # Edit src/index.ts to implement your feature`);
-  console.log(`  npm run build`);
+  console.log(`  cd ${result.featureSlug}`);
+  console.log('  npm install');
+  console.log('  # Edit src/index.ts to implement your feature');
+  console.log('  npm run build');
 }
 
 /**
@@ -163,8 +156,7 @@ export default defineConfig({
 /**
  * 生成最基础的 Feature 类
  */
-function generateMinimalFeatureClass(targetDir: string, featureClass: string): void {
-  const className = toCamelCase(featureClass);
+function generateMinimalFeatureClass(targetDir: string, featureClass: string, featureName: string): void {
   const content = `/**
  * ${featureClass} Feature
  */
@@ -184,7 +176,7 @@ export interface ${featureClass}Config {
 }
 
 export class ${featureClass} implements AgentFeature {
-  readonly name = '${className}';
+  readonly name = '${featureName}';
   readonly dependencies: string[] = [];
   readonly source = fileURLToPath(import.meta.url).replace(/\\\\/g, '/');
   readonly description = '${featureClass} feature';

@@ -137,7 +137,7 @@ import type {
 } from 'agentdev';
 ```
 
-上下文类型、`CoreLifecycle`、`Decision`、`HookDeclarations` 都从包根导出。如果某个导入名报"不存在"，先对照上表和 `CoreLifecycle` 枚举成员核对拼写。
+当前 Studio 支持的 AgentDev 版本会从包根导出上下文类型、`CoreLifecycle`、`Decision` 与 `HookDeclarations`。如果某个导入名报“不存在”，不要直接改成 `as any`：先确认 Feature 项目实际安装的 `agentdev` 版本与 `.d.ts`，再对照 [类型与运行时不同步的排障步骤](../quality/troubleshooting.md#运行时存在但-typescript-导入失败)。
 
 ## AgentInitiate
 

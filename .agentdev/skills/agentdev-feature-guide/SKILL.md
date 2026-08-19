@@ -23,6 +23,22 @@ description: AgentDev Feature 的完整设计、实现、扩展、测试、审�
 
 只实现任务需要的部分。一个无状态工具 Feature 不需要快照；一个纯 hook Feature 不需要工具；一个没有自定义展示的 Feature 不需要模板。
 
+## 按任务选择阅读路径
+
+先判断本次只涉及 Feature 内核，还是已经需要 standalone Agent 装配；不要为了一个工具 Feature 通读所有体验面专题。
+
+| 当前任务 | 先读 |
+|---|---|
+| 纯工具、参数/结果契约 | 本文“选择入口” + [工具契约设计](references/tools/tool-contracts.md) + [Feature 单元测试](references/quality/unit-testing.md) |
+| Hook、继续/结束控制 | [反向 Hook 参考](references/runtime/reverse-hooks-reference.md) + [Hook 规则设计](references/runtime/hook-design.md) |
+| 会话状态、checkpoint、rollback | [状态快照与恢复](references/runtime/state-recovery.md) + [Agent 集成与交付测试](references/quality/integration-testing.md) |
+| client、轮询、子进程或中断 | [初始化、就绪状态与资源清理](references/runtime/resource-management.md) + [并发、中断与幂等](references/tools/concurrency-cancellation.md) |
+| 配置 UI、模板或 Feature 自带技能 | 对应 experience 专题；没有明确需求时不要预先实现 |
+| npm 包交付 | `agentdev-feature-packaging` + [Agent 集成与交付测试](references/quality/integration-testing.md) |
+| standalone Agent 装配 | `agentdev-agent-assembly`；这不是普通 Feature 内核验证 |
+
+本指南优先覆盖 Feature 内核与其 standalone 消费契约。HTTP、前端面板、session IPC、prebuilt/built-in runtime 属于产品宿主集成，不要假设它们会由 Feature Test Runtime 覆盖。若任务确实跨到这些层而手册尚无对应章节，读取相关实现定位，并把可复用契约回填为手册和回归测试。
+
 ## 工作顺序
 
 1. 确定能力边界：用一句话说明 Feature 为 Agent 提供什么能力。

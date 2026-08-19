@@ -22,6 +22,21 @@
 - [动态移除后仍有行为](#动态移除后仍有行为)
 - [日志在终端可见但调试器不可见](#日志在终端可见但调试器不可见)
 - [测试写法与仓库不一致](#测试写法与仓库不一致)
+- [运行时存在但 TypeScript 导入失败](#运行时存在但-typescript-导入失败)
+
+## 运行时存在但 TypeScript 导入失败
+
+不要用 `as any` 把类型错误静默压下去。先确认 Feature 项目的实际 `agentdev` 版本、该版本的 `dist/index.d.ts`，以及 Studio 当前使用的框架版本是否一致。运行时导出存在不代表发布包的声明文件也导出了同一符号。
+
+排查顺序：
+
+1. 查看 Feature 项目的 `package.json`：Studio 脚手架生成的 `devDependencies.agentdev` 应为 Studio 已验证的兼容范围，而不是 `latest`。
+2. 确认 `npm install` 后解析的实际版本；不要只根据工作区另一份 `node_modules` 推断。
+3. 从该版本的包根声明核对 `CoreLifecycle`、`HookDeclarations`、上下文类型等导出是否真实存在。
+4. 若运行时与 `.d.ts` 不同步，升级或降级到 Studio 支持的版本，或在框架源码修复并发布声明；不要为长期代码保留字符串 lifecycle 或 `as any` 逃逸。
+5. 对独立 Feature，同一版本至少应完成一次 `npm run build` 和从构建产物 import 的 smoke test。
+
+纯 JavaScript Feature 可以使用文档列出的字符串 lifecycle/decision 值；这不是 TypeScript 类型缺失的通用替代方案。TypeScript Feature 应依赖可验证的包根类型契约。
 
 ## 工具没有出现
 

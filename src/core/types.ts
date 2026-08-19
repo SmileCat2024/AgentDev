@@ -628,6 +628,12 @@ export interface TodoPlanSnapshot {
   summary: TodoPlanSummary;
   /** 中断目标 task ID（由 ControlledTodoFeature 扩展，null = 无中断目标） */
   interruptTargetId?: string | null;
+  /** 任务未完强制继续开关状态（由 ControlledTodoFeature 扩展，null = 未上报） */
+  forceContinue?: {
+    enabled: boolean;
+    consecutive: number;
+    max: number;
+  } | null;
 }
 
 /**

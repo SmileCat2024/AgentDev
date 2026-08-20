@@ -9,6 +9,7 @@ import type { CustomHeaderEntry, ThinkingEffort } from '../core/config.js';
 import { OPENAI_THINKING_EFFORTS } from '../core/config.js';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
+import { sanitizeToolSchema } from './schema-sanitizer.js';
 import OpenAI from 'openai';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from './retry.js';
 import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
@@ -27,6 +28,86 @@ function ensureHttpClientInitialized() {
 // GLM-4.7等模型扩展了OpenAI的响应格式，添加了reasoning_content字段
 interface ExtendedChatCompletionMessage extends OpenAI.Chat.ChatCompletionMessage {
   reasoning_content?: string;
+}
+
+/**
+ * 将内部 Message[] 编译为 OpenAI Chat Completions wire 格式。
+ * 与 compileContextForAnthropic / compileContextForOpenAIResponses 对称的导出编译函数。
+ */
+export function compileChatMessages(
+  messages: Message[],
+  visionEnabled = false,
+): OpenAI.Chat.ChatCompletionMessageParam[] {
+  // 使用 flatMap 而非 map，因为带图片的 tool 消息需要额外追加一条 user 消息
+  return messages.flatMap(m => {
+    if (m.role === 'tool') {
+      const results: OpenAI.Chat.ChatCompletionMessageParam[] = [
+        { role: 'tool', content: m.content, tool_call_id: m.toolCallId! },
+      ];
+      // tool 消息附带图片
+      if (m.images && m.images.length > 0) {
+        if (visionEnabled) {
+          // 视觉模式：追加一条 user 消息携带图片
+          const parts: OpenAI.Chat.ChatCompletionContentPart[] = [
+            { type: 'text', text: `[Tool image result for ${m.toolCallId}]` },
+          ];
+          for (const img of m.images) {
+            const url = resolveImageDataUri(img) || img.source;
+            if (url) {
+              parts.push({ type: 'image_url', image_url: { url } });
+            }
+          }
+          results.push({ role: 'user', content: parts });
+        } else {
+          // 非视觉模式：降级为文字占位符，追加到 tool 消息后
+          const placeholders = m.images
+            .map(img => `【Image】${img.source || '(inline image)'}`)
+            .join('\n');
+          results.push({ role: 'user', content: `[Tool image placeholders]\n${placeholders}` });
+        }
+      }
+      return results;
+    }
+    // assistant 消息携带 toolCalls 时必须序列化为 tool_calls，
+    // 否则后续 tool 消息会成为孤儿（严格校验的 OpenAI 兼容后端会返回 400：
+    // "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"）
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
+      return [{
+        role: 'assistant' as const,
+        content: m.content ?? '',
+        tool_calls: m.toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments ?? {}),
+          },
+        })),
+      }];
+    }
+    // 处理 user 消息中的图片
+    if (m.role === 'user' && m.images && m.images.length > 0) {
+      if (visionEnabled) {
+        const parts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+        if (m.content) {
+          parts.push({ type: 'text', text: m.content });
+        }
+        for (const img of m.images) {
+          const url = resolveImageDataUri(img) || img.source;
+          if (url) {
+            parts.push({ type: 'image_url', image_url: { url } });
+          }
+        }
+        return [{ role: 'user', content: parts }];
+      }
+      // 非视觉模式：将图片降级为文字占位符
+      const placeholders = m.images
+        .map(img => `【Image】${img.source || '(inline image)'}`)
+        .join('\n');
+      return [{ role: 'user', content: `${m.content}\n${placeholders}` }];
+    }
+    return [{ role: m.role, content: m.content }] as OpenAI.Chat.ChatCompletionMessageParam[];
+  });
 }
 
 export class OpenAILLM implements LLMClient {
@@ -93,59 +174,7 @@ export class OpenAILLM implements LLMClient {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
     // 转换消息格式为 OpenAI 格式
-    // 使用 flatMap 而非 map，因为带图片的 tool 消息需要额外追加一条 user 消息
-    const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = messages.flatMap(m => {
-      if (m.role === 'tool') {
-        const results: OpenAI.Chat.ChatCompletionMessageParam[] = [
-          { role: 'tool', content: m.content, tool_call_id: m.toolCallId! },
-        ];
-        // tool 消息附带图片
-        if (m.images && m.images.length > 0) {
-          if (this.visionEnabled) {
-            // 视觉模式：追加一条 user 消息携带图片
-            const parts: OpenAI.Chat.ChatCompletionContentPart[] = [
-              { type: 'text', text: `[Tool image result for ${m.toolCallId}]` },
-            ];
-            for (const img of m.images) {
-              const url = resolveImageDataUri(img) || img.source;
-              if (url) {
-                parts.push({ type: 'image_url', image_url: { url } });
-              }
-            }
-            results.push({ role: 'user', content: parts });
-          } else {
-            // 非视觉模式：降级为文字占位符，追加到 tool 消息后
-            const placeholders = m.images
-              .map(img => `【Image】${img.source || '(inline image)'}`)
-              .join('\n');
-            results.push({ role: 'user', content: `[Tool image placeholders]\n${placeholders}` });
-          }
-        }
-        return results;
-      }
-      // 处理 user 消息中的图片
-      if (m.role === 'user' && m.images && m.images.length > 0) {
-        if (this.visionEnabled) {
-          const parts: OpenAI.Chat.ChatCompletionContentPart[] = [];
-          if (m.content) {
-            parts.push({ type: 'text', text: m.content });
-          }
-          for (const img of m.images) {
-            const url = resolveImageDataUri(img) || img.source;
-            if (url) {
-              parts.push({ type: 'image_url', image_url: { url } });
-            }
-          }
-          return [{ role: 'user', content: parts }];
-        }
-        // 非视觉模式：将图片降级为文字占位符
-        const placeholders = m.images
-          .map(img => `【Image】${img.source || '(inline image)'}`)
-          .join('\n');
-        return [{ role: 'user', content: `${m.content}\n${placeholders}` }];
-      }
-      return [{ role: m.role, content: m.content }] as OpenAI.Chat.ChatCompletionMessageParam[];
-    });
+    const chatMessages = compileChatMessages(messages, this.visionEnabled);
 
     // 转换工具格式
     const chatTools = tools.map(t => ({
@@ -153,7 +182,7 @@ export class OpenAILLM implements LLMClient {
       function: {
         name: t.name,
         description: t.description,
-        parameters: t.parameters,
+        parameters: sanitizeToolSchema(t.parameters),
       },
     }));
 
@@ -234,10 +263,13 @@ export class OpenAILLM implements LLMClient {
           }
 
           const rawDelta = delta as { reasoning_content?: string; content?: string | null };
+          // reasoning 与 content 独立累积：过渡 chunk 可能同包携带两者（reasoning 尾巴 +
+          // 正文开头），else-if 结构会永久丢弃正文开头片段
           if (rawDelta.reasoning_content) {
             currentPhase = 'thinking';
             reasoning += rawDelta.reasoning_content;
-          } else if (delta.content) {
+          }
+          if (delta.content) {
             currentPhase = 'content';
             content += delta.content;
           }
@@ -245,8 +277,19 @@ export class OpenAILLM implements LLMClient {
           if (delta.tool_calls) {
             currentPhase = 'tool_calling';
             for (const toolCall of delta.tool_calls) {
-              const index = toolCall.index;
-              if (index === undefined) continue;
+              // 兼容省略 index 的 OpenAI 兼容实现（部分网关非并行场景不回填 index）：
+              // 静默丢弃会导致工具调用整体丢失，表现为"会话没有工具调用就被打断"。
+              // 带 id 的增量优先续写同 id 条目，否则开启新调用；不带 id 的增量续写最近条目。
+              let index = toolCall.index;
+              if (index === undefined || index === null) {
+                if (toolCall.id) {
+                  const existingIndex = Array.from(accumulatedToolCalls.entries())
+                    .find(([, v]) => v.id === toolCall.id)?.[0];
+                  index = existingIndex ?? accumulatedToolCalls.size;
+                } else {
+                  index = Math.max(accumulatedToolCalls.size - 1, 0);
+                }
+              }
 
               if (!accumulatedToolCalls.has(index)) {
                 accumulatedToolCalls.set(index, {
@@ -281,8 +324,10 @@ export class OpenAILLM implements LLMClient {
           }
 
           if (chunk.choices[0]?.finish_reason) {
+            // 仅记录，不立即中断迭代：部分网关 finish_reason 先行、增量殿后，
+            // 提前 break 会丢失尾部 tool_calls 增量与 usage chunk。
+            // 规范网关在 [DONE] 后迭代器自然结束，无额外等待。
             finishReason = chunk.choices[0].finish_reason;
-            break;
           }
         }
 

@@ -54,6 +54,7 @@ export {
   AnthropicLLM,
   OpenAILLM,
   OpenAIResponsesLLM,
+  compileChatMessages,
   compileContextForAnthropic,
   compileContextForOpenAIResponses,
   createAnthropicLLM,

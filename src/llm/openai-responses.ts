@@ -11,6 +11,7 @@ import { OPENAI_THINKING_EFFORTS } from '../core/config.js';
 import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '../core/types.js';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
+import { sanitizeToolSchema } from './schema-sanitizer.js';
 import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from './retry.js';
 import { classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
 import { initHttpClient } from './http-client.js';
@@ -834,7 +835,7 @@ function normalizeToolParameters(parameters: Record<string, any> | undefined): R
   if (!parameters || typeof parameters !== 'object') {
     return { type: 'object', properties: {} };
   }
-  return parameters;
+  return sanitizeToolSchema(parameters);
 }
 
 function parseToolArguments(raw: string, toolName?: string): Record<string, any> {

@@ -5,7 +5,7 @@ import { createOpenAILLM } from './openai.js';
 import { createOpenAIResponsesLLM } from './openai-responses.js';
 
 export { AnthropicLLM, compileContextForAnthropic, createAnthropicLLM } from './anthropic.js';
-export { OpenAILLM, createOpenAILLM } from './openai.js';
+export { OpenAILLM, createOpenAILLM, compileChatMessages } from './openai.js';
 export { OpenAIResponsesLLM, compileContextForOpenAIResponses, createOpenAIResponsesLLM } from './openai-responses.js';
 export { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep as retrySleep } from './retry.js';
 export { ClassifiedAPIError, classifyAPIError, classifyAndWrapError, extractConnectionErrorDetails, getUserFriendlyMessage } from './api-errors.js';

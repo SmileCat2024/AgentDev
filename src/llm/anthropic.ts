@@ -6,6 +6,7 @@ import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from
 import { classifyAPIError, classifyAndWrapError, ClassifiedAPIError } from './api-errors.js';
 import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
+import { sanitizeToolSchema } from './schema-sanitizer.js';
 import { emitRetryObservability } from './retry-observability.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
@@ -391,7 +392,7 @@ function toolToAnthropicDefinition(tool: Tool): AnthropicToolDef {
   return {
     name: tool.name,
     description: tool.description,
-    input_schema: tool.parameters ?? { type: 'object', properties: {} },
+    input_schema: sanitizeToolSchema(tool.parameters),
   };
 }
 

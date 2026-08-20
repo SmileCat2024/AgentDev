@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp } from 'fs/promises';
+import { mkdtemp, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Agent } from '../core/agent.js';
@@ -104,5 +104,56 @@ describe('Session restore', () => {
     expect(resumedResult).toBe('restored-users:2');
     expect(agent2.getContext().getAll().filter(message => message.role === 'system')).toHaveLength(1);
     expect(agent2Feature.initiateCount).toBe(1);
+  });
+});
+
+describe('FileSessionStore atomic write', () => {
+  it('persists via tmp + rename and leaves no .tmp residue', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'agentdev-session-'));
+    const store = new FileSessionStore(sessionDir);
+    const sessionId = 'atomic-demo';
+
+    const snapshot: any = {
+      version: 3,
+      sessionId,
+      savedAt: Date.now(),
+      agentType: 'TestAgent',
+      runtime: { initialized: true, callIndex: 0, featureStates: [] },
+      rollbackHistory: [],
+    };
+
+    await store.save(sessionId, snapshot);
+
+    const loaded = await store.load(sessionId);
+    expect(loaded.sessionId).toBe(sessionId);
+    expect(loaded).toEqual(snapshot);
+
+    const files = await readdir(sessionDir);
+    expect(files).toContain(`${sessionId}.json`);
+    expect(files.filter(name => name.endsWith('.tmp'))).toHaveLength(0);
+  });
+
+  it('overwrites an existing session atomically', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'agentdev-session-'));
+    const store = new FileSessionStore(sessionDir);
+    const sessionId = 'overwrite-demo';
+
+    const base = (callIndex: number) => ({
+      version: 3,
+      sessionId,
+      savedAt: Date.now(),
+      agentType: 'TestAgent',
+      runtime: { initialized: true, callIndex, featureStates: [] },
+      rollbackHistory: [],
+    });
+
+    await store.save(sessionId, base(1));
+    await store.save(sessionId, base(2));
+
+    const loaded = await store.load(sessionId);
+    expect(loaded.runtime.callIndex).toBe(2);
+
+    const files = await readdir(sessionDir);
+    expect(files.filter(name => name.endsWith('.tmp'))).toHaveLength(0);
   });
 });

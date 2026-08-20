@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'fs/promises';
 import { resolve } from 'path';
 import { cwd } from 'process';
 import type { ContextSnapshot, ContextBoundaryV2 } from './context.js';
@@ -124,8 +124,36 @@ export class FileSessionStore implements SessionStore {
   async save(sessionId: string, snapshot: AgentSessionSnapshot): Promise<string> {
     await mkdir(this.baseDir, { recursive: true });
     const filePath = this.resolvePath(sessionId);
-    await writeFile(filePath, JSON.stringify(snapshot, null, 2), 'utf-8');
+    await this.atomicWriteJson(filePath, snapshot);
     return filePath;
+  }
+
+  /**
+   * 原子写 JSON：先写临时文件，再 rename 到目标路径。
+   *
+   * 对齐 Claw 侧 server/thread-control/thread-store.js 的 _atomicWriteJson 模式，
+   * 避免直接 writeFile 目标文件在进程崩溃/断电时留下半截损坏的 JSON（JSON.parse 会失败，
+   * 且 Claw 侧会在加载时静默丢弃损坏会话）。处理跨平台差异：
+   * - EPERM / EACCES：Windows 上 rename 覆盖已存在文件可能失败，先 unlink 再 rename。
+   * - EXDEV：临时文件与目标位于不同设备（如不同挂载点），回退 copyFile + unlink。
+   */
+  private async atomicWriteJson(filePath: string, data: unknown): Promise<void> {
+    const tmpPath = `${filePath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    try {
+      await rename(tmpPath, filePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EACCES') {
+        await unlink(filePath).catch(() => {});
+        await rename(tmpPath, filePath);
+      } else if (code === 'EXDEV') {
+        await copyFile(tmpPath, filePath);
+        await unlink(tmpPath).catch(() => {});
+      } else {
+        throw err;
+      }
+    }
   }
 
   async load(sessionId: string): Promise<AgentSessionSnapshot> {

@@ -177,6 +177,11 @@ export class WeixinBot implements AgentFeature {
 
   // 消息游标
   private getUpdatesBuf: string = '';
+  /** 是否已打印过首次 getUpdates 响应（不能用游标为空判断，会话失效后游标恒为空） */
+  private firstUpdateLogged: boolean = false;
+  /** 轮询失败日志节流：上一次错误与连续失败次数 */
+  private lastPollError: string | null = null;
+  private pollErrorCount: number = 0;
 
   /** 当前 turn 上下文（每轮 onCall 期间有效） */
   private _currentTurnCtx: TurnContext | null = null;
@@ -290,14 +295,15 @@ export class WeixinBot implements AgentFeature {
         // 长轮询获取消息
         const response = await this.apiClient.getUpdates(this.getUpdatesBuf);
 
-        // 调试：打印完整响应（第一次）
-        if (this.getUpdatesBuf === '') {
+        // 调试：打印完整响应（只打印一次；不能用游标为空判断，会话失效后游标恒为空）
+        if (!this.firstUpdateLogged) {
+          this.firstUpdateLogged = true;
           console.log('[WeixinBot] 首次 getUpdates 响应:', JSON.stringify(response, null, 2));
         }
 
         // 检查响应是否有效
         if (!response || typeof response !== 'object') {
-          console.error('[WeixinBot] getUpdates 返回无效响应:', response);
+          this.logPollError('[WeixinBot] getUpdates 返回无效响应', response);
           await new Promise(resolve => setTimeout(resolve, 5000));
           continue;
         }
@@ -305,11 +311,25 @@ export class WeixinBot implements AgentFeature {
         // 检查 ret 字段（如果存在且非零）
         // 注意：正常情况下 API 不返回 ret 字段，只有错误时才有
         if ('ret' in response && response.ret !== 0) {
-          console.error('[WeixinBot] getUpdates 返回错误码:', response.ret);
-          console.error('[WeixinBot] 完整响应:', JSON.stringify(response, null, 2));
+          this.logPollError(`[WeixinBot] getUpdates 返回错误码 ret=${response.ret}`, response);
           await new Promise(resolve => setTimeout(resolve, 5000));
           continue;
         }
+
+        // 检查 errcode 字段（如 -14 session timeout；错误响应不携带游标，游标会恒为首次）
+        if (response.errcode !== undefined && response.errcode !== 0) {
+          const hint = response.errcode === -14 ? '（会话已过期，需重新扫码登录）' : '';
+          this.logPollError(
+            `[WeixinBot] getUpdates 返回错误码 errcode=${response.errcode} ${response.errmsg ?? ''}${hint}`.trimEnd(),
+            response
+          );
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          continue;
+        }
+
+        // 轮询恢复正常，重置失败计数
+        this.lastPollError = null;
+        this.pollErrorCount = 0;
 
         // 更新游标
         if (response.get_updates_buf !== undefined) {
@@ -332,8 +352,7 @@ export class WeixinBot implements AgentFeature {
         }
 
         if (error instanceof Error) {
-          console.error('[WeixinBot] 消息循环错误:', error.message);
-          console.error('[WeixinBot] 错误堆栈:', error.stack);
+          this.logPollError(`[WeixinBot] 消息循环错误: ${error.message}`, error.stack);
         }
 
         // 等待 5 秒后重试
@@ -342,6 +361,27 @@ export class WeixinBot implements AgentFeature {
     }
 
     console.log('[WeixinBot] 消息接收循环已退出');
+  }
+
+  /**
+   * 记录轮询失败日志（连续相同错误只打印首次，之后每 12 次重试约 1 分钟打印一条心跳）
+   */
+  private logPollError(message: string, detail?: unknown): void {
+    if (message === this.lastPollError) {
+      this.pollErrorCount++;
+      if (this.pollErrorCount % 12 !== 0) {
+        return;
+      }
+      console.error(`${message}（已连续失败 ${this.pollErrorCount} 次）`);
+      return;
+    }
+    this.lastPollError = message;
+    this.pollErrorCount = 1;
+    if (detail !== undefined) {
+      console.error(message, detail);
+    } else {
+      console.error(message);
+    }
   }
 
   /**

@@ -158,6 +158,10 @@ export interface WeixinMessage {
 export interface GetUpdatesResponse {
   /** 返回码 */
   ret: number;
+  /** 错误码（会话失效等错误时返回，如 -14 session timeout；正常响应不携带） */
+  errcode?: number;
+  /** 错误信息（随 errcode 返回） */
+  errmsg?: string;
   /** 消息列表 */
   msgs?: WeixinMessage[];
   /** 下次请求的游标 */
@@ -241,6 +245,7 @@ export class WeixinApiClient {
   private botToken: string | null = null;
   private configPath: string;
   private xWechatUin: string | null = null;  // 会话期间保持一致
+  private getUpdatesLogged = false;  // getUpdates 请求日志只打印首次
 
   constructor(configPath?: string) {
     this.configPath = configPath || join(process.cwd(), '.agentdev', 'weixin-bot.config.json');
@@ -417,8 +422,9 @@ export class WeixinApiClient {
       throw new Error('未登录，请先扫码登录');
     }
 
-    // 只在首次或出错时打印日志
-    const shouldLog = getUpdatesBuf === '';
+    // 只在首次请求时打印日志（不能用游标为空判断：会话失效后游标恒为空，会导致每轮都当作"首次"刷屏）
+    const shouldLog = !this.getUpdatesLogged;
+    this.getUpdatesLogged = true;
 
     if (shouldLog) {
       console.log('[WeixinAPI] 发起 getUpdates 请求，游标:', getUpdatesBuf || '(首次)');

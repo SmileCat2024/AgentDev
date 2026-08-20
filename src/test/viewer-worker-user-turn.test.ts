@@ -141,6 +141,27 @@ describe('ViewerWorker user-turn contract', () => {
     expect(session.inputLease).toMatchObject({ requestId: 'current-choice', mode: 'choices' });
   });
 
+  it('clears the matching lease when the runtime cancels an input request', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'stale-choice', prompt: '请选择', mode: 'choices', timestamp: Date.now() };
+
+    worker.handleInputRequestCancelled({ type: 'input-request-cancelled', agentId, requestId: 'stale-choice' });
+
+    expect(session.inputLease).toBeUndefined();
+    // 中断取消后，新 user-turn 不再被陈旧 choices 租约以 input_mode_conflict 拒绝
+    const result = worker.submitUserTurn(agentId, { text: 'finally goes through', source: 'chat-composer' });
+    expect(result).toMatchObject({ success: true, delivery: 'queued' });
+  });
+
+  it('does not clear a newer lease when cancelling a stale request id', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'reopened-text', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+
+    worker.handleInputRequestCancelled({ type: 'input-request-cancelled', agentId, requestId: 'stale-choice' });
+
+    expect(session.inputLease).toMatchObject({ requestId: 'reopened-text', mode: 'text' });
+  });
+
   it('exposes the same delivery contract through the HTTP handler', () => {
     const { worker, session, agentId } = createWorker();
     session.inputLease = { requestId: 'http-input', prompt: '请输入', timestamp: Date.now() };

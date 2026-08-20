@@ -930,11 +930,21 @@ export class DebugHub {
         console.log(`[DebugHub] 收到中断信号: agentId=${msg.agentId}, knownAgents=[${[...this.agents.keys()].join(',')}]`);
         const agentData = this.agents.get(msg.agentId);
         console.log(`[DebugHub] agentData found=${!!agentData}, hasAgent=${!!agentData?.agent}, hasInterrupt=${typeof (agentData?.agent as any)?.interrupt}`);
+        let interruptAccepted = false;
         if (agentData?.agent && typeof (agentData.agent as any).interrupt === 'function') {
-          const interrupted = (agentData.agent as any).interrupt();
-          console.log(`[DebugHub] agent.interrupt() returned: ${interrupted}`);
+          interruptAccepted = (agentData.agent as any).interrupt() === true;
+          console.log(`[DebugHub] agent.interrupt() returned: ${interruptAccepted}`);
         } else {
           console.warn(`[DebugHub] Agent 不支持中断: ${msg.agentId}`);
+        }
+        // 中断生效时同步取消该 Agent 挂起的交互输入请求。工具内的输入
+        // 等待已被 tool-executor 的 abort 竞争丢弃，若不在此结算 DebugHub
+        // 租约，宿主输入循环重开 getUserInputEvent 会被 "already has an
+        // active user input lease" 永久拒绝；同时 cancelInputRequests 会
+        // 通知 Worker 清除 inputLease，解除对后续 user-turn 的阻塞。
+        // 空闲宿主输入槽（interrupt 未被接受）不受影响。
+        if (interruptAccepted) {
+          this.cancelInputRequests(msg.agentId, `Agent '${msg.agentId}' was interrupted`);
         }
         const specificHandler = this.interruptHandlers.get(msg.agentId);
         const effectiveHandler = specificHandler ?? this.globalInterruptHandler;
@@ -1117,6 +1127,11 @@ export class DebugHub {
       if (pending.agentId !== agentId) continue;
       pending.abortController?.abort();
       this.settleInputRequest(requestId, { error: this.createAbortError(reason) });
+      // Worker 持有同名 inputLease（HTTP 投递面）；结算后必须同步通知
+      // 清除，否则前端永远提交不到该 requestId，陈旧租约会阻塞后续
+      // user-turn 与新输入租约的重开。按 requestId 匹配，不会误删
+      // 紧随其后打开的新租约。
+      this.sendToWorker({ type: 'input-request-cancelled', agentId, requestId });
     }
     this.activeInputRequests.delete(agentId);
   }

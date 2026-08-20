@@ -757,6 +757,7 @@ export type DebugHubIPCMessage =
   | UnregisterAgentMsg
   | PushNotificationMsg
   | RequestInputMsg
+  | InputRequestCancelledMsg
   | QueueInputMsg
   | ConsumeQueuedInputMsg
   | InterruptAgentMsg
@@ -881,6 +882,17 @@ export interface QueueInputMsg {
   type: 'queue-input';
   agentId: string;
   input: QueuedInput;
+}
+
+/**
+ * 通知 Worker 一个输入请求已被运行时结算/取消（中断、销毁等）。
+ * Worker 持有同名 inputLease 作为 HTTP 投递面；收到后应清除对应租约，
+ * 否则陈旧租约会永久阻塞后续 user-turn（input_mode_conflict）。
+ */
+export interface InputRequestCancelledMsg {
+  type: 'input-request-cancelled';
+  agentId: string;
+  requestId: string;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DebugHub } from '../core/debug-hub.js';
 
 describe('DebugHub input request lifecycle', () => {
@@ -48,6 +48,64 @@ describe('DebugHub input request lifecycle', () => {
 
     hub.cancelInputRequests(agentId, 'test cleanup');
     await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    hub.unregisterAgent(agentId);
+  });
+
+  it('cancels pending input and notifies the worker when an interrupt is accepted', async () => {
+    const hub = DebugHub.getInstance();
+    const agent = {
+      constructor: { name: 'InterruptedAgent' },
+      interrupt: () => true,
+    } as any;
+    const agentId = hub.registerAgent(agent, 'InterruptedAgent');
+    const pending = hub.requestUserInputEvent(agentId, { prompt: 'choose', mode: 'choices' });
+    const expectedRequestId = (hub as any).activeInputRequests.get(agentId).requestId as string;
+    const workerMessages: Array<{ type: string; agentId: string; requestId: string }> = [];
+    const spy = vi.spyOn(hub as any, 'sendToWorker').mockImplementation((msg: any) => {
+      workerMessages.push(msg);
+    });
+
+    // 模拟 ViewerWorker 转发来的中断消息（tool 内的 choices 等待被 abort 丢弃）
+    (hub as any).handleWorkerMessage({ type: 'interrupt-agent', agentId, clearQueue: true });
+
+    await expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+      message: expect.stringContaining('interrupted'),
+    });
+    expect((hub as any).activeInputRequests.has(agentId)).toBe(false);
+    expect(workerMessages).toContainEqual({
+      type: 'input-request-cancelled',
+      agentId,
+      requestId: expectedRequestId,
+    });
+
+    // 宿主输入循环可以立即重开新租约（不再被 "already has an active user input lease" 拒绝）
+    const reopened = hub.requestUserInputEvent(agentId, { prompt: '请输入' });
+    expect((hub as any).activeInputRequests.has(agentId)).toBe(true);
+
+    spy.mockRestore();
+    hub.cancelInputRequests(agentId, 'cleanup');
+    await expect(reopened).rejects.toMatchObject({ name: 'AbortError' });
+    hub.unregisterAgent(agentId);
+  });
+
+  it('keeps an idle host input lease when the interrupt is not accepted', async () => {
+    const hub = DebugHub.getInstance();
+    const agent = {
+      constructor: { name: 'IdleAgent' },
+      interrupt: () => false,
+    } as any;
+    const agentId = hub.registerAgent(agent, 'IdleAgent');
+    const pending = hub.requestUserInputEvent(agentId, { prompt: 'idle slot' });
+    const spy = vi.spyOn(hub as any, 'sendToWorker').mockImplementation(() => {});
+
+    (hub as any).handleWorkerMessage({ type: 'interrupt-agent', agentId, clearQueue: true });
+
+    expect((hub as any).activeInputRequests.has(agentId)).toBe(true);
+
+    spy.mockRestore();
+    hub.cancelInputRequests(agentId, 'cleanup');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     hub.unregisterAgent(agentId);
   });
 });

@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -247,6 +247,9 @@ class ViewerWorker {
         break;
       case 'request-input':
         this.handleRequestInput(msg);
+        break;
+      case 'input-request-cancelled':
+        this.handleInputRequestCancelled(msg);
         break;
       // @deprecated (2026-07-25) — supplement UDS path removed; handleQueueInput
       // no longer forwards to UDS, so this message type is never sent.
@@ -2266,6 +2269,19 @@ class ViewerWorker {
   }
 
   /**
+   * 处理输入请求取消（运行时中断/销毁时由 DebugHub 发出）
+   * 只有 requestId 匹配当前租约时才清除，避免误删紧随其后重开的新租约。
+   */
+  public handleInputRequestCancelled(msg: InputRequestCancelledMsg): void {
+    const session = this.agentSessions.get(msg.agentId);
+    if (!session?.inputLease || session.inputLease.requestId !== msg.requestId) {
+      return;
+    }
+    delete session.inputLease;
+    console.log(`[Viewer Worker] 输入租约已取消: agentId=${msg.agentId}, requestId=${msg.requestId}`);
+  }
+
+  /**
    * 处理静态工具渲染文件
    * 直接返回已编译的 .js 文件内容
    * 路径规则：/tools/{category}/{filename}.js → dist/tools/{category}/{filename}.render.js
@@ -2658,6 +2674,9 @@ if (isMainModule(import.meta.url)) {
         break;
       case 'request-input':
         worker.handleRequestInput(msg);
+        break;
+      case 'input-request-cancelled':
+        worker.handleInputRequestCancelled(msg);
         break;
       case 'stop':
         worker.handleStop();

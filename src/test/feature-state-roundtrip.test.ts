@@ -13,6 +13,7 @@ import type { AgentFeature } from '../core/feature.js';
 import { AudioFeedbackFeature } from '../features/audio-feedback/index.js';
 import { ExampleFeature } from '../features/example-feature/index.js';
 import { FileHistoryFeature } from '../features/file-history/index.js';
+import { HandoffSeedFeature } from '../features/handoff-seed/index.js';
 import { LspFeature } from '../features/lsp/index.js';
 import { MemoryFeature } from '../features/memory/index.js';
 import { OpencodeBasicFeature } from '../features/opencode-basic/index.js';
@@ -45,6 +46,7 @@ const ROUNDTRIP_FACTORIES: Record<string, () => AgentFeature> = {
   'audio-feedback': () => new AudioFeedbackFeature(),
   'example-feature': () => new ExampleFeature(),
   'file-history': () => new FileHistoryFeature(),
+  'handoff-seed': () => new HandoffSeedFeature({ handoff: {} }),
   lsp: () => new LspFeature(),
   memory: () => new MemoryFeature(),
   'opencode-basic': () => new OpencodeBasicFeature(),
@@ -102,6 +104,9 @@ const MUTATIONS: Record<string, Mutate> = {
       sessionId: 'session-x',
       workspaceDir: '/w',
     };
+  },
+  'handoff-seed': feature => {
+    (feature as unknown as { injected: boolean }).injected = true;
   },
   lsp: feature => {
     (feature as unknown as { clients: Map<string, unknown> }).clients = new Map([
@@ -219,6 +224,7 @@ describe('feature state roundtrip (B 前置摸底)', () => {
       const cases: Array<[string, string[]]> = [
         ['example-feature', ['counter', 'enabled', 'lastInput', 'notes']],
         ['memory', ['injected']],
+        ['handoff-seed', ['injected']],
         ['output-guard', ['truncateCount']],
         ['tts', ['enabled', 'lastUtteranceId', 'totalUtterances']],
         ['file-history', [

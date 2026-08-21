@@ -76,6 +76,15 @@ export type { WebSearchFeatureConfig } from './websearch/index.js';
 export { FileHistoryFeature } from './file-history/index.js'
 export type { FileHistoryFeatureConfig, SnapshotInfo } from './file-history/index.js'
 
+// Handoff Seed Feature
+export { HandoffSeedFeature } from './handoff-seed/index.js';
+export type {
+  HandoffSeedFeatureConfig,
+  HandoffSeedPayload,
+  HandoffSeedMessage,
+  HandoffSeedSnapshot,
+} from './handoff-seed/types.js';
+
 // OpencodeBasic Feature
 export { OpencodeBasicFeature } from './opencode-basic/index.js';
 

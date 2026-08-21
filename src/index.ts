@@ -135,6 +135,46 @@ export type {
   SessionContinuityEntry,
 } from './core/continuity/index.js';
 
+// Session Continuity 官方变换实现（ticket 006）
+export {
+  DEFAULT_EXPORT_POLICY,
+  HANDOFF_SCHEMA_VERSION,
+  HANDOFF_COMPILER_VERSION,
+  normalizeExportPolicy,
+  buildTrimmedSeedMessages,
+  TrimTranscriptTransformation,
+  buildSummaryPrompt,
+  stripCompactAnalysis,
+  scanFilesAndSkills,
+  normalizeSummaryPolicy,
+  buildSummarySeedMessage,
+  generateSummaryText,
+  SummaryTransformation,
+  TrimTranscriptWithSummaryTransformation,
+} from './core/continuity/transforms/index.js';
+export type {
+  TrimExportPolicy,
+  TrimStats,
+  TrimmedSeedResult,
+  TrimTranscriptTransformationOptions,
+  SummaryPromptOptions,
+  ScanFilesAndSkillsResult,
+  SummaryExportPolicy,
+  SummaryTransformationOptions,
+  TrimTranscriptWithSummaryOptions,
+} from './core/continuity/transforms/index.js';
+
+// Continuity Participant 中性化协议层（ticket 006）
+export {
+  CONTINUITY_FIELD_KEY,
+  GENERIC_CONTINUITY_PROTOCOL,
+  OPENCODE_BASIC_CONTINUITY_PROTOCOL,
+  readContinuityDescriptor,
+  stripContinuityField,
+  declareContinuity,
+} from './core/continuity/participant.js';
+export type { AgentdevContinuityDescriptor } from './core/continuity/participant.js';
+
 // Continuation request 类型
 export type {
   CallContinuationRequest,

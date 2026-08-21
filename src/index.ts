@@ -26,6 +26,9 @@ export type {
   LegacyCallRollbackSnapshot,
 } from './core/session-store.js';
 
+// 通知版实时运行时状态快照（notification API 的 runtime 字段类型）
+export type { AgentRuntimeStateSnapshot, RuntimeStage } from './core/types.js';
+
 // 用量统计（AgentRuntimeSnapshot.usageStats / Agent.getUsage() 的公共类型面）
 export type { UsageInfo, UsageStatsSnapshot, CallUsageSummary } from './core/usage.js';
 export type { UsageStats } from './core/usage.js'; // type-only，不扩大运行时面

@@ -106,7 +106,7 @@ export type RuntimeStage =
   | 'failed'
   | 'cancelled';
 
-export interface AgentRuntimeSnapshot {
+export interface AgentRuntimeStateSnapshot {
   stage: RuntimeStage;
   callActive: boolean;
   charCount: number;
@@ -206,7 +206,7 @@ export interface ToolCompleteData {
 export interface NotificationStateResponse {
   state: Notification | null;
   event: Notification | null;
-  runtime: AgentRuntimeSnapshot;
+  runtime: AgentRuntimeStateSnapshot;
   callActive: boolean;
   hasNewEvents: boolean;
 }
@@ -568,7 +568,7 @@ export interface AgentOverviewSnapshot {
   updatedAt: number;
   context: AgentContextMetrics;
   usageStats: UsageStatsSnapshot;
-  runtime?: AgentRuntimeSnapshot;
+  runtime?: AgentRuntimeStateSnapshot;
   /** 可选：当前使用的模型名（由 agent 实例注入） */
   modelName?: string;
   /** 可选：当前使用的预设名（由 agent 实例注入，用于 UI dropdown 高亮） */
@@ -631,7 +631,7 @@ export interface AgentSession {
   currentState: Notification | null;
   // call 运行状态（独立于 currentState，不受 state 覆盖影响）
   callActive?: boolean;
-  runtimeState?: AgentRuntimeSnapshot;
+  runtimeState?: AgentRuntimeStateSnapshot;
   events: Notification[];
   lastEventCount: number;
   logs: DebugLogEntry[];

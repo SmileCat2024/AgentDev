@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, ToolMetadata, getDefaultUDSPath } from './types.js';
+import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, ToolMetadata, getDefaultUDSPath } from './types.js';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -1617,7 +1617,7 @@ class ViewerWorker {
     };
   }
 
-  private createEmptyRuntimeState(): AgentRuntimeSnapshot {
+  private createEmptyRuntimeState(): AgentRuntimeStateSnapshot {
     return {
       stage: 'idle',
       callActive: false,
@@ -1636,7 +1636,7 @@ class ViewerWorker {
     };
   }
 
-  private cloneRuntimeState(snapshot?: AgentRuntimeSnapshot | null): AgentRuntimeSnapshot {
+  private cloneRuntimeState(snapshot?: AgentRuntimeStateSnapshot | null): AgentRuntimeStateSnapshot {
     const source = snapshot || this.createEmptyRuntimeState();
     return {
       ...source,
@@ -1645,7 +1645,7 @@ class ViewerWorker {
     };
   }
 
-  private getRuntimeStageFromLLMPhase(phase: string): AgentRuntimeSnapshot['stage'] {
+  private getRuntimeStageFromLLMPhase(phase: string): AgentRuntimeStateSnapshot['stage'] {
     if (phase === 'thinking') return 'llm_thinking';
     if (phase === 'content') return 'llm_content';
     if (phase === 'tool_calling') return 'llm_tool_call_building';
@@ -1653,10 +1653,10 @@ class ViewerWorker {
   }
 
   private updateRuntimeStage(
-    runtimeState: AgentRuntimeSnapshot,
-    nextStage: AgentRuntimeSnapshot['stage'],
+    runtimeState: AgentRuntimeStateSnapshot,
+    nextStage: AgentRuntimeStateSnapshot['stage'],
     timestamp: number,
-  ): AgentRuntimeSnapshot {
+  ): AgentRuntimeStateSnapshot {
     const nextTimestamp = timestamp || Date.now();
     return {
       ...runtimeState,
@@ -1668,7 +1668,7 @@ class ViewerWorker {
     };
   }
 
-  private getSessionRuntimeState(session: AgentSession): AgentRuntimeSnapshot {
+  private getSessionRuntimeState(session: AgentSession): AgentRuntimeStateSnapshot {
     if (!session.runtimeState) {
       session.runtimeState = this.createEmptyRuntimeState();
     }
@@ -1861,7 +1861,7 @@ class ViewerWorker {
         nextRetryDelayMs: undefined,
         lastErrorType: outcome.error?.category ?? null,
         lastErrorMessage: outcome.error?.message ?? null,
-        lastOutcome: notification.data as AgentRuntimeSnapshot['lastOutcome'],
+        lastOutcome: notification.data as AgentRuntimeStateSnapshot['lastOutcome'],
       };
     } else if (notification.type === 'llm.retry') {
       // 适配器内部重试观测：waiting → retry_waiting（含退避参数），

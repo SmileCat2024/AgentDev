@@ -16,14 +16,17 @@
     "prepublishOnly": "npm run build"
   },
   "tsup": {
-    "entry": ["src/index.ts", "src/templates/*.render.ts"],
+    "entry": [
+      "src/index.ts",
+      "src/templates/*.render.ts"
+    ],
     "format": "esm",
     "dts": true,
     "clean": true,
     "sourcemap": true
   },
   "peerDependencies": {
-    "agentdev": ">=0.1.0"
+    "@agentdev/core": "^0.1.0"
   },
   "dependencies": {
     "openai": "^4.73.0",
@@ -33,7 +36,7 @@
     "@types/node": "^20.11.0",
     "tsup": "^8.3.5",
     "typescript": "^5.3.3",
-    "agentdev": "file:../.."
+    "@agentdev/core": "workspace:*"
   },
   "keywords": [
     "agentdev",

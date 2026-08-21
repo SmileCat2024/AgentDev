@@ -16,8 +16,8 @@ import { spawn, execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { mkdir, writeFile } from 'fs/promises';
 import * as path from 'path';
-import type { Tool } from 'agentdev';
-import { createTool } from 'agentdev';
+import type { Tool } from '@agentdev/core';
+import { createTool } from '@agentdev/core';
 import {
   quoteShellCommand,
   shouldAddStdinRedirect,

@@ -12,15 +12,15 @@
 
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import type { AgentFeature, FeatureInitContext, PackageInfo } from 'agentdev';
-import type { Tool } from 'agentdev';
-import { getPackageInfoFromSource } from 'agentdev';
+import type { AgentFeature, FeatureInitContext, PackageInfo } from '@agentdev/core';
+import type { Tool } from '@agentdev/core';
+import { getPackageInfoFromSource } from '@agentdev/core';
 import { createWebFetchTool } from './tools.js';
-import type { MCPClient } from 'agentdev';
-import { MCPConnectionManager } from 'agentdev';
-import { loadMCPConfigFromInput } from 'agentdev';
-import { mountMCPToolsFromConfig, type MCPToolManagementOptions } from 'agentdev';
-import type { MCPConfig, MCPSSEConfig } from 'agentdev';
+import type { MCPClient } from '@agentdev/core';
+import { MCPConnectionManager } from '@agentdev/core';
+import { loadMCPConfigFromInput } from '@agentdev/core';
+import { mountMCPToolsFromConfig, type MCPToolManagementOptions } from '@agentdev/core';
+import type { MCPConfig, MCPSSEConfig } from '@agentdev/core';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);

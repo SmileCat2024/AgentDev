@@ -44,11 +44,11 @@ import type {
   FeatureContext,
   FeatureStateSnapshot,
   PackageInfo,
-} from 'agentdev';
-import { CoreLifecycle } from 'agentdev';
-import type { HookDeclarations } from 'agentdev';
-import { getPackageInfoFromSource } from 'agentdev';
-import type { StepFinishedContext } from 'agentdev';
+} from '@agentdev/core';
+import { CoreLifecycle } from '@agentdev/core';
+import type { HookDeclarations } from '@agentdev/core';
+import { getPackageInfoFromSource } from '@agentdev/core';
+import type { StepFinishedContext } from '@agentdev/core';
 import type {
   TTSFeatureConfig,
   TTSResult,

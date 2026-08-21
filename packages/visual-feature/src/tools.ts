@@ -15,8 +15,8 @@ import { readFileSync } from 'fs';
 import type OpenAI from 'openai';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { createTool } from 'agentdev';
-import type { Tool } from 'agentdev';
+import { createTool } from '@agentdev/core';
+import type { Tool } from '@agentdev/core';
 import type {
   CaptureResult,
   VisualUnderstandingResult,

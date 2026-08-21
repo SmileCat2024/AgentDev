@@ -11,10 +11,10 @@
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, isAbsolute } from 'path';
-import { CoreLifecycle } from 'agentdev';
-import type { HookDeclarations } from 'agentdev';
-import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot, FeatureManifestDefinition } from 'agentdev';
-import { getPackageInfoFromSource } from 'agentdev';
+import { CoreLifecycle } from '@agentdev/core';
+import type { HookDeclarations } from '@agentdev/core';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot, FeatureManifestDefinition } from '@agentdev/core';
+import { getPackageInfoFromSource } from '@agentdev/core';
 
 export interface MemoryFeatureConfig {
   /** 读取 CLAUDE.md 的工作目录 */

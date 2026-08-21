@@ -2,7 +2,7 @@
  * Safe Trash Restore 渲染模板
  */
 
-import type { InlineRenderTemplate } from 'agentdev';
+import type { InlineRenderTemplate } from '@agentdev/core';
 
 function escapeHtml(text: unknown): string {
   const str = String(text);

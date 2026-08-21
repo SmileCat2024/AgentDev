@@ -14,9 +14,9 @@ import type {
   CompatHookName,
   CompatHookHandlerMap,
 } from './types.js';
-import type { Tool, ToolResultValue } from 'agentdev';
-import type { Context } from 'agentdev';
-import { createLogger } from 'agentdev';
+import type { Tool, ToolResultValue } from '@agentdev/core';
+import type { Context } from '@agentdev/core';
+import { createLogger } from '@agentdev/core';
 
 /**
  * 创建插件日志记录器

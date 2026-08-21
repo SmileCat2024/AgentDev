@@ -17,15 +17,15 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "agentdev": ">=0.1.0"
+    "@agentdev/core": "^0.1.0"
   },
   "dependencies": {
     "@sliverp/qqbot": "1.5.5"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "agentdev": "file:../..",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "@agentdev/core": "workspace:*"
   },
   "keywords": [
     "agentdev",

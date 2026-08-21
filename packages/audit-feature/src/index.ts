@@ -20,13 +20,13 @@ import type {
   AgentFeature,
   FeatureInitContext,
   FeatureContext,
-} from 'agentdev';
-import { CoreLifecycle } from 'agentdev';
-import type { HookDeclarations } from 'agentdev';
-import type { Tool } from 'agentdev';
-import type { ToolContext } from 'agentdev';
-import { Decision } from 'agentdev';
-import type { DecisionResult } from 'agentdev';
+} from '@agentdev/core';
+import { CoreLifecycle } from '@agentdev/core';
+import type { HookDeclarations } from '@agentdev/core';
+import type { Tool } from '@agentdev/core';
+import type { ToolContext } from '@agentdev/core';
+import { Decision } from '@agentdev/core';
+import type { DecisionResult } from '@agentdev/core';
 import { promisify } from 'util';
 import { mkdir as mkdirAsync } from 'fs/promises';
 

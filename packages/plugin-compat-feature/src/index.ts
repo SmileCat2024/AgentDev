@@ -6,11 +6,11 @@
 
 import { fileURLToPath } from 'url';
 import { resolve } from 'path';
-import { CoreLifecycle } from 'agentdev';
-import type { HookDeclarations } from 'agentdev';
-import type { AgentFeature, FeatureInitContext, FeatureContext } from 'agentdev';
-import type { Tool } from 'agentdev';
-import { type ToolRegistry } from 'agentdev';
+import { CoreLifecycle } from '@agentdev/core';
+import type { HookDeclarations } from '@agentdev/core';
+import type { AgentFeature, FeatureInitContext, FeatureContext } from '@agentdev/core';
+import type { Tool } from '@agentdev/core';
+import { type ToolRegistry } from '@agentdev/core';
 import type {
   OpenClawPluginManifest,
   PluginCompatConfig,
@@ -28,8 +28,8 @@ import {
 import { createCompatApi, createPluginLogger } from './api.js';
 import { CompatHookRegistry } from './registry.js';
 import { DiagnosticsCollector } from './diagnostics.js';
-import { Decision } from 'agentdev';
-import type { ToolContext, ToolResult } from 'agentdev';
+import { Decision } from '@agentdev/core';
+import type { ToolContext, ToolResult } from '@agentdev/core';
 
 /**
  * PluginCompatFeature

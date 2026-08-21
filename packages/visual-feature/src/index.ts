@@ -50,12 +50,12 @@ import type {
   FeatureContext,
   FeatureStateSnapshot,
   PackageInfo,
-} from 'agentdev';
-import { CoreLifecycle } from 'agentdev';
-import type { HookDeclarations } from 'agentdev';
-import type { Tool } from 'agentdev';
-import { getPackageInfoFromSource } from 'agentdev';
-import type { CallStartContext } from 'agentdev';
+} from '@agentdev/core';
+import { CoreLifecycle } from '@agentdev/core';
+import type { HookDeclarations } from '@agentdev/core';
+import type { Tool } from '@agentdev/core';
+import { getPackageInfoFromSource } from '@agentdev/core';
+import type { CallStartContext } from '@agentdev/core';
 import type {
   WindowInfo,
   CaptureResult,

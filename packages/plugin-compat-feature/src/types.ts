@@ -2,9 +2,9 @@
  * OpenClaw 兼容层类型定义
  */
 
-import type { Tool, ToolCall, Message } from 'agentdev';
-import type { Context } from 'agentdev';
-import type { AgentConfig } from 'agentdev';
+import type { Tool, ToolCall, Message } from '@agentdev/core';
+import type { Context } from '@agentdev/core';
+import type { AgentConfig } from '@agentdev/core';
 
 // ========== OpenClaw Plugin Manifest ==========
 

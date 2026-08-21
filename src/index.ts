@@ -26,6 +26,10 @@ export type {
   LegacyCallRollbackSnapshot,
 } from './core/session-store.js';
 
+// 用量统计（AgentRuntimeSnapshot.usageStats / Agent.getUsage() 的公共类型面）
+export type { UsageInfo, UsageStatsSnapshot, CallUsageSummary } from './core/usage.js';
+export type { UsageStats } from './core/usage.js'; // type-only，不扩大运行时面
+
 // Feature 系统
 export * from './features/index.js';
 

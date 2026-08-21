@@ -88,9 +88,6 @@ export function deserializeReadDedupState(data: unknown): void {
   }
 }
 
-const FILE_UNCHANGED_STUB =
-  'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.';
-
 function normalizeNamedPathArg(args: unknown, ...keys: string[]): string {
   if (!args || typeof args !== 'object') {
     throw new Error(`Missing required parameter: "${keys[0]}"`);
@@ -432,28 +429,6 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const isBinary = await isBinaryFile(resolvedFilePath);
     if (isBinary) {
       throw new Error(`Cannot read binary file: ${resolvedFilePath}`);
-    }
-
-    // 去重：如果同一文件同一范围已读过且 mtime 没变，返回 stub
-    const dedupEntry = readDedupState.get(resolvedFilePath);
-    if (dedupEntry && dedupEntry.offset !== undefined) {
-      const rangeMatch =
-        dedupEntry.offset === (offsetParam ?? 1) &&
-        dedupEntry.limit === limitParam;
-      if (rangeMatch) {
-        try {
-          const currentMtime = (await stat(resolvedFilePath)).mtimeMs;
-          if (currentMtime === dedupEntry.mtimeMs) {
-            return {
-              type: 'file_unchanged',
-              path: resolvedFilePath,
-              content: FILE_UNCHANGED_STUB,
-            };
-          }
-        } catch {
-          // stat 失败，继续正常读取
-        }
-      }
     }
 
     const content = await readFile(resolvedFilePath, 'utf-8');

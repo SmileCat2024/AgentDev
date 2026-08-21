@@ -7,8 +7,8 @@ import {
   getDefaultMCPConfigDir,
   loadMCPConfigFromInput,
   loadAllMCPConfigs,
-} from '../../mcp/config.js';
-import type { MCPConfig } from '../../mcp/types.js';
+} from '../src/config.js';
+import type { MCPConfig } from '../src/types.js';
 
 // ============================================================
 // Helpers

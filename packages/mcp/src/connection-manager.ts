@@ -13,7 +13,7 @@ import type {
   MCPConnectionInfo,
 } from './types.js';
 import { MCPConnectionState } from './types.js';
-import { createLogger } from '../core/logging.js';
+import { createLogger } from '@agentdev/core';
 
 /**
  * MCP 连接详情

@@ -3,9 +3,9 @@ import { mkdtemp, writeFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execPath } from 'process';
-import { MCPConnectionManager } from '../../../mcp/connection-manager.js';
-import { MCPClient, createMCPTool } from '../../../mcp/client.js';
-import type { MCPSstdioConfig } from '../../../mcp/types.js';
+import { MCPConnectionManager } from '../../connection-manager.js';
+import { MCPClient, createMCPTool } from '../../client.js';
+import type { MCPSstdioConfig } from '../../types.js';
 
 /**
  * SDK v2 迁移往返测试

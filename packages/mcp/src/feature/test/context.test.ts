@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createMCPTool } from '../../../mcp/client.js';
+import { createMCPTool } from '../../client.js';
 
 describe('MCP context propagation', () => {
   it('should propagate tool context to transformArgs and client.callTool', async () => {

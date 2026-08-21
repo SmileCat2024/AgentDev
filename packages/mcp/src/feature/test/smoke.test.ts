@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { BasicAgent } from '../../../agents/index.js';
+import { BasicAgent } from '@agentdev/core';
 import { MCPFeature } from '../index.js';
-import type { LLMClient, LLMResponse, Message, Tool } from '../../../core/types.js';
+import type { LLMClient, LLMResponse, Message, Tool } from '@agentdev/core';
 import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';

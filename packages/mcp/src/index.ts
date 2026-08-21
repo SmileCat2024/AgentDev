@@ -72,3 +72,7 @@ export {
   renderMCPToolCall,
   renderMCPToolResult,
 } from './render.js';
+
+// MCPFeature（快速挂载 .agentdev/mcps 的便利封装）
+export { MCPFeature } from './feature/index.js';
+export type { MCPFeatureOptions } from './feature/index.js';

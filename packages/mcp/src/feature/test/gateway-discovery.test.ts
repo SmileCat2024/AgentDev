@@ -8,7 +8,7 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { createServer } from 'http';
 import type { AddressInfo } from 'net';
-import { discoverGatewayServers, gatewayServersToConfig } from '../../../mcp/gateway-client.js';
+import { discoverGatewayServers, gatewayServersToConfig } from '../../gateway-client.js';
 import { MCPFeature } from '../index.js';
 
 let _server: any;

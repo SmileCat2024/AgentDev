@@ -4,7 +4,7 @@
  * 将 MCP 工具适配为现有 Tool 接口，保持架构一致性
  */
 
-import type { Tool, ToolExecutionContext, ToolResultValue } from '../core/types.js';
+import type { Tool, ToolExecutionContext, ToolResultValue } from '@agentdev/core';
 
 /**
  * 注册工具的简化接口

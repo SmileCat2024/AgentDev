@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { mountMCPToolsFromConfig, MCPConnectionManager } from '../../../mcp/index.js';
-import { loadMCPConfigFromInput } from '../../../mcp/config.js';
+import { mountMCPToolsFromConfig, MCPConnectionManager } from '../../index.js';
+import { loadMCPConfigFromInput } from '../../config.js';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
-import type { MCPClient } from '../../../mcp/client.js';
+import type { MCPClient } from '../../client.js';
 
 async function isServiceAvailable(url: string): Promise<boolean> {
   try {
@@ -19,7 +19,7 @@ async function isServiceAvailable(url: string): Promise<boolean> {
 
 describe('Managed MCP tools', () => {
   it('should support rename / disable / description override', async () => {
-    const configDir = join(fileURLToPath(import.meta.url), '../../websearch/mcp/crawl4ai.json');
+    const configDir = join(fileURLToPath(import.meta.url), '../fixtures/crawl4ai.json');
     const config = loadMCPConfigFromInput(configDir);
 
     if (!config) {

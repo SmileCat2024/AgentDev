@@ -27,15 +27,15 @@ import type {
   ContextInjector,
   ToolContextValue,
   PackageInfo,
-} from '../../core/feature.js';
-import { getPackageInfoFromSource } from '../../core/feature.js';
-import type { Tool } from '../../core/types.js';
-import { loadAllMCPConfigs, loadMCPConfigFromInput } from '../../mcp/config.js';
-import { MCPConnectionManager } from '../../mcp/connection-manager.js';
-import { mountMCPToolsFromConfig } from '../../mcp/mount.js';
-import { discoverGatewayServers, gatewayServersToConfig } from '../../mcp/gateway-client.js';
-import type { MCPClient } from '../../mcp/client.js';
-import type { MCPConfig, MCPServerConfig } from '../../mcp/types.js';
+} from '@agentdev/core';
+import { getPackageInfoFromSource } from '@agentdev/core';
+import type { Tool } from '@agentdev/core';
+import { loadAllMCPConfigs, loadMCPConfigFromInput } from '../config.js';
+import { MCPConnectionManager } from '../connection-manager.js';
+import { mountMCPToolsFromConfig } from '../mount.js';
+import { discoverGatewayServers, gatewayServersToConfig } from '../gateway-client.js';
+import type { MCPClient } from '../client.js';
+import type { MCPConfig, MCPServerConfig } from '../types.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);

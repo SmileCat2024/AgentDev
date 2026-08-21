@@ -11,7 +11,8 @@
  * 任何一步失败都会以非零退出码结束，保证「一次 build = 全部可用」。
  */
 import { execSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, rmSync } from 'fs';
+import { createRequire } from 'module';
 import { join, resolve } from 'path';
 
 const root = resolve(import.meta.dirname, '..');
@@ -48,6 +49,43 @@ function run(cmd, label) {
   execSync(cmd, { cwd: root, stdio: 'inherit', env: process.env });
 }
 
+/** 验证包目录内全部 dependencies 都可真实解析（含 file: vendor 内化依赖）。 */
+function depsResolvable(pkgDir) {
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+  } catch {
+    return false;
+  }
+  if (!existsSync(join(pkgDir, 'node_modules'))) return false;
+  const req = createRequire(join(pkgDir, 'package.json'));
+  return Object.keys(pkg.dependencies || {}).every((dep) => {
+    try {
+      req.resolve(dep);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** 安装依赖；失败时清理陈旧 lock / 半残 node_modules 后重试一次（自愈）。 */
+function installDeps(pkgDir, name) {
+  console.log(`\n=== ${name}（workspace 外，安装依赖）===`);
+  const install = () =>
+    execSync('npm install --legacy-peer-deps --no-audit --no-fund', {
+      cwd: pkgDir, stdio: 'inherit', env: process.env,
+    });
+  try {
+    install();
+  } catch {
+    console.log(`\n=== ${name} 安装失败，清理陈旧 lock/node_modules 后重试 ===`);
+    rmSync(join(pkgDir, 'node_modules'), { recursive: true, force: true });
+    rmSync(join(pkgDir, 'package-lock.json'), { force: true });
+    install();
+  }
+}
+
 try {
   run(`npm run build -w ${WORKSPACE_PACKAGES.join(' -w ')}`, 'workspace 包');
 
@@ -57,11 +95,11 @@ try {
       console.error(`[build-all] 跳过 ${name}：包不存在 ${pkgDir}`);
       continue;
     }
-    // workspace 外包裹的依赖不随根 npm install 安装，干净环境需先自装
-    if (!existsSync(join(pkgDir, 'node_modules'))) {
-      console.log(`\n=== ${name}（workspace 外，安装依赖）===`);
-      execSync('npm install --legacy-peer-deps --no-audit --no-fund', { cwd: pkgDir, stdio: 'inherit', env: process.env });
-    }
+    // workspace 外包裹的依赖不随根 npm install 安装。判断依据必须是
+    // 「dependencies 逐个可解析」而不是「node_modules 目录存在」——此前
+    // 失败的安装会留下半残的 node_modules（目录在、依赖缺），仅查目录
+    // 会跳过安装直接构建失败。
+    if (!depsResolvable(pkgDir)) installDeps(pkgDir, name);
     console.log(`\n=== ${name}（workspace 外，子目录构建）===`);
     execSync('npm run build', { cwd: pkgDir, stdio: 'inherit', env: process.env });
   }

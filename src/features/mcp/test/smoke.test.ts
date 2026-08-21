@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { BasicAgent } from '../../../agents/index.js';
+import { MCPFeature } from '../index.js';
 import type { LLMClient, LLMResponse, Message, Tool } from '../../../core/types.js';
 import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -20,12 +21,15 @@ function getMCPToolNames(agent: BasicAgent): string[] {
     .sort();
 }
 
-async function collectTools(label: string, mcpServer?: string | false): Promise<string[]> {
+// BasicAgent 已是纯基类（零内置装配），MCPFeature 由测试显式 use() 挂载。
+async function collectTools(label: string, mcpFeature?: MCPFeature): Promise<string[]> {
   const agent = new BasicAgent({
     llm: new MockLLM(),
     name: `mcp-smoke-${label}`,
-    mcpServer,
   });
+  if (mcpFeature) {
+    agent.use(mcpFeature);
+  }
 
   try {
     await agent.onCall('smoke test');
@@ -121,19 +125,19 @@ describe('MCP smoke', () => {
     await removeTempDir(tempDir);
   });
 
-  it('should register zero MCP tools when disabled', async () => {
-    const disabledTools = await collectTools('disabled', false);
+  it('should register zero MCP tools when MCPFeature is not mounted', async () => {
+    const disabledTools = await collectTools('disabled');
     expect(disabledTools).toHaveLength(0);
   });
 
   it('should register only specified server tools in single-server mode', async () => {
-    const githubTools = await collectTools('github-only', githubConfigPath);
+    const githubTools = await collectTools('github-only', new MCPFeature(githubConfigPath));
     expect(githubTools.length).toBeGreaterThan(0);
     expect(githubTools.every(name => name.startsWith('mcp_github_'))).toBe(true);
   });
 
   it('should register all local MCP config files in auto mode', async () => {
-    const autoTools = await collectTools('auto');
+    const autoTools = await collectTools('auto', new MCPFeature());
     expect(autoTools.length).toBeGreaterThanOrEqual(2);
     expect(autoTools.some(name => name.startsWith('mcp_github_'))).toBe(true);
     expect(autoTools.some(name => name.startsWith('mcp_extra_'))).toBe(true);

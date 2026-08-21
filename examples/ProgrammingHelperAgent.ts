@@ -2,14 +2,15 @@
  * 编程小助手 Agent
  *
  * 专业的编程助手，擅长代码编写、调试和优化
- * 继承 BasicAgent 获得所有基础设施能力
+ * 继承 BasicAgent（纯基类）后，由本类显式装配所需的 Feature
  */
 
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature, MemoryFeature, AudioFeedbackFeature, TTSFeature } from '../src/features/index.js';
+import { MCPFeature, OpencodeBasicFeature, SkillFeature, AuditFeature, TodoFeature, VisualFeature, WebSearchFeature, MemoryFeature, AudioFeedbackFeature, TTSFeature } from '../src/features/index.js';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
+import { cwd } from 'process';
 
 /**
  * 编程小助手配置选项
@@ -17,7 +18,7 @@ import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 export interface ProgrammingHelperAgentConfig extends BasicAgentConfig {
   /** Agent 显示名称（默认：'编程小助手'） */
   name?: string;
-  /** MCP 配置名称（可选）；传 false 时禁用；不传时 BasicAgent 会自动扫描 .agentdev/mcps */
+  /** MCP 配置名称（可选）；传 false 时不挂载 MCPFeature；不传时自动扫描 .agentdev/mcps */
   mcpServer?: string | false;
   /** 有待执行任务时的提醒间隔（默认：3 轮） */
   reminderThresholdWithTasks?: number;
@@ -31,7 +32,7 @@ const DEFAULT_EXCLUDED_MCP_SERVERS = ['crawl4ai-official'];
  * 编程小助手 Agent
  *
  * 专业的编程助手，擅长代码编写、调试和优化
- * 继承 BasicAgent 获得所有基础设施能力
+ * 继承 BasicAgent（纯基类），Feature 由本类显式装配
  *
  * 设计说明：
  * - TodoFeature 通过反向钩子（@StepStart, @StepFinished）自动处理提醒逻辑
@@ -39,13 +40,22 @@ const DEFAULT_EXCLUDED_MCP_SERVERS = ['crawl4ai-official'];
  */
 export class ProgrammingHelperAgent extends BasicAgent {
   constructor(config?: ProgrammingHelperAgentConfig) {
-    super({
-      ...config,
-      excludeMcpServers: Array.from(new Set([
-        ...(config?.excludeMcpServers ?? []),
-        ...DEFAULT_EXCLUDED_MCP_SERVERS,
-      ])),
-    });
+    super(config);
+
+    const workspaceDir = config?.workspaceDir ?? cwd();
+
+    // MCPFeature：mcpServer === false 时完全不挂载
+    if (config?.mcpServer !== false) {
+      this.use(typeof config?.mcpServer === 'string'
+        ? new MCPFeature(config.mcpServer)
+        : new MCPFeature(undefined, { excludeServers: DEFAULT_EXCLUDED_MCP_SERVERS }));
+    }
+
+    // OpencodeBasicFeature（文件操作工具集）
+    this.use(new OpencodeBasicFeature({ workspaceDir }));
+
+    // SkillFeature（invokeSkill 工具和 skills 上下文注入）
+    this.use(new SkillFeature());
 
     // 注册 TodoFeature 并配置 reminder
     // TodoFeature 会通过反向钩子自动处理：

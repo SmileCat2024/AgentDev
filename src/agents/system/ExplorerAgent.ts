@@ -1,13 +1,13 @@
 /**
- * ExplorerAgent - 代码探索者 Agent
+ * ExplorerAgent - 代码探索者 Agent 纯基类
  *
- * 专注于代码库探索和理解的轻量级 Agent
- * 仅配备 read、list、bash 三个核心工具
- * 适用于代码审查、结构分析、文档生成等场景
+ * 专注于代码库探索和理解的轻量级 Agent 基类。
+ * 纯基类：零内置 Feature 装配，文件工具等能力由宿主通过 use() 显式
+ * 挂载（装配权在宿主，ADR-0003 core 纪律）。只读定位通过装配层的
+ * 工具裁剪实现，本类不再代劳。
  */
 
 import { Agent } from '../../core/agent.js';
-import { SkillFeature, SubAgentFeature, OpencodeBasicFeature } from '../../features/index.js';
 import type { AgentConfig, LLMClient } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
@@ -39,7 +39,8 @@ export interface SystemContext {
 /**
  * ExplorerAgent 配置选项
  *
- * 所有参数都是可选的，默认会自动同步加载配置文件
+ * 所有参数都是可选的，默认会自动同步加载配置文件。
+ * 需要工具或上下文注入时，构造后通过 use() 显式挂载 Feature。
  */
 export interface ExplorerAgentConfig {
   /** LLM 客户端（可选，不传则自动同步加载配置创建） */
@@ -50,14 +51,12 @@ export interface ExplorerAgentConfig {
   name?: string;
   /** 系统提示词（可选，默认使用 explorer.md） */
   systemMessage?: string;
-  /** Skills 目录（可选，默认使用 .agentdev/skills） */
-  skillsDir?: string;
 }
 
 /**
  * 代码探索者 Agent
  *
- * 轻量级代码探索 Agent，专注于：
+ * 轻量级代码探索 Agent 基类，专注于：
  * - 代码库结构分析
  * - 代码审查和理解
  * - 文档生成
@@ -68,7 +67,6 @@ export interface ExplorerAgentConfig {
 export class ExplorerAgent extends Agent {
   protected _systemContext: SystemContext;
   protected _config?: AgentConfigFile;
-  protected _skillsDir?: string;
 
   /**
    * 构造函数
@@ -100,7 +98,7 @@ export class ExplorerAgent extends Agent {
     // 构建完整的 Agent 配置
     const agentConfig: AgentConfig = {
       llm: llm!,
-      tools: [],              // 工具由 Feature 提供
+      tools: [],              // 工具由宿主装配
       maxTurns: Infinity,     // 无限交互次数
       systemMessage: config.systemMessage,
       name: config.name,
@@ -111,33 +109,12 @@ export class ExplorerAgent extends Agent {
     // 保存配置（必须在 super() 之后）
     this._systemContext = systemContext;
     this._config = fileConfig;
-    this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
-
-    // 注册 OpencodeBasicFeature（文件操作工具集）
-    this.use(new OpencodeBasicFeature());
-
-    // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
-    this.use(new SkillFeature(config.skillsDir));
-
-    // 注册 SubAgentFeature（子代理工具和消息处理）
-    this.use(new SubAgentFeature());
-
-    // 预禁用只读模式下不应暴露的工具，确保首次快照与运行时一致
-    this.getTools().remove('write');
-    this.getTools().remove('edit');
-    this.getTools().remove('safe_trash_delete');
-    this.getTools().remove('safe_trash_list');
-    this.getTools().remove('safe_trash_restore');
-
-    // 注册可创建的子代理类型
-    this.registerAgentType('ExplorerAgent', () => new ExplorerAgent({ llm: this.llm }));
-    this.registerAgentType('BasicAgent', () => import('./BasicAgent.js').then(m => new m.BasicAgent({ llm: this.llm })));
   }
 
   /**
    * Agent 初始化钩子
-   * 配置系统提示词，禁用写入和编辑工具（只读模式）
+   * 默认系统提示词（explorer.md + 系统环境）
    */
   protected override async onInitiate(): Promise<void> {
     // 配置系统提示词

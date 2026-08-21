@@ -274,6 +274,27 @@ Anthropic 适配的关键规则：
 - 运行时 reminder、step 提示、回退后补充约束等，应继续作为消息流的一部分存在
 - Anthropic 的 caching / context management 能被充分利用，而不用把所有 system 文本粗暴拼接成一个大字符串
 
+## 预置 Agent 是纯基类：装配权在宿主
+
+`BasicAgent` 与 `ExplorerAgent` 是纯基类，只负责系统环境信息上下文和 LLM 自动加载，**不内置任何 Feature 装配**。文件工具（`OpencodeBasicFeature`）、技能（`SkillFeature`）、MCP（`MCPFeature`）、子代理（`SubAgentFeature`）等能力，一律由宿主在构造后通过 `use()` 显式挂载。
+
+这是包结构纪律的一部分（ADR-0003）：框架核心域（core / agents）保持零 feature 反向依赖，宿主按需组合能力。
+
+由此带来的破坏性变更（0.x，无兼容层）：
+
+- `BasicAgentConfig` 的 `mcpServer` / `mcpContext` / `excludeMcpServers` / `skillsDir` / `skillConfig` 选项已移除
+- `BasicAgent.getMcpServer()` / `getMcpContext()` 已移除
+- 依赖内置装配的宿主升级后需要自行补挂载，例如：
+
+```ts
+import { BasicAgent, MCPFeature, OpencodeBasicFeature, SkillFeature } from 'agentdev';
+
+const agent = new BasicAgent()
+  .use(new MCPFeature())
+  .use(new OpencodeBasicFeature())
+  .use(new SkillFeature());
+```
+
 ## 一个最小例子
 
 ```ts

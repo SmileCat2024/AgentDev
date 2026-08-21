@@ -1,21 +1,19 @@
 /**
- * BasicAgent - 基础 Agent 类
+ * BasicAgent - 基础 Agent 纯基类
  *
- * 集成了常用 Feature 和系统环境信息
- * 适用于大多数 Agent 场景
+ * 只负责：系统环境信息上下文、LLM 自动加载（可选）、AgentConfig 组装。
+ * 不内置任何 Feature 装配——文件工具、skills、MCP、子代理等能力
+ * 一律由宿主通过 use() 显式挂载（装配权在宿主，ADR-0003 core 纪律）。
  *
  * 默认自动加载配置文件，开箱即用
  */
 
 import { Agent } from '../../core/agent.js';
-import { MCPFeature, SkillFeature, SubAgentFeature, OpencodeBasicFeature } from '../../features/index.js';
-import type { SkillFeatureConfig } from '../../features/index.js';
 import type { AgentConfig, LLMClient, Tool } from '../../core/types.js';
 import type { AgentConfigFile } from '../../core/config.js';
 import { loadConfigSync } from '../../core/config.js';
 import { createLLM } from '../../llm/index.js';
 import { existsSync } from 'fs';
-import { join } from 'path';
 import { cwd, platform } from 'process';
 /**
  * 系统环境信息上下文
@@ -40,7 +38,8 @@ export interface SystemContext {
 /**
  * BasicAgent 配置选项
  *
- * 所有参数都是可选的，默认会自动同步加载配置文件
+ * 所有参数都是可选的，默认会自动同步加载配置文件。
+ * 需要工具或上下文注入时，构造后通过 use() 显式挂载 Feature。
  */
 export interface BasicAgentConfig {
   /** LLM 客户端（可选，不传则自动同步加载配置创建） */
@@ -51,18 +50,8 @@ export interface BasicAgentConfig {
   name?: string;
   /** 系统提示词（可选，后续可通过 setPrompt() 设置） */
   systemMessage?: string;
-  /** MCP 配置：传字符串时加载指定配置；传 false 时禁用 MCPFeature；不传时挂载 MCPFeature 并由其自动加载 .agentdev/mcps 等配置 */
-  mcpServer?: string | false;
-  /** MCP 运行时上下文（可选，如 GitHub Token） */
-  mcpContext?: Record<string, unknown>;
-  /** 自动扫描 MCP 时排除的 serverId 列表 */
-  excludeMcpServers?: string[];
-  /** 自定义工具集（可选，默认使用 Feature 提供的工具） */
+  /** 自定义工具集（可选，默认为空） */
   tools?: Tool[];
-  /** Skills 目录（可选，默认使用 .agentdev/skills） */
-  skillsDir?: string;
-  /** SkillFeature 完整配置（可选，覆盖 skillsDir） */
-  skillConfig?: SkillFeatureConfig;
   /** Feature 特定配置（可选） */
   features?: AgentConfig['features'];
   /** 调试器和模板解析使用的项目根目录 */
@@ -74,16 +63,12 @@ export interface BasicAgentConfig {
 /**
  * 基础 Agent 类
  *
- * 集成常用 Feature 和系统环境信息，开箱即用
+ * 纯基类：集成系统环境信息与 LLM 自动加载，零内置 Feature 装配。
  * 构造函数不传任何参数时，会自动同步加载配置文件创建 LLM
  */
 export class BasicAgent extends Agent {
   protected _systemContext: SystemContext;
-  protected _mcpServer?: string | false;
-  protected _mcpContext?: Record<string, unknown>;
   protected _config?: AgentConfigFile;
-  protected _skillsDir?: string;
-  protected _mcpFeature?: MCPFeature;
 
   /**
    * 构造函数
@@ -130,41 +115,7 @@ export class BasicAgent extends Agent {
     // 保存配置（必须在 super() 之后）
     this._systemContext = systemContext;
     this._config = fileConfig;
-    this._mcpServer = config.mcpServer;
-    this._mcpContext = config.mcpContext;
-    this._skillsDir = config.skillsDir;
     this.setSystemContext(systemContext);
-
-    // MCPFeature 始终挂载；是否实际加载到配置由 feature 自身根据运行时
-    // 配置（features.mcp / .agentdev/mcps）决定。mcpServer === false 是
-    // 唯一的显式 opt-out。
-    if (config.mcpServer !== false) {
-      this._mcpFeature = typeof config.mcpServer === 'string'
-        ? new MCPFeature(config.mcpServer)
-        : new MCPFeature(undefined, { excludeServers: config.excludeMcpServers });
-      if (config.mcpContext) {
-        this._mcpFeature.setMCPContext(config.mcpContext);
-      }
-      this.use(this._mcpFeature);
-    }
-
-    // 注册 OpencodeBasicFeature（文件操作工具集）
-    this.use(new OpencodeBasicFeature({ workspaceDir }));
-
-    // 注册 SkillFeature（invokeSkill 工具和 skills 上下文注入）
-    const skillInput = config.skillConfig || config.skillsDir || join(workspaceDir, '.agentdev', 'skills');
-    this.use(new SkillFeature(skillInput));
-
-    // 注册 SubAgentFeature（子代理工具和消息处理）
-    this.use(new SubAgentFeature());
-
-    // 预禁用不需要的子代理工具，确保首次快照与运行时一致
-    this.getTools().remove('list_agents');
-    this.getTools().remove('close_agent');
-
-    // 注册可创建的子代理类型
-    this.registerAgentType('BasicAgent', () => new BasicAgent({ llm: this.llm }));
-    this.registerAgentType('ExplorerAgent', () => import('./ExplorerAgent.js').then(m => new m.ExplorerAgent({ llm: this.llm })));
   }
 
   /**
@@ -172,19 +123,5 @@ export class BasicAgent extends Agent {
    */
   getSystemContext(): SystemContext {
     return this._systemContext;
-  }
-
-  /**
-   * 获取 MCP 服务器配置
-   */
-  getMcpServer(): string | false | undefined {
-    return this._mcpServer;
-  }
-
-  /**
-   * 获取 MCP 上下文
-   */
-  getMcpContext(): Record<string, unknown> | undefined {
-    return this._mcpContext;
   }
 }

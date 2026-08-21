@@ -2,15 +2,16 @@
  * QQBot 编程小助手 Agent
  *
  * 专业的编程助手，通过 QQ 与用户交互
- * 继承 BasicAgent 获得所有基础设施能力
+ * 继承 BasicAgent（纯基类）后，由本类显式装配所需的 Feature
  */
 
 import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
-import { AuditFeature, TodoFeature, VisualFeature, WebSearchFeature } from '../src/features/index.js';
+import { MCPFeature, OpencodeBasicFeature, SkillFeature, AuditFeature, TodoFeature, VisualFeature, WebSearchFeature } from '../src/features/index.js';
 import { QQBotFeature } from '@agentdev/qqbot-feature';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
+import { cwd } from 'process';
 
 /**
  * QQBot 编程小助手配置选项
@@ -18,7 +19,7 @@ import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 export interface QQBotProgrammingHelperAgentConfig extends BasicAgentConfig {
   /** Agent 显示名称（默认：'QQBot 编程助手'） */
   name?: string;
-  /** MCP 配置名称（可选）；传 false 时禁用；不传时 BasicAgent 会自动扫描 .agentdev/mcps */
+  /** MCP 配置名称（可选）；传 false 时不挂载 MCPFeature；不传时自动扫描 .agentdev/mcps */
   mcpServer?: string | false;
   /** 有待执行任务时的提醒间隔（默认：3 轮） */
   reminderThresholdWithTasks?: number;
@@ -42,7 +43,7 @@ const DEFAULT_EXCLUDED_MCP_SERVERS = ['crawl4ai-official'];
  * QQBot 编程小助手 Agent
  *
  * 专业的编程助手，通过 QQ 与用户交互
- * 继承 BasicAgent 获得所有基础设施能力
+ * 继承 BasicAgent（纯基类），Feature 由本类显式装配
  *
  * 设计说明：
  * - 使用 QQBotFeature 接收 QQ 消息，替代 UserInputFeature
@@ -53,13 +54,22 @@ export class QQBotProgrammingHelperAgent extends BasicAgent {
   private qqbotFeature: QQBotFeature;
 
   constructor(config?: QQBotProgrammingHelperAgentConfig) {
-    super({
-      ...config,
-      excludeMcpServers: Array.from(new Set([
-        ...(config?.excludeMcpServers ?? []),
-        ...DEFAULT_EXCLUDED_MCP_SERVERS,
-      ])),
-    });
+    super(config);
+
+    const workspaceDir = config?.workspaceDir ?? cwd();
+
+    // MCPFeature：mcpServer === false 时完全不挂载
+    if (config?.mcpServer !== false) {
+      this.use(typeof config?.mcpServer === 'string'
+        ? new MCPFeature(config.mcpServer)
+        : new MCPFeature(undefined, { excludeServers: DEFAULT_EXCLUDED_MCP_SERVERS }));
+    }
+
+    // OpencodeBasicFeature（文件操作工具集）
+    this.use(new OpencodeBasicFeature({ workspaceDir }));
+
+    // SkillFeature（invokeSkill 工具和 skills 上下文注入）
+    this.use(new SkillFeature());
 
     // 注册 QQBotFeature
     this.qqbotFeature = new QQBotFeature({

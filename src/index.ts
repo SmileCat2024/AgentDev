@@ -175,6 +175,31 @@ export {
 } from './core/continuity/participant.js';
 export type { AgentdevContinuityDescriptor } from './core/continuity/participant.js';
 
+// WorkThread 锚点层 + 可选看板（ticket 007）
+export { WorkThread, WorkThreadNotFoundError } from './core/workthread/index.js';
+export { WorkThreadBoard } from './core/workthread/index.js';
+export { WorkThreadStore, WorkThreadRevisionConflictError } from './core/workthread/index.js';
+export { WorkThreadRuntimeBridge } from './core/workthread/index.js';
+export {
+  WorkThreadCommandStatus,
+  WorkThreadCommandKind,
+  generateWorkThreadId,
+} from './core/workthread/index.js';
+export type {
+  WorkThreadStartOptions,
+  WorkThreadOptions,
+  WorkThreadRecord,
+  WorkThreadChainEntry,
+  WorkThreadPendingSuccession,
+  WorkThreadStatus,
+  WorkThreadCommand,
+  WorkThreadBoardStatus,
+  WorkThreadBoardMode,
+  WorkThreadBoardState,
+  WorkThreadBridge,
+  WorkThreadDeliveryOutcome,
+} from './core/workthread/index.js';
+
 // Continuation request 类型
 export type {
   CallContinuationRequest,

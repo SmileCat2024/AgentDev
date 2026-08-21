@@ -16,6 +16,10 @@
  * - turn.completed  回合完成（含 token 用量）
  * - turn.failed     回合失败
  *
+ * 术语（ADR-0002/Q6，一词不混用）：本事件流里的 `thread.started` 的 thread
+ * 指**会话本身**（codex exec 对外 jsonl 审计契约，永不改义）；框架的接续链概念
+ * 定名 **WorkThread**（见 `core/workthread/`），一处不混用。
+ *
  * item 类型：
  * - agent_message  agent 的自然语言回复
  * - reasoning      agent 的思考摘要

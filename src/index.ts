@@ -125,6 +125,16 @@ export type { DebugCapabilities } from './core/debug-capabilities.js';
 export type { AgentSessionSnapshot, SessionStore, NamedCheckpoint } from './core/session-store.js';
 export type { FeatureCheckpoint } from './core/checkpoint.js';
 
+// Session Continuity 契约层（ticket 005；006/007 官方实现与 WorkThread 消费）
+export type {
+  SessionTransformation,
+  TransformInput,
+  TransformContext,
+  SuccessorSeed,
+  SessionSeedMessage,
+  SessionContinuityEntry,
+} from './core/continuity/index.js';
+
 // Continuation request 类型
 export type {
   CallContinuationRequest,

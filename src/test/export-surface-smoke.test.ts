@@ -29,6 +29,13 @@ import type {
   EnrichedMessage,
   MessageTag,
   ParsedContent,
+  // 005：Session Continuity 契约层
+  SessionTransformation,
+  TransformInput,
+  TransformContext,
+  SuccessorSeed,
+  SessionSeedMessage,
+  SessionContinuityEntry,
 } from '../index.js';
 
 test('001: usage 类型族可从入口解析', () => {
@@ -105,4 +112,77 @@ test('003-fix: EnrichedMessage 引用闭包可从入口解析', () => {
   };
   assert.equal(enriched.tags[0], 'assistant');
   assert.equal(enriched.parsed.taskIds.length, 0);
+});
+
+test('005: Session Continuity 契约类型可从入口解析', () => {
+  // 最小 SuccessorSeed：schemaVersion 必填，seedMessages 为种子消息。
+  const seed: SuccessorSeed = {
+    schemaVersion: 1,
+    seedMessages: [{ role: 'system', content: 'continuation' }],
+  };
+  assert.equal(seed.schemaVersion, 1);
+  assert.equal(seed.seedMessages[0].content, 'continuation');
+
+  // 完整 SuccessorSeed：按 handoff JSON v1 蓝本框架化的全部可选载荷。
+  const fullSeed: SuccessorSeed = {
+    schemaVersion: 1,
+    seedMessages: [{ role: 'assistant', content: 'ok', turn: 3 }],
+    featureContinuity: [
+      { featureName: 'todo', protocol: 'example.feature-continuity.v1', state: { tasks: [] } },
+    ],
+    importantFiles: ['src/core/continuity/index.ts'],
+    importantSkills: ['implement'],
+    fileRanges: { 'src/core/continuity/index.ts': '1-160' },
+    meta: { sourceSessionId: 's1' },
+  };
+  assert.equal(fullSeed.importantFiles!.length, 1);
+  assert.equal(fullSeed.featureContinuity?.[0].protocol, 'example.feature-continuity.v1');
+  assert.equal(fullSeed.fileRanges?.['src/core/continuity/index.ts'], '1-160');
+
+  // 窄契约输入：sourceSnapshot 复用 session-store 快照，policy 为自由策略面。
+  const input: TransformInput = {
+    sourceSnapshot: {
+      version: 1,
+      sessionId: 's1',
+      savedAt: 0,
+      agentType: 'basic',
+      runtime: { initialized: true, callIndex: 0, featureStates: [] },
+      rollbackHistory: [],
+    },
+    policy: { strategy: 'trim-transcript' },
+  };
+  assert.equal(input.policy?.strategy, 'trim-transcript');
+
+  // 变换上下文：llm 为宿主注入的进程内 LLM 基座（摘要变换执行底座）。
+  const ctx: TransformContext = {
+    llm: {
+      async chat() {
+        return { content: 'summary' };
+      },
+    },
+  };
+
+  // 变换窄契约：id + transform(input, ctx) → Promise<SuccessorSeed>。
+  const transformation: SessionTransformation = {
+    id: 'agentdev.summary',
+    async transform() {
+      return seed;
+    },
+  };
+  assert.equal(transformation.id, 'agentdev.summary');
+
+  // 契约-级检查：SuccessorSeed / SessionSeedMessage 的键集合不包含任何 Claw 私有概念。
+  const seedKeys = new Set(['schemaVersion', 'seedMessages', 'featureContinuity', 'importantFiles', 'importantSkills', 'fileRanges', 'meta']);
+  for (const key of Object.keys(seed)) {
+    assert.ok(seedKeys.has(key), `unexpected SuccessorSeed key: ${key}`);
+  }
+  const messageKeys = new Set(['role', 'content', 'turn', 'toolCallId', 'toolCalls', 'reasoning', 'thinkingBlocks', 'images', 'tag']);
+  for (const key of Object.keys(seed.seedMessages[0])) {
+    assert.ok(messageKeys.has(key), `unexpected SessionSeedMessage key: ${key}`);
+  }
+  // 窄契约输入/输出类型均为 framework 中性概念；显式引用种子消息承载类型以防改名遗漏。
+  const sm: SessionSeedMessage = { role: 'user', content: 'hi' };
+  const entry: SessionContinuityEntry = { featureName: 'f', protocol: 'p', state: null as unknown };
+  assert.equal(sm.role, 'user');
+  assert.equal(entry.protocol, 'p');
 });

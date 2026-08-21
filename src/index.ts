@@ -7,7 +7,13 @@
 // 核心
 export { Agent } from './core/agent.js';
 export { Context } from './core/context.js';
-export type { ContextSnapshot, ContextBoundaryV2 } from './core/context.js';
+export type {
+  ContextSnapshot,
+  ContextBoundaryV2,
+  ToolExecResult,
+  ContextTombstoneSummary,
+  ContextTombstoneEntry,
+} from './core/context.js';
 export { createTool, ToolRegistry } from './core/tool.js';
 export { DebugHub } from './core/debug-hub.js';
 export { createLogger, installConsoleBridge, runWithLogScope } from './core/logging.js';
@@ -111,9 +117,13 @@ export type {
   ImageInput,
   UserTurnInput,
   UserTurnSubmissionResult,
+  EnrichedMessage,
+  MessageTag,
+  ParsedContent,
 } from './core/types.js';
 export type { DebugCapabilities } from './core/debug-capabilities.js';
 export type { AgentSessionSnapshot, SessionStore, NamedCheckpoint } from './core/session-store.js';
+export type { FeatureCheckpoint } from './core/checkpoint.js';
 
 // Continuation request 类型
 export type {

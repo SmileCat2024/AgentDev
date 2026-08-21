@@ -25,7 +25,7 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
-    "@agentdev/core": "workspace:*"
+    "@agentdev/core": "file:../core"
   },
   "keywords": [
     "agentdev",

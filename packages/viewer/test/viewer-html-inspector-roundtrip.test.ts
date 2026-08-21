@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import vm from 'node:vm';
-import { VIEWER_JS_INSPECTOR } from '../core/viewer-html/js-inspector.js';
-import type { HookInspectorSnapshot } from '../core/types.js';
+import { VIEWER_JS_INSPECTOR } from '../src/viewer-html/js-inspector.js';
+import type { HookInspectorSnapshot } from '@agentdev/core';
 
 /**
  * Round-trip 测试：验证 HookInspectorSnapshot 经过 viewer-html 的

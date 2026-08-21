@@ -18,8 +18,8 @@
  *   AGENTDEV_OPEN_BROWSER - 是否打开浏览器（默认 true）
  */
 
-import { ViewerWorker } from '../core/viewer-worker.js';
-import { getDefaultUDSPath } from '../core/types.js';
+import { ViewerWorker } from '../viewer-worker.js';
+import { getDefaultUDSPath } from '@agentdev/core';
 
 const DEFAULT_PORT = 2026;
 

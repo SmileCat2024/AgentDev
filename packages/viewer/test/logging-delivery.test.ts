@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { DebugHub } from '../core/debug-hub.js';
-import { emitLog, runWithLogScope } from '../core/logging.js';
-import { ViewerWorker } from '../core/viewer-worker.js';
+import { DebugHub } from '@agentdev/core';
+import { emitLog, runWithLogScope } from '@agentdev/core';
+import { ViewerWorker } from '../src/viewer-worker.js';
 
 function getTestUdsPath(): string {
   if (process.platform === 'win32') {

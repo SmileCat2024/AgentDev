@@ -2,8 +2,8 @@ import { once } from 'node:events';
 import { connect, createServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { DebugHub } from '../core/debug-hub.js';
-import { ViewerWorker } from '../core/viewer-worker.js';
+import { DebugHub } from '@agentdev/core';
+import { ViewerWorker } from '../src/viewer-worker.js';
 
 function getTestUdsPath(): string {
   const id = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;

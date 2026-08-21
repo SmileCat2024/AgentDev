@@ -21,8 +21,8 @@
  *   AGENTDEV_UDS_PATH - UDS 路径（默认自动检测平台）
  */
 
-import { ViewerWorker } from '../core/viewer-worker.js';
-import { getDefaultUDSPath } from '../core/types.js';
+import { ViewerWorker } from '../viewer-worker.js';
+import { getDefaultUDSPath } from '@agentdev/core';
 
 const DEFAULT_PORT = 2026;
 

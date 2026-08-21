@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport as StreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import * as z from 'zod/v4';
-import type { AgentLogsResponse, AgentSession, DebugLogEntry, HookInspectorSnapshot } from './types.js';
+import type { AgentLogsResponse, AgentSession, DebugLogEntry, HookInspectorSnapshot } from '@agentdev/core';
 
 const QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT = 200;
 
@@ -211,8 +211,8 @@ export class DebuggerMCPServer {
         agentId: z.string().optional().describe('Agent ID, "current", or "self". Defaults to current.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
       }),
-    }, async ({ agentId, callerAgentId }, extra) => {
-      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId, extra);
+    }, async ({ agentId, callerAgentId }) => {
+      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId);
       const agent = resolvedAgentId ? this.dataSource.getAgent(resolvedAgentId) : undefined;
       return createTextResult(jsonText({
         requestedAgentId: agentId || 'current',
@@ -232,8 +232,8 @@ export class DebuggerMCPServer {
         agentId: z.string().optional().describe('Agent ID, "current", or "self". Defaults to current.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
       }),
-    }, async ({ agentId, callerAgentId }, extra) => {
-      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId, extra);
+    }, async ({ agentId, callerAgentId }) => {
+      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId);
       const hooks = resolvedAgentId ? this.dataSource.getHooks(resolvedAgentId) : undefined;
       return createTextResult(jsonText({
         requestedAgentId: agentId || 'current',
@@ -263,8 +263,8 @@ export class DebuggerMCPServer {
         offset: z.number().int().min(0).optional().describe('Pagination offset. Use with limit to continue paged results.'),
         search: z.string().optional().describe('Substring search over the log message and serialized JSON payload/context.'),
       }),
-    }, async (args, extra) => {
-      const resolvedAgentId = this.resolveAgentRef(args.agentId, args.callerAgentId, extra);
+    }, async (args) => {
+      const resolvedAgentId = this.resolveAgentRef(args.agentId, args.callerAgentId);
       const scope = args.scope === 'all' ? 'all' : 'current';
       const queryAgentId = args.agentId && args.agentId !== 'current'
         ? resolvedAgentId || undefined
@@ -504,18 +504,14 @@ export class DebuggerMCPServer {
 
   private resolveAgentRef(
     requestedAgentId: string | undefined,
-    callerAgentId: string | undefined,
-    extra: { requestInfo?: unknown }
+    callerAgentId: string | undefined
   ): string | null {
-    const fromHeader = this.getRequestHeader(extra.requestInfo, 'x-agentdev-agent-id');
-    const fallbackAgentId = callerAgentId || fromHeader;
-
     if (!requestedAgentId || requestedAgentId === 'current') {
       return this.dataSource.getCurrentAgentId();
     }
 
     if (requestedAgentId === 'self') {
-      return fallbackAgentId || this.dataSource.getCurrentAgentId();
+      return callerAgentId || this.dataSource.getCurrentAgentId();
     }
 
     return requestedAgentId;
@@ -525,14 +521,6 @@ export class DebuggerMCPServer {
     if (typeof value === 'string') return value;
     if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
     return undefined;
-  }
-
-  private getRequestHeader(requestInfo: unknown, name: string): string | undefined {
-    const headers = (requestInfo as { headers?: Headers } | undefined)?.headers;
-    if (!headers || typeof headers.get !== 'function') {
-      return undefined;
-    }
-    return headers.get(name) || undefined;
   }
 }
 

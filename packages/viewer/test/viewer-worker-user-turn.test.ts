@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import { ViewerWorker } from '../core/viewer-worker.js';
+import { ViewerWorker } from '../src/viewer-worker.js';
 
 function getTestUdsPath(): string {
   if (process.platform === 'win32') {

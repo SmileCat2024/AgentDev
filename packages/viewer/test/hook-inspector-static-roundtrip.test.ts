@@ -14,17 +14,17 @@
 
 import { describe, it, expect } from 'vitest';
 import vm from 'node:vm';
-import { VIEWER_JS_INSPECTOR } from '../core/viewer-html/js-inspector.js';
-import { HooksRegistry } from '../core/hooks-registry.js';
-import { CoreLifecycle, Decision } from '../core/lifecycle.js';
-import type { AgentFeature } from '../core/feature.js';
+import { VIEWER_JS_INSPECTOR } from '../src/viewer-html/js-inspector.js';
+import { HooksRegistry } from '@agentdev/core';
+import { CoreLifecycle, Decision } from '@agentdev/core';
+import type { AgentFeature } from '@agentdev/core';
 import type {
   ToolContext,
   StepStartContext,
   StepFinishDecisionContext,
   ToolResultTransformContext,
-} from '../core/lifecycle.js';
-import type { ToolExecResult } from '../core/context.js';
+} from '@agentdev/core';
+import type { ToolExecResult } from '@agentdev/core';
 
 function createInspectorSandbox(): Record<string, unknown> {
   const sandbox: Record<string, unknown> = {};

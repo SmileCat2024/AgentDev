@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ViewerWorker } from '../core/viewer-worker.js';
+import { ViewerWorker } from '../src/viewer-worker.js';
 
 /**
  * Round-trip 测试：验证 streamToolNames 字段在

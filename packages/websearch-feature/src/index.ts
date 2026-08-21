@@ -16,10 +16,10 @@ import type { AgentFeature, FeatureInitContext, PackageInfo } from '@agentdev/co
 import type { Tool } from '@agentdev/core';
 import { getPackageInfoFromSource } from '@agentdev/core';
 import { createWebFetchTool } from './tools.js';
-import type { MCPClient } from '@agentdev/core';
-import { MCPConnectionManager } from '@agentdev/core';
-import { loadMCPConfigFromInput } from '@agentdev/core';
-import { mountMCPToolsFromConfig, type MCPToolManagementOptions } from '@agentdev/core';
+import type { MCPClient } from '@agentdev/mcp';
+import { MCPConnectionManager } from '@agentdev/mcp';
+import { loadMCPConfigFromInput } from '@agentdev/mcp';
+import { mountMCPToolsFromConfig, type MCPToolManagementOptions } from '@agentdev/mcp';
 import type { MCPConfig, MCPSSEConfig } from '@agentdev/core';
 
 // ESM 中获取 __dirname

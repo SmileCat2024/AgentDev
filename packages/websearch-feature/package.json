@@ -26,7 +26,8 @@
     "sourcemap": true
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdev/core": "^0.1.0",
+    "@agentdev/mcp": "^0.1.0"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"
@@ -36,7 +37,8 @@
     "@types/js-yaml": "^4.0.5",
     "tsup": "^8.3.5",
     "typescript": "^5.3.3",
-    "@agentdev/core": "file:../core"
+    "@agentdev/core": "file:../core",
+    "@agentdev/mcp": "file:../mcp"
   },
   "keywords": [
     "agentdev",

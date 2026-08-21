@@ -128,7 +128,7 @@ export class MemoryFeature implements AgentFeature {
    * CallStart 钩子：仅在首次对话开始时注入文档内容
    */
   async injectCLAUDEContent(
-    ctx: import('agentdev').CallStartContext
+    ctx: import('@agentdev/core').CallStartContext
   ): Promise<void> {
     // 只在首轮注入
     if (!ctx.isFirstCall) {

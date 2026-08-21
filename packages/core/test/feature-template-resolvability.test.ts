@@ -6,19 +6,22 @@
  * 全部 404，前端静默降级为 JSON 渲染。构建与服务端均无报错，只有
  * 浏览器里能观察到——这类"声明 ↔ 文件"失联必须由测试当场拦住。
  *
- * 断言两层契约：
+ * 断言三层契约：
  * 1. 每个 feature 的 getTemplateNames() 声明的模板，必须真实存在于该包
  *    dist 的两种布局之一：
  *      - 框架包布局：dist/features/<feature>/templates/<name>.render.js
  *      - 独立包布局：dist/templates/<name>.render.js
  * 2. 反向：dist 布局目录里的每个 .render.js 都被某个声明覆盖（防死文件）。
+ * 3. 模板产物内的相对 import（tsup 共享 chunk 等）目标必须存在于磁盘。
+ *    模板 URL 采用镜像布局（URL 路径 = 包内磁盘路径），磁盘可达即 URL 可达；
+ *    若此断言失败，浏览器加载模板时其依赖链会静默 404（2026-08-21 二次事故）。
  *
  * 运行前提：包已构建（npm run build）。CI 中测试排在 build 之后。
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,6 +56,42 @@ test('core 包 dist 已构建（本测试依赖构建产物）', () => {
     existsSync(join(distDir, 'index.js')),
     'packages/core/dist 不存在：先运行 npm run build'
   );
+});
+
+test('dist 模板的相对 import 依赖全部存在（chunk 依赖链完整性）', () => {
+  const templateFiles: string[] = [];
+  const featuresDir = join(distDir, 'features');
+  if (existsSync(featuresDir)) {
+    for (const feature of readdirSync(featuresDir)) {
+      const dir = join(featuresDir, feature, 'templates');
+      if (!existsSync(dir)) continue;
+      for (const f of readdirSync(dir)) {
+        if (f.endsWith('.render.js')) templateFiles.push(join(dir, f));
+      }
+    }
+  }
+  const flatDir = join(distDir, 'templates');
+  if (existsSync(flatDir)) {
+    for (const f of readdirSync(flatDir)) {
+      if (f.endsWith('.render.js')) templateFiles.push(join(flatDir, f));
+    }
+  }
+  assert.ok(templateFiles.length > 0, 'dist 中未发现任何模板文件');
+
+  for (const file of templateFiles) {
+    const content = readFileSync(file, 'utf-8');
+    for (const line of content.split('\n')) {
+      const m = line.match(/^(?:import|export)\s+(?:[^'";]*?from\s*)?['"]([^'"]+)['"]/);
+      if (!m) continue;
+      const spec = m[1];
+      if (!spec.startsWith('./') && !spec.startsWith('../')) continue; // 裸包名走 node_modules，不在本断言范围
+      const target = join(dirname(file), spec);
+      assert.ok(
+        existsSync(target),
+        `模板 ${relative(distDir, file)} 的相对依赖 "${spec}" 不存在: ${target}（浏览器加载模板时其依赖链会 404）`
+      );
+    }
+  }
 });
 
 for (const [featureName, FeatureClass] of BUILTIN_FEATURES) {

@@ -56,7 +56,7 @@ import { TemplateLoader } from '../template/loader.js';
 import { discover } from '../skills/loader.js';
 import type { SkillMetadata } from '../skills/types.js';
 import { existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, relative, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 // 导入重构后的模块
@@ -655,19 +655,25 @@ class AgentBase {
         const templateNames = feature.getTemplateNames();
 
         if (pkgInfo && templateNames.length > 0) {
-          // 判别该 feature 的模板在包内的实际布局，以决定 URL 是否带 feature 段：
-          // - 单 feature 独立包（@agentdev/shell-feature 等）：模板在 <root>/dist/templates/
-          // - 多 feature 框架包（@agentdev/core）：模板在 <root>/dist/features/<feature>/templates/
-          const hasFeatureSubdir = existsSync(
-            join(pkgInfo.root, 'dist', 'features', feature.name, 'templates')
-          );
-          for (const templateName of templateNames) {
-            // 独立包：/template/{packageName}/{templateName}.render.js
-            // 框架包：/template/{packageName}/{featureName}/{templateName}.render.js
-            const url = hasFeatureSubdir
-              ? `/template/${pkgInfo.name}/${feature.name}/${templateName}.render.js`
-              : `/template/${pkgInfo.name}/${templateName}.render.js`;
-            featureTemplates[templateName] = url;
+          if (pkgInfo.name.startsWith('@')) {
+            // npm 包（scoped）：URL 镜像包内磁盘路径 /template/{pkg}/{包内相对路径}。
+            // 模板产物可能包含相对导入（tsup 共享 chunk），只有 URL 空间与磁盘布局
+            // 同构，浏览器按 URL 解析出的相对依赖才能命中。
+            for (const templateName of templateNames) {
+              const candidates = [
+                join(pkgInfo.root, 'dist', 'templates', `${templateName}.render.js`),
+                join(pkgInfo.root, 'dist', 'features', feature.name, 'templates', `${templateName}.render.js`),
+              ];
+              const templatePath = candidates.find((p) => existsSync(p));
+              if (!templatePath) continue; // 声明了但磁盘不存在的模板不上报，避免 404 映射
+              const relPath = relative(pkgInfo.root, templatePath).split(sep).join('/');
+              featureTemplates[templateName] = `/template/${pkgInfo.name}/${relPath}`;
+            }
+          } else {
+            // 用户本地 Feature：保持紧凑格式，由 viewer-worker 按 projectRoot 布局解析
+            for (const templateName of templateNames) {
+              featureTemplates[templateName] = `/template/${pkgInfo.name}/${feature.name}/${templateName}.render.js`;
+            }
           }
         }
       }

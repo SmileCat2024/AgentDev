@@ -8,7 +8,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, normalize, isAbsolute } from 'path';
 import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, type ToolMetadata, getDefaultUDSPath } from '@agentdev/core';
 import {
   DebuggerMCPServer,
@@ -2278,29 +2278,31 @@ class ViewerWorker {
   }
 
   /**
-   * 处理统一的 Feature 模板路由（新格式）
-   * URL 格式: /template/{packageName}/{templateName}.render.js
-   * 
-   * 统一支持三种来源：
-   * 1. 框架内置 Feature：/template/agentdev/visual/capture.render.js
-   *    映射到: node_modules/agentdev/dist/features/visual/templates/capture.render.js
-   *    或: dist/features/visual/templates/capture.render.js（开发模式）
-   * 
-   * 2. 外部 npm 包：/template/@agentdev/shell-feature/bash.render.js
-   *    映射到: node_modules/@agentdev/shell-feature/dist/templates/bash.render.js
-   * 
-   * 3. 用户本地 Feature：/template/my-project/visual/capture.render.js
-   *    映射到: dist/templates/capture.render.js
-   *    或: dist/features/visual/templates/capture.render.js
+   * 处理统一的 Feature 模板路由
+   * URL 格式: /template/{packageName}/{包内相对路径}
+   *
+   * scoped npm 包采用镜像布局：URL 路径与包在 node_modules 内的磁盘路径同构，
+   * 模板文件的相对导入（tsup 共享 chunk、sourcemap）在 URL 空间按相同结构解析。
+   * 例如：
+   *   - /template/@agentdev/core/dist/features/opencode-basic/templates/read.render.js
+   *   - /template/@agentdev/core/dist/chunk-DGUM43GV.js（模板的 chunk 依赖）
+   *   - /template/@agentdev/shell-feature/dist/templates/bash.render.js
+   *
+   * 非 scoped 包保持紧凑格式（本地 Feature 按 projectRoot 布局解析）：
+   *   - /template/my-project/visual/capture.render.js
+   *     映射到: dist/templates/capture.render.js
+   *     或: dist/features/visual/templates/capture.render.js
    */
   public handleUnifiedTemplate(req: IncomingMessage, res: ServerResponse, url: string): void {
     try {
-      // 解析 URL: /template/{packageName}/{templateName}.render.js
-      // 支持普通包名和 scope 包名（@scope/name）
+      // 解析 URL: /template/{packageName}/{包内相对路径}
+      // 支持普通包名和 scope 包名（@scope/name），路径段不限于 .render.js——
+      // 模板的相对依赖（tsup 共享 chunk、sourcemap）也经此路由加载。
       // 例如：
       //   - /template/agentdev/visual/capture.render.js -> packageName=agentdev, templateFile=visual/capture.render.js
-      //   - /template/@agentdev/visual-feature/capture.render.js -> packageName=@agentdev/visual-feature, templateFile=capture.render.js
-      const match = url.match(/^\/template\/((?:@[^/]+\/)?[^/]+)\/(.+\.render\.js)$/);
+      //   - /template/@agentdev/core/dist/features/opencode-basic/templates/read.render.js
+      //   - /template/@agentdev/core/dist/chunk-XXXXXXXX.js（模板的 chunk 依赖）
+      const match = url.match(/^\/template\/((?:@[^/]+\/)?[^/]+)\/(.+)$/);
       if (!match) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Invalid template path format');
@@ -2308,6 +2310,14 @@ class ViewerWorker {
       }
 
       const [, packageName, templateFile] = match;
+
+      // 路径穿越防护：包内相对路径不得逃逸到包目录之外
+      const relFile = normalize(templateFile);
+      if (relFile.startsWith('..') || isAbsolute(relFile)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Forbidden path');
+        return;
+      }
       const templateFileTs = templateFile.replace('.render.js', '.render.ts');
 
       // 获取当前 Agent 的项目根目录
@@ -2319,25 +2329,20 @@ class ViewerWorker {
 
       // 1. 外部 npm 包（包括 scope 包）
       if (packageName.startsWith('@')) {
-        // scoped package: @scope/name
-        // 两种可能布局：
-        //  - 单 feature 独立包：dist/templates/{templateFile}
-        //  - 多 feature 框架包（@agentdev/core）：dist/features/{feature}/{template}
-        //    template 形如 `opencode-basic/read.render.js`，需拆出 feature 段后拼接
-        const templateWithFeature = templateFile.split('/');
-        searchPaths.push(
-          // 独立包布局
-          join(projectRoot, 'node_modules', packageName, 'dist', 'templates', templateFile),
-          join(projectRoot, 'node_modules', packageName, 'dist', 'templates', templateFileTs),
-        );
-        if (templateWithFeature.length === 2) {
-          const [featureName, innerTemplate] = templateWithFeature;
-          const innerTemplateTs = innerTemplate.replace('.render.js', '.render.ts');
-          // 框架包布局
+        // 镜像布局：/template/{pkg}/{包内相对路径} 直接映射 node_modules 下同结构文件，
+        // 模板内的相对依赖（tsup 共享 chunk、sourcemap）按相同布局自然命中
+        searchPaths.push(join(projectRoot, 'node_modules', packageName, relFile));
+        // 兼容旧紧凑格式（/{name}.render.js 或 /{feature}/{name}.render.js，不带 dist 段）
+        if (templateFile.endsWith('.render.js')) {
           searchPaths.push(
-            join(projectRoot, 'node_modules', packageName, 'dist', 'features', featureName, 'templates', innerTemplate),
-            join(projectRoot, 'node_modules', packageName, 'dist', 'features', featureName, 'templates', innerTemplateTs),
+            join(projectRoot, 'node_modules', packageName, 'dist', 'templates', templateFile),
           );
+          const parts = templateFile.split('/');
+          if (parts.length === 2) {
+            searchPaths.push(
+              join(projectRoot, 'node_modules', packageName, 'dist', 'features', parts[0], 'templates', parts[1]),
+            );
+          }
         }
       } else if (packageName === 'agentdev') {
         // 2. 框架内置 Feature（agentdev 包）

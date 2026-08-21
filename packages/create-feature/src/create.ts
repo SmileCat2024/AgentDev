@@ -14,7 +14,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Keep generated Feature projects on the framework version that the scaffold
 // itself was built and tested against. An unconstrained `latest` type surface
 // can disagree with the runtime used by Studio or other consumers.
-const AGENTDEV_COMPAT_VERSION = '^0.2.11';
+// Feature 包依赖 `@agentdev/core`（ADR-0003 决策 2，票 010）。版本与锁步组对齐。
+const AGENTDEV_COMPAT_VERSION = '^0.1.0';
 
 export interface CreateFeatureProjectOptions {
   /** npm package name, with or without the @agentdev/ scope. */
@@ -85,13 +86,13 @@ function generatePackageJson(targetDir: string, packageName: string, featureSlug
       prepublishOnly: 'npm run build'
     },
     peerDependencies: {
-      agentdev: AGENTDEV_COMPAT_VERSION
+      '@agentdev/core': AGENTDEV_COMPAT_VERSION
     },
     devDependencies: {
       '@types/node': '^20.11.0',
       tsup: '^8.3.5',
       typescript: '^5.3.3',
-      agentdev: AGENTDEV_COMPAT_VERSION
+      '@agentdev/core': AGENTDEV_COMPAT_VERSION
     },
     keywords: ['agentdev', 'feature', featureSlug],
     license: 'MIT'
@@ -171,9 +172,9 @@ import type {
   AgentFeature,
   FeatureInitContext,
   PackageInfo,
-} from 'agentdev';
-import type { Tool } from 'agentdev';
-import { getPackageInfoFromSource } from 'agentdev';
+} from '@agentdev/core';
+import type { Tool } from '@agentdev/core';
+import { getPackageInfoFromSource } from '@agentdev/core';
 
 export interface ${featureClass}Config {
   /** 配置选项 */
@@ -262,7 +263,7 @@ npm install ${packageName}
 ## Usage
 
 \`\`\`typescript
-import { Agent } from 'agentdev';
+import { Agent } from '@agentdev/core';
 import { ${toPascalCase(featureSlug)} } from '${packageName}';
 
 const agent = new Agent().use(new ${toPascalCase(featureSlug)}());

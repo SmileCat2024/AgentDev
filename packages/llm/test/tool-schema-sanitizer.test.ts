@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeToolSchema } from '../llm/schema-sanitizer.js';
-import { compileContextForAnthropic } from '../llm/anthropic.js';
-import { compileContextForOpenAIResponses } from '../llm/openai-responses.js';
-import type { Tool } from '../core/types.js';
+import { sanitizeToolSchema } from '../src/schema-sanitizer.js';
+import { compileContextForAnthropic } from '../src/anthropic.js';
+import { compileContextForOpenAIResponses } from '../src/openai-responses.js';
+import type { Tool } from '@agentdev/core';
 
 function makeTool(name: string, parameters?: Record<string, unknown>): Tool {
   return {

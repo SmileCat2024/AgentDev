@@ -4,7 +4,7 @@ import {
   HTTP_HEADERS_TIMEOUT_MS,
   buildHttpDispatcherOptions,
   isExternallyManagedDispatcher,
-} from '../../llm/http-client.js';
+} from '../../src/http-client.js';
 
 describe('llm http client ownership and timeouts', () => {
   it('uses Undici connector and response-header timeout fields', () => {

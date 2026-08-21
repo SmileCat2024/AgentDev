@@ -1,5 +1,5 @@
-import type { AgentConfigFile, ModelConfig } from '../core/config.js';
-import type { LLMClient } from '../core/types.js';
+import type { AgentConfigFile, ModelConfig } from '@agentdev/core';
+import type { LLMClient } from '@agentdev/core';
 import { createAnthropicLLM } from './anthropic.js';
 import { createOpenAILLM } from './openai.js';
 import { createOpenAIResponsesLLM } from './openai-responses.js';
@@ -7,9 +7,9 @@ import { createOpenAIResponsesLLM } from './openai-responses.js';
 export { AnthropicLLM, compileContextForAnthropic, createAnthropicLLM } from './anthropic.js';
 export { OpenAILLM, createOpenAILLM, compileChatMessages } from './openai.js';
 export { OpenAIResponsesLLM, compileContextForOpenAIResponses, createOpenAIResponsesLLM } from './openai-responses.js';
-export { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep as retrySleep } from './retry.js';
-export { ClassifiedAPIError, classifyAPIError, classifyAndWrapError, extractConnectionErrorDetails, getUserFriendlyMessage } from './api-errors.js';
-export type { APIErrorType, ConnectionErrorDetails } from './api-errors.js';
+export { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, sleep as retrySleep } from '@agentdev/core';
+export { ClassifiedAPIError, classifyAPIError, classifyAndWrapError, extractConnectionErrorDetails, getUserFriendlyMessage } from '@agentdev/core';
+export type { APIErrorType, ConnectionErrorDetails } from '@agentdev/core';
 export { initHttpClient, getGlobalDispatcher } from './http-client.js';
 
 export function createLLM(config: AgentConfigFile): LLMClient;

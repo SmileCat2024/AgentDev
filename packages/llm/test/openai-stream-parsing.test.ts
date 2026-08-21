@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { OpenAILLM } from '../llm/openai.js';
+import { OpenAILLM } from '../src/openai.js';
 
 /**
  * 复现 OpenAI 兼容网关（OpenCode Go / deepseek 等）流式行为下增量丢失的缺陷：

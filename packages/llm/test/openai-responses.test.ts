@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { compileContextForOpenAIResponses, OpenAIResponsesLLM } from '../llm/openai-responses.js';
-import { parseRetryAfter } from '../llm/retry.js';
-import type { Message, Tool } from '../core/types.js';
+import { compileContextForOpenAIResponses, OpenAIResponsesLLM } from '../src/openai-responses.js';
+import { parseRetryAfter } from '@agentdev/core';
+import type { Message, Tool } from '@agentdev/core';
 
 const tools: Tool[] = [
   {

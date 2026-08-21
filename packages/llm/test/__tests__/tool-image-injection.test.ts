@@ -7,19 +7,17 @@
  * 3. Anthropic 编译器：tool 消息图片（视觉 / 非视觉）
  * 4. OpenAI Chat 编译器：tool 消息图片（视觉 / 非视觉）
  * 5. OpenAI Responses 编译器：tool 消息图片（视觉 / 非视觉）
+ *
+ * 注：read_image 工具的内容快照语义测试在 packages/image-reader-feature。
  */
 
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createReadImageTool } from '../../../packages/image-reader-feature/src/tools.js';
-import { withImages, isWithImagesResult } from '../../core/tool-result-images.js';
-import { Context } from '../../core/context.js';
-import type { ToolExecResult } from '../../core/context.js';
-import type { ToolCall, ImageInput } from '../../core/types.js';
-import { compileContextForAnthropic } from '../../llm/anthropic.js';
-import { compileContextForOpenAIResponses } from '../../llm/openai-responses.js';
+import { withImages, isWithImagesResult } from '@agentdev/core';
+import { Context } from '@agentdev/core';
+import type { ToolExecResult } from '@agentdev/core';
+import type { ToolCall, ImageInput } from '@agentdev/core';
+import { compileContextForAnthropic } from '../../src/anthropic.js';
+import { compileContextForOpenAIResponses } from '../../src/openai-responses.js';
 
 // ---- helpers ----
 
@@ -43,63 +41,7 @@ const TOOLS = [
 ];
 
 // ============================================================
-// 1. read_image 内容快照
-// ============================================================
-
-describe('read_image managed snapshots', () => {
-  it('should preserve the bytes read at tool-call time after the source changes or moves', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'agentdev-read-image-'));
-    try {
-      const workspaceDir = join(root, 'workspace');
-      const storageDir = join(root, 'images');
-      const sourcePath = join(root, 'source.png');
-      const movedPath = join(root, 'moved.png');
-      const original = Buffer.from('original-image-bytes');
-      const replacement = Buffer.from('replacement-image-bytes');
-      writeFileSync(sourcePath, original);
-
-      const tool = createReadImageTool({ workspaceDir, storageDir });
-      const result = await tool.execute({ path: sourcePath }, {} as any) as any;
-      expect(isWithImagesResult(result)).toBe(true);
-      const snapshotPath = result.images[0].path as string;
-      expect(snapshotPath).not.toBe(sourcePath);
-      expect(snapshotPath.startsWith(storageDir)).toBe(true);
-      expect(readFileSync(snapshotPath).equals(original)).toBe(true);
-
-      writeFileSync(sourcePath, replacement);
-      renameSync(sourcePath, movedPath);
-
-      expect(readFileSync(snapshotPath).equals(original)).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('should deduplicate identical content into one managed snapshot path', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'agentdev-read-image-dedup-'));
-    try {
-      const storageDir = join(root, 'images');
-      const firstPath = join(root, 'first.png');
-      const secondPath = join(root, 'second.png');
-      const bytes = Buffer.from('same-image-bytes');
-      writeFileSync(firstPath, bytes);
-      writeFileSync(secondPath, bytes);
-
-      const tool = createReadImageTool({ storageDir });
-      const first = await tool.execute({ path: firstPath }, {} as any) as any;
-      const second = await tool.execute({ path: secondPath }, {} as any) as any;
-
-      expect(first.images[0].path).toBe(second.images[0].path);
-      expect(first.images[0].source).toBe(firstPath);
-      expect(second.images[0].source).toBe(secondPath);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-// ============================================================
-// 2. withImages() / isWithImagesResult()
+// 1. withImages() / isWithImagesResult()
 // ============================================================
 
 describe('withImages()', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { compileChatMessages } from '../llm/openai.js';
-import type { Message } from '../core/types.js';
+import { compileChatMessages } from '../src/openai.js';
+import type { Message } from '@agentdev/core';
 
 describe('OpenAI Chat Completions compilation', () => {
   it('should pass through plain messages', () => {

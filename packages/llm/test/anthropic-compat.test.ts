@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
-import { compileContextForAnthropic } from '../llm/anthropic.js';
-import type { Message, Tool } from '../core/types.js';
+import { compileContextForAnthropic } from '../src/anthropic.js';
+import type { Message, Tool } from '@agentdev/core';
 
 const tools: Tool[] = [
   {

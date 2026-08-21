@@ -1,10 +1,5 @@
 # 依赖目录
 node_modules/
-# vendor 内化依赖排除全局规则（@sliverp/qqbot 随 tgz bundled 的依赖与 dist 必须入库）
-!vendor/@sliverp/qqbot/node_modules/
-!vendor/@sliverp/qqbot/node_modules/**
-!vendor/@sliverp/qqbot/dist/
-!vendor/@sliverp/qqbot/dist/**
 
 # 编译输出目录
 dist/
@@ -107,3 +102,14 @@ pyproject.toml
 requirements.txt
 uv.lock
 src/features/visual/python/__pycache__
+
+# vendor/@sliverp/qqbot 为整体入库的内化依赖（上游包未发布 npm，含构建
+# 产物与 bundled 依赖）。例外必须置于文件末尾：gitignore 后匹配的规则
+# 胜出，前置例外会被上方 node_modules/、dist/ 等通用规则再次压掉
+# （vendor dist 曾因此漏入库，导致 qqbot-feature 构建找不到 standalone）。
+!vendor/@sliverp/qqbot/node_modules/
+!vendor/@sliverp/qqbot/node_modules/**
+!vendor/@sliverp/qqbot/dist/
+!vendor/@sliverp/qqbot/dist/**
+!vendor/@sliverp/qqbot/node_modules/**/dist/
+!vendor/@sliverp/qqbot/node_modules/**/dist/**

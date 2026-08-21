@@ -100,6 +100,14 @@ try {
     // 失败的安装会留下半残的 node_modules（目录在、依赖缺），仅查目录
     // 会跳过安装直接构建失败。
     if (!depsResolvable(pkgDir)) installDeps(pkgDir, name);
+    if (!depsResolvable(pkgDir)) {
+      console.error(
+        `\n[build-all] ${name} 依赖安装后仍无法解析。` +
+        `\n常见原因：npm install 报 up to date 但包内容缺失（如 file: 依赖目标不完整）。` +
+        `\n请执行清理后重试：rm -rf ${join(pkgDir, 'node_modules')} ${join(pkgDir, 'package-lock.json')} && npm run build`,
+      );
+      process.exit(1);
+    }
     console.log(`\n=== ${name}（workspace 外，子目录构建）===`);
     execSync('npm run build', { cwd: pkgDir, stdio: 'inherit', env: process.env });
   }

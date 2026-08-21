@@ -5,6 +5,8 @@
  * - recordRuntimeEvent 把 codex turn.* / item.* 事件翻译为看板状态
  * - idle/running/waiting_input/failed 状态机
  * - executionEvents 持久化 / cursor 切片 / eventId 去重
+ * - 绝对游标（ticket 017）：跨裁剪点增量读不丢不重；after < baseOffset 返回
+ *   完整当前窗口；重启后 baseOffset 恢复、cursor 不回退
  * - resume（failed/waiting_input → running，拒绝其他）
  * - mode
  * - closed 语义：closed 线程拒绝迟到事件；closeBoard 置看板终态
@@ -138,6 +140,100 @@ describe('WorkThreadBoard', () => {
     const tail = await board.getExecutionEvents(wt.threadId, { after: 2 });
     expect(tail.events.length).toBe(1);
     expect(tail.events[0].type).toBe('turn.completed');
+  });
+
+  it('execution events: monotonic absolute cursor across trim points (no loss, no dup)', { timeout: 30000 }, async () => {
+    const { core, board } = makeBoardFixtures(root);
+    const wt = await core.start({ sessionRef: { agentId: 'a', sessionId: 'ev-mono' } });
+    const emit = (i: number) =>
+      board.recordRuntimeEvent({
+        agentId: 'a', sessionId: 'ev-mono', runtimeInstanceId: 'rt-1',
+        event: { type: 'item.completed', item: { id: `i-${i}`, type: 'agent_message' }, eventId: `ev-${i}` },
+      });
+
+    // 推入 620 个事件，跨裁剪点（>500 开始裁）分批增量读，模拟长期轮询消费者。
+    const checkpoints = new Set([100, 300, 550, 620]);
+    const seen: string[] = [];
+    let cursor = 0;
+    for (let i = 1; i <= 620; i++) {
+      await emit(i);
+      if (!checkpoints.has(i)) continue;
+      const page = await board.getExecutionEvents(wt.threadId, { after: cursor });
+      expect(page.cursor).toBeGreaterThan(cursor, 'cursor 必须单调递增');
+      cursor = page.cursor;
+      seen.push(...page.events.map((e) => e.eventId as string));
+    }
+
+    // 不丢不重：增量读拼接结果恰好是 ev-1..ev-620 各一次，顺序保持
+    expect(seen.length).toBe(620);
+    expect(new Set(seen).size).toBe(620, '不得重复投递');
+    expect(seen).toEqual(Array.from({ length: 620 }, (_, k) => `ev-${k + 1}`));
+
+    // 绝对游标语义：cursor = baseOffset + 窗口长度；窗口裁到最近 500 条
+    expect(cursor).toBe(620);
+    const state = (await board.getState(wt.threadId))!;
+    expect(state.executionEvents.length).toBe(500);
+    expect(state.executionEventBaseOffset).toBe(120);
+
+    // 读尽后：空页 + cursor 稳定
+    const drained = await board.getExecutionEvents(wt.threadId, { after: cursor });
+    expect(drained.events).toEqual([]);
+    expect(drained.cursor).toBe(620);
+  });
+
+  it('execution events: stale cursor below baseOffset returns the full current window', { timeout: 30000 }, async () => {
+    const { core, board } = makeBoardFixtures(root);
+    const wt = await core.start({ sessionRef: { agentId: 'a', sessionId: 'ev-stale' } });
+    for (let i = 1; i <= 520; i++) {
+      await board.recordRuntimeEvent({
+        agentId: 'a', sessionId: 'ev-stale', runtimeInstanceId: 'rt-1',
+        event: { type: 'item.completed', item: { id: `i-${i}`, type: 'agent_message' }, eventId: `ev-${i}` },
+      });
+    }
+    expect((await board.getState(wt.threadId))!.executionEventBaseOffset).toBe(20);
+
+    // after=0 / after=10 均落后于窗口起点（baseOffset=20）：clamp 到窗口起点，
+    // 从头返回当前可用窗口（500 条，首个是 ev-21），而非空数组静默丢读。
+    for (const after of [0, 10]) {
+      const page = await board.getExecutionEvents(wt.threadId, { after });
+      expect(page.events.length).toBe(500);
+      expect(page.events[0].eventId).toBe('ev-21');
+      expect(page.cursor).toBe(520);
+    }
+  });
+
+  it('execution events: cursor stays monotonic across board restart (persisted baseOffset)', { timeout: 60000 }, async () => {
+    const first = makeBoardFixtures(root);
+    const wt = await first.core.start({ sessionRef: { agentId: 'a', sessionId: 'ev-restart' } });
+    const emit = (board: WorkThreadBoard, i: number) =>
+      board.recordRuntimeEvent({
+        agentId: 'a', sessionId: 'ev-restart', runtimeInstanceId: 'rt-1',
+        event: { type: 'item.completed', item: { id: `i-${i}`, type: 'agent_message' }, eventId: `ev-${i}` },
+      });
+
+    for (let i = 1; i <= 520; i++) await emit(first.board, i);
+    const before = await first.board.getExecutionEvents(wt.threadId, { after: 0 });
+    expect(before.cursor).toBe(520);
+
+    // 重启：同一 rootDir 下全新 store / core / board 实例，状态只从磁盘恢复
+    const second = makeBoardFixtures(root);
+    const restored = await second.board.getState(wt.threadId);
+    expect(restored!.executionEventBaseOffset).toBe(20);
+    expect(restored!.executionEvents.length).toBe(500);
+
+    // 重启后 cursor 不回退（未持久化 baseOffset 的旧缺陷会回退到 500）
+    const afterRestart = await second.board.getExecutionEvents(wt.threadId, { after: 520 });
+    expect(afterRestart.events).toEqual([]);
+    expect(afterRestart.cursor).toBe(520);
+
+    // 继续追加：游标连续，增量读恰好只拿到新增事件
+    for (let i = 521; i <= 530; i++) await emit(second.board, i);
+    const page = await second.board.getExecutionEvents(wt.threadId, { after: 520 });
+    expect(page.events.map((e) => e.eventId)).toEqual(
+      Array.from({ length: 10 }, (_, k) => `ev-${521 + k}`),
+    );
+    expect(page.cursor).toBe(530);
+    expect((await second.board.getState(wt.threadId))!.executionEventBaseOffset).toBe(30);
   });
 
   it('resume admits failed / waiting_input and rejects non-resumable states', async () => {

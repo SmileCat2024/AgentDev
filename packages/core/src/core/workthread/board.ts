@@ -53,6 +53,12 @@ export interface WorkThreadBoardState {
   mode: WorkThreadBoardMode;
   status: WorkThreadBoardStatus;
   executionEvents: WorkThreadBoardExecutionEvent[];
+  /**
+   * 已从 executionEvents 窗口裁掉的事件总数（ticket 017）。
+   * 绝对游标 = executionEventBaseOffset + executionEvents.length，随状态落盘，
+   * 保证进程重启后 cursor 不回退。旧状态文件缺省时按 0 读取。
+   */
+  executionEventBaseOffset: number;
   lifecycleEvents: WorkThreadBoardLifecycleEvent[];
   lastLifecycleEvent: WorkThreadBoardLifecycleEvent | null;
   revision: number;
@@ -163,6 +169,7 @@ export class WorkThreadBoard {
       mode,
       status: 'idle',
       executionEvents: [],
+      executionEventBaseOffset: 0,
       lifecycleEvents: [],
       lastLifecycleEvent: null,
       revision: 1,
@@ -222,6 +229,11 @@ export class WorkThreadBoard {
 
   /**
    * 读取看板 executionEvents，支持 cursor 切片。
+   *
+   * cursor 是绝对游标（baseOffset + 窗口长度，ticket 017）：跨裁剪点单调递增，
+   * 长期增量消费者（轮询 after=cursor）不丢事件。`after` 落后于窗口起点时
+   * clamp 到窗口起点从头返回当前可用窗口——旧数据已裁掉不可恢复，但绝不以
+   * 空数组静默丢读；消费者可用 eventId 去重。
    * @returns {{events, cursor}}
    */
   async getExecutionEvents(
@@ -231,10 +243,12 @@ export class WorkThreadBoard {
     const state = await this.getState(workThreadId);
     if (!state) return { events: [], cursor: 0 };
     const events = Array.isArray(state.executionEvents) ? state.executionEvents : [];
-    const cursor = Math.max(0, Number(opts.after) || 0);
+    const baseOffset = Math.max(0, Number(state.executionEventBaseOffset) || 0);
+    const after = Math.max(0, Number(opts.after) || 0);
+    const from = after < baseOffset ? 0 : after - baseOffset;
     return {
-      events: events.slice(cursor).map((entry) => entry.event),
-      cursor: events.length,
+      events: events.slice(from).map((entry) => entry.event),
+      cursor: baseOffset + events.length,
     };
   }
 
@@ -292,7 +306,9 @@ export class WorkThreadBoard {
           event: { ...event },
         });
         if (draft.executionEvents.length > MAX_EXECUTION_EVENTS) {
-          draft.executionEvents.splice(0, draft.executionEvents.length - MAX_EXECUTION_EVENTS);
+          const removed = draft.executionEvents.length - MAX_EXECUTION_EVENTS;
+          draft.executionEvents.splice(0, removed);
+          draft.executionEventBaseOffset = Math.max(0, Number(draft.executionEventBaseOffset) || 0) + removed;
         }
         return draft;
       });

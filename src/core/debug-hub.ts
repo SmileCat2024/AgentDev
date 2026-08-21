@@ -65,9 +65,6 @@ export class DebugHub {
 
   // 输入请求回调映射：requestId → owned request lifecycle
   private pendingInputRequests = new Map<string, PendingInputRequest>();
-  // @deprecated (2026-07-25) — supplement mechanism removed; no caller sets
-  // this handler. Kept for backward compatibility; safe to remove.
-  private queuedInputHandler?: (agentId: string, input: { id: string; text: string; timestamp: number; images?: ImageInput[] }) => void | Promise<void>;
   private interruptHandlers = new Map<string, (agentId: string, clearQueue: boolean) => void | Promise<void>>();
   private globalInterruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
 
@@ -625,14 +622,6 @@ export class DebugHub {
     return getDebugCapabilities();
   }
 
-  /**
-   * @deprecated (2026-07-25) — supplement mechanism removed; no caller invokes
-   * this method. Kept for backward compatibility; safe to remove.
-   */
-  setQueuedInputHandler(handler?: (agentId: string, input: { id: string; text: string; timestamp: number; images?: ImageInput[] }) => void | Promise<void>): void {
-    this.queuedInputHandler = handler;
-  }
-
   setInterruptHandler(
     agentIdOrHandler: string | ((agentId: string, clearQueue: boolean) => void | Promise<void>) | undefined,
     handler?: (agentId: string, clearQueue: boolean) => void | Promise<void>,
@@ -659,21 +648,6 @@ export class DebugHub {
         }
       };
     }
-  }
-
-  /**
-   * @deprecated (2026-07-25) — supplement mechanism removed; no caller invokes
-   * this method. Kept for backward compatibility; safe to remove.
-   */
-  consumeQueuedInput(agentId: string, inputId: string): void {
-    if (this.transportMode === 'claw') {
-      return;
-    }
-    this.sendToWorker({
-      type: 'consume-queued-input',
-      agentId,
-      inputId,
-    } as DebugHubIPCMessage);
   }
 
   /**
@@ -914,16 +888,6 @@ export class DebugHub {
         }
         break;
       }
-
-      // @deprecated (2026-07-25) — supplement mechanism removed; queuedInputHandler
-      // is never set, so this branch is always skipped. Safe to remove.
-      case 'queue-input':
-        if (this.queuedInputHandler && msg.input?.id && typeof msg.input?.text === 'string') {
-          Promise.resolve(this.queuedInputHandler(msg.agentId, msg.input)).catch((error) => {
-            console.error('[DebugHub] 处理 queue-input 失败:', error);
-          });
-        }
-        break;
 
       // 处理中断信号
       case 'interrupt-agent': {

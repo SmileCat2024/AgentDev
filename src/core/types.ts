@@ -356,30 +356,6 @@ export interface ToolCall {
   arguments: Record<string, any>;
 }
 
-/**
- * 统一用量格式（兼容 Anthropic 和 OpenAI）
- */
-export interface UsageInfo {
-  /** 输入 token 数 */
-  inputTokens: number;
-  /** 输出 token 数 */
-  outputTokens: number;
-  /** 总 token 数 */
-  totalTokens: number;
-
-  // ========== Anthropic 特有（可选）==========
-  /** 创建缓存消耗的 token 数 */
-  cacheCreationTokens?: number;
-  /** 从缓存读取的 token 数 */
-  cacheReadTokens?: number;
-
-  // ========== OpenAI 特有（可选）==========
-  /** 推理 token 数 */
-  reasoningTokens?: number;
-  /** 音频 token 数 */
-  audioTokens?: number;
-}
-
 // LLM 响应
 export interface LLMResponse {
   content: string;
@@ -457,7 +433,10 @@ import type { PlaceholderContext, TemplateSource } from '../template/types.js';
 
 // MCP 类型导入
 import type { MCPConfig } from '../mcp/types.js';
-import type { UsageStatsSnapshot } from './usage.js';
+import type { UsageInfo, UsageStatsSnapshot } from './usage.js';
+
+// UsageInfo 权威定义位于 usage.ts；此处 re-export 保持 types.js 的既有导入路径
+export type { UsageInfo };
 
 // Agent 配置
 export interface AgentConfig {
@@ -758,8 +737,6 @@ export type DebugHubIPCMessage =
   | PushNotificationMsg
   | RequestInputMsg
   | InputRequestCancelledMsg
-  | QueueInputMsg
-  | ConsumeQueuedInputMsg
   | InterruptAgentMsg
   | StopMsg;
 
@@ -876,15 +853,6 @@ export interface RequestInputMsg {
 }
 
 /**
- * 排队用户输入（运行期间提交的消息）
- */
-export interface QueueInputMsg {
-  type: 'queue-input';
-  agentId: string;
-  input: QueuedInput;
-}
-
-/**
  * 通知 Worker 一个输入请求已被运行时结算/取消（中断、销毁等）。
  * Worker 持有同名 inputLease 作为 HTTP 投递面；收到后应清除对应租约，
  * 否则陈旧租约会永久阻塞后续 user-turn（input_mode_conflict）。
@@ -893,15 +861,6 @@ export interface InputRequestCancelledMsg {
   type: 'input-request-cancelled';
   agentId: string;
   requestId: string;
-}
-
-/**
- * 通知 Worker 移除一条已被运行时接管/开始处理的排队输入
- */
-export interface ConsumeQueuedInputMsg {
-  type: 'consume-queued-input';
-  agentId: string;
-  inputId: string;
 }
 
 /**

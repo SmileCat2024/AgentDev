@@ -251,12 +251,6 @@ class ViewerWorker {
       case 'input-request-cancelled':
         this.handleInputRequestCancelled(msg);
         break;
-      // @deprecated (2026-07-25) — supplement UDS path removed; handleQueueInput
-      // no longer forwards to UDS, so this message type is never sent.
-      // Kept for backward compatibility; safe to remove in a future cleanup.
-      case 'consume-queued-input':
-        this.handleConsumeQueuedInput(msg.agentId, msg.inputId);
-        break;
       case 'stop':
         this.handleStop();
         break;
@@ -446,13 +440,6 @@ class ViewerWorker {
     const userTurnMatch = url.match(/^\/api\/agents\/([^/]+)\/user-turn$/);
     if (userTurnMatch && req.method === 'POST') {
       this.handlePostUserTurn(req, res, userTurnMatch[1]);
-      return;
-    }
-
-    // POST /api/agents/:id/queue-input - 运行期间排队用户输入
-    const queueInputMatch = url.match(/^\/api\/agents\/([^/]+)\/queue-input$/);
-    if (queueInputMatch && req.method === 'POST') {
-      this.handleQueueInput(req, res, queueInputMatch[1]);
       return;
     }
 
@@ -1250,50 +1237,6 @@ class ViewerWorker {
   }
 
   /**
-   * 排队用户输入（运行期间提交的消息）
-   */
-  private handleQueueInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
-    let body = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const { text, images } = JSON.parse(body);
-        if (!text || typeof text !== 'string') {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Missing or invalid text' }));
-          return;
-        }
-
-        const session = this.agentSessions.get(agentId);
-        if (!session) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Agent not found' }));
-          return;
-        }
-        if (session.inputPolicy === 'none') {
-          res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({
-            success: false,
-            code: 'runtime_not_accepting_input',
-            error: 'This runtime does not accept external user turns',
-          }));
-          return;
-        }
-
-        const queuedInput = this.enqueueQueuedInput(session, text, images);
-        console.log(`[Viewer Worker] 用户输入已排队: ${agentId}, queueLength=${session.queuedInputs.length}`);
-
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ success: true, id: queuedInput.id, queueLength: session.queuedInputs.length }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'Invalid request' }));
-      }
-    });
-  }
-
-  /**
    * 获取排队中的用户输入
    */
   private handleGetQueuedInputs(req: IncomingMessage, res: ServerResponse, agentId: string): void {
@@ -1331,23 +1274,6 @@ class ViewerWorker {
     console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ input, remaining: queued.length }));
-  }
-
-  /**
-   * @deprecated (2026-07-25) — supplement mechanism removed; this method is
-   * only reachable via the deprecated 'consume-queued-input' UDS handler above.
-   * Safe to remove in a future cleanup.
-   */
-  private handleConsumeQueuedInput(agentId: string, inputId: string): void {
-    const session = this.agentSessions.get(agentId);
-    if (!session || !Array.isArray(session.queuedInputs) || !inputId) {
-      return;
-    }
-    const nextQueue = session.queuedInputs.filter((item) => item?.id !== inputId);
-    if (nextQueue.length !== session.queuedInputs.length) {
-      session.queuedInputs = nextQueue;
-      console.log(`[Viewer Worker] 已移除排队输入: ${agentId}, inputId=${inputId}, remaining=${session.queuedInputs.length}`);
-    }
   }
 
   /**

@@ -57,6 +57,11 @@ try {
       console.error(`[build-all] 跳过 ${name}：包不存在 ${pkgDir}`);
       continue;
     }
+    // workspace 外包裹的依赖不随根 npm install 安装，干净环境需先自装
+    if (!existsSync(join(pkgDir, 'node_modules'))) {
+      console.log(`\n=== ${name}（workspace 外，安装依赖）===`);
+      execSync('npm install --legacy-peer-deps --no-audit --no-fund', { cwd: pkgDir, stdio: 'inherit', env: process.env });
+    }
     console.log(`\n=== ${name}（workspace 外，子目录构建）===`);
     execSync('npm run build', { cwd: pkgDir, stdio: 'inherit', env: process.env });
   }

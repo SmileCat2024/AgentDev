@@ -1,0 +1,92 @@
+{
+  "name": "@sliverp/qqbot",
+  "version": "1.5.5",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./standalone": {
+      "types": "./dist/standalone.d.ts",
+      "default": "./dist/standalone.js"
+    }
+  },
+  "bin": {
+    "qqbot": "./bin/qqbot-cli.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "src",
+    "skills",
+    "index.ts",
+    "standalone.ts",
+    "tsconfig.json",
+    "openclaw.plugin.json",
+    "clawdbot.plugin.json",
+    "moltbot.plugin.json"
+  ],
+  "clawdbot": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "moltbot": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "demo:standalone": "npm run build && node dist/src/demo-standalone.js",
+    "test": "bash tests/run-tests.sh",
+    "test:local": "bash tests/e2e.sh",
+    "prepack": "npm install --omit=dev"
+  },
+  "dependencies": {
+    "mpg123-decoder": "^1.0.3",
+    "silk-wasm": "^3.7.1",
+    "ws": "^8.18.0"
+  },
+  "bundledDependencies": [
+    "mpg123-decoder",
+    "silk-wasm",
+    "ws"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "clawdbot": "*",
+    "moltbot": "*",
+    "openclaw": "*"
+  },
+  "peerDependenciesMeta": {
+    "clawdbot": {
+      "optional": true
+    },
+    "moltbot": {
+      "optional": true
+    },
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "homepage": "https://github.com/sliverp/qqbot",
+  "bundleDependencies": [
+    "mpg123-decoder",
+    "silk-wasm",
+    "ws"
+  ]
+}

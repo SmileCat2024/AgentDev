@@ -20,7 +20,7 @@
     "@agentdev/core": "^0.1.0"
   },
   "dependencies": {
-    "@sliverp/qqbot": "1.5.5"
+    "@sliverp/qqbot": "file:../../vendor/@sliverp/qqbot"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

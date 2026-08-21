@@ -1,5 +1,10 @@
 # 依赖目录
 node_modules/
+# vendor 内化依赖排除全局规则（@sliverp/qqbot 随 tgz bundled 的依赖与 dist 必须入库）
+!vendor/@sliverp/qqbot/node_modules/
+!vendor/@sliverp/qqbot/node_modules/**
+!vendor/@sliverp/qqbot/dist/
+!vendor/@sliverp/qqbot/dist/**
 
 # 编译输出目录
 dist/

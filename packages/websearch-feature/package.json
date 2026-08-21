@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/websearch-feature",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Web search and content fetching feature for AgentDev",
   "type": "module",
   "main": "dist/index.js",

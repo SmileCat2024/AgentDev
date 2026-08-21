@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/rokid-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "rokid-bot feature for AgentDev — bridge to Rokid glasses via WebSocket",
   "type": "module",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/tts-feature",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Text-to-Speech feature for AgentDev - 使用小米 Mimo TTS API 将文本转换为语音并播放",
   "type": "module",
   "main": "dist/index.js",

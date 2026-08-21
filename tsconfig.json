@@ -1,29 +1,5 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
-  },
-  "include": ["src/**/*"],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "examples",
-    "src/**/*.test.ts",
-    "src/**/__tests__/**",
-    "src/test/**",
-    "src/features/*/test/**",
-    "vitest.config.ts"
-  ]
+  "files": [],
+  "include": [],
+  "exclude": ["node_modules", "dist", "packages/*/dist", "coverage"]
 }

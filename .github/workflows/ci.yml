@@ -46,6 +46,26 @@ jobs:
       - name: Lint
         run: npm run lint
 
+  core-discipline:
+    name: Core Discipline (lockstep + deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Check lockstep versions
+        run: npm run check:versions
+
+      - name: Assert core dependency discipline
+        run: npm run check:core-deps
+
   test:
     name: Test & Coverage
     runs-on: ubuntu-latest

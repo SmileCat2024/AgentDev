@@ -72,7 +72,7 @@ export default tseslint.config(
   // workspaceDir 参数获取工作目录。构造函数中的 || process.cwd() 回退
   // 属于可接受的防御性默认值（onInitiate 会覆盖），设为 warn 而非 error。
   {
-    files: ['src/features/**/*.ts', 'src/agents/**/*.ts'],
+    files: ['packages/core/src/features/**/*.ts', 'packages/core/src/agents/**/*.ts'],
     rules: {
       'no-restricted-syntax': [
         'warn',
@@ -94,7 +94,8 @@ export default tseslint.config(
       'node_modules/',
       '.agentdev/',
       'packages/*/dist/',
-      'src/core/viewer-html.ts',
+      'packages/*/coverage/',
+      'packages/viewer/src/viewer-html/',
       'vitest.config.ts',
       'scripts/',
       'eslint.config.mjs',

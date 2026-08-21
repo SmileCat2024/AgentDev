@@ -120,8 +120,7 @@ export class ExampleFeature implements AgentFeature {
    * 获取模板名称列表（统一打包方案）
    */
   getTemplateNames(): string[] {
-    // 两个别名指向同一个模板文件
-    return ['example-tool', 'example_tool'];
+    return ['example-tool'];
   }
 
   getContextInjectors(): Map<string | RegExp, ContextInjector> {

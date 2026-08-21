@@ -190,9 +190,6 @@ export class ShellFeature implements AgentFeature {
   getTemplateNames(): string[] {
     return [
       'bash',
-      'safe_trash_delete',
-      'safe_trash_list',
-      'safe_trash_restore',
       'trash-delete',
       'trash-list',
       'trash-restore',

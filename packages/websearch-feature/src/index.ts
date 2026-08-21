@@ -134,7 +134,7 @@ export class WebSearchFeature implements AgentFeature {
    * 获取模板名称列表（统一打包方案）
    */
   getTemplateNames(): string[] {
-    // web-fetch 和 web_fetch 是别名，crawl4ai 是独立模板
-    return ['web-fetch', 'web_fetch', 'crawl4ai'];
+    // web_fetch 工具的 render 引用 web-fetch 模板（蛇形是工具名，非模板名）
+    return ['web-fetch', 'crawl4ai'];
   }
 }

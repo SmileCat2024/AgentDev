@@ -2320,10 +2320,25 @@ class ViewerWorker {
       // 1. 外部 npm 包（包括 scope 包）
       if (packageName.startsWith('@')) {
         // scoped package: @scope/name
+        // 两种可能布局：
+        //  - 单 feature 独立包：dist/templates/{templateFile}
+        //  - 多 feature 框架包（@agentdev/core）：dist/features/{feature}/{template}
+        //    template 形如 `opencode-basic/read.render.js`，需拆出 feature 段后拼接
+        const templateWithFeature = templateFile.split('/');
         searchPaths.push(
+          // 独立包布局
           join(projectRoot, 'node_modules', packageName, 'dist', 'templates', templateFile),
           join(projectRoot, 'node_modules', packageName, 'dist', 'templates', templateFileTs),
         );
+        if (templateWithFeature.length === 2) {
+          const [featureName, innerTemplate] = templateWithFeature;
+          const innerTemplateTs = innerTemplate.replace('.render.js', '.render.ts');
+          // 框架包布局
+          searchPaths.push(
+            join(projectRoot, 'node_modules', packageName, 'dist', 'features', featureName, 'templates', innerTemplate),
+            join(projectRoot, 'node_modules', packageName, 'dist', 'features', featureName, 'templates', innerTemplateTs),
+          );
+        }
       } else if (packageName === 'agentdev') {
         // 2. 框架内置 Feature（agentdev 包）
         // 需要从模板名推断 feature 名称

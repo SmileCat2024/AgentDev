@@ -655,14 +655,18 @@ class AgentBase {
         const templateNames = feature.getTemplateNames();
 
         if (pkgInfo && templateNames.length > 0) {
+          // 判别该 feature 的模板在包内的实际布局，以决定 URL 是否带 feature 段：
+          // - 单 feature 独立包（@agentdev/shell-feature 等）：模板在 <root>/dist/templates/
+          // - 多 feature 框架包（@agentdev/core）：模板在 <root>/dist/features/<feature>/templates/
+          const hasFeatureSubdir = existsSync(
+            join(pkgInfo.root, 'dist', 'features', feature.name, 'templates')
+          );
           for (const templateName of templateNames) {
-            // 构建统一的 URL 格式
-            // 独立 npm 包（@agentdev/*）不包含 feature.name，因为一个包只有一个 feature
-            // 内置 feature 使用 /template/{packageName}/{featureName}/{templateName}.render.js
-            const isStandalonePackage = pkgInfo.name.startsWith('@agentdev/') && pkgInfo.name !== 'agentdev';
-            const url = isStandalonePackage
-              ? `/template/${pkgInfo.name}/${templateName}.render.js`
-              : `/template/${pkgInfo.name}/${feature.name}/${templateName}.render.js`;
+            // 独立包：/template/{packageName}/{templateName}.render.js
+            // 框架包：/template/{packageName}/{featureName}/{templateName}.render.js
+            const url = hasFeatureSubdir
+              ? `/template/${pkgInfo.name}/${feature.name}/${templateName}.render.js`
+              : `/template/${pkgInfo.name}/${templateName}.render.js`;
             featureTemplates[templateName] = url;
           }
         }

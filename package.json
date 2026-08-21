@@ -9,7 +9,7 @@
     "!packages/qqbot-feature"
   ],
   "scripts": {
-    "build": "npm run build -w @agentdev/core && npm run build -w @agentdev/llm -w @agentdev/viewer -w @agentdev/mcp -w @agentdev/create-feature && npm run build -w @agentdev/audio-feedback-feature -w @agentdev/audit-feature -w @agentdev/feishu-bot -w @agentdev/image-reader-feature -w @agentdev/memory-feature -w @agentdev/plugin-compat-feature -w @agentdev/qqbot-feature -w @agentdev/rokid-bot -w @agentdev/shell-feature -w @agentdev/tts-feature -w @agentdev/visual-feature -w @agentdev/websearch-feature -w @agentdev/wecom-bot -w @agentdev/weixin-bot",
+    "build": "node scripts/build-all.mjs",
     "dev": "npm run dev -w @agentdev/core",
     "test": "npm test --workspaces --if-present",
     "test:ci": "npm test --workspaces --if-present",

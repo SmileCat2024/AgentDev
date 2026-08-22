@@ -258,6 +258,67 @@ describe('WorkThreadBoard', () => {
     await expect(() => board.resume(t4.threadId)).rejects.toMatchObject({ code: 'board_not_resumable' });
   });
 
+  it('waiting_input is host-seeded only: event translation never produces it', async () => {
+    const { core, board } = makeBoardFixtures(root);
+    await core.start({ sessionRef: { agentId: 'wi-a', sessionId: 'wi-s1' } });
+    const emit = (event: Record<string, unknown>) =>
+      board.recordRuntimeEvent({ agentId: 'wi-a', sessionId: 'wi-s1', runtimeInstanceId: 'rt-1', event });
+
+    // 全部受支持事件类型穷举：翻译目标态只能是 running / idle / failed 或不转换，
+    // 任何事件都不产生 waiting_input（预留态唯一写入路径是 setStatus）
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ type: 'turn.started', turn: 1 }, 'running'],
+      [{ type: 'item.started', item: { id: 'i1' } }, 'running'],
+      [{ type: 'item.completed', item: { id: 'i1' } }, 'running'],
+      [{ type: 'turn.cancelled', turn: 1 }, 'running'],
+      [{ type: 'turn.completed', turn: 1 }, 'idle'],
+      [{ type: 'turn.failed', turn: 2, error: { message: 'x' } }, 'failed'],
+    ];
+    for (const [event, expected] of cases) {
+      const res = await emit(event);
+      expect(res.applied).toBe(true);
+      expect(res.state?.status, `after ${event.type}`).toBe(expected);
+    }
+  });
+
+  it('seeded waiting_input converges coherently on subsequent runtime events', async () => {
+    // 播种后三条收敛路径都必须自洽：不抛 invalid_board_transition、不卡死在预留态
+    const paths: Array<[Record<string, unknown>, string]> = [
+      [{ type: 'turn.started', turn: 1 }, 'running'],
+      [{ type: 'turn.completed', turn: 1 }, 'idle'],
+      [{ type: 'turn.failed', turn: 1, error: { message: 'x' } }, 'failed'],
+    ];
+    for (let k = 0; k < paths.length; k++) {
+      const [event, expected] = paths[k];
+      const { core, board } = makeBoardFixtures(root);
+      const wt = await core.start({ sessionRef: { agentId: 'wi-b', sessionId: `wi-conv-${k}` } });
+      const seeded = await board.setStatus(wt.threadId, 'waiting_input');
+      expect(seeded.status).toBe('waiting_input');
+      expect(seeded.lastLifecycleEvent?.type).toBe('status_seeded');
+
+      const res = await board.recordRuntimeEvent({
+        agentId: 'wi-b', sessionId: `wi-conv-${k}`, runtimeInstanceId: 'rt-1', event,
+      });
+      expect(res.applied, `seeded + ${event.type}`).toBe(true);
+      expect(res.state?.status, `seeded + ${event.type}`).toBe(expected);
+    }
+  });
+
+  it('setStatus seeds waiting_input from idle and mid-turn running', async () => {
+    const { core, board } = makeBoardFixtures(root);
+
+    // idle 途中播种
+    const t1 = await core.start({ sessionRef: { agentId: 'wi-c', sessionId: 'wi-seed-1' } });
+    expect((await board.setStatus(t1.threadId, 'waiting_input')).status).toBe('waiting_input');
+
+    // running 途中播种（宿主真实场景：turn 进行中前端转入等待人工输入），turn 正常完成后收敛回 idle
+    const t2 = await core.start({ sessionRef: { agentId: 'wi-c', sessionId: 'wi-seed-2' } });
+    await board.recordRuntimeEvent({ agentId: 'wi-c', sessionId: 'wi-seed-2', event: { type: 'turn.started', turn: 1 } });
+    expect((await board.setStatus(t2.threadId, 'waiting_input')).status).toBe('waiting_input');
+    const done = await board.recordRuntimeEvent({ agentId: 'wi-c', sessionId: 'wi-seed-2', event: { type: 'turn.completed', turn: 1 } });
+    expect(done.state?.status).toBe('idle');
+  });
+
   it('closed thread rejects runtime events (board terminal)', async () => {
     const { core, board } = makeBoardFixtures(root);
     const wt = await core.start({ sessionRef: { agentId: 'a', sessionId: 'cl-b1' } });

@@ -89,6 +89,14 @@ export type { WithImagesResult } from './core/tool-result-images.js';
 
 // 配置
 export { loadConfig, loadConfigSync, listConfigs } from './core/config.js';
+// Feature 配置队列解析（merge 与 provenance 的唯一权威实现，纯函数）
+export { resolveFeatureConfig } from './core/feature-config.js';
+export type {
+  FeatureConfig,
+  ConfigProvenanceEntry,
+  ConfigWarning,
+  ResolvedFeatureConfig,
+} from './core/feature-config.js';
 export { getDebugCapabilities } from './core/debug-capabilities.js';
 export { getClawRuntimeUrl, resolveDebugTransportMode } from './core/debug-transport.js';
 export type { CustomHeaderEntry } from './core/config.js';

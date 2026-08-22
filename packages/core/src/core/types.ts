@@ -216,7 +216,6 @@ export interface NotificationStateResponse {
 
 export interface AgentLogsResponse {
   scope: 'current' | 'all';
-  currentAgentId: string | null;
   selectedAgentId: string | null;
   total: number;
   logs: DebugLogEntry[];
@@ -735,7 +734,6 @@ export type DebugHubIPCMessage =
   | UpdateTodoPlanMsg
   | PushMessagesMsg
   | RegisterToolsMsg
-  | SetCurrentAgentMsg
   | UnregisterAgentMsg
   | PushNotificationMsg
   | RequestInputMsg
@@ -787,20 +785,12 @@ export interface PushMessagesMsg {
 }
 
 /**
- * 注册 Agent 工具
- */
+  * 注册 Agent 工具
+  */
 export interface RegisterToolsMsg {
   type: 'register-tools';
   agentId: string;
   tools: Tool[];
-}
-
-/**
- * 切换当前选中的 Agent
- */
-export interface SetCurrentAgentMsg {
-  type: 'set-current-agent';
-  agentId: string;
 }
 
 /**
@@ -949,7 +939,6 @@ export interface UserInputResponse {
  */
 export type WorkerIPCMessage =
   | ReadyMsg
-  | AgentSwitchedMsg
   | InputResponseMsg;
 
 /**
@@ -957,14 +946,6 @@ export type WorkerIPCMessage =
  */
 export interface ReadyMsg {
   type: 'ready';
-}
-
-/**
- * Agent 切换确认
- */
-export interface AgentSwitchedMsg {
-  type: 'agent-switched';
-  agentId: string;
 }
 
 // ========== 上下文管理类型 ==========

@@ -28,8 +28,6 @@ export interface DebuggerAgentDetails extends DebuggerAgentSummary {
 export interface DebuggerLogQuery {
   scope?: 'current' | 'all';
   agentId?: string | null;
-  currentAgentId?: string | null;
-  selectedAgentId?: string | null;
   level?: string;
   namespace?: string;
   feature?: string;
@@ -44,7 +42,6 @@ export interface DebuggerLogQuery {
 export interface DebuggerMCPDataSource {
   listAgents(): DebuggerAgentSummary[];
   getAgent(agentId: string): DebuggerAgentDetails | undefined;
-  getCurrentAgentId(): string | null;
   getHooks(agentId: string): HookInspectorSnapshot | undefined;
   queryLogs(query: DebuggerLogQuery): AgentLogsResponse;
 }
@@ -55,12 +52,8 @@ export const DEBUGGER_MCP_TOOL_DEFINITIONS = [
     description: 'List all debugger-visible agents and basic session status.',
   },
   {
-    name: 'get_current_agent',
-    description: 'Get the currently selected agent in the debugger.',
-  },
-  {
     name: 'get_agent',
-    description: 'Get a single agent by id. Supports "current" and "self".',
+    description: 'Get a single agent by id. Supports "self".',
   },
   {
     name: 'get_hooks',
@@ -76,10 +69,6 @@ export const DEBUGGER_MCP_RESOURCE_DEFINITIONS = [
   {
     uri: 'debug://agents',
     description: 'All visible debugger agents.',
-  },
-  {
-    uri: 'debug://agents/current',
-    description: 'Currently selected agent in the debugger.',
   },
   {
     uri: 'debug://agents/{agentId}',
@@ -191,35 +180,22 @@ export class DebuggerMCPServer {
       return createTextResult(jsonText({ agents }), { agents });
     });
 
-    server.registerTool('get_current_agent', {
-      title: 'Get Current Agent',
-      description: 'Get the currently selected agent in the debugger.',
-      inputSchema: z.object({}).optional(),
-    }, async () => {
-      const currentAgentId = this.dataSource.getCurrentAgentId();
-      const agent = currentAgentId ? this.dataSource.getAgent(currentAgentId) : undefined;
-      return createTextResult(jsonText({ currentAgentId, agent: agent || null }), {
-        currentAgentId,
-        agent: agent || null,
-      });
-    });
-
     server.registerTool('get_agent', {
       title: 'Get Agent',
-      description: 'Get a single agent by id. Supports "current" and "self".',
+      description: 'Get a single agent by id. Supports "self".',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID, "current", or "self". Defaults to current.'),
+        agentId: z.string().optional().describe('Agent ID or "self" (resolves to the caller agent). Explicit ID is expected.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
       }),
     }, async ({ agentId, callerAgentId }) => {
       const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId);
       const agent = resolvedAgentId ? this.dataSource.getAgent(resolvedAgentId) : undefined;
       return createTextResult(jsonText({
-        requestedAgentId: agentId || 'current',
+        requestedAgentId: agentId ?? null,
         resolvedAgentId,
         agent: agent || null,
       }), {
-        requestedAgentId: agentId || 'current',
+        requestedAgentId: agentId ?? null,
         resolvedAgentId,
         agent: agent || null,
       });
@@ -229,18 +205,18 @@ export class DebuggerMCPServer {
       title: 'Get Hooks',
       description: 'Get the hook inspector snapshot for an agent.',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID, "current", or "self". Defaults to current.'),
+        agentId: z.string().optional().describe('Agent ID or "self" (resolves to the caller agent). Explicit ID is expected.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
       }),
     }, async ({ agentId, callerAgentId }) => {
       const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId);
       const hooks = resolvedAgentId ? this.dataSource.getHooks(resolvedAgentId) : undefined;
       return createTextResult(jsonText({
-        requestedAgentId: agentId || 'current',
+        requestedAgentId: agentId ?? null,
         resolvedAgentId,
         hooks: hooks || { lifecycleOrder: [], features: [], hooks: [] },
       }), {
-        requestedAgentId: agentId || 'current',
+        requestedAgentId: agentId ?? null,
         resolvedAgentId,
         hooks: hooks || { lifecycleOrder: [], features: [], hooks: [] },
       });
@@ -250,9 +226,9 @@ export class DebuggerMCPServer {
       title: 'Query Logs',
       description: 'Query structured logs. Use filters to narrow results; unfiltered queries are auto-truncated with guidance to refine.',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID, "current", or "self". Omit for current.'),
+        agentId: z.string().optional().describe('Agent ID or "self" (resolves to the caller agent). Omit with scope=all to query every agent.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
-        scope: z.enum(['current', 'all']).optional().describe('Scope: "current" or "all". Use filters with "all".'),
+        scope: z.enum(['current', 'all']).optional().describe('Scope: "current" (single agent, requires agentId) or "all".'),
         level: z.string().optional().describe('Exact log level filter, for example "error" or "warn".'),
         namespace: z.string().optional().describe('Substring match on the log namespace.'),
         feature: z.string().optional().describe('Exact feature name filter.'),
@@ -266,9 +242,7 @@ export class DebuggerMCPServer {
     }, async (args) => {
       const resolvedAgentId = this.resolveAgentRef(args.agentId, args.callerAgentId);
       const scope = args.scope === 'all' ? 'all' : 'current';
-      const queryAgentId = args.agentId && args.agentId !== 'current'
-        ? resolvedAgentId || undefined
-        : undefined;
+      const queryAgentId = resolvedAgentId || undefined;
       const result = this.dataSource.queryLogs({
         scope,
         agentId: queryAgentId,
@@ -284,7 +258,7 @@ export class DebuggerMCPServer {
       });
       const payload = {
         ...result,
-        requestedAgentId: args.agentId || 'current',
+        requestedAgentId: args.agentId ?? null,
         resolvedAgentId,
       };
       const text = result.truncation?.truncated
@@ -312,22 +286,6 @@ export class DebuggerMCPServer {
           uri: 'debug://agents',
           mimeType: 'application/json',
           text: jsonText({ agents }),
-        }],
-      };
-    });
-
-    server.registerResource('current-agent', 'debug://agents/current', {
-      title: 'Current Agent',
-      description: 'Currently selected agent in the debugger.',
-      mimeType: 'application/json',
-    }, async () => {
-      const currentAgentId = this.dataSource.getCurrentAgentId();
-      const agent = currentAgentId ? this.dataSource.getAgent(currentAgentId) : undefined;
-      return {
-        contents: [{
-          uri: 'debug://agents/current',
-          mimeType: 'application/json',
-          text: jsonText({ currentAgentId, agent: agent || null }),
         }],
       };
     });
@@ -383,7 +341,7 @@ export class DebuggerMCPServer {
       title: 'Analyze Errors',
       description: 'Summarize recent error logs for an agent and suggest likely causes.',
       argsSchema: {
-        agentId: z.string().optional().describe('Agent ID, "current", or "self". Defaults to current.'),
+        agentId: z.string().optional().describe('Agent ID. Use list_agents to discover IDs.'),
       },
     }, async ({ agentId }) => {
       const resolvedAgentId = this.resolvePromptAgent(agentId);
@@ -404,7 +362,7 @@ export class DebuggerMCPServer {
               'Analyze the recent debugger errors for this agent.',
               'Focus on root cause, repeated failure patterns, and concrete next checks.',
               '',
-              `Requested agent: ${agentId || 'current'}`,
+              `Requested agent: ${agentId || 'none'}`,
               `Resolved agent: ${resolvedAgentId || 'none'}`,
               '',
               'Agent snapshot:',
@@ -422,7 +380,7 @@ export class DebuggerMCPServer {
       title: 'Review Hooks',
       description: 'Review an agent hook snapshot and identify ordering or binding issues.',
       argsSchema: {
-        agentId: z.string().optional().describe('Agent ID, "current", or "self". Defaults to current.'),
+        agentId: z.string().optional().describe('Agent ID. Use list_agents to discover IDs.'),
       },
     }, async ({ agentId }) => {
       const resolvedAgentId = this.resolvePromptAgent(agentId);
@@ -438,7 +396,7 @@ export class DebuggerMCPServer {
               'Review this debugger hook snapshot.',
               'Look for missing hooks, ordering surprises, disabled features, and likely wiring mistakes.',
               '',
-              `Requested agent: ${agentId || 'current'}`,
+              `Requested agent: ${agentId || 'none'}`,
               `Resolved agent: ${resolvedAgentId || 'none'}`,
               '',
               'Agent snapshot:',
@@ -456,7 +414,7 @@ export class DebuggerMCPServer {
       title: 'Diagnose Agent',
       description: 'Produce a high-level diagnosis from the current agent snapshot, hooks, and recent warnings/errors.',
       argsSchema: {
-        agentId: z.string().optional().describe('Agent ID, "current", or "self". Defaults to current.'),
+        agentId: z.string().optional().describe('Agent ID. Use list_agents to discover IDs.'),
       },
     }, async ({ agentId }) => {
       const resolvedAgentId = this.resolvePromptAgent(agentId);
@@ -477,7 +435,7 @@ export class DebuggerMCPServer {
               'Diagnose this agent using the debugger snapshot.',
               'Summarize health, likely bottlenecks, suspicious hook/tool wiring, and the next debugging steps.',
               '',
-              `Requested agent: ${agentId || 'current'}`,
+              `Requested agent: ${agentId || 'none'}`,
               `Resolved agent: ${resolvedAgentId || 'none'}`,
               '',
               'Agent snapshot:',
@@ -495,26 +453,34 @@ export class DebuggerMCPServer {
     });
   }
 
+  /**
+   * 解析 agent 引用。'self' 解析为 callerAgentId；'current' 伪 ID 已随服务端
+   * current 语义移除，显式报错引导调用方传显式 ID；缺省返回 null（由调用方决定
+   * 如何呈现"未指定"）。
+   */
   private resolvePromptAgent(agentId: string | undefined): string | null {
-    if (!agentId || agentId === 'current' || agentId === 'self') {
-      return this.dataSource.getCurrentAgentId();
+    if (agentId === 'current') {
+      throw new Error("the 'current' pseudo-id was removed; pass an explicit agentId or 'self'");
     }
-    return agentId;
+    if (agentId === 'self') {
+      return null;
+    }
+    return agentId || null;
   }
 
   private resolveAgentRef(
     requestedAgentId: string | undefined,
     callerAgentId: string | undefined
   ): string | null {
-    if (!requestedAgentId || requestedAgentId === 'current') {
-      return this.dataSource.getCurrentAgentId();
+    if (requestedAgentId === 'current') {
+      throw new Error("the 'current' pseudo-id was removed; pass an explicit agentId or 'self'");
     }
 
     if (requestedAgentId === 'self') {
-      return callerAgentId || this.dataSource.getCurrentAgentId();
+      return callerAgentId || null;
     }
 
-    return requestedAgentId;
+    return requestedAgentId || null;
   }
 
   private stringVar(value: unknown): string | undefined {
@@ -557,7 +523,7 @@ export function createDebuggerAgentDetails(
 
 export function filterDebuggerLogs(
   logs: DebugLogEntry[],
-  query: Omit<DebuggerLogQuery, 'scope' | 'currentAgentId' | 'selectedAgentId'> & { limit?: number; offset?: number }
+  query: Omit<DebuggerLogQuery, 'scope'> & { limit?: number; offset?: number }
 ): DebugLogEntry[] {
   let filtered = logs;
 

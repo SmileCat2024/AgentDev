@@ -117,14 +117,6 @@ export class ClawDebugClient {
     });
   }
 
-  async selectAgent(agentId: string): Promise<void> {
-    const sessionId = await this.requireSessionId(agentId);
-    await this.requestJson('/api/agents/current', {
-      method: 'PUT',
-      body: JSON.stringify({ agentId: sessionId }),
-    });
-  }
-
   async pushMessages(agentId: string, messages: Message[]): Promise<void> {
     await this.pushEvent(agentId, 'message', { messages });
   }

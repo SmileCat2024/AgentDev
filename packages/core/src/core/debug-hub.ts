@@ -59,7 +59,6 @@ export class DebugHub {
 
   // ========== 状态 ==========
   private agents: Map<string, AgentData> = new Map();
-  private currentAgentId: string | null = null;
   private nextId: number = 1;
   private readonly processId: string;  // 进程唯一标识
 
@@ -403,11 +402,6 @@ export class DebugHub {
         this.agentInputPolicy.set(id, inputPolicy);
       }
 
-      // 首个注册的 Agent 自动成为当前 Agent
-      if (this.agents.size === 1) {
-        this.currentAgentId = id;
-      }
-
       // 通知 Worker
       if (this.transportMode === 'claw') {
         void this.clawClient?.registerAgent({
@@ -463,52 +457,7 @@ export class DebugHub {
         this.sendToWorker({ type: 'unregister-agent', agentId });
       }
       console.log(`[DebugHub] Agent 已注销: ${agentId}`);
-
-      // 如果注销的是当前 Agent，切换到另一个
-      if (this.currentAgentId === agentId) {
-        const remaining = Array.from(this.agents.keys());
-        this.currentAgentId = remaining.length > 0 ? remaining[0] : null;
-        if (this.currentAgentId) {
-          if (this.transportMode === 'claw') {
-            void this.clawClient?.selectAgent(this.currentAgentId).catch(error => {
-              console.error(`[DebugHub] Claw selectAgent 失败: ${(error as Error).message}`);
-            });
-          } else if (this.transportMode === 'viewer-worker') {
-            this.sendToWorker({
-              type: 'set-current-agent',
-              agentId: this.currentAgentId,
-            });
-          }
-        }
-      }
     }
-  }
-
-  /**
-   * 切换当前选中的 Agent
-   * @param agentId Agent ID
-   * @returns 是否成功
-   */
-  selectAgent(agentId: string): boolean {
-    if (!this.agents.has(agentId)) {
-      return false;
-    }
-    this.currentAgentId = agentId;
-    if (this.transportMode === 'claw') {
-      void this.clawClient?.selectAgent(agentId).catch(error => {
-        console.error(`[DebugHub] Claw selectAgent 失败: ${(error as Error).message}`);
-      });
-      console.log(`[DebugHub] 当前 Agent 已切换: ${agentId}`);
-      return true;
-    }
-    if (this.transportMode === 'viewer-worker') {
-      this.sendToWorker({
-        type: 'set-current-agent',
-        agentId,
-      });
-    }
-    console.log(`[DebugHub] 当前 Agent 已切换: ${agentId}`);
-    return true;
   }
 
   /**
@@ -601,13 +550,6 @@ export class DebugHub {
    */
   getAgentList(): AgentInfo[] {
     return Array.from(this.agents.values()).map(v => v.info);
-  }
-
-  /**
-   * 获取当前选中的 Agent ID
-   */
-  getCurrentAgentId(): string | null {
-    return this.currentAgentId;
   }
 
   isAgentRegistered(agentId: string): boolean {
@@ -817,14 +759,6 @@ export class DebugHub {
         // 关键：重新注册所有 Agent（用于重连后恢复状态）
         this.reregisterAllAgents();
 
-        // 设置当前 Agent
-        if (this.currentAgentId) {
-          this.sendToWorker({
-            type: 'set-current-agent',
-            agentId: this.currentAgentId,
-          });
-        }
-
         resolve();
       });
 
@@ -872,10 +806,6 @@ export class DebugHub {
    */
   private handleWorkerMessage(msg: any): void {
     switch (msg.type) {
-      case 'agent-switched':
-        console.log(`[DebugHub] 当前 Agent 已切换: ${msg.agentId}`);
-        break;
-
       // 处理用户输入响应
       case 'input-response': {
         if (this.pendingInputRequests.has(msg.requestId)) {

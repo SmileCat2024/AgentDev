@@ -136,10 +136,11 @@ describe('Debugger MCP', () => {
     const tools = await client.listTools();
     expect(tools.tools.some(tool => tool.name === 'query_logs')).toBe(true);
     expect(tools.tools.some(tool => tool.name === 'get_hooks')).toBe(true);
+    expect(tools.tools.some(tool => tool.name === 'get_current_agent')).toBe(false);
 
     const resources = await client.listResources();
     expect(resources.resources.some(r => r.uri === 'debug://agents')).toBe(true);
-    expect(resources.resources.some(r => r.uri === 'debug://agents/current')).toBe(true);
+    expect(resources.resources.some(r => r.uri === 'debug://agents/current')).toBe(false);
 
     const resourceTemplates = await client.listResourceTemplates();
     expect(resourceTemplates.resourceTemplates.some(r => r.uriTemplate === 'debug://agents/{agentId}')).toBe(true);
@@ -148,18 +149,19 @@ describe('Debugger MCP', () => {
     expect(prompts.prompts.some(p => p.name === 'diagnose_agent')).toBe(true);
   });
 
-  it('should return current agent in resource', async () => {
-    const resource = await client.readResource({ uri: 'debug://agents/current' });
-    const text = resource.contents[0] && 'text' in resource.contents[0]
-      ? (resource.contents[0] as any).text
-      : undefined;
-    expect(text).toContain('DebuggerTestAgent');
+  it('should reject the removed current pseudo-id with guidance', async () => {
+    const result = await client.callTool({
+      name: 'get_agent',
+      arguments: { agentId: 'current' },
+    });
+
+    expect((result as any).isError).toBe(true);
   });
 
   it('should query logs with filters', async () => {
     const result = await client.callTool({
       name: 'query_logs',
-      arguments: { level: 'error', feature: 'shell', limit: 10 },
+      arguments: { agentId: 'agent-test-1', level: 'error', feature: 'shell', limit: 10 },
     });
     const payload = getStructuredToolPayload(result);
 
@@ -172,7 +174,7 @@ describe('Debugger MCP', () => {
   it('should cap unbounded query and report truncation', async () => {
     const result = await client.callTool({
       name: 'query_logs',
-      arguments: {},
+      arguments: { scope: 'all' },
     });
     const payload = getStructuredToolPayload(result);
 

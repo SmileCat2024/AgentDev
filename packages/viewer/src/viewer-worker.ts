@@ -43,16 +43,12 @@ class ViewerWorker {
   // 多 Agent 会话存储
   private agentSessions: Map<string, AgentSession> = new Map();
 
-  // 当前选中的 Agent ID
-  private currentAgentId: string | null = null;
-
   // Feature 模板路径映射（agentId -> 模板名 -> URL）
   private featureTemplateMap: Map<string, Record<string, string>> = new Map();
 
   private readonly debuggerMcp = new DebuggerMCPServer({
     listAgents: () => this.listAgentSummaries(),
     getAgent: (agentId: string) => this.getAgentDetails(agentId),
-    getCurrentAgentId: () => this.currentAgentId,
     getHooks: (agentId: string) => this.agentSessions.get(agentId)?.hookInspector,
     queryLogs: (query: DebuggerLogQuery) => this.queryLogs(query),
   });
@@ -234,11 +230,6 @@ class ViewerWorker {
       case 'register-tools':
         this.handleRegisterTools(msg);
         break;
-      case 'set-current-agent':
-        this.handleSetCurrentAgent(msg);
-        // 发送确认
-        socket.write(JSON.stringify({ type: 'agent-switched', agentId: msg.agentId }) + '\n');
-        break;
       case 'unregister-agent':
         this.handleUnregisterAgent(msg);
         break;
@@ -335,18 +326,6 @@ class ViewerWorker {
     // GET /api/agents - Agent 列表
     if (url === '/api/agents' && req.method === 'GET') {
       this.handleGetAgents(req, res);
-      return;
-    }
-
-    // GET /api/agents/current - 当前 Agent
-    if (url === '/api/agents/current' && req.method === 'GET') {
-      this.handleGetCurrentAgent(req, res);
-      return;
-    }
-
-    // PUT /api/agents/current - 切换当前 Agent
-    if (url === '/api/agents/current' && req.method === 'PUT') {
-      this.handleSetCurrentAgentHttp(req, res);
       return;
     }
 
@@ -471,28 +450,6 @@ class ViewerWorker {
       return;
     }
 
-    // 兼容端点：/api/messages → 当前 Agent 的消息
-    if (url === '/api/messages' && req.method === 'GET') {
-      if (this.currentAgentId) {
-        this.handleGetAgentMessages(req, res, this.currentAgentId);
-      } else {
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify([]));
-      }
-      return;
-    }
-
-    // 兼容端点：/api/tools → 当前 Agent 的工具
-    if (url === '/api/tools' && req.method === 'GET') {
-      if (this.currentAgentId) {
-        this.handleGetAgentTools(req, res, this.currentAgentId);
-      } else {
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify([]));
-      }
-      return;
-    }
-
     res.writeHead(404);
     res.end('API Not Found');
   }
@@ -510,86 +467,32 @@ class ViewerWorker {
       messageCount: session.messages.length,
       connected: this.isSessionConnected(session),
       inputAccepted: session.inputPolicy !== 'none',
+      // 活跃输入租约标志：前端用它做焦点恢复（inputRequest 优先）
+      pendingInputCount: session.inputLease ? 1 : 0,
     }));
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       agents,
-      currentAgentId: this.currentAgentId,
     }));
-  }
-
-  /**
-   * GET /api/agents/current - 获取当前 Agent
-   */
-  private handleGetCurrentAgent(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.currentAgentId) {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'No current agent' }));
-      return;
-    }
-
-    const session = this.agentSessions.get(this.currentAgentId);
-    if (!session) {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Agent not found' }));
-      return;
-    }
-
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({
-      id: session.id,
-      name: session.name,
-      createdAt: session.createdAt,
-    }));
-  }
-
-  /**
-   * PUT /api/agents/current - 切换当前 Agent
-   */
-  public handleSetCurrentAgentHttp(req: IncomingMessage, res: ServerResponse): void {
-    let body = '';
-    req.setEncoding('utf8');
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const data = JSON.parse(body);
-        const agentId = data.agentId;
-
-        if (!this.agentSessions.has(agentId)) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Agent not found' }));
-          return;
-        }
-
-        this.currentAgentId = agentId;
-        this.updateSessionActivity(agentId);
-
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ success: true, agentId }));
-
-        // 通知主进程
-        if (process.send) {
-          process.send({ type: 'agent-switched', agentId });
-        }
-      } catch (e) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: 'Invalid JSON' }));
-      }
-    });
   }
 
   /**
    * GET /api/templates/feature - 获取 Feature 模板映射
    */
   public handleGetFeatureTemplates(req: IncomingMessage, res: ServerResponse, searchParams?: URLSearchParams): void {
-    // 确定目标 agentId：优先用 query 参数，其次用 currentAgentId
-    const targetAgentId = searchParams?.get('agentId') || this.currentAgentId;
+    // 目标 agentId 必须显式指定（焦点语义已前端化，服务端不再有"当前 Agent"）
+    const targetAgentId = searchParams?.get('agentId') || null;
+    if (!targetAgentId) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'agentId query parameter is required' }));
+      return;
+    }
 
     // 获取目标 Agent 的项目根目录和模板映射
-    const session = targetAgentId ? this.agentSessions.get(targetAgentId) : undefined;
+    const session = this.agentSessions.get(targetAgentId);
     const projectRoot = session?.projectRoot;
-    const templates = targetAgentId ? this.featureTemplateMap.get(targetAgentId) : undefined;
+    const templates = this.featureTemplateMap.get(targetAgentId);
 
     if (!templates || Object.keys(templates).length === 0) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -597,13 +500,13 @@ class ViewerWorker {
       return;
     }
 
-    // 将绝对路径转换为 HTTP URL
+    // 将绝对路径转换为 HTTP URL（携带 ?agent= 编码，静态 handler 据此解析 projectRoot）
     const featureTemplateMapForFrontend: Record<string, string> = {};
     for (const [templateName, absolutePath] of Object.entries(templates)) {
       const normalizedPath = absolutePath.replace(/\\/g, '/');
       const url = this.templatePathToUrl(normalizedPath, projectRoot);
       if (url) {
-        featureTemplateMapForFrontend[templateName] = url;
+        featureTemplateMapForFrontend[templateName] = `${url}?agent=${encodeURIComponent(targetAgentId)}`;
       }
     }
 
@@ -966,17 +869,10 @@ class ViewerWorker {
     this.agentSessions.delete(agentId);
     console.log(`[Viewer Worker] 已删除断开的 Agent 会话: ${agentId}`);
 
-    if (this.currentAgentId === agentId) {
-      const remaining = Array.from(this.agentSessions.values());
-      const nextActive = remaining.find(candidate => this.isSessionConnected(candidate)) || remaining[0];
-      this.currentAgentId = nextActive?.id || null;
-    }
-
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       success: true,
       agentId,
-      currentAgentId: this.currentAgentId,
     }));
   }
 
@@ -1463,18 +1359,10 @@ class ViewerWorker {
         timestamp: activeInputRequest.timestamp,
       };
 
-      // 如果有活跃输入请求，自动切换到该 Agent（确保前端能看到输入框）
-      this.currentAgentId = agentId;
-
-      console.log(`[Viewer Worker] 恢复活跃输入请求: ${activeInputRequest.requestId}，切换到 Agent: ${agentId}`);
+      console.log(`[Viewer Worker] 恢复活跃输入请求: ${activeInputRequest.requestId}，Agent: ${agentId}`);
     } else {
       // 注册快照是完整事实来源；没有 lease 就不能保留旧连接的输入卡。
       delete session.inputLease;
-    }
-
-    // 首个 Agent 自动成为当前（如果没有活跃输入请求的情况）
-    if (this.agentSessions.size === 1 && !activeInputRequest) {
-      this.currentAgentId = agentId;
     }
 
     console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})${clientId ? ` [client: ${clientId}]` : ''}`);
@@ -1761,18 +1649,6 @@ class ViewerWorker {
   }
 
   /**
-   * 处理切换当前 Agent（IPC 消息）
-   */
-  public handleSetCurrentAgent(msg: any): void {
-    const { agentId } = msg;
-    if (this.agentSessions.has(agentId)) {
-      this.currentAgentId = agentId;
-      this.updateSessionActivity(agentId);
-      console.log(`[Viewer Worker] 当前 Agent 已切换: ${agentId}`);
-    }
-  }
-
-  /**
    * 处理注销 Agent
    */
   public handleUnregisterAgent(msg: any): void {
@@ -1780,12 +1656,6 @@ class ViewerWorker {
     this.agentSessions.delete(agentId);
     this.clearFeatureTemplates(agentId);
     console.log(`[Viewer Worker] Agent 已注销: ${agentId}`);
-
-    // 如果注销的是当前 Agent，切换到另一个
-    if (this.currentAgentId === agentId) {
-      const remaining = Array.from(this.agentSessions.keys());
-      this.currentAgentId = remaining.length > 0 ? remaining[0] : null;
-    }
   }
 
   /**
@@ -2018,7 +1888,7 @@ class ViewerWorker {
 
   private queryLogs(query: DebuggerLogQuery) {
     const scope: 'current' | 'all' = query.scope === 'all' ? 'all' : 'current';
-    const selectedAgentId = query.agentId || this.currentAgentId;
+    const selectedAgentId = query.agentId || null;
     const requestedOffset = typeof query.offset === 'number' ? query.offset : 0;
     const hasExplicitLimit = typeof query.limit === 'number';
     const isUnboundedQuery = !hasExplicitLimit
@@ -2040,8 +1910,7 @@ class ViewerWorker {
         }
       }
     } else {
-      const effectiveAgentId = selectedAgentId || this.currentAgentId;
-      const session = effectiveAgentId ? this.agentSessions.get(effectiveAgentId) : undefined;
+      const session = selectedAgentId ? this.agentSessions.get(selectedAgentId) : undefined;
       logs = session ? session.logs.map((entry) => this.withSessionLogContext(entry, session)) : [];
     }
 
@@ -2079,7 +1948,6 @@ class ViewerWorker {
 
     return {
       scope,
-      currentAgentId: this.currentAgentId,
       selectedAgentId,
       total,
       logs: paged,
@@ -2208,10 +2076,48 @@ class ViewerWorker {
   }
 
   /**
+   * 从请求 query 中解析 agent 上下文（?agent=<agentId>）。
+   * 模板 URL 由 handleGetFeatureTemplates 生成时编码，闭环保证；
+   * 路由分发传入的是 pathname，query 需从 req.url 重新解析。
+   */
+  private extractAgentIdFromRequest(req: IncomingMessage): string | null {
+    const raw = req.url || '';
+    const idx = raw.indexOf('?agent=');
+    if (idx < 0) return null;
+    const value = raw.substring(idx + 7);
+    const ampIdx = value.indexOf('&');
+    return decodeURIComponent(ampIdx >= 0 ? value.substring(0, ampIdx) : value);
+  }
+
+  /**
+   * 解析请求对应的 projectRoot：优先 ?agent= 指定 agent 的根目录，
+   * 无 agent 上下文时回退 process.cwd()（共享静态资源）。
+   */
+  private resolveAgentProjectRoot(req: IncomingMessage): string {
+    const agentId = this.extractAgentIdFromRequest(req);
+    const session = agentId ? this.agentSessions.get(agentId) : undefined;
+    return session?.projectRoot || process.cwd();
+  }
+
+  /**
+   * 全部已注册 agent 的 projectRoot（保持注册顺序、去重），
+   * 用于 chunk 类共享资源无 agent 上下文时的兜底查找。
+   */
+  private collectProjectRoots(): string[] {
+    const roots: string[] = [];
+    for (const session of this.agentSessions.values()) {
+      if (session.projectRoot && !roots.includes(session.projectRoot)) {
+        roots.push(session.projectRoot);
+      }
+    }
+    return roots;
+  }
+
+  /**
    * 处理静态工具渲染文件
    * 直接返回已编译的 .js 文件内容
    * 路径规则：/tools/{category}/{filename}.js → dist/tools/{category}/{filename}.render.js
-   * 
+   *
    * 支持从多个位置查找：
    * 1. 项目根目录 dist/tools/
    * 2. npm 包 node_modules/agentdev/dist/tools/
@@ -2221,9 +2127,8 @@ class ViewerWorker {
       // 解析路径: /tools/system/shell.render.js
       const relativePath = url.substring('/tools/'.length);
 
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
+      // 解析 agent 上下文对应的 projectRoot（?agent= 编码，见 extractAgentIdFromRequest）
+      const projectRoot = this.resolveAgentProjectRoot(req);
 
       // 计算可能的文件路径
       const searchPaths = [
@@ -2320,9 +2225,8 @@ class ViewerWorker {
       }
       const templateFileTs = templateFile.replace('.render.js', '.render.ts');
 
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
+      // 解析 agent 上下文对应的 projectRoot（?agent= 编码，见 extractAgentIdFromRequest）
+      const projectRoot = this.resolveAgentProjectRoot(req);
 
       // 构建可能的文件路径（按优先级）
       const searchPaths: string[] = [];
@@ -2419,9 +2323,8 @@ class ViewerWorker {
       // 同时尝试 .js 和 .ts 扩展名
       const templateFileTs = templateFile.replace('.render.js', '.render.ts');
 
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
+      // 解析 agent 上下文对应的 projectRoot（?agent= 编码，见 extractAgentIdFromRequest）
+      const projectRoot = this.resolveAgentProjectRoot(req);
 
       // 构建可能的文件路径（按优先级）
       const searchPaths = [
@@ -2456,9 +2359,8 @@ class ViewerWorker {
    */
   public handleNpmFeatureTemplate(req: IncomingMessage, res: ServerResponse, url: string): void {
     try {
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
+      // 解析 agent 上下文对应的 projectRoot（?agent= 编码，见 extractAgentIdFromRequest）
+      const projectRoot = this.resolveAgentProjectRoot(req);
 
       let templatePath: string;
 
@@ -2525,20 +2427,29 @@ class ViewerWorker {
    */
   public handleStaticAsset(req: IncomingMessage, res: ServerResponse, url: string): void {
     try {
-      // 获取当前 Agent 的项目根目录
-      const session = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = session?.projectRoot || process.cwd();
-
       // 提取文件名（去掉开头的 /）
       const fileName = url.substring(1); // 如 /chunk-xxx.js -> chunk-xxx.js
 
-      // 构建搜索路径
-      const searchPaths = [
-        // npm 包模式：node_modules/agentdev/dist/{file}
-        join(projectRoot, 'node_modules', 'agentdev', 'dist', fileName),
-        // 开发模式：项目根目录 dist/{file}
-        join(projectRoot, 'dist', fileName),
-      ];
+      // chunk 类共享资源：优先 ?agent= 指定 root，再按注册顺序遍历全部 agent 的
+      // projectRoot 兜底（chunk 文件名含内容 hash，不同版本不重名，按文件名查找不会错配）
+      const searchRoots = [this.resolveAgentProjectRoot(req), ...this.collectProjectRoots()];
+
+      // 构建搜索路径（去重）
+      const searchPaths: string[] = [];
+      const seen = new Set<string>();
+      for (const root of searchRoots) {
+        for (const candidate of [
+          // npm 包模式：node_modules/agentdev/dist/{file}
+          join(root, 'node_modules', 'agentdev', 'dist', fileName),
+          // 开发模式：项目根目录 dist/{file}
+          join(root, 'dist', fileName),
+        ]) {
+          if (!seen.has(candidate)) {
+            seen.add(candidate);
+            searchPaths.push(candidate);
+          }
+        }
+      }
 
       // 按顺序尝试每个路径
       this.tryReadFile(searchPaths, 0, res, url);
@@ -2608,9 +2519,6 @@ if (isMainModule(import.meta.url)) {
         break;
       case 'register-tools':
         worker.handleRegisterTools(msg);
-        break;
-      case 'set-current-agent':
-        worker.handleSetCurrentAgent(msg);
         break;
       case 'unregister-agent':
         worker.handleUnregisterAgent(msg);

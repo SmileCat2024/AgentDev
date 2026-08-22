@@ -1,18 +1,43 @@
 export const VIEWER_JS_AGENTS = `
+    // 焦点自持：服务端不再有"当前 Agent"概念，焦点由本页持有并持久化。
+    // 恢复优先级：活跃输入请求 > localStorage 记忆 > 第一个 connected agent。
+    function restoreFocus(agents) {
+      const pendingInput = agents.find(a => a.connected !== false && a.pendingInputCount > 0);
+      if (pendingInput) return pendingInput.id;
+      try {
+        const remembered = localStorage.getItem('agentdev-last-focused-agent');
+        if (remembered && agents.some(a => a.id === remembered)) return remembered;
+      } catch (e) { /* localStorage 不可用时跳过记忆 */ }
+      const connected = agents.find(a => a.connected !== false);
+      if (connected) return connected.id;
+      return agents.length > 0 ? agents[0].id : null;
+    }
+
+    function persistFocus(agentId) {
+      try {
+        if (agentId) localStorage.setItem('agentdev-last-focused-agent', agentId);
+        else localStorage.removeItem('agentdev-last-focused-agent');
+      } catch (e) { /* ignore */ }
+    }
+
     async function loadAgents() {
       try {
         const res = await fetch('/api/agents');
         const data = await res.json();
         allAgents = data.agents || [];
 
+        // 焦点为空时初始化（页面首次加载 / 全部 agent 被清空后重新出现）
+        if (!currentAgentId && allAgents.length > 0) {
+          const restored = restoreFocus(allAgents);
+          if (restored) {
+            currentAgentId = restored;
+            setFollowLatest(true);
+            await loadAgentData(currentAgentId);
+          }
+        }
+
         renderAgentList();
         renderFeaturePanel();
-
-        if (data.currentAgentId && data.currentAgentId !== currentAgentId) {
-          currentAgentId = data.currentAgentId;
-          setFollowLatest(true);
-          await loadAgentData(currentAgentId);
-        }
       } catch (e) {
         console.error('Failed to load agents:', e);
       }
@@ -56,21 +81,11 @@ export const VIEWER_JS_AGENTS = `
     window.switchAgent = async (newAgentId) => {
       if (newAgentId === currentAgentId) return;
       closeAgentContextMenu();
-      try {
-        const res = await fetch('/api/agents/current', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agentId: newAgentId })
-        });
-        if (res.ok) {
-          currentAgentId = newAgentId;
-          setFollowLatest(true);
-          await loadAgentData(newAgentId);
-          renderAgentList(); // Update active state
-        }
-      } catch (e) {
-        console.error('Failed to switch agent:', e);
-      }
+      currentAgentId = newAgentId;   // 焦点前端自持，直接切换
+      persistFocus(newAgentId);
+      setFollowLatest(true);
+      await loadAgentData(newAgentId);
+      renderAgentList(); // Update active state
     };
 
     window.openAgentActions = (event, agentId) => {
@@ -105,18 +120,22 @@ export const VIEWER_JS_AGENTS = `
         closeAgentContextMenu();
         await loadAgents();
 
-        if (data.currentAgentId && data.currentAgentId !== currentAgentId) {
-          currentAgentId = data.currentAgentId;
-          await loadAgentData(currentAgentId);
-        } else if (!data.currentAgentId) {
-          currentAgentId = null;
-          currentMessages = [];
-          setCurrentLogs([]);
-          setCurrentHookInspector({ lifecycleOrder: [], features: [], hooks: [] });
-          setCurrentOverviewSnapshot(getEmptyOverviewSnapshot());
-          container.innerHTML = getEmptyStateHtml();
-          setFollowLatest(true);
-          currentAgentTitle.textContent = t('page_title');
+        // 被删的是焦点 agent：按焦点恢复算法自选下一个
+        if (contextMenuAgentId === currentAgentId) {
+          currentAgentId = allAgents.length > 0 ? restoreFocus(allAgents) : null;
+          if (currentAgentId) {
+            persistFocus(currentAgentId);
+            await loadAgentData(currentAgentId);
+          } else {
+            persistFocus(null);
+            currentMessages = [];
+            setCurrentLogs([]);
+            setCurrentHookInspector({ lifecycleOrder: [], features: [], hooks: [] });
+            setCurrentOverviewSnapshot(getEmptyOverviewSnapshot());
+            container.innerHTML = getEmptyStateHtml();
+            setFollowLatest(true);
+            currentAgentTitle.textContent = t('page_title');
+          }
         }
       } catch (e) {
         closeAgentContextMenu();

@@ -6,22 +6,26 @@
  * 全部 404，前端静默降级为 JSON 渲染。构建与服务端均无报错，只有
  * 浏览器里能观察到——这类"声明 ↔ 文件"失联必须由测试当场拦住。
  *
- * 断言三层契约：
+ * 断言契约（2026-08-22 mount 协议收敛后）：
  * 1. 每个 feature 的 getTemplateNames() 声明的模板，必须真实存在于该包
  *    dist 的两种布局之一：
  *      - 框架包布局：dist/features/<feature>/templates/<name>.render.js
  *      - 独立包布局：dist/templates/<name>.render.js
  * 2. 反向：dist 布局目录里的每个 .render.js 都被某个声明覆盖（防死文件）。
  * 3. 模板产物内的相对 import（tsup 共享 chunk 等）目标必须存在于磁盘。
- *    模板 URL 采用镜像布局（URL 路径 = 包内磁盘路径），磁盘可达即 URL 可达；
+ *    mount 协议下 URL = /tpl/{mountId}/{rel}，mount root 到文件是字节级
+ *    镜像（URL 路径层级 = 磁盘路径层级），磁盘可达即 URL 可达；
  *    若此断言失败，浏览器加载模板时其依赖链会静默 404（2026-08-21 二次事故）。
+ * 4. 注册载荷闭环：模拟 agent.ts 的 mount 探测逻辑构造
+ *    { mounts, entries }，每个 entry 的 join(mounts[mount], rel) 必须存在
+ *    ——这是 viewer-worker 注册时验证的同款检查，从生成端提前锁定。
  *
  * 运行前提：包已构建（npm run build）。CI 中测试排在 build 之后。
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, dirname, relative } from 'node:path';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -129,3 +133,54 @@ for (const [featureName, FeatureClass] of BUILTIN_FEATURES) {
     }
   });
 }
+
+test('注册载荷闭环：模拟 agent.ts mount 探测，每个 entry 在其 mount root 下真实存在', () => {
+  // 复刻 src/core/agent.ts withViewer() 的载荷构造逻辑（探测顺序 / realpath /
+  // rel 分隔符归一），agent.ts 变更时需同步此处。
+  const templateMounts: string[] = [];
+  const templateEntries: Record<string, { mount: number; rel: string }> = {};
+
+  for (const [featureName, FeatureClass] of BUILTIN_FEATURES) {
+    const feature: any = new FeatureClass();
+    const pkgInfo = feature.getPackageInfo();
+    const templateNames: string[] = feature.getTemplateNames();
+    if (!pkgInfo || templateNames.length === 0) continue;
+
+    let mountRoot: string;
+    try {
+      mountRoot = realpathSync(pkgInfo.root);
+    } catch {
+      continue;
+    }
+    let mountIndex = templateMounts.indexOf(mountRoot);
+    if (mountIndex < 0) {
+      templateMounts.push(mountRoot);
+      mountIndex = templateMounts.length - 1;
+    }
+
+    for (const templateName of templateNames) {
+      const candidates = [
+        join(pkgInfo.root, 'dist', 'templates', `${templateName}.render.js`),
+        join(pkgInfo.root, 'dist', 'features', featureName, 'templates', `${templateName}.render.js`),
+      ];
+      const templatePath = candidates.find((p) => existsSync(p));
+      if (!templatePath) continue;
+      templateEntries[templateName] = {
+        mount: mountIndex,
+        rel: relative(mountRoot, realpathSync(templatePath)).split(sep).join('/'),
+      };
+    }
+  }
+
+  assert.ok(Object.keys(templateEntries).length > 0, '注册载荷应包含至少一个模板条目');
+
+  // viewer-worker 注册时验证的同款检查：join(mounts[mount], rel) 必须命中磁盘
+  for (const [templateName, entry] of Object.entries(templateEntries)) {
+    const root = templateMounts[entry.mount];
+    const target = join(root, entry.rel);
+    assert.ok(
+      existsSync(target),
+      `模板 "${templateName}" 的注册条目不可达: mount=${root} rel=${entry.rel}`
+    );
+  }
+});

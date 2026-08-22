@@ -82,10 +82,16 @@ export const WORKTHREAD_BOARD_OPEN_STATUSES: ReadonlySet<WorkThreadBoardStatus> 
 ]);
 
 // 执行状态机转换矩阵（看板层契约）。closed 为终态。
+//
+// `waiting_input` 是宿主播种的预留状态，事件翻译（recordRuntimeEvent）永不产生它：
+// turn.started → running、turn.completed → idle、turn.failed → failed，
+// item.* / turn.cancelled 不做状态转换。宿主经 setStatus 显式置位（如前端等待
+// 人工输入）；其出边（→ running / idle / failed / closed）保证播种后后续 runtime
+// 事件（含终态失败）仍能自洽收敛，不会卡死在预留态或丢失终态事件。
 const BOARD_TRANSITIONS: Record<WorkThreadBoardStatus, ReadonlySet<WorkThreadBoardStatus>> = {
   idle: new Set(['running', 'waiting_input', 'failed', 'closed']),
   running: new Set(['idle', 'waiting_input', 'failed', 'closed']),
-  waiting_input: new Set(['running', 'idle', 'closed']),
+  waiting_input: new Set(['running', 'idle', 'failed', 'closed']),
   failed: new Set(['running', 'idle', 'closed']),
   closed: new Set(),
 };
@@ -259,6 +265,9 @@ export class WorkThreadBoard {
    *
    * 通过 core.findThreadByHeadSession 定位 workThreadId（只读锚点定位），
    * 只在看板域写状态与 executionEvents；closed 线程拒绝迟到观测事件。
+   *
+   * 事件翻译只产生 running / idle / failed 三个目标态，永不产生 waiting_input
+   * （该状态由宿主经 setStatus 显式播种，见 BOARD_TRANSITIONS 注释）。
    *
    * @returns {{applied: boolean, reason?: string, thread?: WorkThreadBoardState}}
    */

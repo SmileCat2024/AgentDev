@@ -195,10 +195,10 @@ export class TodoFeature implements AgentFeature {
     if (agentId) {
       this.debugAgentId = agentId;
     }
-    const hub = DebugHub.getInstance();
-    const targetAgentId = agentId || this.debugAgentId || hub.getCurrentAgentId();
-    if (!targetAgentId || !hub.isConnected()) return;
-    hub.updateTodoPlan(targetAgentId, this.getPlanSnapshot());
+    // 身份自持：只用显式传入或上次记住的 agentId，不依赖全局选中状态
+    const targetAgentId = agentId || this.debugAgentId;
+    if (!targetAgentId || !DebugHub.getInstance().isConnected()) return;
+    DebugHub.getInstance().updateTodoPlan(targetAgentId, this.getPlanSnapshot());
   }
 
   getHookDescription(lifecycle: string, methodName: string): string | undefined {

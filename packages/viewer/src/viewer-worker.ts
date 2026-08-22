@@ -7,8 +7,9 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
-import { unlinkSync, existsSync } from 'fs';
-import { join, normalize, isAbsolute } from 'path';
+import { unlinkSync, existsSync, readFile } from 'fs';
+import { createHash } from 'crypto';
+import { join, resolve, sep, extname } from 'path';
 import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, type ToolMetadata, getDefaultUDSPath } from '@agentdev/core';
 import {
   DebuggerMCPServer,
@@ -43,16 +44,16 @@ class ViewerWorker {
   // 多 Agent 会话存储
   private agentSessions: Map<string, AgentSession> = new Map();
 
-  // 当前选中的 Agent ID
-  private currentAgentId: string | null = null;
+  // 模板装载注册表（mountId → 装载点）。mountId 是 root 的稳定哈希，
+  // 多 agent 共享同一 root（如同一个框架包 junction）时复用同一条目。
+  private templateMounts: Map<string, { root: string; agents: Set<string> }> = new Map();
 
-  // Feature 模板路径映射（agentId -> 模板名 -> URL）
-  private featureTemplateMap: Map<string, Record<string, string>> = new Map();
+  // 每个 agent 的模板装载载荷（agentId → { mounts 根数组, entries 模板名→{mount,rel} }）
+  private templatePayloads: Map<string, { mounts: string[]; entries: Record<string, { mount: number; rel: string }> }> = new Map();
 
   private readonly debuggerMcp = new DebuggerMCPServer({
     listAgents: () => this.listAgentSummaries(),
     getAgent: (agentId: string) => this.getAgentDetails(agentId),
-    getCurrentAgentId: () => this.currentAgentId,
     getHooks: (agentId: string) => this.agentSessions.get(agentId)?.hookInspector,
     queryLogs: (query: DebuggerLogQuery) => this.queryLogs(query),
   });
@@ -234,11 +235,6 @@ class ViewerWorker {
       case 'register-tools':
         this.handleRegisterTools(msg);
         break;
-      case 'set-current-agent':
-        this.handleSetCurrentAgent(msg);
-        // 发送确认
-        socket.write(JSON.stringify({ type: 'agent-switched', agentId: msg.agentId }) + '\n');
-        break;
       case 'unregister-agent':
         this.handleUnregisterAgent(msg);
         break;
@@ -283,33 +279,11 @@ class ViewerWorker {
       return;
     }
 
-    // 静态文件：工具渲染模板
-    if (url.startsWith('/tools/')) {
-      this.handleStaticToolFile(req, res, url);
-      return;
-    }
-
-    // 统一的 Feature 模板路由（新格式：/template/{packageName}/{templateName}.render.js）
-    if (url.startsWith('/template/')) {
-      this.handleUnifiedTemplate(req, res, url);
-      return;
-    }
-
-    // Feature 工具渲染模板（旧格式，向后兼容）
-    if (url.startsWith('/features/')) {
-      this.handleFeatureTemplate(req, res, url);
-      return;
-    }
-
-    // npm 包中的 Feature 模板（旧格式，向后兼容）
-    if (url.startsWith('/npm/')) {
-      this.handleNpmFeatureTemplate(req, res, url);
-      return;
-    }
-
-    // 静态资源：chunk 文件和其他 JS/CSS 文件
-    if (/^\/(chunk-|BasicAgent-|ExplorerAgent-|notification-|resolver-|types-|index\.js).*$/.test(url)) {
-      this.handleStaticAsset(req, res, url);
+    // 模板装载资产：/tpl/{mountId}/{mount内相对路径}
+    // URL 层级与 mount root 下磁盘层级同构，模板内的相对依赖（tsup 共享
+    // chunk、sourcemap）按相同布局自然命中，无需任何布局推断。
+    if (url.startsWith('/tpl/')) {
+      this.handleTplAsset(req, res, url);
       return;
     }
 
@@ -335,18 +309,6 @@ class ViewerWorker {
     // GET /api/agents - Agent 列表
     if (url === '/api/agents' && req.method === 'GET') {
       this.handleGetAgents(req, res);
-      return;
-    }
-
-    // GET /api/agents/current - 当前 Agent
-    if (url === '/api/agents/current' && req.method === 'GET') {
-      this.handleGetCurrentAgent(req, res);
-      return;
-    }
-
-    // PUT /api/agents/current - 切换当前 Agent
-    if (url === '/api/agents/current' && req.method === 'PUT') {
-      this.handleSetCurrentAgentHttp(req, res);
       return;
     }
 
@@ -471,28 +433,6 @@ class ViewerWorker {
       return;
     }
 
-    // 兼容端点：/api/messages → 当前 Agent 的消息
-    if (url === '/api/messages' && req.method === 'GET') {
-      if (this.currentAgentId) {
-        this.handleGetAgentMessages(req, res, this.currentAgentId);
-      } else {
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify([]));
-      }
-      return;
-    }
-
-    // 兼容端点：/api/tools → 当前 Agent 的工具
-    if (url === '/api/tools' && req.method === 'GET') {
-      if (this.currentAgentId) {
-        this.handleGetAgentTools(req, res, this.currentAgentId);
-      } else {
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify([]));
-      }
-      return;
-    }
-
     res.writeHead(404);
     res.end('API Not Found');
   }
@@ -510,209 +450,48 @@ class ViewerWorker {
       messageCount: session.messages.length,
       connected: this.isSessionConnected(session),
       inputAccepted: session.inputPolicy !== 'none',
+      // 活跃输入租约标志：前端用它做焦点恢复（inputRequest 优先）
+      pendingInputCount: session.inputLease ? 1 : 0,
     }));
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       agents,
-      currentAgentId: this.currentAgentId,
     }));
-  }
-
-  /**
-   * GET /api/agents/current - 获取当前 Agent
-   */
-  private handleGetCurrentAgent(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.currentAgentId) {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'No current agent' }));
-      return;
-    }
-
-    const session = this.agentSessions.get(this.currentAgentId);
-    if (!session) {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Agent not found' }));
-      return;
-    }
-
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({
-      id: session.id,
-      name: session.name,
-      createdAt: session.createdAt,
-    }));
-  }
-
-  /**
-   * PUT /api/agents/current - 切换当前 Agent
-   */
-  public handleSetCurrentAgentHttp(req: IncomingMessage, res: ServerResponse): void {
-    let body = '';
-    req.setEncoding('utf8');
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const data = JSON.parse(body);
-        const agentId = data.agentId;
-
-        if (!this.agentSessions.has(agentId)) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: 'Agent not found' }));
-          return;
-        }
-
-        this.currentAgentId = agentId;
-        this.updateSessionActivity(agentId);
-
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ success: true, agentId }));
-
-        // 通知主进程
-        if (process.send) {
-          process.send({ type: 'agent-switched', agentId });
-        }
-      } catch (e) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: 'Invalid JSON' }));
-      }
-    });
   }
 
   /**
    * GET /api/templates/feature - 获取 Feature 模板映射
    */
   public handleGetFeatureTemplates(req: IncomingMessage, res: ServerResponse, searchParams?: URLSearchParams): void {
-    // 确定目标 agentId：优先用 query 参数，其次用 currentAgentId
-    const targetAgentId = searchParams?.get('agentId') || this.currentAgentId;
+    // 目标 agentId 必须显式指定（焦点语义已前端化，服务端不再有"当前 Agent"）
+    const targetAgentId = searchParams?.get('agentId') || null;
+    if (!targetAgentId) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'agentId query parameter is required' }));
+      return;
+    }
 
-    // 获取目标 Agent 的项目根目录和模板映射
-    const session = targetAgentId ? this.agentSessions.get(targetAgentId) : undefined;
-    const projectRoot = session?.projectRoot;
-    const templates = targetAgentId ? this.featureTemplateMap.get(targetAgentId) : undefined;
-
-    if (!templates || Object.keys(templates).length === 0) {
+    const payload = this.templatePayloads.get(targetAgentId);
+    if (!payload || Object.keys(payload.entries).length === 0) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end('{}');
       return;
     }
 
-    // 将绝对路径转换为 HTTP URL
+    // URL = /tpl/{mountId}/{rel}。mountId 由装载根目录哈希而来，与 agent 无关：
+    // 多 agent 共享同一包时浏览器复用同一份模块缓存，chunk 相对 import 也天然命中。
     const featureTemplateMapForFrontend: Record<string, string> = {};
-    for (const [templateName, absolutePath] of Object.entries(templates)) {
-      const normalizedPath = absolutePath.replace(/\\/g, '/');
-      const url = this.templatePathToUrl(normalizedPath, projectRoot);
-      if (url) {
-        featureTemplateMapForFrontend[templateName] = url;
-      }
+    for (const [templateName, entry] of Object.entries(payload.entries)) {
+      const root = payload.mounts[entry.mount];
+      if (root === undefined) continue;
+      featureTemplateMapForFrontend[templateName] = `/tpl/${ViewerWorker.mountIdForRoot(root)}/${entry.rel}`;
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(featureTemplateMapForFrontend));
   }
 
-  /**
-   * 将模板文件路径转换为 HTTP URL
-   * 支持多种来源：
-   * 1. 独立 npm 包 node_modules/@scope/package/dist/templates/xxx.render.js
-   * 2. npm 包 node_modules/agentdev/dist/features/xxx/templates/xxx.render.js
-   * 3. npm workspace 符号链接（路径是真实物理路径，但需要转换为 node_modules 路径）
-   * 4. 项目内 dist/features/xxx/templates/xxx.render.js
-   * 5. 项目内 src/features/xxx/templates/xxx.render.ts
-   * 6. 用户自定义路径
-   */
-  private templatePathToUrl(normalizedPath: string, projectRoot?: string): string | null {
-    // 如果已经是 URL 格式，直接返回
-    if (normalizedPath.startsWith('/template/') || 
-        normalizedPath.startsWith('/features/') || 
-        normalizedPath.startsWith('/npm/') ||
-        normalizedPath.startsWith('/tools/')) {
-      return normalizedPath;
-    }
-
-    // 规范化路径：统一使用 / 分隔符
-    let normalizedForMatch = normalizedPath.replace(/\\/g, '/');
-    
-    // 处理 Windows 盘符路径
-    // 格式可能是: /D:/code/... 或 D:/code/...
-    const windowsDriveMatch = normalizedForMatch.match(/^(?:\/)?([A-Za-z]):\/(.+)$/);
-    if (windowsDriveMatch) {
-      normalizedForMatch = windowsDriveMatch[2]; // 只保留盘符后的路径部分
-    }
-    
-    // 如果有项目根目录，提取相对于项目根目录的路径
-    if (projectRoot) {
-      const normalizedProjectRoot = projectRoot.replace(/\\/g, '/');
-      // 尝试匹配项目根目录（可能包含盘符）
-      const projectRootMatch = normalizedProjectRoot.match(/^(?:\/)?([A-Za-z]):\/(.+)$/);
-      if (projectRootMatch) {
-        const projectRootPath = projectRootMatch[2]; // 移除盘符后的项目根目录
-        if (normalizedForMatch.startsWith(projectRootPath + '/')) {
-          normalizedForMatch = normalizedForMatch.substring(projectRootPath.length + 1);
-        }
-      } else if (normalizedForMatch.startsWith(normalizedProjectRoot + '/')) {
-        normalizedForMatch = normalizedForMatch.substring(normalizedProjectRoot.length + 1);
-      }
-    }
-
-    // 模式 1: 独立 npm 包路径 node_modules/@scope/package/dist/templates/xxx.render.js
-    // 例如: node_modules/@agentdev/shell-feature/dist/templates/bash.render.js
-    let match = normalizedForMatch.match(/node_modules\/(@[^/]+\/[^/]+)\/dist\/templates\/(.+\.render\.js)$/);
-    if (match) {
-      const [, scopedPackageName, templateFile] = match;
-      return `/npm/${scopedPackageName}/templates/${templateFile}`;
-    }
-
-    // 模式 1b: 独立 npm 包路径（无 scope）node_modules/package/dist/templates/xxx.render.js
-    match = normalizedForMatch.match(/node_modules\/([^/@][^/]*)\/dist\/templates\/(.+\.render\.js)$/);
-    if (match) {
-      const [, packageName, templateFile] = match;
-      return `/npm/${packageName}/templates/${templateFile}`;
-    }
-
-    // 模式 2: npm 包路径 node_modules/xxx/dist/features/xxx/templates/xxx.render.js
-    match = normalizedForMatch.match(/node_modules\/([^/]+)\/dist\/features\/([^/]+)\/templates\/(.+\.render\.js)$/);
-    if (match) {
-      const [, packageName, featureName, templateFile] = match;
-      return `/npm/${packageName}/features/${featureName}/${templateFile}`;
-    }
-
-    // 模式 3: npm workspace 符号链接（检查路径是否来自 node_modules 中的符号链接目标）
-    // 例如：D:/code/AgentDev/dist/features/... 可能来自 D:/code/Project/node_modules/agentdev -> D:/code/AgentDev
-    if (projectRoot) {
-      const npmPackageUrl = this.resolveNpmWorkspacePackage(normalizedPath, projectRoot);
-      if (npmPackageUrl) {
-        return npmPackageUrl;
-      }
-    }
-
-    // 模式 4: 项目内 dist 路径（支持 Windows 盘符前缀）
-    match = normalizedForMatch.match(/dist\/features\/([^/]+)\/templates\/(.+\.render\.js)$/);
-    if (match) {
-      const [, featureName, templateFile] = match;
-      return `/features/${featureName}/${templateFile}`;
-    }
-
-    // 模式 4b: packages 目录下的独立包路径 packages/xxx/dist/templates/xxx.render.js
-    // 例如: packages/shell-feature/dist/templates/bash.render.js
-    match = normalizedForMatch.match(/packages\/([^/]+)\/dist\/templates\/(.+\.render\.js)$/);
-    if (match) {
-      const [, packageName, templateFile] = match;
-      // 将包名转换为 npm 包格式，假设是 @agentdev scope
-      return `/npm/@agentdev/${packageName}/templates/${templateFile}`;
-    }
-
-    // 模式 5: 项目内 src 路径（支持 Windows 盘符前缀）
-    match = normalizedForMatch.match(/src\/features\/([^/]+)\/templates\/(.+\.render\.(ts|js))$/);
-    if (match) {
-      const [, featureName, templateFile] = match;
-      return `/features/${featureName}/${templateFile}`;
-    }
-
-    // 无法匹配的路径，记录警告
-    console.warn(`[Viewer Worker] 无法解析模板路径: ${normalizedPath}`);
-    return null;
-  }
 
   /**
    * 解析 npm workspace 符号链接
@@ -966,17 +745,10 @@ class ViewerWorker {
     this.agentSessions.delete(agentId);
     console.log(`[Viewer Worker] 已删除断开的 Agent 会话: ${agentId}`);
 
-    if (this.currentAgentId === agentId) {
-      const remaining = Array.from(this.agentSessions.values());
-      const nextActive = remaining.find(candidate => this.isSessionConnected(candidate)) || remaining[0];
-      this.currentAgentId = nextActive?.id || null;
-    }
-
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       success: true,
       agentId,
-      currentAgentId: this.currentAgentId,
     }));
   }
 
@@ -1418,7 +1190,7 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt, projectRoot, featureTemplates, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
+    const { agentId, name, createdAt, projectRoot, templateMounts, templateEntries, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
     const session = this.getOrCreateSession(agentId, name);
 
     // 外部输入策略（'none' = 拒绝排队注入，如测试沙盒）
@@ -1436,9 +1208,48 @@ class ViewerWorker {
       session.clientId = clientId;
     }
 
-    // 收集 Feature 模板路径（按 agent 隔离）
-    if (featureTemplates && typeof featureTemplates === 'object') {
-      this.featureTemplateMap.set(agentId, featureTemplates);
+    // 收集模板装载载荷（mount 协议：mounts 为真实目录根数组，entries 为
+    // 模板名 → {mount 下标, rel 相对路径}）。协议不混版：worker 只认
+    // mount 载荷，旧版字段（URL 映射）一律无视。
+    if (Array.isArray(templateMounts) && templateEntries && typeof templateEntries === 'object') {
+      const mounts: string[] = [];
+      const entries: Record<string, { mount: number; rel: string }> = {};
+      const missing: string[] = [];
+
+      for (const root of templateMounts) {
+        if (typeof root !== 'string' || !root) continue;
+        if (!mounts.includes(root)) mounts.push(root);
+      }
+      for (const [templateName, entry] of Object.entries(templateEntries)) {
+        const root = mounts[(entry as any)?.mount];
+        const rel = (entry as any)?.rel;
+        if (typeof root !== 'string' || typeof rel !== 'string') continue;
+        // 注册时验证：装载条目在磁盘必须存在。缺失在这里显性化（warn），
+        // 而不是留到浏览器 404 后静默降级。
+        if (!existsSync(join(root, rel))) {
+          missing.push(`${templateName} -> ${join(root, rel)}`);
+          continue;
+        }
+        entries[templateName] = { mount: mounts.indexOf(root), rel };
+      }
+      if (missing.length > 0) {
+        console.warn(`[Viewer Worker] Agent ${agentId} 注册时发现 ${missing.length} 个模板装载条目缺失: ${missing.join('; ')}`);
+      }
+
+      this.templatePayloads.set(agentId, { mounts, entries });
+      for (const root of mounts) {
+        const mountId = ViewerWorker.mountIdForRoot(root);
+        let mount = this.templateMounts.get(mountId);
+        if (!mount) {
+          mount = { root, agents: new Set() };
+          this.templateMounts.set(mountId, mount);
+        } else if (mount.root !== root) {
+          // 哈希碰撞（概率可忽略）：拒绝注册该 root 并告警，不静默错配
+          console.warn(`[Viewer Worker] mountId 碰撞: ${mountId} 已绑定 ${mount.root}，拒绝 ${root}`);
+          continue;
+        }
+        mount.agents.add(agentId);
+      }
     }
 
     if (hookInspector) {
@@ -1463,18 +1274,10 @@ class ViewerWorker {
         timestamp: activeInputRequest.timestamp,
       };
 
-      // 如果有活跃输入请求，自动切换到该 Agent（确保前端能看到输入框）
-      this.currentAgentId = agentId;
-
-      console.log(`[Viewer Worker] 恢复活跃输入请求: ${activeInputRequest.requestId}，切换到 Agent: ${agentId}`);
+      console.log(`[Viewer Worker] 恢复活跃输入请求: ${activeInputRequest.requestId}，Agent: ${agentId}`);
     } else {
       // 注册快照是完整事实来源；没有 lease 就不能保留旧连接的输入卡。
       delete session.inputLease;
-    }
-
-    // 首个 Agent 自动成为当前（如果没有活跃输入请求的情况）
-    if (this.agentSessions.size === 1 && !activeInputRequest) {
-      this.currentAgentId = agentId;
     }
 
     console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})${clientId ? ` [client: ${clientId}]` : ''}`);
@@ -1508,10 +1311,17 @@ class ViewerWorker {
   }
 
   /**
-   * 清空 Feature 模板映射（当 Agent 断开连接时调用）
+   * 清空 Feature 模板装载（当 Agent 断开连接时调用）：
+   * 移除该 agent 的载荷，并对 mount 注册表做引用计数回收。
    */
   private clearFeatureTemplates(agentId: string): void {
-    this.featureTemplateMap.delete(agentId);
+    this.templatePayloads.delete(agentId);
+    for (const [mountId, mount] of this.templateMounts) {
+      mount.agents.delete(agentId);
+      if (mount.agents.size === 0) {
+        this.templateMounts.delete(mountId);
+      }
+    }
   }
 
   /**
@@ -1761,18 +1571,6 @@ class ViewerWorker {
   }
 
   /**
-   * 处理切换当前 Agent（IPC 消息）
-   */
-  public handleSetCurrentAgent(msg: any): void {
-    const { agentId } = msg;
-    if (this.agentSessions.has(agentId)) {
-      this.currentAgentId = agentId;
-      this.updateSessionActivity(agentId);
-      console.log(`[Viewer Worker] 当前 Agent 已切换: ${agentId}`);
-    }
-  }
-
-  /**
    * 处理注销 Agent
    */
   public handleUnregisterAgent(msg: any): void {
@@ -1780,12 +1578,6 @@ class ViewerWorker {
     this.agentSessions.delete(agentId);
     this.clearFeatureTemplates(agentId);
     console.log(`[Viewer Worker] Agent 已注销: ${agentId}`);
-
-    // 如果注销的是当前 Agent，切换到另一个
-    if (this.currentAgentId === agentId) {
-      const remaining = Array.from(this.agentSessions.keys());
-      this.currentAgentId = remaining.length > 0 ? remaining[0] : null;
-    }
   }
 
   /**
@@ -2018,7 +1810,7 @@ class ViewerWorker {
 
   private queryLogs(query: DebuggerLogQuery) {
     const scope: 'current' | 'all' = query.scope === 'all' ? 'all' : 'current';
-    const selectedAgentId = query.agentId || this.currentAgentId;
+    const selectedAgentId = query.agentId || null;
     const requestedOffset = typeof query.offset === 'number' ? query.offset : 0;
     const hasExplicitLimit = typeof query.limit === 'number';
     const isUnboundedQuery = !hasExplicitLimit
@@ -2040,8 +1832,7 @@ class ViewerWorker {
         }
       }
     } else {
-      const effectiveAgentId = selectedAgentId || this.currentAgentId;
-      const session = effectiveAgentId ? this.agentSessions.get(effectiveAgentId) : undefined;
+      const session = selectedAgentId ? this.agentSessions.get(selectedAgentId) : undefined;
       logs = session ? session.logs.map((entry) => this.withSessionLogContext(entry, session)) : [];
     }
 
@@ -2079,7 +1870,6 @@ class ViewerWorker {
 
     return {
       scope,
-      currentAgentId: this.currentAgentId,
       selectedAgentId,
       total,
       logs: paged,
@@ -2208,342 +1998,73 @@ class ViewerWorker {
   }
 
   /**
-   * 处理静态工具渲染文件
-   * 直接返回已编译的 .js 文件内容
-   * 路径规则：/tools/{category}/{filename}.js → dist/tools/{category}/{filename}.render.js
-   * 
-   * 支持从多个位置查找：
-   * 1. 项目根目录 dist/tools/
-   * 2. npm 包 node_modules/agentdev/dist/tools/
+   * mountId：装载根目录的稳定哈希（sha1 前 12 hex）。与 agent 无关，
+   * 同一 root 跨 agent / 跨注册复用同一 ID，浏览器模块缓存天然共享。
    */
-  public handleStaticToolFile(req: IncomingMessage, res: ServerResponse, url: string): void {
-    try {
-      // 解析路径: /tools/system/shell.render.js
-      const relativePath = url.substring('/tools/'.length);
-
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
-
-      // 计算可能的文件路径
-      const searchPaths = [
-        // 1. 项目根目录 dist/tools/
-        join(projectRoot, 'dist/tools', relativePath),
-        // 2. npm 包 node_modules/agentdev/dist/tools/
-        join(projectRoot, 'node_modules/agentdev/dist/tools', relativePath),
-      ];
-
-      // 按顺序尝试每个路径
-      this.tryReadFile(searchPaths, 0, res, url);
-    } catch (err: any) {
-      console.error('[Viewer Worker] 静态文件处理错误:', err.message);
-      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Internal server error');
-    }
+  private static mountIdForRoot(root: string): string {
+    return createHash('sha1').update(root.split('\\').join('/').toLowerCase()).digest('hex').slice(0, 12);
   }
 
   /**
-   * 尝试从多个路径读取文件
+   * /tpl/{mountId}/{rel...} — 模板装载资产服务。
+   * mount root 下的字节级镜像：模板文件、tsup 共享 chunk、sourcemap 同构命中。
+   * 唯一安全边界：resolve 后必须仍在 mount root 内（路径穿越防护）。
    */
-  private tryReadFile(paths: string[], index: number, res: ServerResponse, originalUrl: string): void {
-    if (index >= paths.length) {
-      console.error(`[Viewer Worker] 模板未找到，尝试了所有路径: ${paths.join(', ')}`);
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end(`Template not found: ${originalUrl}`);
-      return;
-    }
-
-    const currentPath = paths[index];
-    
-    import('fs').then((fs) => {
-      fs.readFile(currentPath, 'utf-8', (err: Error | null, data: string) => {
-        if (err) {
-          // 当前路径失败，尝试下一个
-          this.tryReadFile(paths, index + 1, res, originalUrl);
-          return;
-        }
-
-        // 成功读取
-        res.writeHead(200, {
-          'Content-Type': 'application/javascript; charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-        });
-        res.end(data);
-      });
-    }).catch((err) => {
-      console.error('[Viewer Worker] fs 模块加载失败:', err.message);
-      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Internal server error');
-    });
-  }
-
-  /**
-   * 处理统一的 Feature 模板路由
-   * URL 格式: /template/{packageName}/{包内相对路径}
-   *
-   * scoped npm 包采用镜像布局：URL 路径与包在 node_modules 内的磁盘路径同构，
-   * 模板文件的相对导入（tsup 共享 chunk、sourcemap）在 URL 空间按相同结构解析。
-   * 例如：
-   *   - /template/@agentdev/core/dist/features/opencode-basic/templates/read.render.js
-   *   - /template/@agentdev/core/dist/chunk-DGUM43GV.js（模板的 chunk 依赖）
-   *   - /template/@agentdev/shell-feature/dist/templates/bash.render.js
-   *
-   * 非 scoped 包保持紧凑格式（本地 Feature 按 projectRoot 布局解析）：
-   *   - /template/my-project/visual/capture.render.js
-   *     映射到: dist/templates/capture.render.js
-   *     或: dist/features/visual/templates/capture.render.js
-   */
-  public handleUnifiedTemplate(req: IncomingMessage, res: ServerResponse, url: string): void {
+  public handleTplAsset(req: IncomingMessage, res: ServerResponse, url: string): void {
     try {
-      // 解析 URL: /template/{packageName}/{包内相对路径}
-      // 支持普通包名和 scope 包名（@scope/name），路径段不限于 .render.js——
-      // 模板的相对依赖（tsup 共享 chunk、sourcemap）也经此路由加载。
-      // 例如：
-      //   - /template/agentdev/visual/capture.render.js -> packageName=agentdev, templateFile=visual/capture.render.js
-      //   - /template/@agentdev/core/dist/features/opencode-basic/templates/read.render.js
-      //   - /template/@agentdev/core/dist/chunk-XXXXXXXX.js（模板的 chunk 依赖）
-      const match = url.match(/^\/template\/((?:@[^/]+\/)?[^/]+)\/(.+)$/);
+      const match = url.match(/^\/tpl\/([0-9a-f]{12})\/(.+)$/);
       if (!match) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Invalid template path format');
+        res.end('Invalid template mount path');
+        return;
+      }
+      const [, mountId, rel] = match;
+
+      const mount = this.templateMounts.get(mountId);
+      if (!mount) {
+        console.warn(`[Viewer Worker] /tpl/ 未注册 mountId: ${mountId} (url=${url})`);
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(`Unknown template mount: ${mountId}`);
         return;
       }
 
-      const [, packageName, templateFile] = match;
-
-      // 路径穿越防护：包内相对路径不得逃逸到包目录之外
-      const relFile = normalize(templateFile);
-      if (relFile.startsWith('..') || isAbsolute(relFile)) {
+      // 路径穿越防护：解析后的绝对路径不得逃出 mount root
+      // （win32 盘符大小写不敏感，前缀比较统一小写）
+      const rootAbs = resolve(mount.root);
+      const target = resolve(rootAbs, rel);
+      const targetLower = target.toLowerCase();
+      const rootLower = rootAbs.toLowerCase();
+      if (targetLower !== rootLower && !targetLower.startsWith(rootLower + sep)) {
         res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Forbidden path');
         return;
       }
-      const templateFileTs = templateFile.replace('.render.js', '.render.ts');
 
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
-
-      // 构建可能的文件路径（按优先级）
-      const searchPaths: string[] = [];
-
-      // 1. 外部 npm 包（包括 scope 包）
-      if (packageName.startsWith('@')) {
-        // 镜像布局：/template/{pkg}/{包内相对路径} 直接映射 node_modules 下同结构文件，
-        // 模板内的相对依赖（tsup 共享 chunk、sourcemap）按相同布局自然命中
-        searchPaths.push(join(projectRoot, 'node_modules', packageName, relFile));
-        // 兼容旧紧凑格式（/{name}.render.js 或 /{feature}/{name}.render.js，不带 dist 段）
-        if (templateFile.endsWith('.render.js')) {
-          searchPaths.push(
-            join(projectRoot, 'node_modules', packageName, 'dist', 'templates', templateFile),
-          );
-          const parts = templateFile.split('/');
-          if (parts.length === 2) {
-            searchPaths.push(
-              join(projectRoot, 'node_modules', packageName, 'dist', 'features', parts[0], 'templates', parts[1]),
-            );
-          }
+      readFile(target, (err: any, data: Buffer) => {
+        if (err) {
+          console.warn(`[Viewer Worker] /tpl/ 文件缺失: ${target} (url=${url})`);
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Template asset not found');
+          return;
         }
-      } else if (packageName === 'agentdev') {
-        // 2. 框架内置 Feature（agentdev 包）
-        // 需要从模板名推断 feature 名称
-        // 例如: visual/capture.render.js -> feature=visual, template=capture.render.js
-        const templateParts = templateFile.split('/');
-        if (templateParts.length === 2) {
-          const featureName = templateParts[0];
-          const templateName = templateParts[1];
-          
-          searchPaths.push(
-            // 开发模式：项目根目录 dist/features/
-            join(projectRoot, 'dist', 'features', featureName, 'templates', templateName),
-            join(projectRoot, 'dist', 'features', featureName, 'templates', templateName.replace('.js', '.ts')),
-            // 源码模式：项目根目录 src/features/
-            join(projectRoot, 'src', 'features', featureName, 'templates', templateName.replace('.js', '.ts')),
-            // npm 包模式：node_modules/agentdev/dist/features/
-            join(projectRoot, 'node_modules', 'agentdev', 'dist', 'features', featureName, 'templates', templateName),
-          );
-        } else {
-          // 兜底：直接在 dist/templates 查找
-          searchPaths.push(
-            join(projectRoot, 'dist', 'templates', templateFile),
-            join(projectRoot, 'dist', 'templates', templateFileTs),
-          );
-        }
-      } else {
-        // 3. 用户本地 Feature（其他包名）
-        // 尝试在项目的 dist/templates 或 dist/features/*/templates 查找
-        searchPaths.push(
-          join(projectRoot, 'dist', 'templates', templateFile),
-          join(projectRoot, 'dist', 'templates', templateFileTs),
-          // 也尝试 feature 子目录
-          join(projectRoot, 'dist', 'features', templateFile),
-          join(projectRoot, 'dist', 'features', templateFileTs),
-          // 源码目录
-          join(projectRoot, 'src', 'templates', templateFileTs),
-          join(projectRoot, 'src', 'features', templateFileTs),
-        );
-      }
-
-      // 按顺序尝试每个路径
-      this.tryReadFile(searchPaths, 0, res, url);
-    } catch (err: any) {
-      console.error('[Viewer Worker] Unified template handler error:', err.message);
-      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Internal server error');
-    }
-  }
-
-  /**
-   * 处理 Feature 渲染模板文件
-   * 解析路径: /features/shell/trash-delete.render.js
-   * 
-   * 支持从多个位置查找：
-   * 1. 项目根目录 dist/features/{feature}/templates/
-   * 2. 项目根目录 src/features/{feature}/templates/
-   * 3. npm 包 node_modules/agentdev/dist/features/{feature}/templates/
-   * 
-   * 支持扩展名映射：
-   * - .js → 同时尝试 .js 和 .ts
-   */
-  public handleFeatureTemplate(req: IncomingMessage, res: ServerResponse, url: string): void {
-    try {
-      // 解析路径: /features/shell/trash-delete.render.js
-      const match = url.match(/^\/features\/([^/]+)\/(.+\.render\.js)$/);
-      if (!match) {
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Invalid feature template path');
-        return;
-      }
-
-      const [, featureName, templateFile] = match;
-      // 同时尝试 .js 和 .ts 扩展名
-      const templateFileTs = templateFile.replace('.render.js', '.render.ts');
-
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
-
-      // 构建可能的文件路径（按优先级）
-      const searchPaths = [
-        // 1. 项目根目录 dist/features/ (.js 编译后)
-        join(projectRoot, 'dist', 'features', featureName, 'templates', templateFile),
-        // 2. 项目根目录 dist/features/ (.ts 源码)
-        join(projectRoot, 'dist', 'features', featureName, 'templates', templateFileTs),
-        // 3. 项目根目录 src/features/ (.ts 源码)
-        join(projectRoot, 'src', 'features', featureName, 'templates', templateFileTs),
-        // 4. 项目根目录 src/features/ (.js 如果存在)
-        join(projectRoot, 'src', 'features', featureName, 'templates', templateFile),
-        // 5. npm 包 node_modules/agentdev/dist/features/
-        join(projectRoot, 'node_modules', 'agentdev', 'dist', 'features', featureName, 'templates', templateFile),
-      ];
-
-      // 按顺序尝试每个路径
-      this.tryReadFile(searchPaths, 0, res, url);
-    } catch (err: any) {
-      console.error('[Viewer Worker] Feature 模板处理错误:', err.message);
-      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Internal server error');
-    }
-  }
-
-  /**
-   * 处理 npm 包中的 Feature 模板
-   * 支持两种路径格式：
-   * 1. 独立包: /npm/@agentdev/shell-feature/templates/bash.render.js
-   *    映射到: node_modules/@agentdev/shell-feature/dist/templates/bash.render.js
-   * 2. 框架包: /npm/agentdev/features/shell/bash.render.js
-   *    映射到: node_modules/agentdev/dist/features/shell/templates/bash.render.js
-   */
-  public handleNpmFeatureTemplate(req: IncomingMessage, res: ServerResponse, url: string): void {
-    try {
-      // 获取当前 Agent 的项目根目录
-      const currentSession = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = currentSession?.projectRoot || process.cwd();
-
-      let templatePath: string;
-
-      // 模式 1: 独立 npm 包 /npm/@scope/package/templates/xxx.render.js
-      const scopedMatch = url.match(/^\/npm\/(@[^/]+\/[^/]+)\/templates\/(.+\.render\.js)$/);
-      if (scopedMatch) {
-        const [, scopedPackageName, templateFile] = scopedMatch;
-        // 构建路径: node_modules/@scope/package/dist/templates/{template}
-        templatePath = join(projectRoot, 'node_modules', scopedPackageName, 'dist', 'templates', templateFile);
-      } else {
-        // 模式 2: 独立 npm 包（无 scope）/npm/package/templates/xxx.render.js
-        const simpleMatch = url.match(/^\/npm\/([^/@][^/]*)\/templates\/(.+\.render\.js)$/);
-        if (simpleMatch) {
-          const [, packageName, templateFile] = simpleMatch;
-          templatePath = join(projectRoot, 'node_modules', packageName, 'dist', 'templates', templateFile);
-        } else {
-          // 模式 3: 框架包 /npm/agentdev/features/shell/bash.render.js
-          const frameworkMatch = url.match(/^\/npm\/([^/]+)\/features\/([^/]+)\/(.+\.render\.js)$/);
-          if (!frameworkMatch) {
-            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('Invalid npm feature template path');
-            return;
-          }
-          const [, packageName, featureName, templateFile] = frameworkMatch;
-          // 构建路径: node_modules/{package}/dist/features/{feature}/templates/{template}
-          templatePath = join(projectRoot, 'node_modules', packageName, 'dist', 'features', featureName, 'templates', templateFile);
-        }
-      }
-
-      // 读取文件并返回
-      import('fs').then((fs) => {
-        fs.readFile(templatePath, 'utf-8', (err: any, data: string) => {
-          if (err) {
-            console.error('[Viewer Worker] 读取 npm Feature 模板失败:', {
-              path: templatePath,
-              error: err.message
-            });
-            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end(`npm feature template not found: ${url}`);
-            return;
-          }
-
-          res.writeHead(200, {
-            'Content-Type': 'application/javascript; charset=utf-8',
-            'Access-Control-Allow-Origin': '*',
-          });
-          res.end(data);
+        const ext = extname(target).toLowerCase();
+        const contentType = ext === '.js' || ext === '.mjs'
+          ? 'application/javascript; charset=utf-8'
+          : ext === '.json' || ext === '.map'
+            ? 'application/json; charset=utf-8'
+            : ext === '.css'
+              ? 'text/css; charset=utf-8'
+              : 'application/octet-stream';
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          // 开发态（junction 指向框架仓库）dist 会在运行中重建，chunk 名随内容
+          // 变化；协商缓存保证重建后浏览器拿到新文件，同时保留 304 能力。
+          'Cache-Control': 'no-cache',
         });
-      }).catch((err) => {
-        console.error('[Viewer Worker] fs 模块加载失败:', err.message);
-        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Internal server error');
+        res.end(data);
       });
     } catch (err: any) {
-      console.error('[Viewer Worker] npm Feature 模板处理错误:', err.message);
-      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Internal server error');
-    }
-  }
-
-  /**
-   * 处理静态资源文件（chunk、js、css 等）
-   * 支持 agentdev npm 包中的共享模块
-   */
-  public handleStaticAsset(req: IncomingMessage, res: ServerResponse, url: string): void {
-    try {
-      // 获取当前 Agent 的项目根目录
-      const session = this.currentAgentId ? this.agentSessions.get(this.currentAgentId) : undefined;
-      const projectRoot = session?.projectRoot || process.cwd();
-
-      // 提取文件名（去掉开头的 /）
-      const fileName = url.substring(1); // 如 /chunk-xxx.js -> chunk-xxx.js
-
-      // 构建搜索路径
-      const searchPaths = [
-        // npm 包模式：node_modules/agentdev/dist/{file}
-        join(projectRoot, 'node_modules', 'agentdev', 'dist', fileName),
-        // 开发模式：项目根目录 dist/{file}
-        join(projectRoot, 'dist', fileName),
-      ];
-
-      // 按顺序尝试每个路径
-      this.tryReadFile(searchPaths, 0, res, url);
-    } catch (err: any) {
-      console.error('[Viewer Worker] 静态资源处理错误:', err.message);
+      console.error('[Viewer Worker] /tpl/ 处理错误:', err.message);
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Internal server error');
     }
@@ -2608,9 +2129,6 @@ if (isMainModule(import.meta.url)) {
         break;
       case 'register-tools':
         worker.handleRegisterTools(msg);
-        break;
-      case 'set-current-agent':
-        worker.handleSetCurrentAgent(msg);
         break;
       case 'unregister-agent':
         worker.handleUnregisterAgent(msg);

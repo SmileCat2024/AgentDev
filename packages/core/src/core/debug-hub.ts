@@ -100,8 +100,8 @@ export class DebugHub {
   private readonly MAX_RECONNECT_ATTEMPTS = 10;
   private readonly RECONNECT_DELAY = 2000;
 
-  // 缓存每个 Agent 的 featureTemplates（用于重连后重新注册）
-  private agentFeatureTemplates: Map<string, Record<string, string>> = new Map();
+  // 缓存每个 Agent 的模板装载载荷（mounts + entries，用于重连后重新注册）
+  private agentTemplatePayload: Map<string, { mounts: string[]; entries: Record<string, { mount: number; rel: string }> }> = new Map();
 
   // 缓存每个 Agent 的外部输入策略（用于重连后重新注册）
   private agentInputPolicy: Map<string, 'standard' | 'none'> = new Map();
@@ -357,13 +357,15 @@ export class DebugHub {
    * 注册 Agent
    * @param agent Agent 实例
    * @param name 显示名称（可选，默认使用类名）
-   * @param featureTemplates Feature 模板路径映射（可选）
+   * @param templateMounts 模板装载点（真实目录根，可选）
+   * @param templateEntries 模板名 → {mount 下标, rel 相对路径}（可选）
    * @returns 分配的 agentId
    */
   registerAgent(
     agent: Agent,
     name?: string,
-    featureTemplates?: Record<string, string>,
+    templateMounts?: string[],
+    templateEntries?: Record<string, { mount: number; rel: string }>,
     hookInspector?: HookInspectorSnapshot,
     overview?: AgentOverviewSnapshot,
     projectRoot?: string,
@@ -392,9 +394,12 @@ export class DebugHub {
 
       this.agents.set(id, { info, agent });
 
-      // 缓存 featureTemplates（用于重连后重新注册）
-      if (featureTemplates) {
-        this.agentFeatureTemplates.set(id, featureTemplates);
+      // 缓存模板装载载荷（用于重连后重新注册）
+      if (templateMounts || templateEntries) {
+        this.agentTemplatePayload.set(id, {
+          mounts: templateMounts ?? [],
+          entries: templateEntries ?? {},
+        });
       }
 
       // 缓存外部输入策略（用于重连后重新注册）
@@ -408,7 +413,8 @@ export class DebugHub {
           agentId: id,
           name: info.name,
           projectRoot: resolvedProjectRoot,
-          featureTemplates,
+          templateMounts: templateMounts ?? [],
+          templateEntries: templateEntries ?? {},
           hookInspector,
           overview,
           inputPolicy: inputPolicy || undefined,
@@ -422,7 +428,8 @@ export class DebugHub {
           name: info.name,
           createdAt: info.registeredAt,
           projectRoot: resolvedProjectRoot,
-          featureTemplates, // 传递 Feature 模板路径映射
+          templateMounts: templateMounts ?? [],
+          templateEntries: templateEntries ?? {},
           hookInspector,
           overview,
           inputPolicy: inputPolicy || undefined,
@@ -447,7 +454,7 @@ export class DebugHub {
 
     const deleted = this.agents.delete(agentId);
     if (deleted) {
-      this.agentFeatureTemplates.delete(agentId);
+      this.agentTemplatePayload.delete(agentId);
       this.agentInputPolicy.delete(agentId);
       if (this.transportMode === 'claw') {
         void this.clawClient?.unregisterAgent(agentId).catch(error => {
@@ -862,13 +869,14 @@ export class DebugHub {
         const hookInspector = (data.agent as any).buildHookInspectorSnapshot?.()
           || (data.agent as any).hookInspector;
         const overview = (data.agent as any).buildOverviewSnapshot?.();
-        const featureTemplates = this.agentFeatureTemplates.get(id) || {};
+        const templatePayload = this.agentTemplatePayload.get(id) || { mounts: [], entries: {} };
 
         void this.clawClient?.registerAgent({
           agentId: id,
           name: data.info.name,
           projectRoot: data.info.projectRoot || process.cwd(),
-          featureTemplates,
+          templateMounts: templatePayload.mounts,
+          templateEntries: templatePayload.entries,
           hookInspector,
           overview,
           inputPolicy: this.agentInputPolicy.get(id) || undefined,
@@ -908,8 +916,8 @@ export class DebugHub {
         || (data.agent as any).hookInspector;
       const overview = (data.agent as any).buildOverviewSnapshot?.();
 
-      // 获取缓存的 featureTemplates
-      const featureTemplates = this.agentFeatureTemplates.get(id) || {};
+      // 获取缓存的模板装载载荷
+      const templatePayload = this.agentTemplatePayload.get(id) || { mounts: [], entries: {} };
 
       // 获取活跃的输入请求（用于恢复输入框）
       const activeInputRequest = this.activeInputRequests.get(id);
@@ -923,7 +931,8 @@ export class DebugHub {
         name: data.info.name,
         createdAt: data.info.registeredAt,
         projectRoot: data.info.projectRoot || process.cwd(),
-        featureTemplates,
+        templateMounts: templatePayload.mounts,
+        templateEntries: templatePayload.entries,
         hookInspector,
         overview,
         activeInputRequest, // 携带活跃输入请求

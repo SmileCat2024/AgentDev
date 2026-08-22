@@ -38,7 +38,8 @@ export interface RegisterClawAgentInput {
   agentId: string;
   name: string;
   projectRoot?: string;
-  featureTemplates?: Record<string, string>;
+  templateMounts?: string[];
+  templateEntries?: Record<string, { mount: number; rel: string }>;
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
   inputPolicy?: 'standard' | 'none';
@@ -77,7 +78,8 @@ export class ClawDebugClient {
         metadata: {
           adapter: 'agentdev-debug-hub',
           agentId: input.agentId,
-          featureTemplates: input.featureTemplates ?? {},
+          templateMounts: input.templateMounts ?? [],
+          templateEntries: input.templateEntries ?? {},
         },
         state: {
           hookInspector: input.hookInspector ?? null,

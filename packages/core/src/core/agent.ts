@@ -55,7 +55,7 @@ import { DataSourceRegistry } from '../template/data-source.js';
 import { TemplateLoader } from '../template/loader.js';
 import { discover } from '../skills/loader.js';
 import type { SkillMetadata } from '../skills/types.js';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { dirname, join, relative, sep } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -645,37 +645,44 @@ class AgentBase {
     // the same DebugHub connection barrier; start() is idempotent once ready.
     await this.debugHub.start(port, openBrowser);
 
-    // 收集 Feature 模板信息（使用新的统一方式）
-    const featureTemplates: Record<string, string> = {};
+    // 收集 Feature 模板装载信息（mount 协议：注册事实，不推导 URL）
+    // mount root 来自 feature.getPackageInfo()（唯一权威来源），realpath 解析
+    // junction / 符号链接；模板文件按包内两种布局探测（dist/templates 与
+    // dist/features/<feature>/templates）。声明了但磁盘不存在的模板不上报，
+    // 由 viewer-worker 在注册时做最终存在性验证并告警。
+    const templateMounts: string[] = [];
+    const templateEntries: Record<string, { mount: number; rel: string }> = {};
 
     for (const feature of this.features.values()) {
-      // 使用 getPackageInfo() + getTemplateNames() 方式
-      if (feature.getPackageInfo && feature.getTemplateNames) {
-        const pkgInfo = feature.getPackageInfo();
-        const templateNames = feature.getTemplateNames();
+      if (!feature.getPackageInfo || !feature.getTemplateNames) continue;
+      const pkgInfo = feature.getPackageInfo();
+      const templateNames = feature.getTemplateNames();
+      if (!pkgInfo || templateNames.length === 0) continue;
 
-        if (pkgInfo && templateNames.length > 0) {
-          if (pkgInfo.name.startsWith('@')) {
-            // npm 包（scoped）：URL 镜像包内磁盘路径 /template/{pkg}/{包内相对路径}。
-            // 模板产物可能包含相对导入（tsup 共享 chunk），只有 URL 空间与磁盘布局
-            // 同构，浏览器按 URL 解析出的相对依赖才能命中。
-            for (const templateName of templateNames) {
-              const candidates = [
-                join(pkgInfo.root, 'dist', 'templates', `${templateName}.render.js`),
-                join(pkgInfo.root, 'dist', 'features', feature.name, 'templates', `${templateName}.render.js`),
-              ];
-              const templatePath = candidates.find((p) => existsSync(p));
-              if (!templatePath) continue; // 声明了但磁盘不存在的模板不上报，避免 404 映射
-              const relPath = relative(pkgInfo.root, templatePath).split(sep).join('/');
-              featureTemplates[templateName] = `/template/${pkgInfo.name}/${relPath}`;
-            }
-          } else {
-            // 用户本地 Feature：保持紧凑格式，由 viewer-worker 按 projectRoot 布局解析
-            for (const templateName of templateNames) {
-              featureTemplates[templateName] = `/template/${pkgInfo.name}/${feature.name}/${templateName}.render.js`;
-            }
-          }
-        }
+      let mountRoot: string;
+      try {
+        mountRoot = realpathSync(pkgInfo.root);
+      } catch {
+        continue; // 包根不可达（异常装配），该 feature 的模板整体不上报
+      }
+      let mountIndex = templateMounts.indexOf(mountRoot);
+      if (mountIndex < 0) {
+        templateMounts.push(mountRoot);
+        mountIndex = templateMounts.length - 1;
+      }
+
+      for (const templateName of templateNames) {
+        const candidates = [
+          join(pkgInfo.root, 'dist', 'templates', `${templateName}.render.js`),
+          join(pkgInfo.root, 'dist', 'features', feature.name, 'templates', `${templateName}.render.js`),
+        ];
+        const templatePath = candidates.find((p) => existsSync(p));
+        if (!templatePath) continue;
+        // rel 基于 realpath 后的 mount root 计算，与 worker 服务端的磁盘读取同源
+        templateEntries[templateName] = {
+          mount: mountIndex,
+          rel: relative(mountRoot, realpathSync(templatePath)).split(sep).join('/'),
+        };
       }
     }
 
@@ -683,7 +690,8 @@ class AgentBase {
     const registeredAgentId = this.debugHub.registerAgent(
       this,
       name || this.constructor.name,
-      featureTemplates,
+      templateMounts,
+      templateEntries,
       this.buildHookInspectorSnapshot(),
       this.buildOverviewSnapshot(),
       options?.projectRoot ?? this.config.projectRoot,

@@ -749,8 +749,18 @@ export interface RegisterAgentMsg {
   agentId: string;
   name: string;
   createdAt: number;
-  projectRoot?: string; // 项目根目录，用于模板文件加载
-  featureTemplates?: Record<string, string>; // Feature 模板路径映射
+  projectRoot?: string; // 项目根目录
+  /**
+   * 模板装载点：Feature 所属包的真实目录根（junction 已解析）。
+   * Agent 侧是唯一知道权威 mount root 的一层（来自 feature.getPackageInfo()），
+   * 注册只传事实，不做 URL 推导；URL 由 viewer-worker 分配。
+   */
+  templateMounts?: string[];
+  /**
+   * 模板名 → 装载条目。mount 为 templateMounts 数组下标，
+   * rel 为该 mount root 下的相对路径（POSIX 分隔符）。
+   */
+  templateEntries?: Record<string, { mount: number; rel: string }>;
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
   activeInputRequest?: ActiveInputRequest; // 活跃的输入请求（用于重连后恢复）

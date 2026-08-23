@@ -48,8 +48,8 @@ function runCleanupFns(fns: Array<() => void>): void {
  * 使工具执行立即结束，不等实际工具完成。
  */
 class ToolInterruptError extends Error {
-  constructor() {
-    super('Interrupted by user');
+  constructor(public readonly reason: TerminationSource = 'user') {
+    super(reason === 'timeout' ? 'Tool timed out' : 'Interrupted by user');
     this.name = 'AbortError';
   }
 }
@@ -272,6 +272,10 @@ export class ToolExecutor {
       // 一次性资源清理（超时计时器等）；正常路径在 race finally 中清理，
       // 异常路径由 catch 兜底，避免计时器泄漏挂住进程退出。
       const cleanupFns: Array<() => void> = [];
+      // 当前 call 的唯一终止事实。所有终止路径（包括 settle 超窗）都消费它，
+      // 禁止在下游按异常类型猜测 timeout/user。
+      let terminationReason: TerminationSource | null = null;
+      let terminationDeadline: number | null = null;
 
       try {
         // 执行工具
@@ -372,7 +376,6 @@ export class ToolExecutor {
         } else {
           // ---------- 声明 timeout：合并 signal + settle 窗口 ----------
           const externalSignal = this.parentAgent._abortController?.signal;
-          let terminationReason: TerminationSource | null = null;
 
           // per-call 合并 AbortController：外部用户中断与框架超时汇入同一个
           // 合并 signal 传给工具；终止原因由执行器记录，经 termination()
@@ -383,6 +386,7 @@ export class ToolExecutor {
             const onExternalAbort = () => {
               if (terminationReason === null) {
                 terminationReason = 'user';
+                terminationDeadline = Date.now() + TOOL_TERMINATION_SETTLE_MS;
               }
               mergedController.abort(externalSignal.reason);
             };
@@ -397,6 +401,7 @@ export class ToolExecutor {
           const timeoutTimer = setTimeout(() => {
             if (!mergedController.signal.aborted) {
               terminationReason = 'timeout';
+              terminationDeadline = Date.now() + TOOL_TERMINATION_SETTLE_MS;
             }
             mergedController.abort(new Error(`Tool timed out after ${timeoutMs}ms`));
           }, timeoutMs);
@@ -412,6 +417,7 @@ export class ToolExecutor {
           toolContext = {
             ...toolContext,
             termination: () => terminationReason,
+            terminationDeadline: () => terminationDeadline,
             timeoutMs,
           };
 
@@ -421,7 +427,7 @@ export class ToolExecutor {
           try {
             // 已中断则直接跳过 settle（无输出可保留）
             if (signal.aborted) {
-              throw new ToolInterruptError();
+              throw new ToolInterruptError(terminationReason ?? 'user');
             }
             // 创建 abort 监听 Promise，并在 race 结束后清理 listener
             let removeAbortListener: (() => void) | undefined;
@@ -445,7 +451,11 @@ export class ToolExecutor {
                 const settlePromise = new Promise<'expired'>((resolve) => {
                   fireSettleExpiry = () => resolve('expired');
                 });
-                const settleTimer = setTimeout(() => fireSettleExpiry?.(), TOOL_TERMINATION_SETTLE_MS);
+                const remainingSettleMs = Math.max(
+                  0,
+                  (terminationDeadline ?? (Date.now() + TOOL_TERMINATION_SETTLE_MS)) - Date.now(),
+                );
+                const settleTimer = setTimeout(() => fireSettleExpiry?.(), remainingSettleMs);
                 // 工具先收尾时回收窗口定时器（Promise.race 不会取消输家）
                 cleanupFns.push(() => clearTimeout(settleTimer));
                 try {
@@ -467,7 +477,7 @@ export class ToolExecutor {
                   }
                 }
                 if (!settled) {
-                  throw new ToolInterruptError();
+                  throw new ToolInterruptError(terminationReason ?? 'user');
                 }
               }
             } finally {
@@ -493,13 +503,19 @@ export class ToolExecutor {
         runCleanupFns(cleanupFns);
         const isInterrupt = error instanceof ToolInterruptError
           || (error instanceof Error && error.name === 'AbortError');
+        const interruptReason = error instanceof ToolInterruptError
+          ? error.reason
+          : terminationReason;
         result.error = isInterrupt
-          ? 'Interrupted by user'
+          ? (interruptReason === 'timeout' ? 'Tool timed out' : 'Interrupted by user')
           : (error instanceof Error ? error.message : String(error));
 
         execResult = {
           success: false,
           result: { error: result.error },
+          ...(isInterrupt && interruptReason && terminationDeadline !== null
+            ? { interrupted: { reason: interruptReason } }
+            : {}),
         };
       }
 

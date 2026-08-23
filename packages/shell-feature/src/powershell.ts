@@ -129,6 +129,7 @@ export async function runPowerShellCommand(
     logPrefix: '[powershell]',
     signal: context?.signal,
     termination: context?.termination,
+    terminationDeadline: context?.terminationDeadline,
     progress: context?.progress,
   });
 }
@@ -165,6 +166,7 @@ export function createPowerShellTool(
       const result = await runPowerShellCommand(command, options, {
         signal: context?.signal,
         termination: context?.termination,
+        terminationDeadline: context?.terminationDeadline,
         progress: {
           callId: context?.callId,
           toolName: 'powershell',

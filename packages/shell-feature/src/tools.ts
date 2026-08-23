@@ -185,6 +185,7 @@ export async function runShellCommand(
     logPrefix: '[shell]',
     signal: context?.signal,
     termination: context?.termination,
+    terminationDeadline: context?.terminationDeadline,
     progress: context?.progress,
     cleanStderr: (stderr) => stderr
       .split('\n')
@@ -226,6 +227,7 @@ export function createShellCommandTool(
       const result = await runShellCommand(command, options, {
         signal: context?.signal,
         termination: context?.termination,
+        terminationDeadline: context?.terminationDeadline,
         progress: {
           callId: context?.callId,
           toolName: 'bash',

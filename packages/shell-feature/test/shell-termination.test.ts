@@ -15,7 +15,8 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ToolExecutionContext, ToolTerminationReason } from '@agentdev/core';
+import { Agent } from '@agentdev/core';
+import type { LLMClient, LLMResponse, Message, ToolExecutionContext, ToolTerminationReason } from '@agentdev/core';
 import {
   createShellCommandTool,
   createPowerShellTool,
@@ -34,9 +35,11 @@ function makeContext(opts: {
 } = {}): ToolExecutionContext & { controller: AbortController } {
   const controller = new AbortController();
   let reason: ToolTerminationReason | null = null;
+  let deadline: number | null = null;
   if (opts.terminateAfterMs !== undefined) {
     setTimeout(() => {
       reason = opts.reason ?? 'timeout';
+      deadline = Date.now() + 1000;
       controller.abort();
     }, opts.terminateAfterMs).unref();
   }
@@ -44,6 +47,7 @@ function makeContext(opts: {
     controller,
     signal: controller.signal,
     termination: () => reason,
+    terminationDeadline: () => deadline,
     callId: 'tc_test_1',
   };
 }
@@ -63,11 +67,91 @@ function parseMetadata(output: string): Record<string, unknown> {
 const bashPath = findGitBashPath();
 const BASH_SKIP = !bashPath ? 'bash not available' : false;
 
+class ShellIntegrationLLM implements LLMClient {
+  public readonly observedToolResults: string[] = [];
+
+  async chat(messages: Message[]): Promise<LLMResponse> {
+    const toolMessage = messages.find(message => message.role === 'tool');
+    if (!toolMessage) {
+      return {
+        content: 'Run the shell command.',
+        toolCalls: [{
+          id: 'shell-integration-call',
+          name: 'bash',
+          arguments: { command: 'for i in 1 2 3 4 5; do echo "integration-tick-$i"; sleep 0.3; done' },
+        }],
+      };
+    }
+    this.observedToolResults.push(toolMessage.content);
+    return { content: 'I received the shell result.' };
+  }
+}
+
 // ===========================================================================
 // bash 三态
 // ===========================================================================
 
 describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () => {
+  it('经 Agent executor：模型收到部分输出、shell_metadata 与 timeout reason', async () => {
+    const llm = new ShellIntegrationLLM();
+    const bash = createShellCommandTool('test bash', {
+      workdir,
+      bashPath,
+      timeoutMs: 300,
+      maxTimeoutMs: 300,
+    });
+    const agent = new Agent({ llm, maxTurns: 3, name: 'ShellIntegrationAgent', tools: [bash] });
+
+    const outcome = await agent.onCallDetailed('run integration shell command');
+
+    expect(outcome.status).toBe('completed');
+    expect(llm.observedToolResults).toHaveLength(1);
+    expect(llm.observedToolResults[0]).toContain('integration-tick-1');
+    expect(llm.observedToolResults[0]).toContain('<shell_metadata>');
+    expect(llm.observedToolResults[0]).toContain('reason: timeout');
+    expect(llm.observedToolResults[0]).not.toContain('Interrupted by user');
+  }, 15_000);
+
+  it('经 Agent executor：手动 interrupt 也保留部分输出并标记 user', async () => {
+    let toolStarted = false;
+    const llm: LLMClient = {
+      async chat(messages: Message[]): Promise<LLMResponse> {
+        if (!messages.some(message => message.role === 'tool')) {
+          toolStarted = true;
+          return {
+            content: 'Run the shell command.',
+            toolCalls: [{
+              id: 'shell-user-interrupt-call',
+              name: 'bash',
+              arguments: { command: 'echo user-before; sleep 30' },
+            }],
+          };
+        }
+        return { content: 'I received the interrupted shell result.' };
+      },
+    };
+    const bash = createShellCommandTool('test bash', {
+      workdir,
+      bashPath,
+      timeoutMs: 60_000,
+      maxTimeoutMs: 60_000,
+    });
+    const agent = new Agent({ llm, maxTurns: 3, name: 'ShellUserInterruptAgent', tools: [bash] });
+    const callPromise = agent.onCallDetailed('run and interrupt shell command');
+
+    while (!toolStarted) await new Promise(resolve => setTimeout(resolve, 2));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(agent.interrupt()).toBe(true);
+
+    const outcome = await callPromise;
+    const toolMessage = agent.getContext().getAll().find(message => message.role === 'tool');
+    expect(outcome.status).toBe('cancelled');
+    expect(toolMessage?.content).toContain('user-before');
+    expect(toolMessage?.content).toContain('<shell_metadata>');
+    expect(toolMessage?.content).toContain('reason: user');
+    expect(toolMessage?.content).not.toBe('{"success":false,"result":{"error":"Interrupted by user"}}');
+  }, 15_000);
+
   it('超时：返回已积累的部分输出 + 元数据块（terminated/reason=timeout/exitCode=null/logPath）', async () => {
     const tool = createShellCommandTool('test bash', { workdir });
     // 慢速滴流输出，永不自行退出；框架侧 300ms 触发合并 signal

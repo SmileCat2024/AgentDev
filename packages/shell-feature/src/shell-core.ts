@@ -19,7 +19,9 @@ import type { ToolTerminationReason } from '@agentdev/core';
 import { emitNotification, createToolProgress } from '@agentdev/core';
 
 /** drain 上限：kill 后等待管道 EOF 的时间（孙进程占 pipe 兜底）。 */
-const TERMINATION_DRAIN_MS = 1000;
+const TERMINATION_DRAIN_FALLBACK_MS = 1000;
+/** Reserve a small margin so the tool promise settles before executor's deadline. */
+const TERMINATION_DRAIN_SAFETY_MS = 50;
 
 /** 进度发射节流（工单 025）：notification 层另有 100ms 节流兜底。 */
 const PROGRESS_EMIT_INTERVAL_MS = 300;
@@ -42,6 +44,8 @@ export interface ShellRunContext {
   signal?: AbortSignal;
   /** 终止原因查询（executor 注入；未走终止协议时恒返回 null） */
   termination?: () => ToolTerminationReason | null;
+  /** 当前终止 settle 的绝对截止时间（epoch ms）；shell drain 消费同一预算 */
+  terminationDeadline?: () => number | null;
   /**
    * 进度发射上下文（工单 025）：提供后执行中每 ~300ms 发射一次
    * tool.progress 通知；缺省不发射（纯增量，行为不变）。
@@ -339,7 +343,12 @@ export function runCollectedProcess(
       stopProgressTimer();
       console.log(`${logPrefix} signal abort detected, killing child PID=${child.pid}`);
       killChild();
-      void drainToEof(child, TERMINATION_DRAIN_MS)
+      const deadline = opts.terminationDeadline?.();
+      const drainMs = Math.max(
+        0,
+        (deadline ?? (Date.now() + TERMINATION_DRAIN_FALLBACK_MS)) - Date.now() - TERMINATION_DRAIN_SAFETY_MS,
+      );
+      void drainToEof(child, drainMs)
         .then(finishTerminated)
         .then((value) => finishSettled(() => resolve(value)))
         .catch((err) => finishSettled(() => reject(err)));

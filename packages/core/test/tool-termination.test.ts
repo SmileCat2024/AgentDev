@@ -5,7 +5,7 @@
  * - 超时触发合并 signal（工具收到 aborted signal + termination()='timeout'）
  * - 用户打断优先于超时
  * - settle 窗口内收尾 → success: true + interrupted 标注（timeout / user 两种 reason）
- * - 超窗未收尾 → 降级为 'Interrupted by user'
+ * - 超窗未收尾 → 降级但保留真实 timeout/user reason
  * - 未声明 timeout 的工具零影响（无合并 controller，行为与改动前一致）
  * - fromArg clamp 边界（负数/0 → 1；超过 maxMs → maxMs；非法值回退 defaultMs）
  */
@@ -184,7 +184,7 @@ describe('ticket 023 工具终止协议', () => {
       expect(result.interrupted).toBeUndefined();
     });
 
-    it('超窗未收尾：降级为 Interrupted by user 失败结果', async () => {
+    it('超窗未收尾：保留真实 timeout reason，不伪装成 user 打断', async () => {
       const neverEndingTool: Tool = {
         name: 'stuck',
         description: 'Ignores the signal and never settles',
@@ -206,8 +206,8 @@ describe('ticket 023 工具终止协议', () => {
 
       const result = lastToolResult(agent);
       expect(result.success).toBe(false);
-      expect((result.result as { error?: string }).error).toBe('Interrupted by user');
-      expect(result.interrupted).toBeUndefined();
+      expect((result.result as { error?: string }).error).toBe('Tool timed out');
+      expect(result.interrupted).toEqual({ reason: 'timeout' });
     }, 15_000);
 
     it('timeout 终止后 react-loop 继续循环：模型可重试并正常完成', async () => {

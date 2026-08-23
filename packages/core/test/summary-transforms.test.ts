@@ -57,7 +57,7 @@ describe('buildSummaryPrompt', () => {
 
   it('uses trim-appended variant when requested', () => {
     const prompt = buildSummaryPrompt({ trimAppended: true });
-    assert.ok(prompt.includes('大部分工具调用记录会被精简'));
+    assert.ok(prompt.includes('工具调用记录中的参数细节和返回内容可能不会继续保留'));
   });
 });
 

@@ -185,6 +185,7 @@ export async function runShellCommand(
     logPrefix: '[shell]',
     signal: context?.signal,
     termination: context?.termination,
+    progress: context?.progress,
     cleanStderr: (stderr) => stderr
       .split('\n')
       .filter(line => !line.includes('process group') && !line.includes('job control'))

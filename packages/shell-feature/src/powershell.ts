@@ -129,6 +129,7 @@ export async function runPowerShellCommand(
     logPrefix: '[powershell]',
     signal: context?.signal,
     termination: context?.termination,
+    progress: context?.progress,
   });
 }
 

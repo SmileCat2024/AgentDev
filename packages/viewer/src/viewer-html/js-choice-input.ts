@@ -308,8 +308,13 @@ export const VIEWER_JS_CHOICE_INPUT = `    function isChoiceInputRequest(req) {
         return line;
       }).join('\\n');
 
+      const targetAgentId = String(currentAgentId || '').trim();
+      if (!targetAgentId) {
+        console.error('[Viewer] Cannot submit choice input without an explicit agent target');
+        return;
+      }
       try {
-        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
+        const res = await fetch(\`/api/agents/\${encodeURIComponent(targetAgentId)}/input\`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -392,9 +397,14 @@ export const VIEWER_JS_CHOICE_INPUT = `    function isChoiceInputRequest(req) {
     async function submitInput(requestId) {
       const textarea = document.getElementById(\`input-\${requestId}\`);
       const input = textarea ? textarea.value : '';
+      const targetAgentId = String(currentAgentId || '').trim();
+      if (!targetAgentId) {
+        console.error('[Viewer] Cannot submit input without an explicit agent target');
+        return;
+      }
 
       try {
-        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
+        const res = await fetch(\`/api/agents/\${encodeURIComponent(targetAgentId)}/input\`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -427,8 +437,13 @@ export const VIEWER_JS_CHOICE_INPUT = `    function isChoiceInputRequest(req) {
     }
 
     async function submitInputAction(requestId, actionId, payload = {}) {
+      const targetAgentId = String(currentAgentId || '').trim();
+      if (!targetAgentId) {
+        console.error('[Viewer] Cannot submit input action without an explicit agent target');
+        return;
+      }
       try {
-        const res = await fetch(\`/api/agents/\${currentAgentId}/input\`, {
+        const res = await fetch(\`/api/agents/\${encodeURIComponent(targetAgentId)}/input\`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

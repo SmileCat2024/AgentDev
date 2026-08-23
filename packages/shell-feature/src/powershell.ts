@@ -2,14 +2,18 @@
  * PowerShell 命令执行工具
  *
  * 提供 PowerShell 路径检测、命令执行和工具定义。
- * 与 bash 工具平行，共享输出截断逻辑。
+ * 与 bash 工具平行，共用 shell-core.ts 的「spawn + collect + 截断落盘 +
+ * 终止收集」管线（ticket 024），行为逐项一致（render 模板本就共用 bash.render.ts）。
  */
 
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import type { Tool } from '@agentdev/core';
 import { createTool } from '@agentdev/core';
-import { processOutputWithPersistence, type ShellExecutionResult } from './tools.js';
+import {
+  runCollectedProcess,
+  type ShellRunContext,
+} from './shell-core.js';
 
 // ---------------------------------------------------------------------------
 // PowerShell 路径检测
@@ -81,7 +85,7 @@ export function findPowerShellPath(configuredPath?: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// 核心运行逻辑
+// 工具定义与超时契约
 // ---------------------------------------------------------------------------
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
@@ -93,19 +97,22 @@ export interface PowerShellToolOptions {
   resourceRoot?: string;
   /** 已检测到的 PowerShell 路径 */
   psPath?: string;
-  /** Timeout in milliseconds (default: 120000 = 2 min) */
+  /** 覆盖默认超时（manifest 配置 defaultTimeoutMs）；缺省 120000 */
   timeoutMs?: number;
+  /** 覆盖超时上限（manifest 配置 maxTimeoutMs）；缺省 600000 */
+  maxTimeoutMs?: number;
 }
 
 /**
- * 运行 PowerShell 命令（支持 AbortSignal 中断）
+ * 运行 PowerShell 命令（支持 AbortSignal 中断；终止时收集部分输出并附元数据块）
  */
 export async function runPowerShellCommand(
   command: string,
   options: PowerShellToolOptions = {},
-  signal?: AbortSignal,
-): Promise<ShellExecutionResult> {
-  const workdir = options.workdir || options.workspaceDir || process.cwd();
+  context?: ShellRunContext,
+): Promise<{ stdout: string; stderr: string; output: string }> {
+  const workspaceDir = options.workspaceDir || process.cwd();
+  const workdir = options.workdir || workspaceDir;
   const psPath = options.psPath || findPowerShellPath();
 
   if (!psPath) {
@@ -114,154 +121,26 @@ export async function runPowerShellCommand(
 
   console.log(`[powershell] ${command}`);
 
-  const psArgs = ['-NoProfile', '-NonInteractive', '-Command', command];
-
-  return new Promise((resolve, reject) => {
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    const timeoutMs = Math.min(options.timeoutMs || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
-
-    const isWin = process.platform === 'win32';
-
-    const child = spawn(psPath, psArgs, {
-      cwd: workdir,
-      env: { ...process.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      // On Linux/macOS, detached: true enables process group kill on timeout/abort.
-      ...(!isWin ? { detached: true } : {}),
-    });
-
-    const killChild = () => {
-      try {
-        if (process.platform === 'win32') {
-          const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-          killer.once('error', (error) => {
-            console.warn(`[powershell] taskkill failed for PID=${child.pid}:`, error);
-            child.kill('SIGKILL');
-          });
-          killer.once('close', (code) => {
-            if (code !== 0) {
-              console.warn(`[powershell] taskkill exited with code ${code} for PID=${child.pid}; killing the direct child`);
-              child.kill('SIGKILL');
-            }
-          });
-        } else {
-          process.kill(-child.pid!, 'SIGKILL');
-        }
-      } catch {
-        // 进程可能已经退出
-      }
-    };
-
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-    const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-    };
-
-    const rejectInterrupted = (message: string) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      killChild();
-      const error: any = new Error(message);
-      error.name = 'AbortError';
-      reject(error);
-    };
-
-    const onAbort = () => {
-      console.log(`[powershell] signal abort detected, killing child PID=${child.pid}`);
-      rejectInterrupted('Command interrupted');
-    };
-
-    timeoutId = setTimeout(() => {
-      if (settled) return;
-      console.log(`[powershell] command timed out after ${timeoutMs}ms, killing PID=${child.pid}`);
-      settled = true;
-      cleanup();
-      killChild();
-      reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
-
-    if (signal) {
-      if (signal.aborted) {
-        rejectInterrupted('Command interrupted before execution');
-        return;
-      }
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-
-    child.stdout?.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr?.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-
-      const cleanStderr = stderr.trim();
-
-
-      if (signal?.aborted) {
-        const err: any = new Error('Command interrupted');
-        err.name = 'AbortError';
-        reject(err);
-        return;
-      }
-
-      if (code === 0) {
-        // 成功：stdout 和 stderr 分别独立截断
-        Promise.all([
-          processOutputWithPersistence(stdout || '', workdir),
-          processOutputWithPersistence(cleanStderr || '', workdir),
-        ]).then(([truncatedStdout, truncatedStderr]) => {
-          resolve({
-            stdout: truncatedStdout,
-            stderr: truncatedStderr,
-            output: truncatedStdout || truncatedStderr,
-          });
-        }).catch(err => {
-          reject(err);
-        });
-      } else {
-        // 失败：合并 stdout + stderr 后统一截断
-        const combined = [stdout, cleanStderr].filter(Boolean).join('\n\n--- stderr ---\n');
-        processOutputWithPersistence(combined, workdir).then(truncated => {
-          reject(new Error(truncated || `Command failed with exit code ${code}`));
-        }).catch(err => {
-          reject(err);
-        });
-      }
-    });
-
-    child.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-      reject(err);
-    });
+  return runCollectedProcess({
+    workdir,
+    execPath: psPath,
+    args: ['-NoProfile', '-NonInteractive', '-Command', command],
+    env: { ...process.env },
+    logPrefix: '[powershell]',
+    signal: context?.signal,
+    termination: context?.termination,
+    terminationDeadline: context?.terminationDeadline,
+    progress: context?.progress,
   });
 }
-
-// ---------------------------------------------------------------------------
-// 工具定义
-// ---------------------------------------------------------------------------
 
 export function createPowerShellTool(
   description: string,
   options: PowerShellToolOptions = {},
 ): Tool {
+  const defaultTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // max 是硬上限：default 配置超过 max 时收敛到 max，保证契约自洽
+  const maxTimeoutMs = Math.max(options.maxTimeoutMs ?? MAX_TIMEOUT_MS, defaultTimeoutMs, 1);
   return createTool({
     name: 'powershell',
     description,
@@ -269,14 +148,31 @@ export function createPowerShellTool(
       type: 'object',
       properties: {
         command: { type: 'string' },
-        timeout: { type: 'number', description: 'Optional timeout in milliseconds (max 600000). Defaults to 120000 (2 minutes).' },
+        timeout: { type: 'number', description: `Optional timeout in milliseconds (max ${maxTimeoutMs}). Defaults to ${defaultTimeoutMs}.` },
       },
       required: ['command'],
     },
     render: { call: 'bash', result: 'bash' },
+    // 与 bash 一致：计时职责归框架 executor（ticket 023）
+    timeout: {
+      defaultMs: defaultTimeoutMs,
+      maxMs: maxTimeoutMs,
+      fromArg: 'timeout',
+    },
     execute: async (args, context) => {
-      const { command, timeout } = args as { command: string; timeout?: number };
-      const result = await runPowerShellCommand(command, { ...options, timeoutMs: timeout }, context?.signal);
+      const { command } = args as { command: string };
+      // 生效超时（executor clamp 后）经 toolContext 透传（工单 025 进度显示）
+      const effectiveTimeoutMs = typeof context?.timeoutMs === 'number' ? context.timeoutMs : null;
+      const result = await runPowerShellCommand(command, options, {
+        signal: context?.signal,
+        termination: context?.termination,
+        terminationDeadline: context?.terminationDeadline,
+        progress: {
+          callId: context?.callId,
+          toolName: 'powershell',
+          timeoutMs: effectiveTimeoutMs,
+        },
+      });
       return result.output;
     },
   });

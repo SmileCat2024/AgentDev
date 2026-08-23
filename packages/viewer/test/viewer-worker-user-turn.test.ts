@@ -71,6 +71,68 @@ describe('ViewerWorker user-turn contract', () => {
     });
   });
 
+  it('rejects input delivery without a runtime client instead of broadcasting', () => {
+    const { worker, session, agentId } = createWorker();
+    const writes: string[] = [];
+    session.inputLease = { requestId: 'missing-client', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+    delete session.clientId;
+    (worker as any).udsClients.set('other-client', {
+      write(message: string) { writes.push(message); },
+    });
+
+    const result = worker.submitUserTurn(agentId, {
+      text: 'must not reach another runtime',
+      source: 'chat-composer',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      code: 'runtime_not_accepting_input',
+      error: 'Agent runtime is not connected',
+    });
+    expect(session.inputLease).toMatchObject({ requestId: 'missing-client' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('does not report interrupt success when the runtime client is missing', () => {
+    const { worker, session, agentId } = createWorker();
+    delete session.clientId;
+    let status = 0;
+    let body = '';
+    const res = {
+      writeHead(code: number) { status = code; },
+      end(value: string) { body = value; },
+    };
+
+    (worker as any).handleInterrupt({} as any, res as any, agentId);
+
+    expect(status).toBe(409);
+    expect(JSON.parse(body)).toEqual({
+      success: false,
+      code: 'runtime_not_accepting_input',
+      error: 'Agent runtime is not connected',
+    });
+  });
+
+  it('rejects current logs without an explicit runtime target', () => {
+    const worker = new ViewerWorker(0, false, getTestUdsPath());
+    let status = 0;
+    let body = '';
+    const res = {
+      writeHead(code: number) { status = code; },
+      end(value: string) { body = value; },
+    };
+
+    (worker as any).handleGetLogs({} as any, res as any, new URLSearchParams('scope=current'));
+
+    expect(status).toBe(400);
+    expect(JSON.parse(body)).toEqual({
+      success: false,
+      code: 'invalid_target',
+      error: 'agentId query parameter is required for current logs',
+    });
+  });
+
   it('stores a startup turn in the runtime mailbox before a lease opens', () => {
     const { worker, session, agentId } = createWorker();
 

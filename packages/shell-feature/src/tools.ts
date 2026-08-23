@@ -10,11 +10,14 @@
  * 4. Windows null rewrite：>nul → >/dev/null
  * 5. 动态 bash 路径检测（Windows: Git Bash; Linux/macOS: $SHELL || /bin/bash）
  * 6. 输出截断：防止大输出撑爆 LLM 上下文
+ *
+ * 终止语义（ticket 024 / ADR-0005）：超时计时归框架 executor（Tool.timeout
+ * 声明契约）；signal aborted 时 kill → drain 到 EOF → resolve 部分输出 +
+ * <shell_metadata> 块（见 shell-core.ts）。
  */
 
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import { existsSync } from 'fs';
-import { mkdir, writeFile } from 'fs/promises';
 import * as path from 'path';
 import type { Tool } from '@agentdev/core';
 import { createTool } from '@agentdev/core';
@@ -23,6 +26,11 @@ import {
   shouldAddStdinRedirect,
   rewriteWindowsNullRedirect,
 } from './shellQuoting.js';
+import {
+  runCollectedProcess,
+  // ShellRunContext 复用共享运行核心的上下文形状（signal/termination/progress）
+  type ShellRunContext,
+} from './shell-core.js';
 
 export interface ShellCommandToolOptions {
   workspaceDir?: string;
@@ -30,8 +38,10 @@ export interface ShellCommandToolOptions {
   resourceRoot?: string;
   /** Override bash path detection (used when ShellFeature pre-detects the path) */
   bashPath?: string;
-  /** Timeout in milliseconds (default: 120000 = 2 min) */
+  /** 覆盖默认超时（manifest 配置 defaultTimeoutMs）；缺省 120000 */
   timeoutMs?: number;
+  /** 覆盖超时上限（manifest 配置 maxTimeoutMs）；缺省 600000 */
+  maxTimeoutMs?: number;
 }
 
 export interface ShellExecutionResult {
@@ -41,83 +51,11 @@ export interface ShellExecutionResult {
 }
 
 // ---------------------------------------------------------------------------
-// 输出截断 + 落盘持久化（参考 Claude Code 的 toolResultStorage 策略）
-// ---------------------------------------------------------------------------
-
-const MAX_OUTPUT_LENGTH = 30_000;
-
-/**
- * 截断输出并持久化完整内容到磁盘。
- *
- * 当输出超过 limit 时：
- * 1. 将完整输出写入 workdir/.agentdev/temp/bash-output-<timestamp>-<random>.log
- * 2. 返回截断版本（头 60% + 尾 40%），中间插入截断提示和文件路径引用
- *
- * 如果写盘失败，fallback 到纯截断（不丢失截断提示，但完整内容不可恢复）。
- */
-export async function processOutputWithPersistence(
-  output: string,
-  workdir: string,
-  limit: number = MAX_OUTPUT_LENGTH,
-): Promise<string> {
-  if (output.length <= limit) return output;
-
-  const headSize = Math.floor(limit * 0.6);
-  const tailSize = limit - headSize;
-  const head = output.slice(0, headSize);
-  const tail = output.slice(-tailSize);
-  const omitted = output.length - limit;
-  const totalKB = Math.round(output.length / 1024);
-
-  // 尝试将完整输出持久化到磁盘
-  let filePath: string | null = null;
-  try {
-    const tempDir = path.join(workdir, '.agentdev', 'temp');
-    const now = new Date();
-    const ts = now.getFullYear().toString() +
-      String(now.getMonth() + 1).padStart(2, '0') +
-      String(now.getDate()).padStart(2, '0') + '-' +
-      String(now.getHours()).padStart(2, '0') +
-      String(now.getMinutes()).padStart(2, '0') +
-      String(now.getSeconds()).padStart(2, '0');
-    const suffix = Math.random().toString(36).slice(2, 8);
-    const fileName = `bash-output-${ts}-${suffix}.log`;
-    filePath = path.join(tempDir, fileName);
-
-    await mkdir(tempDir, { recursive: true });
-    await writeFile(filePath, output, 'utf-8');
-  } catch (err) {
-    console.error(`[shell] Failed to persist output: ${err}`);
-    filePath = null;
-  }
-
-  // 构建截断提示
-  const persistNotice = filePath
-    ? `[Full output (${totalKB}KB) saved to: ${filePath}]\nUse the read tool to access the full output if needed.\n`
-    : '';
-
-  return (
-    head +
-    `\n\n... [truncated: omitted ${omitted} characters (${totalKB}KB total)] ...\n${persistNotice}\n` +
-    tail
-  );
-}
-
-// ---------------------------------------------------------------------------
 // 动态 Git Bash 路径检测（照搬 Claude Code 的 findGitBashPath）
 // ---------------------------------------------------------------------------
 
 let cachedBashPath: string | null = null;
 
-/**
- * 动态查找 Git Bash 的 bash.exe 路径。
- *
- * 查找顺序：
- * 1. 环境变量 AGENTDEV_GIT_BASH_PATH
- * 2. 环境变量 SHELL（如果包含 bash）
- * 3. where bash（Windows）
- * 4. 常见安装位置
- */
 /**
  * 动态查找 Git Bash 的 bash.exe 路径。
  *
@@ -186,14 +124,14 @@ export function findGitBashPath(configuredPath?: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// 核心：运行 Shell 命令
+// 核心运行参数与超时契约默认值
 // ---------------------------------------------------------------------------
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
 const MAX_TIMEOUT_MS = 600_000;     // 10 minutes
 
 /**
- * 运行 Shell 命令（支持 AbortSignal 中断）
+ * 运行 Shell 命令（支持 AbortSignal 中断；终止时收集部分输出并附元数据块）
  *
  * 关键改进：
  * - 使用 eval + 单引号引用替代 naive 的双引号转义
@@ -204,7 +142,7 @@ const MAX_TIMEOUT_MS = 600_000;     // 10 minutes
 export async function runShellCommand(
   command: string,
   options: ShellCommandToolOptions = {},
-  signal?: AbortSignal,
+  context?: ShellRunContext,
 ): Promise<ShellExecutionResult> {
   const workspaceDir = options.workspaceDir || process.cwd();
   const workdir = options.workdir || workspaceDir;
@@ -221,7 +159,7 @@ export async function runShellCommand(
   const quotedCommand = quoteShellCommand(normalizedCommand, addStdinRedirect);
 
   // 3. 构建 eval 命令字符串
-  const quotedBashrc = `'${bashrcPath.replace(/'/g, `'\"'\"'`)}'`;
+  const quotedBashrc = `'${bashrcPath.replace(/'/g, `'\\''`)}'`;
   const commandString = `source ${quotedBashrc} 2>/dev/null || true; eval ${quotedCommand}`;
 
   // 4. 确定 bash 路径和参数
@@ -232,155 +170,28 @@ export async function runShellCommand(
       : 'Bash not found. Please ensure bash is installed or configure the path in settings.';
     throw new Error(hint);
   }
-  const bashArgs = ['-c', commandString];
 
   const isWin = process.platform === 'win32';
 
-  return new Promise((resolve, reject) => {
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    const timeoutMs = Math.min(options.timeoutMs || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
-
-    const child = spawn(bashPath, bashArgs, {
-      cwd: workdir,
-      env: {
-        ...process.env,
-        // MSYSTEM is only meaningful for Git Bash (MSYS2/MinGW) on Windows.
-        ...(isWin ? { MSYSTEM: process.env.MSYSTEM || 'MINGW64' } : {}),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      // On Linux/macOS, detached: true puts the child in its own process group
-      // so that process.kill(-pid) can terminate the entire group on timeout/abort.
-      ...(!isWin ? { detached: true } : {}),
-    });
-
-    const killChild = () => {
-      try {
-        if (process.platform === 'win32') {
-          const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-          killer.once('error', (error) => {
-            console.warn(`[shell] taskkill failed for PID=${child.pid}:`, error);
-            child.kill('SIGKILL');
-          });
-          killer.once('close', (code) => {
-            if (code !== 0) {
-              console.warn(`[shell] taskkill exited with code ${code} for PID=${child.pid}; killing the direct child`);
-              child.kill('SIGKILL');
-            }
-          });
-        } else {
-          process.kill(-child.pid!, 'SIGKILL');
-        }
-      } catch {
-        // 进程可能已经退出
-      }
-    };
-
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-    const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-    };
-
-    const rejectInterrupted = (message: string) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      killChild();
-      const error: any = new Error(message);
-      error.name = 'AbortError';
-      reject(error);
-    };
-
-    const onAbort = () => {
-      console.log(`[shell] signal abort detected, killing child PID=${child.pid}`);
-      rejectInterrupted('Command interrupted');
-    };
-
-    // A timeout must settle the tool call itself. Waiting for `close` here makes
-    // a failed or delayed taskkill look like a successful timeout while the call
-    // remains blocked indefinitely.
-    timeoutId = setTimeout(() => {
-      if (settled) return;
-      console.log(`[shell] command timed out after ${timeoutMs}ms, killing PID=${child.pid}`);
-      settled = true;
-      cleanup();
-      killChild();
-      reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
-
-    if (signal) {
-      if (signal.aborted) {
-        rejectInterrupted('Command interrupted before execution');
-        return;
-      }
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-
-    child.stdout?.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr?.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-
-      const cleanStderr = stderr
-        .split('\n')
-        .filter(line => !line.includes('process group') && !line.includes('job control'))
-        .join('\n')
-        .trim();
-
-
-      if (signal?.aborted) {
-        const err: any = new Error('Command interrupted');
-        err.name = 'AbortError';
-        reject(err);
-        return;
-      }
-
-      if (code === 0) {
-        // 成功：stdout 和 stderr 分别独立截断
-        Promise.all([
-          processOutputWithPersistence(stdout || '', workdir),
-          processOutputWithPersistence(cleanStderr || '', workdir),
-        ]).then(([truncatedStdout, truncatedStderr]) => {
-          resolve({
-            stdout: truncatedStdout,
-            stderr: truncatedStderr,
-            output: truncatedStdout || truncatedStderr,
-          });
-        }).catch(err => {
-          reject(err);
-        });
-      } else {
-        // 失败：合并 stdout + stderr 后统一截断
-        const combined = [stdout, cleanStderr].filter(Boolean).join('\n\n--- stderr ---\n');
-        processOutputWithPersistence(combined, workdir).then(truncated => {
-          reject(new Error(truncated || `Command failed with exit code ${code}`));
-        }).catch(err => {
-          reject(err);
-        });
-      }
-    });
-
-    child.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-      reject(err);
-    });
+  return runCollectedProcess({
+    workdir,
+    execPath: bashPath,
+    args: ['-c', commandString],
+    env: {
+      ...process.env,
+      // MSYSTEM is only meaningful for Git Bash (MSYS2/MinGW) on Windows.
+      ...(isWin ? { MSYSTEM: process.env.MSYSTEM || 'MINGW64' } : {}),
+    },
+    logPrefix: '[shell]',
+    signal: context?.signal,
+    termination: context?.termination,
+    terminationDeadline: context?.terminationDeadline,
+    progress: context?.progress,
+    cleanStderr: (stderr) => stderr
+      .split('\n')
+      .filter(line => !line.includes('process group') && !line.includes('job control'))
+      .join('\n')
+      .trim(),
   });
 }
 
@@ -388,6 +199,9 @@ export function createShellCommandTool(
   description: string,
   options: ShellCommandToolOptions = {},
 ): Tool {
+  const defaultTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // max 是硬上限：default 配置超过 max 时收敛到 max，保证契约自洽
+  const maxTimeoutMs = Math.max(options.maxTimeoutMs ?? MAX_TIMEOUT_MS, defaultTimeoutMs, 1);
   return createTool({
     name: 'bash',
     description,
@@ -395,14 +209,31 @@ export function createShellCommandTool(
       type: 'object',
       properties: {
         command: { type: 'string' },
-        timeout: { type: 'number', description: 'Optional timeout in milliseconds (max 600000). Defaults to 120000 (2 minutes).' },
+        timeout: { type: 'number', description: `Optional timeout in milliseconds (max ${maxTimeoutMs}). Defaults to ${defaultTimeoutMs}.` },
       },
       required: ['command'],
     },
     render: { call: 'bash', result: 'bash' },
+    // 计时职责归框架 executor（ticket 023）：args.timeout 经 fromArg 消费并 clamp
+    timeout: {
+      defaultMs: defaultTimeoutMs,
+      maxMs: maxTimeoutMs,
+      fromArg: 'timeout',
+    },
     execute: async (args, context) => {
-      const { command, timeout } = args as { command: string; timeout?: number };
-      const result = await runShellCommand(command, { ...options, timeoutMs: timeout }, context?.signal);
+      const { command } = args as { command: string };
+      // 生效超时（executor clamp 后）经 toolContext 透传（工单 025 进度显示）
+      const effectiveTimeoutMs = typeof context?.timeoutMs === 'number' ? context.timeoutMs : null;
+      const result = await runShellCommand(command, options, {
+        signal: context?.signal,
+        termination: context?.termination,
+        terminationDeadline: context?.terminationDeadline,
+        progress: {
+          callId: context?.callId,
+          toolName: 'bash',
+          timeoutMs: effectiveTimeoutMs,
+        },
+      });
       return result.output;
     },
   });

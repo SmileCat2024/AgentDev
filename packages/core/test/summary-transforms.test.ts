@@ -13,6 +13,7 @@ import {
   stripCompactAnalysis,
   scanFilesAndSkills,
   buildSummarySeedMessage,
+  generateSummaryText,
   SummaryTransformation,
   TrimTranscriptWithSummaryTransformation,
 } from '../src/core/continuity/transforms/index.js';
@@ -56,7 +57,7 @@ describe('buildSummaryPrompt', () => {
 
   it('uses trim-appended variant when requested', () => {
     const prompt = buildSummaryPrompt({ trimAppended: true });
-    assert.ok(prompt.includes('大部分工具调用记录会被精简'));
+    assert.ok(prompt.includes('工具调用记录中的参数细节和返回内容可能不会继续保留'));
   });
 });
 
@@ -99,6 +100,85 @@ describe('buildSummarySeedMessage', () => {
     assert.equal(msg.role, 'system');
     assert.ok(msg.content.includes('summary body'));
     assert.equal(msg.turn, 0);
+  });
+});
+
+describe('generateSummaryText message construction', () => {
+  function captureLLM(): { llm: TransformContext['llm']; captured: { messages: any[]; tools: any[] } } {
+    const captured: { messages: any[]; tools: any[] } = { messages: [], tools: [] };
+    const llm = {
+      async chat(messages: any[], tools: any[]) {
+        captured.messages = messages;
+        captured.tools = tools;
+        return { content: 'summary text', stopReason: 'end_turn' } as any;
+      },
+    } as any;
+    return { llm, captured };
+  }
+
+  it('replaces head static system prefix with role preamble + prompt, keeps mid-conversation systems, ends with user anchor', async () => {
+    const { llm, captured } = captureLLM();
+    const snapshot = makeSnapshot([
+      { role: 'system', content: '你是某工作空间的执行 agent，负责自主交付' },
+      { role: 'system', content: '# CLAUDE.md\n项目引导文档...' },
+      { role: 'user', content: '开始任务', turn: 0 },
+      { role: 'system', tag: 'folded-tool-activity', content: '[Folded tool activity] read(a.ts)', turn: 0 },
+      { role: 'assistant', content: '完成', turn: 0 },
+    ]);
+    await generateSummaryText({ llm }, snapshot, buildSummaryPrompt({ trimAppended: true }));
+    const { messages, tools } = captured;
+
+    // 唯一的头部 system：身份澄清前缀 + 摘要提示词
+    assert.equal(messages[0].role, 'system');
+    assert.ok(messages[0].content.includes('不是你与任何人的真实交互'));
+    assert.ok(messages[0].content.includes('你的任务是为当前对话创建一份详细摘要'));
+    // 头部静态 system（身份设定 / CLAUDE.md）被剥离
+    const leaked = messages.filter((m) => m.content?.includes('执行 agent') || m.content?.includes('CLAUDE.md'));
+    assert.equal(leaked.length, 0);
+    // 对话主体保留，中途动态 system（folded-tool-activity）保留
+    assert.ok(messages.some((m) => m.content === '开始任务'));
+    assert.ok(messages.some((m) => m.tag === 'folded-tool-activity'));
+    // 末尾 user 锚定
+    const last = messages[messages.length - 1];
+    assert.equal(last.role, 'user');
+    assert.ok(last.content.includes('会话记录到此为止'));
+    // 空工具集
+    assert.deepEqual(tools, []);
+  });
+
+  it('injects tool results as tagged system messages with call signatures and truncation', async () => {
+    const { llm, captured } = captureLLM();
+    const longOutput = 'x'.repeat(3000);
+    const snapshot = makeSnapshot([
+      { role: 'user', content: '开始', turn: 0 },
+      {
+        role: 'assistant',
+        content: '',
+        turn: 0,
+        toolCalls: [
+          { id: 'tc1', name: 'read', arguments: { filePath: 'src/a.ts' } },
+          { id: 'tc2', name: 'bash', arguments: { command: 'npm test' } },
+        ],
+      },
+      { role: 'tool', toolCallId: 'tc1', content: 'file body line 1\nline 2', turn: 0 },
+      { role: 'tool', toolCallId: 'tc2', content: longOutput, turn: 0 },
+      { role: 'tool', toolCallId: 'tc-unknown', content: 'orphan result', turn: 0 },
+    ]);
+    await generateSummaryText({ llm }, snapshot, buildSummaryPrompt({ trimAppended: true }));
+    const { messages } = captured;
+
+    const toolResults = messages.filter((m) => m.tag === 'tool-result');
+    assert.equal(toolResults.length, 3);
+    assert.ok(toolResults[0].content.startsWith('[工具返回 read(a.ts)]\nfile body line 1'));
+    // 长返回截断到上限并标注原始长度
+    assert.ok(toolResults[1].content.includes('[工具返回 bash]'));
+    assert.ok(toolResults[1].content.includes('…(返回已截断，原始长度 3000 字符)'));
+    assert.ok(toolResults[1].content.length < 1400);
+    // 配对失败仍保留内容，标注未匹配
+    assert.ok(toolResults[2].content.includes('[工具返回 未匹配调用]'));
+    assert.ok(toolResults[2].content.includes('orphan result'));
+    // 全部以 system 注入（不冒充用户发言）
+    assert.ok(toolResults.every((m) => m.role === 'system'));
   });
 });
 

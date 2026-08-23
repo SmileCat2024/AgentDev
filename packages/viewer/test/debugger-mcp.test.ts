@@ -171,6 +171,20 @@ describe('Debugger MCP', () => {
     expect(payload?.truncation?.truncated).toBe(false);
   });
 
+  it('should reject missing targets for runtime-scoped debugger operations', async () => {
+    const missingAgent = await client.callTool({
+      name: 'get_agent',
+      arguments: {},
+    });
+    expect((missingAgent as any).isError).toBe(true);
+
+    const missingLogsTarget = await client.callTool({
+      name: 'query_logs',
+      arguments: { scope: 'current', level: 'error' },
+    });
+    expect((missingLogsTarget as any).isError).toBe(true);
+  });
+
   it('should cap unbounded query and report truncation', async () => {
     const result = await client.callTool({
       name: 'query_logs',

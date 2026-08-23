@@ -177,6 +177,9 @@ export const VIEWER_JS_AGENTS = `
     });
 
     async function loadLogs(forceRender = false) {
+      if (logPanelScope === 'current' && !currentAgentId) {
+        return;
+      }
       try {
         const params = new URLSearchParams({
           scope: logPanelScope,

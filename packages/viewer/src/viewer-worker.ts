@@ -650,9 +650,21 @@ class ViewerWorker {
   }
 
   private handleGetLogs(req: IncomingMessage, res: ServerResponse, searchParams: URLSearchParams): void {
+    const scope = searchParams.get('scope') === 'all' ? 'all' : 'current';
+    const agentId = searchParams.get('agentId');
+    if (scope === 'current' && !agentId) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        success: false,
+        code: 'invalid_target',
+        error: 'agentId query parameter is required for current logs',
+      }));
+      return;
+    }
+
     const result = this.queryLogs({
-      scope: searchParams.get('scope') === 'all' ? 'all' : 'current',
-      agentId: searchParams.get('agentId'),
+      scope,
+      agentId,
       level: searchParams.get('level') || undefined,
       namespace: searchParams.get('namespace') || undefined,
       feature: searchParams.get('feature') || undefined,
@@ -959,19 +971,10 @@ class ViewerWorker {
       return false;
     }
 
-    // 向后兼容：如果没有记录 clientId，广播到所有客户端
-    console.warn('[Viewer Worker] Agent 未记录 clientId，尝试广播到所有客户端');
-    let delivered = false;
-    for (const [cid, socket] of this.udsClients) {
-      try {
-        socket.write(message);
-        delivered = true;
-        console.log(`[Viewer Worker] 输入响应广播到 ${cid}`);
-      } catch (writeError) {
-        console.error(`[Viewer Worker] 向 ${cid} 广播失败:`, writeError);
-      }
-    }
-    return delivered;
+    // Runtime-scoped input must have an exact client binding. Broadcasting would
+    // allow a missing/stale runtime identity to deliver input to another agent.
+    console.warn(`[Viewer Worker] Agent has no clientId; refusing input delivery: ${agentId}`);
+    return false;
   }
 
   private createTextInputResponse(input: UserTurnInput | QueuedInput): UserInputResponse {
@@ -1067,25 +1070,45 @@ class ViewerWorker {
     if (targetClientId) {
       const targetSocket = this.udsClients.get(targetClientId);
       console.log(`[VW.handleInterrupt] socketFound=${!!targetSocket}, socketDestroyed=${targetSocket?.destroyed}`);
-      if (targetSocket) {
-        try {
-          if (Array.isArray(session.queuedInputs) && session.queuedInputs.length > 0) {
-            session.queuedInputs = [];
-          }
-          targetSocket.write(JSON.stringify({
-            type: 'interrupt-agent',
-            agentId,
-            clearQueue: true,
-          }) + '\n');
-          console.log(`[VW.handleInterrupt] UDS message sent to ${targetClientId}: ${agentId}`);
-        } catch (writeError) {
-          console.error('[VW.handleInterrupt] UDS write failed:', writeError);
-        }
-      } else {
+      if (!targetSocket) {
         console.warn(`[VW.handleInterrupt] no UDS socket for clientId=${targetClientId}`);
+        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          success: false,
+          code: 'runtime_not_accepting_input',
+          error: 'Agent runtime is not connected',
+        }));
+        return;
+      }
+      try {
+        if (Array.isArray(session.queuedInputs) && session.queuedInputs.length > 0) {
+          session.queuedInputs = [];
+        }
+        targetSocket.write(JSON.stringify({
+          type: 'interrupt-agent',
+          agentId,
+          clearQueue: true,
+        }) + '\n');
+        console.log(`[VW.handleInterrupt] UDS message sent to ${targetClientId}: ${agentId}`);
+      } catch (writeError) {
+        console.error('[VW.handleInterrupt] UDS write failed:', writeError);
+        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          success: false,
+          code: 'runtime_not_accepting_input',
+          error: 'Agent runtime is not connected',
+        }));
+        return;
       }
     } else {
       console.warn(`[VW.handleInterrupt] session has no clientId`);
+      res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        success: false,
+        code: 'runtime_not_accepting_input',
+        error: 'Agent runtime is not connected',
+      }));
+      return;
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

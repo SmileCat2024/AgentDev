@@ -25,6 +25,8 @@ export function createTool(
     render?: ToolRenderInput;
     executionMode?: 'normal' | 'exclusive';
     parallelizable?: boolean;
+    /** 超时契约声明（ticket 023 / ADR-0005），透传到 Tool.timeout */
+    timeout?: Tool['timeout'];
   },
   sourceFile?: string
 ): Tool {
@@ -60,6 +62,7 @@ export function createTool(
     render: finalRender,
     ...(config.executionMode ? { executionMode: config.executionMode } : {}),
     ...(config.parallelizable ? { parallelizable: config.parallelizable } : {}),
+    ...(config.timeout ? { timeout: config.timeout } : {}),
   };
 }
 

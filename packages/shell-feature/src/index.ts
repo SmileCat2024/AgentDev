@@ -36,6 +36,20 @@ interface ResolvedShellConfig {
   bashPath?: string;
   powershellEnabled: boolean;
   powershellPath?: string;
+  /** 默认命令超时（毫秒），executor 计时起点；默认 120000 */
+  defaultTimeoutMs: number;
+  /** 超时硬上限（毫秒），任何来源的超时值 clamp 到此值；默认 600000 */
+  maxTimeoutMs: number;
+}
+
+/** 默认超时契约值（与工具 timeout 声明保持一致，ticket 024 步骤 5）。 */
+const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
+const MAX_TIMEOUT_MS = 600_000;     // 10 minutes
+
+function resolvePositiveNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
 }
 
 /**
@@ -100,6 +114,23 @@ export class ShellFeature implements AgentFeature {
             description: 'PowerShell 可执行文件路径。留空时自动检测。',
             placeholder: '自动检测',
           },
+          defaultTimeoutMs: {
+            type: 'number',
+            title: '默认命令超时（毫秒）',
+            description: '命令执行的默认超时时间。模型可通过 timeout 参数覆盖（不超过最大超时）。',
+            default: DEFAULT_TIMEOUT_MS,
+            min: 1,
+            max: MAX_TIMEOUT_MS,
+            step: 1000,
+          },
+          maxTimeoutMs: {
+            type: 'number',
+            title: '最大命令超时（毫秒）',
+            description: '命令超时的硬上限，任何来源的超时值都会被限制到此值以内。',
+            default: MAX_TIMEOUT_MS,
+            min: 1,
+            step: 1000,
+          },
         },
       },
     };
@@ -107,14 +138,29 @@ export class ShellFeature implements AgentFeature {
 
   private resolveShellConfig(featureConfig: unknown): ResolvedShellConfig {
     if (!featureConfig || typeof featureConfig !== 'object') {
-      return { bashEnabled: true, powershellEnabled: true };
+      return {
+        bashEnabled: true,
+        powershellEnabled: true,
+        defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+        maxTimeoutMs: MAX_TIMEOUT_MS,
+      };
     }
     const c = featureConfig as Record<string, unknown>;
+    const maxTimeoutMs = Math.max(
+      resolvePositiveNumber(c.maxTimeoutMs, MAX_TIMEOUT_MS),
+      1,
+    );
     return {
       bashEnabled: c.bashEnabled !== false,
       bashPath: typeof c.bashPath === 'string' && c.bashPath.trim() ? c.bashPath.trim() : undefined,
       powershellEnabled: c.powershellEnabled !== false,
       powershellPath: typeof c.powershellPath === 'string' && c.powershellPath.trim() ? c.powershellPath.trim() : undefined,
+      // default 不允许超过 max（配置面板顺序无关时的自洽保护）
+      defaultTimeoutMs: Math.min(
+        resolvePositiveNumber(c.defaultTimeoutMs, DEFAULT_TIMEOUT_MS),
+        maxTimeoutMs,
+      ),
+      maxTimeoutMs,
     };
   }
 
@@ -142,6 +188,8 @@ export class ShellFeature implements AgentFeature {
           workdir: this.workdir,
           resourceRoot: this.resourceRoot,
           bashPath,
+          timeoutMs: config.defaultTimeoutMs,
+          maxTimeoutMs: config.maxTimeoutMs,
         }));
       } else {
         console.warn('[shell] Bash is enabled but was not found on this system. Skipping Bash tool.');
@@ -165,6 +213,8 @@ export class ShellFeature implements AgentFeature {
           workdir: this.workdir,
           resourceRoot: this.resourceRoot,
           psPath,
+          timeoutMs: config.defaultTimeoutMs,
+          maxTimeoutMs: config.maxTimeoutMs,
         }));
       } else {
         console.warn('[shell] PowerShell is enabled but was not found on this system. Skipping PowerShell tool.');
@@ -201,6 +251,18 @@ export class ShellFeature implements AgentFeature {
 export { createShellCommandTool, runShellCommand, findGitBashPath } from './tools.js';
 export type { ShellCommandToolOptions, ShellExecutionResult } from './tools.js';
 export { createPowerShellTool, runPowerShellCommand, findPowerShellPath } from './powershell.js';
+
+// 导出共享运行核心（供高级用户使用；截断落盘函数自 tools.ts 迁入，行为不变）
+export {
+  processOutputWithPersistence,
+  formatShellMetadata,
+  SHELL_METADATA_OPEN,
+  SHELL_METADATA_CLOSE,
+} from './shell-core.js';
+export type {
+  ShellRunResult,
+  ShellMetadataFields,
+} from './shell-core.js';
 
 // 导出命令引用工具（供高级用户使用）
 export {

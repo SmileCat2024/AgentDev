@@ -372,6 +372,8 @@ export class ReActLoopRunner {
 
           // ========== 结果收集 Map ==========
           const resultsMap = new Map<string, ToolExecResult>();
+          // 是否有工具以 user 终止收尾（timeout 终止不算，见下方注入循环）
+          let userTerminated = false;
 
           if (!batchRejected) {
             // ========== 分流 ==========
@@ -440,26 +442,34 @@ export class ReActLoopRunner {
               resultsMap.set(call.id, result);
             }
 
-            // ========== 统一注入：按原始顺序写入 context ==========
-            for (const call of toolCalls) {
-              const result = resultsMap.get(call.id);
-              if (result) {
-                context.addToolMessage(call, result, callIndex);
-              } else {
-                // 安全网：结果缺失
-                context.addToolMessage(call, {
-                  success: false,
-                  result: { error: 'Tool result missing (internal error)' },
-                }, callIndex);
+          // ========== 统一注入：按原始顺序写入 context ==========
+          for (const call of toolCalls) {
+            const result = resultsMap.get(call.id);
+            if (result) {
+              context.addToolMessage(call, result, callIndex);
+              // timeout 终止不退出循环（ADR-0005）：模型看到元数据后自行决策
+              // （重试 / 调大 timeout / 换路线）；user 终止才结束当前 call。
+              if (result.interrupted?.reason === 'user') {
+                userTerminated = true;
               }
+            } else {
+              // 安全网：结果缺失
+              context.addToolMessage(call, {
+                success: false,
+                result: { error: 'Tool result missing (internal error)' },
+              }, callIndex);
             }
-          } // end if (!batchRejected)
+          }
+        } // end if (!batchRejected)
 
-          // 如果在 tool 执行中被中断，结束当前 call
-          // 同时检查 signal?.aborted：当 abort 在并行工具 race 或单个工具执行期间触发时，
-          // interrupted 标志不会被设置（只有 pre-check 和 serial 循环头部会设），
-          // 但工具已通过 ToolInterruptError 返回了 error result，此时应立即退出。
-          if (interrupted || signal?.aborted) {
+        // 如果在 tool 执行中被用户中断，结束当前 call。
+        // 同时检查 signal?.aborted：当 abort 在并行工具 race 或单个工具执行期间触发时，
+        // interrupted 标志不会被设置（只有 pre-check 和 serial 循环头部会设），
+        // 但工具已通过 ToolInterruptError 返回了 error result，此时应立即退出。
+        //
+        // timeout 终止（interrupted.reason === 'timeout'）不在此列：结果已带元数据
+        // 写入 context，循环继续，由模型决定下一步。
+        if (interrupted || signal?.aborted || userTerminated) {
             this.pushToDebug(context.getAll());
             const lastContent = context.getAll().filter(m => m.role === 'assistant' && m.content).pop();
             finalResponse = lastContent?.content ?? response.content ?? '';

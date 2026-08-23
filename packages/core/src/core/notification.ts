@@ -280,6 +280,39 @@ export function createToolComplete(
   };
 }
 
+/** tool.progress 通知 data：工具执行中的进度信号（ticket 023，schema 定义）。 */
+export interface ToolProgressData {
+  /** LLM 生成的 call.id（与 tool_call 条目配对） */
+  callId: string;
+  /** 工具名称 */
+  toolName: string;
+  /** 工具开始执行的 Unix 毫秒时间戳 */
+  startedAt: number;
+  /** 已执行时长（毫秒），由发射方计算 */
+  elapsedMs: number;
+  /** 本调用的生效超时（毫秒）；工具未声明 timeout 时为 null */
+  timeoutMs: number | null;
+  /** 输出尾部文本；由发射方截尾，本票只定 schema */
+  outputTail?: string;
+}
+
+/**
+ * 创建工具进度通知（state 类，自动获得通知系统节流）
+ *
+ * 执行中可见性通道（ADR-0005）：长任务工具可周期性发射，前端据此渲染
+ * "已运行 Ns / 超时 Xm / 尾部输出" 卡片。不进 session-events 审计流——
+ * 审计关心终态（interrupted 字段已覆盖），不节流的事件流加尾部输出会让
+ * 无头 jsonl 爆炸。发射方负责 outputTail 截尾。
+ */
+export function createToolProgress(data: ToolProgressData): Notification {
+  return {
+    type: 'tool.progress',
+    category: 'state',
+    timestamp: Date.now(),
+    data: { ...data },
+  };
+}
+
 /**
  * 创建 Call 开始通知
  */

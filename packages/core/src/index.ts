@@ -18,7 +18,7 @@ export { createTool, ToolRegistry } from './core/tool.js';
 export { DebugHub } from './core/debug-hub.js';
 export { createLogger, emitLog, installConsoleBridge, runWithLogScope } from './core/logging.js';
 export type { Logger, LoggerBindings } from './core/logging.js';
-export { createLLMRetry, emitNotification, createLLMCharCount, createLLMComplete } from './core/notification.js';
+export { createLLMRetry, emitNotification, createLLMCharCount, createLLMComplete, createToolProgress } from './core/notification.js';
 
 // LLM 重试与错误分类契约（ReAct 循环与 @agentdev/llm 共同消费）
 export {
@@ -37,7 +37,7 @@ export {
   extractErrorCode,
   sleep,
 } from './core/retry.js';
-export type { LLMRetryData } from './core/notification.js';
+export type { LLMRetryData, ToolProgressData } from './core/notification.js';
 export { subscribeSessionEvents, emitSessionEvent } from './core/session-events.js';
 export type { SessionEvent, SessionItem, SessionEventListener, TurnUsage, TurnFailure } from './core/session-events.js';
 export { FileSessionStore, getDefaultSessionStore } from './core/session-store.js';
@@ -138,6 +138,7 @@ export type {
   ToolCall,
   ToolExecutionContext,
   ToolResultValue,
+  ToolTerminationReason,
   LLMResponse,
   LLMClient,
   LLMMeta,

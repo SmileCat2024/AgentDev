@@ -61,6 +61,12 @@ export interface ToolCallItem extends SessionItemBase {
   result?: unknown;
   /** 失败时的错误信息 */
   error?: string;
+  /**
+   * 终止标注（ticket 023 / ADR-0005）：工具被超时/用户打断终止但仍在 settle
+   * 窗口内收尾时出现。success 结果可携带此字段，无头 jsonl 审计据此区分
+   * 正常完成与被终止收尾。
+   */
+  interrupted?: { reason: 'timeout' | 'user' };
 }
 
 export type SessionItem = AgentMessageItem | ReasoningItem | ToolCallItem;
@@ -193,6 +199,7 @@ export function emitToolResultEvents(call: ToolCall, result: ToolExecResult, tur
       ...(result.success
         ? { result: result.result }
         : { error: result.error ?? 'tool execution failed' }),
+      ...(result.interrupted ? { interrupted: result.interrupted } : {}),
     },
   });
 }

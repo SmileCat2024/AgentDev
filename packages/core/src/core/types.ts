@@ -109,6 +109,14 @@ export type RuntimeStage =
   | 'failed'
   | 'cancelled';
 
+/**
+ * 工具终止原因（ticket 023 / ADR-0005）
+ *
+ * - 'timeout'：框架统一超时计时触发（Tool 声明 timeout 后生效）
+ * - 'user'：外部用户中断（Agent.interrupt() 触发的 abort signal）
+ */
+export type ToolTerminationReason = 'timeout' | 'user';
+
 export interface AgentRuntimeStateSnapshot {
   stage: RuntimeStage;
   callActive: boolean;
@@ -139,8 +147,17 @@ export interface AgentRuntimeStateSnapshot {
  * 可以扩展额外字段。
  */
 export interface ToolExecutionContext {
-  /** 中断信号，用于取消工具执行 */
+  /** 中断信号，用于取消工具执行（外部用户中断与框架超时合并后的 signal） */
   signal?: AbortSignal;
+  /** 当前工具调用的 LLM 生成 call.id（tool.progress 等进度信号配对用） */
+  callId?: string;
+  /**
+   * 查询当前工具执行是否已被终止及终止原因（ticket 023）。
+   *
+   * 返回 null 表示尚未终止；工具可据此在结果中填写模型可读的终止元数据。
+   * reason 不挂在 AbortSignal 上（signal 保持标准形状），统一经此函数查询。
+   */
+  termination?: () => ToolTerminationReason | null;
   /** 注册 continuation request（供 checkpoint/rollback 等控制流工具使用） */
   registerContinuationRequest?: (request: CallContinuationRequest) => void;
   /** Feature 通过 contextInjectors 注入的自定义属性 */
@@ -192,6 +209,21 @@ export interface Tool {
    *   或其副作用不会与同批次其他工具冲突
    */
   parallelizable?: boolean;
+  /**
+   * 超时契约声明（ticket 023 / ADR-0005）。
+   *
+   * 声明后由框架执行器统一计时：超时触发合并 AbortSignal（reason=timeout），
+   * 并给工具一个 settle 窗口优雅收尾；未声明的工具不受框架超时管辖，行为不变。
+   *
+   * - defaultMs: 默认超时（模型未通过 fromArg 参数覆盖时生效）
+   * - maxMs: 生效超时的硬上限，任何来源的超时值都会被 clamp 到 [1, maxMs]
+   * - fromArg: 可选参数名；声明后生效超时取 args[fromArg]（数字），再 clamp
+   */
+  timeout?: {
+    defaultMs: number;
+    maxMs: number;
+    fromArg?: string;
+  };
 }
 
 /**

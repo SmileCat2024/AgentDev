@@ -3,8 +3,11 @@ export const VIEWER_JS_STATE = `    // Feature 模板映射（从 API 动态加�
 
     // 加载 Feature 模板映射
     async function loadFeatureTemplateMap() {
+      if (!currentAgentId) {
+        return false;
+      }
       try {
-        const response = await fetch('/api/templates/feature' + (currentAgentId ? '?agentId=' + encodeURIComponent(currentAgentId) : ''));
+        const response = await fetch('/api/templates/feature?agentId=' + encodeURIComponent(currentAgentId));
         if (response.ok) {
           const data = await response.json();
           if (Object.keys(data).length > 0) {

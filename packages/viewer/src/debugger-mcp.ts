@@ -184,12 +184,12 @@ export class DebuggerMCPServer {
       title: 'Get Agent',
       description: 'Get a single agent by id. Supports "self".',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID or "self" (resolves to the caller agent). Explicit ID is expected.'),
+        agentId: z.string().min(1).describe('Explicit Agent ID or "self" (resolves to the caller agent).'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
       }),
     }, async ({ agentId, callerAgentId }) => {
-      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId);
-      const agent = resolvedAgentId ? this.dataSource.getAgent(resolvedAgentId) : undefined;
+      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId, { required: true });
+      const agent = this.dataSource.getAgent(resolvedAgentId);
       return createTextResult(jsonText({
         requestedAgentId: agentId ?? null,
         resolvedAgentId,
@@ -205,12 +205,12 @@ export class DebuggerMCPServer {
       title: 'Get Hooks',
       description: 'Get the hook inspector snapshot for an agent.',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID or "self" (resolves to the caller agent). Explicit ID is expected.'),
+        agentId: z.string().min(1).describe('Explicit Agent ID or "self" (resolves to the caller agent).'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
       }),
     }, async ({ agentId, callerAgentId }) => {
-      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId);
-      const hooks = resolvedAgentId ? this.dataSource.getHooks(resolvedAgentId) : undefined;
+      const resolvedAgentId = this.resolveAgentRef(agentId, callerAgentId, { required: true });
+      const hooks = this.dataSource.getHooks(resolvedAgentId);
       return createTextResult(jsonText({
         requestedAgentId: agentId ?? null,
         resolvedAgentId,
@@ -226,9 +226,9 @@ export class DebuggerMCPServer {
       title: 'Query Logs',
       description: 'Query structured logs. Use filters to narrow results; unfiltered queries are auto-truncated with guidance to refine.',
       inputSchema: z.object({
-        agentId: z.string().optional().describe('Agent ID or "self" (resolves to the caller agent). Omit with scope=all to query every agent.'),
+        agentId: z.string().min(1).optional().describe('Explicit Agent ID or "self" (resolves to the caller agent). Required with scope=current; omit only with scope=all.'),
         callerAgentId: z.string().optional().describe('Optional caller agent id used to resolve "self".'),
-        scope: z.enum(['current', 'all']).optional().describe('Scope: "current" (single agent, requires agentId) or "all".'),
+        scope: z.enum(['current', 'all']).optional().describe('Scope: "current" (requires agentId) or "all".'),
         level: z.string().optional().describe('Exact log level filter, for example "error" or "warn".'),
         namespace: z.string().optional().describe('Substring match on the log namespace.'),
         feature: z.string().optional().describe('Exact feature name filter.'),
@@ -240,8 +240,10 @@ export class DebuggerMCPServer {
         search: z.string().optional().describe('Substring search over the log message and serialized JSON payload/context.'),
       }),
     }, async (args) => {
-      const resolvedAgentId = this.resolveAgentRef(args.agentId, args.callerAgentId);
       const scope = args.scope === 'all' ? 'all' : 'current';
+      const resolvedAgentId = scope === 'current'
+        ? this.resolveAgentRef(args.agentId, args.callerAgentId, { required: true })
+        : this.resolveAgentRef(args.agentId, args.callerAgentId);
       const queryAgentId = resolvedAgentId || undefined;
       const result = this.dataSource.queryLogs({
         scope,
@@ -341,11 +343,11 @@ export class DebuggerMCPServer {
       title: 'Analyze Errors',
       description: 'Summarize recent error logs for an agent and suggest likely causes.',
       argsSchema: {
-        agentId: z.string().optional().describe('Agent ID. Use list_agents to discover IDs.'),
+        agentId: z.string().min(1).describe('Explicit Agent ID. Use list_agents to discover IDs.'),
       },
     }, async ({ agentId }) => {
       const resolvedAgentId = this.resolvePromptAgent(agentId);
-      const agent = resolvedAgentId ? this.dataSource.getAgent(resolvedAgentId) : undefined;
+      const agent = this.dataSource.getAgent(resolvedAgentId);
       const logs = this.dataSource.queryLogs({
         scope: 'current',
         agentId: resolvedAgentId,
@@ -380,12 +382,12 @@ export class DebuggerMCPServer {
       title: 'Review Hooks',
       description: 'Review an agent hook snapshot and identify ordering or binding issues.',
       argsSchema: {
-        agentId: z.string().optional().describe('Agent ID. Use list_agents to discover IDs.'),
+        agentId: z.string().min(1).describe('Explicit Agent ID. Use list_agents to discover IDs.'),
       },
     }, async ({ agentId }) => {
       const resolvedAgentId = this.resolvePromptAgent(agentId);
-      const hooks = resolvedAgentId ? this.dataSource.getHooks(resolvedAgentId) : undefined;
-      const agent = resolvedAgentId ? this.dataSource.getAgent(resolvedAgentId) : undefined;
+      const hooks = this.dataSource.getHooks(resolvedAgentId);
+      const agent = this.dataSource.getAgent(resolvedAgentId);
 
       return {
         messages: [{
@@ -414,12 +416,12 @@ export class DebuggerMCPServer {
       title: 'Diagnose Agent',
       description: 'Produce a high-level diagnosis from the current agent snapshot, hooks, and recent warnings/errors.',
       argsSchema: {
-        agentId: z.string().optional().describe('Agent ID. Use list_agents to discover IDs.'),
+        agentId: z.string().min(1).describe('Explicit Agent ID. Use list_agents to discover IDs.'),
       },
     }, async ({ agentId }) => {
       const resolvedAgentId = this.resolvePromptAgent(agentId);
-      const agent = resolvedAgentId ? this.dataSource.getAgent(resolvedAgentId) : undefined;
-      const hooks = resolvedAgentId ? this.dataSource.getHooks(resolvedAgentId) : undefined;
+      const agent = this.dataSource.getAgent(resolvedAgentId);
+      const hooks = this.dataSource.getHooks(resolvedAgentId);
       const logs = this.dataSource.queryLogs({
         scope: 'current',
         agentId: resolvedAgentId,
@@ -458,29 +460,38 @@ export class DebuggerMCPServer {
    * current 语义移除，显式报错引导调用方传显式 ID；缺省返回 null（由调用方决定
    * 如何呈现"未指定"）。
    */
-  private resolvePromptAgent(agentId: string | undefined): string | null {
-    if (agentId === 'current') {
-      throw new Error("the 'current' pseudo-id was removed; pass an explicit agentId or 'self'");
-    }
-    if (agentId === 'self') {
-      return null;
-    }
-    return agentId || null;
+  private resolvePromptAgent(agentId: string | undefined): string {
+    return this.resolveAgentRef(agentId, undefined, { required: true });
   }
 
   private resolveAgentRef(
     requestedAgentId: string | undefined,
-    callerAgentId: string | undefined
+    callerAgentId: string | undefined,
+    options: { required: true },
+  ): string;
+
+  private resolveAgentRef(
+    requestedAgentId: string | undefined,
+    callerAgentId: string | undefined,
+    options?: { required?: false },
+  ): string | null;
+
+  private resolveAgentRef(
+    requestedAgentId: string | undefined,
+    callerAgentId: string | undefined,
+    { required = false }: { required?: boolean } = {},
   ): string | null {
     if (requestedAgentId === 'current') {
       throw new Error("the 'current' pseudo-id was removed; pass an explicit agentId or 'self'");
     }
 
-    if (requestedAgentId === 'self') {
-      return callerAgentId || null;
+    const resolved = requestedAgentId === 'self'
+      ? callerAgentId || null
+      : requestedAgentId?.trim() || null;
+    if (required && !resolved) {
+      throw new Error('an explicit agentId is required for this runtime-scoped operation');
     }
-
-    return requestedAgentId || null;
+    return resolved;
   }
 
   private stringVar(value: unknown): string | undefined {

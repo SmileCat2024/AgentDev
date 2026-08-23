@@ -407,10 +407,12 @@ export class ToolExecutor {
           const signal = mergedController.signal;
           toolContext = { ...toolContext, signal };
 
-          // 覆盖 termination()：接通本调用的终止原因记录
+          // 覆盖 termination()：接通本调用的终止原因记录；
+          // 暴露生效 timeoutMs（进度发射用，ticket 025）
           toolContext = {
             ...toolContext,
             termination: () => terminationReason,
+            timeoutMs,
           };
 
           // 终止信号触发后不再立即 reject：先给工具最多 TOOL_TERMINATION_SETTLE_MS

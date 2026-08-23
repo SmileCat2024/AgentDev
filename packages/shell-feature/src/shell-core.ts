@@ -16,9 +16,16 @@ import { spawn } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
 import * as path from 'path';
 import type { ToolTerminationReason } from '@agentdev/core';
+import { emitNotification, createToolProgress } from '@agentdev/core';
 
 /** drain 上限：kill 后等待管道 EOF 的时间（孙进程占 pipe 兜底）。 */
 const TERMINATION_DRAIN_MS = 1000;
+
+/** 进度发射节流（工单 025）：notification 层另有 100ms 节流兜底。 */
+const PROGRESS_EMIT_INTERVAL_MS = 300;
+
+/** 进度 outputTail 行数上限。 */
+const PROGRESS_TAIL_LINES = 5;
 
 /** 元数据块标记（仅终止态出现在结果尾部）。 */
 export const SHELL_METADATA_OPEN = '<shell_metadata>';
@@ -35,6 +42,26 @@ export interface ShellRunContext {
   signal?: AbortSignal;
   /** 终止原因查询（executor 注入；未走终止协议时恒返回 null） */
   termination?: () => ToolTerminationReason | null;
+  /**
+   * 进度发射上下文（工单 025）：提供后执行中每 ~300ms 发射一次
+   * tool.progress 通知；缺省不发射（纯增量，行为不变）。
+   */
+  progress?: {
+    /** LLM 生成的 call.id */
+    callId?: string;
+    /** 工具名称 */
+    toolName: string;
+    /** 本次调用生效超时（毫秒）；未声明 timeout 时为 null */
+    timeoutMs: number | null;
+  };
+}
+
+/** 取输出尾部 N 行（进度预览）。 */
+function tailLines(text: string, lines: number): string {
+  if (!text) return '';
+  const parts = text.split('\n');
+  const tail = parts.slice(-lines).join('\n');
+  return tail.length > 500 ? tail.slice(-500) : tail;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +234,7 @@ export interface SharedRunOptions extends ShellRunContext {
 export function runCollectedProcess(
   opts: SharedRunOptions,
 ): Promise<ShellRunResult> {
-  const { workdir, logPrefix, signal, termination } = opts;
+  const { workdir, logPrefix, signal, termination, progress } = opts;
 
   const startedAt = Date.now();
   const cleanForRun = (raw: string): string =>
@@ -218,6 +245,40 @@ export function runCollectedProcess(
     let stdout = '';
     let stderr = '';
     let settled = false;
+
+    // 进度发射（工单 025）：~300ms 节流，发射失败静默忽略（纯呈现通道）
+    let lastProgressAt = 0;
+    let progressTimer: ReturnType<typeof setInterval> | null = null;
+    const stopProgressTimer = () => {
+      if (progressTimer !== null) {
+        clearInterval(progressTimer);
+        progressTimer = null;
+      }
+    };
+    const emitProgress = () => {
+      if (!progress) return;
+      const now = Date.now();
+      if (now - lastProgressAt < PROGRESS_EMIT_INTERVAL_MS) return;
+      lastProgressAt = now;
+      try {
+        emitNotification(createToolProgress({
+          callId: progress.callId ?? '',
+          toolName: progress.toolName,
+          startedAt,
+          elapsedMs: now - startedAt,
+          timeoutMs: progress.timeoutMs,
+          outputTail: tailLines(stdout || stderr, PROGRESS_TAIL_LINES),
+        }));
+      } catch {
+        // 进度是纯增量呈现通道，任何失败不影响执行主流程
+      }
+    };
+
+    /** settle 收尾统一出口：停进度计时器 */
+    const finishSettled = (fn: () => void) => {
+      stopProgressTimer();
+      fn();
+    };
 
     /** 终止态收尾：已积累输出无条件落盘 → 组装「部分输出 + 元数据块」结果。 */
     const finishTerminated = async (): Promise<ShellRunResult> => {
@@ -256,6 +317,13 @@ export function runCollectedProcess(
 
     const killChild = makeKillChild(child);
 
+    // 执行开始：启动进度周期发射
+    if (progress) {
+      emitProgress();
+      progressTimer = setInterval(emitProgress, PROGRESS_EMIT_INTERVAL_MS);
+      progressTimer.unref?.();
+    }
+
     const cleanupSignal = () => {
       signal?.removeEventListener('abort', onAbort);
     };
@@ -268,12 +336,13 @@ export function runCollectedProcess(
       if (settled) return;
       settled = true;
       cleanupSignal();
+      stopProgressTimer();
       console.log(`${logPrefix} signal abort detected, killing child PID=${child.pid}`);
       killChild();
       void drainToEof(child, TERMINATION_DRAIN_MS)
         .then(finishTerminated)
-        .then(resolve)
-        .catch(reject);
+        .then((value) => finishSettled(() => resolve(value)))
+        .catch((err) => finishSettled(() => reject(err)));
     };
 
     const onAbort = () => terminateAndCollect();
@@ -299,12 +368,15 @@ export function runCollectedProcess(
       if (settled) return;
       settled = true;
       cleanupSignal();
+      stopProgressTimer();
 
       const cleanStderr = cleanForRun(stderr);
 
       if (signal?.aborted) {
         // close 在终止收集之后到达（罕见竞态）：仍以终止态收尾
-        void finishTerminated().then(resolve).catch(reject);
+        void finishTerminated()
+          .then((value) => finishSettled(() => resolve(value)))
+          .catch((err) => finishSettled(() => reject(err)));
         return;
       }
 
@@ -314,21 +386,21 @@ export function runCollectedProcess(
           processOutputWithPersistence(stdout || '', workdir),
           processOutputWithPersistence(cleanStderr || '', workdir),
         ]).then(([truncatedStdout, truncatedStderr]) => {
-          resolve({
+          finishSettled(() => resolve({
             stdout: truncatedStdout[0],
             stderr: truncatedStderr[0],
             output: truncatedStdout[0] || truncatedStderr[0],
-          });
+          }));
         }).catch(err => {
-          reject(err);
+          finishSettled(() => reject(err));
         });
       } else {
         // 失败：合并 stdout + stderr 后统一截断（现状语义）
         const combined = [stdout, cleanStderr].filter(Boolean).join('\n\n--- stderr ---\n');
         processOutputWithPersistence(combined, workdir).then(([truncated]) => {
-          reject(new Error(truncated || `Command failed with exit code ${code}`));
+          finishSettled(() => reject(new Error(truncated || `Command failed with exit code ${code}`)));
         }).catch(err => {
-          reject(err);
+          finishSettled(() => reject(err));
         });
       }
     });
@@ -337,7 +409,7 @@ export function runCollectedProcess(
       if (settled) return;
       settled = true;
       cleanupSignal();
-      reject(err);
+      finishSettled(() => reject(err));
     });
   });
 }

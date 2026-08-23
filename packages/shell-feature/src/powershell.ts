@@ -12,6 +12,7 @@ import type { Tool } from '@agentdev/core';
 import { createTool } from '@agentdev/core';
 import {
   runCollectedProcess,
+  type ShellRunContext,
 } from './shell-core.js';
 
 // ---------------------------------------------------------------------------
@@ -108,7 +109,7 @@ export interface PowerShellToolOptions {
 export async function runPowerShellCommand(
   command: string,
   options: PowerShellToolOptions = {},
-  context?: { signal?: AbortSignal; termination?: () => 'timeout' | 'user' | null },
+  context?: ShellRunContext,
 ): Promise<{ stdout: string; stderr: string; output: string }> {
   const workspaceDir = options.workspaceDir || process.cwd();
   const workdir = options.workdir || workspaceDir;
@@ -158,9 +159,16 @@ export function createPowerShellTool(
     },
     execute: async (args, context) => {
       const { command } = args as { command: string };
+      // 生效超时（executor clamp 后）经 toolContext 透传（工单 025 进度显示）
+      const effectiveTimeoutMs = typeof context?.timeoutMs === 'number' ? context.timeoutMs : null;
       const result = await runPowerShellCommand(command, options, {
         signal: context?.signal,
         termination: context?.termination,
+        progress: {
+          callId: context?.callId,
+          toolName: 'powershell',
+          timeoutMs: effectiveTimeoutMs,
+        },
       });
       return result.output;
     },

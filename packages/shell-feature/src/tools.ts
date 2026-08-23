@@ -28,6 +28,8 @@ import {
 } from './shellQuoting.js';
 import {
   runCollectedProcess,
+  // ShellRunContext 复用共享运行核心的上下文形状（signal/termination/progress）
+  type ShellRunContext,
 } from './shell-core.js';
 
 export interface ShellCommandToolOptions {
@@ -140,7 +142,7 @@ const MAX_TIMEOUT_MS = 600_000;     // 10 minutes
 export async function runShellCommand(
   command: string,
   options: ShellCommandToolOptions = {},
-  context?: { signal?: AbortSignal; termination?: () => 'timeout' | 'user' | null },
+  context?: ShellRunContext,
 ): Promise<ShellExecutionResult> {
   const workspaceDir = options.workspaceDir || process.cwd();
   const workdir = options.workdir || workspaceDir;
@@ -218,9 +220,16 @@ export function createShellCommandTool(
     },
     execute: async (args, context) => {
       const { command } = args as { command: string };
+      // 生效超时（executor clamp 后）经 toolContext 透传（工单 025 进度显示）
+      const effectiveTimeoutMs = typeof context?.timeoutMs === 'number' ? context.timeoutMs : null;
       const result = await runShellCommand(command, options, {
         signal: context?.signal,
         termination: context?.termination,
+        progress: {
+          callId: context?.callId,
+          toolName: 'bash',
+          timeoutMs: effectiveTimeoutMs,
+        },
       });
       return result.output;
     },

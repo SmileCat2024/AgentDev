@@ -158,6 +158,8 @@ export interface ToolExecutionContext {
    * reason 不挂在 AbortSignal 上（signal 保持标准形状），统一经此函数查询。
    */
   termination?: () => ToolTerminationReason | null;
+  /** 本次调用生效的超时（毫秒，含 args 覆盖后的 clamp 结果）；仅声明 timeout 的工具注入（ticket 025 进度显示用） */
+  timeoutMs?: number;
   /** 注册 continuation request（供 checkpoint/rollback 等控制流工具使用） */
   registerContinuationRequest?: (request: CallContinuationRequest) => void;
   /** Feature 通过 contextInjectors 注入的自定义属性 */

@@ -18,6 +18,7 @@ import type {
   ParsedContent,
   ImageInput,
   MessageExecutionMeta,
+  ToolTerminationReason,
 } from './types.js';
 import { cloneMessages } from './message.js';
 import { ContextQuery } from './context-query.js';
@@ -55,6 +56,12 @@ export interface ToolExecResult {
   success: boolean;
   result: string | Record<string, any>;
   error?: string;
+  /**
+   * 终止标注（ticket 023 / ADR-0005）：工具被超时/用户打断终止但仍在 settle
+   * 窗口内收尾时，结果以 success: true 返回并携带此字段。
+   * reason: 'timeout'（框架统一超时）| 'user'（外部用户中断）。
+   */
+  interrupted?: { reason: ToolTerminationReason };
   /** 工具返回的图片（注入到 tool 消息，视觉模式下传给 LLM） */
   images?: ImageInput[];
   /** 前端展示数据（不注入 LLM，仅 tool 消息） */
@@ -345,6 +352,7 @@ export class Context {
       success: result.success,
       result: result.result,
       ...(result.error ? { error: result.error } : {}),
+      ...(result.interrupted ? { interrupted: result.interrupted } : {}),
     });
     this.addSerializedToolMessage(call.id, content, turn, result.images, result.display);
   }

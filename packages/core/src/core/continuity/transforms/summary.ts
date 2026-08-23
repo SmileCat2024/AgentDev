@@ -31,14 +31,14 @@ import {
 
 // ============ 提示词（以 claude-compact-prompts.js 为蓝本） ============
 
-const BASE_SUMMARY_PROMPT = `你的任务是为当前对话创建一份详细摘要，重点关注用户的明确请求和你之前采取的行动。
+const BASE_SUMMARY_PROMPT = `你的任务是为当前对话创建一份详细摘要，重点关注用户的明确请求和该 agent 之前采取的行动。
 这份摘要应保留恢复工作所需的任务连续性关键信息。
 
 按时间顺序分析对话：
 
 1. 识别用户的明确请求和意图
 2. 保留用户较为模糊的术语概念与情况表述，不做过多推测与转述
-3. 识别你的方法和关键决策，以及用户的反馈，特别注意自己曾理解有误，或后续改变了方向的用户反馈
+3. 识别该 agent 的方法和关键决策，以及用户的反馈，特别注意该 agent 曾理解有误、或后续改变方向的用户反馈
 4. 记录与用户探讨的重要结论，以及最终放弃、或纠正某些决策的原因
 5. 记录当前讨论要点之于整个项目的层次，以及重要的技术概念、文件名、代码模式
 6. 记录遇到的错误及修复方式
@@ -239,16 +239,87 @@ function extractMessages(snapshot: AgentSessionSnapshot): any[] {
     : [];
 }
 
+/**
+ * 身份澄清前缀：摘要请求携带原会话完整记录注入，需明确告知模型
+ * 这是一份已存在的会话记录而非其真实交互，防止模型代入原 agent 身份
+ * （尤其当记录中途残留原身份相关内容时）。
+ */
+const SUMMARY_ROLE_PREAMBLE = `以下呈现的是一份已经存在的会话记录（transcript）。注意：这份记录不是你与任何人的真实交互，你也不是该会话中的任何角色——不要代入其中 agent 的身份，不要延续其中的任务或对话。你的唯一任务是：以旁观者身份，按本提示的要求为这份完整记录撰写摘要。`;
+
+/** 结尾锚定：标记会话记录到此为止，其上全部内容才是概括对象。 */
+const SUMMARY_CLOSING_ANCHOR = '会话记录到此为止。请基于以上全部记录，按照系统提示的要求输出摘要；不要续写会话，不要扮演其中的任何角色。';
+
+/** 单条工具返回注入摘要请求的最大字符数（长输出截断，防止撑爆上下文）。 */
+const TOOL_RESULT_MAX_CHARS = 1200;
+
+function truncateToolResult(content: unknown): string {
+  const text = typeof content === 'string' ? content : '';
+  if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n…(返回已截断，原始长度 ${text.length} 字符)`;
+}
+
+/** 调用签名（与 folded-tool-activity 折叠行同格式）：read/edit/write 取文件名，invoke_skill 取技能名，其余用工具名。 */
+function toolCallSignature(call: any): string {
+  const name = typeof call?.name === 'string' && call.name ? call.name : 'tool';
+  let args = call?.arguments ?? call?.args;
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { args = null; }
+  }
+  if (args && typeof args === 'object') {
+    const record = args as Record<string, unknown>;
+    const filePath = typeof record.filePath === 'string' ? record.filePath : '';
+    if ((name === 'read' || name === 'edit' || name === 'write') && filePath) {
+      return `${name}(${filePath.split(/[\\/]/).pop() || filePath})`;
+    }
+    if (name === 'invoke_skill' && typeof record.skill === 'string') {
+      return `invoke_skill(${record.skill})`;
+    }
+  }
+  return name;
+}
+
 function buildChatMessages(snapshot: AgentSessionSnapshot, prompt: string): Message[] {
   const rawMessages = extractMessages(snapshot);
-  const sys: Message = { role: 'system', content: prompt };
-  const history: Message[] = rawMessages.map((m) => ({
-    role: m?.role,
-    content: typeof m?.content === 'string' ? m.content : '',
-    turn: m?.turn,
-    ...(m?.tag ? { tag: m.tag } : {}),
-  } as Message));
-  return [sys, ...history].filter((m) => m.role === 'system' || m.role === 'user' || m.role === 'assistant');
+  const sys: Message = { role: 'system', content: `${SUMMARY_ROLE_PREAMBLE}\n\n${prompt}` };
+  // 剥离会话头部的静态 system 前缀（身份设定、环境文档、全局约束），
+  // 由摘要指令替换其成为唯一 system 前缀，避免模型在摘要请求中继续扮演原 agent。
+  // 对话中途注入的 system（folded-tool-activity、前轮摘要 seed、任务状态等）
+  // 不在头部前缀内，作为摘要素材原样保留。
+  let headEnd = 0;
+  while (headEnd < rawMessages.length && rawMessages[headEnd]?.role === 'system') headEnd++;
+
+  // 工具返回配对表：toolCallId → 调用签名，让摘要模型能把每条返回对应到具体调用。
+  // 补偿型摘要的增量信息（文件内容、命令输出、报错原文）都在工具返回里，
+  // 必须随对话主体一起进入摘要请求，否则模型只能依赖 assistant 的转述。
+  const callSignatures = new Map<string, string>();
+  for (const m of rawMessages) {
+    if (m?.role !== 'assistant' || !Array.isArray(m.toolCalls)) continue;
+    for (const tc of m.toolCalls) {
+      const id = typeof tc?.id === 'string' ? tc.id : '';
+      if (id) callSignatures.set(id, toolCallSignature(tc));
+    }
+  }
+
+  const history: Message[] = [];
+  for (const m of rawMessages.slice(headEnd)) {
+    if (m?.role === 'tool') {
+      const signature = (typeof m?.toolCallId === 'string' && callSignatures.get(m.toolCallId)) || '未匹配调用';
+      history.push({
+        role: 'system',
+        content: `[工具返回 ${signature}]\n${truncateToolResult(m?.content)}`,
+        tag: 'tool-result',
+      } as Message);
+      continue;
+    }
+    history.push({
+      role: m?.role,
+      content: typeof m?.content === 'string' ? m.content : '',
+      turn: m?.turn,
+      ...(m?.tag ? { tag: m.tag } : {}),
+    } as Message);
+  }
+  const closing: Message = { role: 'user', content: SUMMARY_CLOSING_ANCHOR };
+  return [sys, ...history, closing].filter((m) => m.role === 'system' || m.role === 'user' || m.role === 'assistant');
 }
 
 /** 调用 llm 生成摘要文本（空工具集、非流式）。失败时抛出。 */

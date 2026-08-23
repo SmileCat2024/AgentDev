@@ -4,7 +4,7 @@
  * 封装单个工具的执行逻辑
  */
 
-import type { ToolCall, Message, ToolExecutionContext } from '../types.js';
+import type { ToolCall, Message, ToolExecutionContext, ToolTerminationReason } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
 import type { AgentFeature, ContextInjector } from '../feature.js';
@@ -19,14 +19,37 @@ import { createLogger, runWithLogScope } from '../logging.js';
 const logger = createLogger('agent.tool');
 
 /**
+ * settle 窗口时长（ticket 023 / ADR-0005）。
+ *
+ * 终止信号（超时/用户打断）触发后，不再立即 reject，而是给工具最多这个时长
+ * 优雅收尾：窗口内 resolve 的结果正常返回（success: true + interrupted 标注）；
+ * 超窗未收尾才降级为 ToolInterruptError 路径。
+ */
+export const TOOL_TERMINATION_SETTLE_MS = 1000;
+
+/** 合并 controller 的终止原因 → 结果标注的 reason 映射相同；此处仅约束类型。 */
+type TerminationSource = ToolTerminationReason;
+
+/** 执行并清空清理函数列表（abort listener / 超时计时器等一次性资源）。 */
+function runCleanupFns(fns: Array<() => void>): void {
+  for (const fn of fns.splice(0)) {
+    try {
+      fn();
+    } catch {
+      // 清理失败不影响主流程
+    }
+  }
+}
+
+/**
  * 工具中断错误
  *
  * 当 AbortSignal 触发时，Promise.race 中此错误被抛出，
  * 使工具执行立即结束，不等实际工具完成。
  */
 class ToolInterruptError extends Error {
-  constructor() {
-    super('Interrupted by user');
+  constructor(public readonly reason: TerminationSource = 'user') {
+    super(reason === 'timeout' ? 'Tool timed out' : 'Interrupted by user');
     this.name = 'AbortError';
   }
 }
@@ -51,6 +74,37 @@ export class ToolExecutor {
     private onToolFinishedFn: (result: ToolResult) => Promise<void>,
     private hooksRegistry: HooksRegistry
   ) {}
+
+  /**
+   * 工具成功返回值 → ToolExecResult（保留 images / display 分离协议，
+   * 可选携带终止标注）。
+   */
+  private buildSuccessExecResult(
+    data: unknown,
+    interrupted?: { reason: TerminationSource },
+  ): ToolExecResult {
+    if (isWithImagesResult(data)) {
+      return {
+        success: true,
+        result: data.text,
+        images: data.images,
+        ...(interrupted ? { interrupted } : {}),
+      };
+    }
+    if (isWithDisplayResult(data)) {
+      return {
+        success: true,
+        result: data.text,
+        display: data.display,
+        ...(interrupted ? { interrupted } : {}),
+      };
+    }
+    return {
+      success: true,
+      result: typeof data === 'string' ? data : JSON.stringify(data),
+      ...(interrupted ? { interrupted } : {}),
+    };
+  }
 
   /**
    * 执行单个工具
@@ -215,6 +269,14 @@ export class ToolExecutor {
 
       let execResult: ToolExecResult;
 
+      // 一次性资源清理（超时计时器等）；正常路径在 race finally 中清理，
+      // 异常路径由 catch 兜底，避免计时器泄漏挂住进程退出。
+      const cleanupFns: Array<() => void> = [];
+      // 当前 call 的唯一终止事实。所有终止路径（包括 settle 超窗）都消费它，
+      // 禁止在下游按异常类型猜测 timeout/user。
+      let terminationReason: TerminationSource | null = null;
+      let terminationDeadline: number | null = null;
+
       try {
         // 执行工具
         // 使用声明的上下文注入器
@@ -222,24 +284,42 @@ export class ToolExecutor {
 
         for (const { pattern, injector } of this.contextInjectors) {
           if (typeof pattern === 'string' && pattern === call.name) {
-            toolContext = { ...toolContext, ...injector(call) };
+            toolContext = { ...(toolContext ?? {}), ...injector(call) };
           } else if (pattern instanceof RegExp && pattern.test(call.name)) {
-            toolContext = { ...toolContext, ...injector(call) };
+            toolContext = { ...(toolContext ?? {}), ...injector(call) };
           }
         }
 
-        // 传递 AbortSignal 给工具（支持中断）
-        const signal = this.parentAgent._abortController?.signal;
-        if (signal) {
-          toolContext = { ...toolContext, signal };
+        // ========== 生效超时值（ticket 023）==========
+        // clamp(fromArg ? args[fromArg] : defaultMs, 1, maxMs)
+        // 未声明 timeout 的工具不受框架超时管辖，行为完全不变。
+        const timeoutSpec = tool?.timeout;
+        let timeoutMs: number | undefined;
+        if (timeoutSpec && typeof timeoutSpec.defaultMs === 'number' && typeof timeoutSpec.maxMs === 'number' && timeoutSpec.maxMs > 0) {
+          const requested = timeoutSpec.fromArg
+            ? (call.arguments as Record<string, unknown>)?.[timeoutSpec.fromArg]
+            : timeoutSpec.defaultMs;
+          timeoutMs = Math.min(
+            Math.max(Number.isFinite(requested) ? Number(requested) : timeoutSpec.defaultMs, 1),
+            timeoutSpec.maxMs,
+          );
         }
 
         // 注入 continuation request sink（供控制工具使用）
         toolContext = {
-          ...toolContext,
+          ...(toolContext ?? {}),
           registerContinuationRequest: (request: import('../continuation.js').CallContinuationRequest) => {
             this.parentAgent.registerContinuationRequest(request);
           },
+        };
+
+        // 注入 callId 与终止原因查询函数（progress 配对 / 工具填写终止元数据）。
+        // 纯增量注入：未声明 timeout 的工具不读取即无感；legacy 路径下
+        // termination() 恒返回 null。
+        toolContext = {
+          ...toolContext,
+          ...(call.id !== undefined ? { callId: call.id } : {}),
+          termination: (): ToolTerminationReason | null => null,
         };
 
         try {
@@ -249,72 +329,193 @@ export class ToolExecutor {
           // Ignore notification failures.
         }
 
-        // ========== 框架级中断 ==========
-        // 将工具执行与 abort signal 竞争。
-        // 当 signal abort 时立即返回，不等待工具完成。
-        // 工具的实际执行在后台 fire-and-forget，其结果被丢弃。
+        // ========== 框架级终止（ticket 023 / ADR-0005）==========
         let data: unknown;
-        if (signal) {
+
+        if (timeoutMs === undefined) {
+          // ---------- 未声明 timeout：现状路径，行为与改动前逐字节一致 ----------
+          const signal = this.parentAgent._abortController?.signal;
+          if (signal) {
+            toolContext = { ...toolContext, signal };
+          }
           // 已中断则直接跳过
-          if (signal.aborted) {
+          if (signal?.aborted) {
             throw new ToolInterruptError();
           }
-          // 创建 abort 监听 Promise，并在 race 结束后清理 listener
-          let removeAbortListener: (() => void) | undefined;
-          const abortPromise = new Promise<never>((_, reject) => {
-            const onAbort = () => reject(new ToolInterruptError());
-            signal.addEventListener('abort', onAbort, { once: true });
-            removeAbortListener = () => signal.removeEventListener('abort', onAbort);
-          });
-          try {
-            data = await Promise.race([
-              tool.execute(call.arguments, toolContext),
-              abortPromise,
-            ]);
-          } finally {
-            removeAbortListener?.();
+          if (signal) {
+            // 将工具执行与 abort signal 竞争。
+            // 当 signal abort 时立即返回，不等待工具完成。
+            // 工具的实际执行在后台 fire-and-forget，其结果被丢弃。
+            let removeAbortListener: (() => void) | undefined;
+            const abortPromise = new Promise<never>((_, reject) => {
+              const onAbort = () => reject(new ToolInterruptError());
+              signal.addEventListener('abort', onAbort, { once: true });
+              removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+            });
+            try {
+              data = await Promise.race([
+                tool.execute(call.arguments, toolContext),
+                abortPromise,
+              ]);
+            } finally {
+              removeAbortListener?.();
+            }
+            // 如果工具完成后发现已被中断，仍然标记为 interrupted
+            if (signal.aborted) {
+              throw new ToolInterruptError();
+            }
+          } else {
+            data = await tool.execute(call.arguments, toolContext);
           }
+
+          result.success = true;
+          result.data = data;
+
+          execResult = this.buildSuccessExecResult(data);
+
         } else {
-          data = await tool.execute(call.arguments, toolContext);
-        }
+          // ---------- 声明 timeout：合并 signal + settle 窗口 ----------
+          const externalSignal = this.parentAgent._abortController?.signal;
 
-        // 如果工具完成后发现已被中断，仍然标记为 interrupted
-        if (signal?.aborted) {
-          throw new ToolInterruptError();
-        }
+          // per-call 合并 AbortController：外部用户中断与框架超时汇入同一个
+          // 合并 signal 传给工具；终止原因由执行器记录，经 termination()
+          // 查询（不往 AbortSignal 上挂非标属性）。
+          const mergedController = new AbortController();
+          let cleanupExternalListener: (() => void) | undefined;
+          if (externalSignal) {
+            const onExternalAbort = () => {
+              if (terminationReason === null) {
+                terminationReason = 'user';
+                terminationDeadline = Date.now() + TOOL_TERMINATION_SETTLE_MS;
+              }
+              mergedController.abort(externalSignal.reason);
+            };
+            if (externalSignal.aborted) {
+              onExternalAbort();
+            } else {
+              externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+              cleanupExternalListener = () => externalSignal.removeEventListener('abort', onExternalAbort);
+            }
+          }
 
-        result.success = true;
-        result.data = data;
+          const timeoutTimer = setTimeout(() => {
+            if (!mergedController.signal.aborted) {
+              terminationReason = 'timeout';
+              terminationDeadline = Date.now() + TOOL_TERMINATION_SETTLE_MS;
+            }
+            mergedController.abort(new Error(`Tool timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+          // 注册到统一清理：覆盖内层 race 之前提前 throw 的路径
+          // （如下方 signal.aborted 预检查），保证计时器必然被回收
+          cleanupFns.push(() => clearTimeout(timeoutTimer));
 
-        if (isWithImagesResult(data)) {
-          execResult = {
-            success: true,
-            result: data.text,
-            images: data.images,
+          const signal = mergedController.signal;
+          toolContext = { ...toolContext, signal };
+
+          // 覆盖 termination()：接通本调用的终止原因记录；
+          // 暴露生效 timeoutMs（进度发射用，ticket 025）
+          toolContext = {
+            ...toolContext,
+            termination: () => terminationReason,
+            terminationDeadline: () => terminationDeadline,
+            timeoutMs,
           };
-        } else if (isWithDisplayResult(data)) {
-          execResult = {
-            success: true,
-            result: data.text,
-            display: data.display,
-          };
-        } else {
-          execResult = {
-            success: true,
-            result: typeof data === 'string' ? data : JSON.stringify(data),
-          };
+
+          // 终止信号触发后不再立即 reject：先给工具最多 TOOL_TERMINATION_SETTLE_MS
+          // 的 settle 窗口优雅收尾。窗口内 resolve → 结果正常返回并标注 interrupted；
+          // 窗口内 throw → 走下方现有 catch；超窗未收尾 → 降级为 ToolInterruptError。
+          try {
+            // 已中断则直接跳过 settle（无输出可保留）
+            if (signal.aborted) {
+              throw new ToolInterruptError(terminationReason ?? 'user');
+            }
+            // 创建 abort 监听 Promise，并在 race 结束后清理 listener
+            let removeAbortListener: (() => void) | undefined;
+            const abortPromise = new Promise<'aborted'>((resolve) => {
+              const onAbort = () => resolve('aborted');
+              signal.addEventListener('abort', onAbort, { once: true });
+              removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+            });
+            const toolPromise = tool.execute(call.arguments, toolContext);
+            try {
+              const raced = await Promise.race([
+                toolPromise.then(() => 'completed' as const),
+                abortPromise,
+              ]);
+              if (raced === 'completed') {
+                data = await toolPromise;
+              } else {
+                // 进入 settle 窗口：等工具在窗口内自行收尾
+                let settled = false;
+                let fireSettleExpiry: (() => void) | undefined;
+                const settlePromise = new Promise<'expired'>((resolve) => {
+                  fireSettleExpiry = () => resolve('expired');
+                });
+                const remainingSettleMs = Math.max(
+                  0,
+                  (terminationDeadline ?? (Date.now() + TOOL_TERMINATION_SETTLE_MS)) - Date.now(),
+                );
+                const settleTimer = setTimeout(() => fireSettleExpiry?.(), remainingSettleMs);
+                // 工具先收尾时回收窗口定时器（Promise.race 不会取消输家）
+                cleanupFns.push(() => clearTimeout(settleTimer));
+                try {
+                  const settleRaced = await Promise.race([
+                    toolPromise.then(() => { settled = true; return 'settled' as const; }),
+                    settlePromise,
+                  ]);
+                  if (settleRaced === 'settled') {
+                    data = await toolPromise;
+                    // settle 窗口内完成但原因缺失（如工具自 abort），以用户中断兜底标注
+                    if (terminationReason === null) {
+                      terminationReason = 'user';
+                    }
+                  }
+                } finally {
+                  // settle 结束后若工具仍在跑，静默回收其结果/错误，避免 unhandled rejection
+                  if (!settled) {
+                    void toolPromise.catch(() => {});
+                  }
+                }
+                if (!settled) {
+                  throw new ToolInterruptError(terminationReason ?? 'user');
+                }
+              }
+            } finally {
+              removeAbortListener?.();
+              clearTimeout(timeoutTimer);
+              cleanupExternalListener?.();
+            }
+          } finally {
+            runCleanupFns(cleanupFns);
+          }
+
+          result.success = true;
+          result.data = data;
+
+          const interruptedMeta = terminationReason !== null
+            ? { reason: terminationReason }
+            : undefined;
+
+          execResult = this.buildSuccessExecResult(data, interruptedMeta);
         }
 
       } catch (error) {
+        runCleanupFns(cleanupFns);
         const isInterrupt = error instanceof ToolInterruptError
           || (error instanceof Error && error.name === 'AbortError');
+        const interruptReason = error instanceof ToolInterruptError
+          ? error.reason
+          : terminationReason;
         result.error = isInterrupt
-          ? 'Interrupted by user'
+          ? (interruptReason === 'timeout' ? 'Tool timed out' : 'Interrupted by user')
           : (error instanceof Error ? error.message : String(error));
 
         execResult = {
           success: false,
           result: { error: result.error },
+          ...(isInterrupt && interruptReason && terminationDeadline !== null
+            ? { interrupted: { reason: interruptReason } }
+            : {}),
         };
       }
 

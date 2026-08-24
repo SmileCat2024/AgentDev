@@ -453,6 +453,32 @@ export class WorkThreadBoard {
     return state;
   }
 
+  /**
+   * Reopen a board after a host-level archive is cancelled.
+   *
+   * `closed` is terminal for runtime events, so reopening is intentionally
+   * separate from `resume`: resume handles failed/waiting_input, while this
+   * operation restores an archived board to an idle, not-running state.
+   */
+  async reopenBoard(workThreadId: string, opts: { source?: string } = {}): Promise<WorkThreadBoardState> {
+    const state = await this.getState(workThreadId);
+    if (!state) {
+      return this.ensureInit(workThreadId, 'autonomous');
+    }
+    if (state.status !== 'closed') return state;
+    const { state: next } = await this.mutate(workThreadId, (draft) => {
+      draft.status = 'idle';
+      this.pushLifecycle(draft, {
+        type: 'board_reopened',
+        status: 'idle',
+        at: Date.now(),
+        source: typeof opts.source === 'string' ? opts.source.trim() : 'api',
+      });
+      return draft;
+    });
+    return next;
+  }
+
   /** 状态机转换矩阵（公开，供测试与宿主校验）。 */
   getTransitionMatrix(): Record<WorkThreadBoardStatus, WorkThreadBoardStatus[]> {
     const out = {} as Record<WorkThreadBoardStatus, WorkThreadBoardStatus[]>;

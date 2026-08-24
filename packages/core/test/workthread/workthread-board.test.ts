@@ -342,6 +342,17 @@ describe('WorkThreadBoard', () => {
     await expect(() => board.resume(wt.threadId)).rejects.toMatchObject({ code: 'thread_closed' });
   });
 
+  it('reopenBoard restores an archived board to idle without starting execution', async () => {
+    const { core, board } = makeBoardFixtures(root);
+    const wt = await core.start({ sessionRef: { agentId: 'a', sessionId: 'reopen-1' } });
+    await board.closeBoard(wt.threadId, { reason: 'archive' });
+
+    const reopened = await board.reopenBoard(wt.threadId, { source: 'unarchive' });
+    expect(reopened.status).toBe('idle');
+    expect(reopened.lastLifecycleEvent?.type).toBe('board_reopened');
+    expect((await board.getState(wt.threadId))?.status).toBe('idle');
+  });
+
   it('setMode persists board mode', async () => {
     const { core, board } = makeBoardFixtures(root);
     const wt = await core.start({ sessionRef: { agentId: 'a', sessionId: 'mode-1' } });

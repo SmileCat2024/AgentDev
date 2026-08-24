@@ -104,12 +104,13 @@ describe('buildSummarySeedMessage', () => {
 });
 
 describe('generateSummaryText message construction', () => {
-  function captureLLM(): { llm: TransformContext['llm']; captured: { messages: any[]; tools: any[] } } {
-    const captured: { messages: any[]; tools: any[] } = { messages: [], tools: [] };
+  function captureLLM(): { llm: TransformContext['llm']; captured: { messages: any[]; tools: any[]; options?: any } } {
+    const captured: { messages: any[]; tools: any[]; options?: any } = { messages: [], tools: [] };
     const llm = {
-      async chat(messages: any[], tools: any[]) {
+      async chat(messages: any[], tools: any[], options?: any) {
         captured.messages = messages;
         captured.tools = tools;
+        captured.options = options;
         return { content: 'summary text', stopReason: 'end_turn' } as any;
       },
     } as any;
@@ -144,6 +145,15 @@ describe('generateSummaryText message construction', () => {
     assert.ok(last.content.includes('会话记录到此为止'));
     // 空工具集
     assert.deepEqual(tools, []);
+  });
+
+  it('forwards the transform cancellation signal to the non-streaming LLM call', async () => {
+    const { llm, captured } = captureLLM();
+    const signal = new AbortController().signal;
+    const snapshot = makeSnapshot([{ role: 'user', content: '继续', turn: 0 }]);
+    await generateSummaryText({ llm, signal }, snapshot, buildSummaryPrompt({}));
+    assert.equal(captured.options?.noStream, true);
+    assert.equal(captured.options?.signal, signal);
   });
 
   it('injects tool results as tagged system messages with call signatures and truncation', async () => {

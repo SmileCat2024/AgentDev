@@ -51,6 +51,8 @@ export interface TransformInput {
 export interface TransformContext {
   /** 宿主注入的进程内 LLM 调用能力（摘要类变换的执行基座）。 */
   llm: LLMClient;
+  /** 可选的宿主取消信号；摘要变换应将其传递给 LLM 调用。 */
+  signal?: AbortSignal;
 }
 
 /**

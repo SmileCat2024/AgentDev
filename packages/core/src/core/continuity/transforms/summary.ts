@@ -331,7 +331,10 @@ export async function generateSummaryText(
   prompt: string,
 ): Promise<string> {
   const messages = buildChatMessages(snapshot, prompt);
-  const response: LLMResponse = await ctx.llm.chat(messages, [], { noStream: true });
+  const response: LLMResponse = await ctx.llm.chat(messages, [], {
+    noStream: true,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+  });
   const text = stripCompactAnalysis(response.content ?? '');
   if (!text) {
     throw new Error('Summary LLM returned an empty summary');

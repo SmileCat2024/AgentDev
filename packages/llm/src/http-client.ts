@@ -22,11 +22,13 @@ let initialGlobalDispatcher: any = null;
 
 export const HTTP_CONNECT_TIMEOUT_MS = 10_000;
 export const HTTP_HEADERS_TIMEOUT_MS = 60_000;
+export const HTTP_BODY_TIMEOUT_MS = 60_000;
 
 export function buildHttpDispatcherOptions(noProxy?: string): Record<string, unknown> {
   return {
     ...(noProxy ? { noProxy } : {}),
     headersTimeout: HTTP_HEADERS_TIMEOUT_MS,
+    bodyTimeout: HTTP_BODY_TIMEOUT_MS,
     connect: { timeout: HTTP_CONNECT_TIMEOUT_MS },
   };
 }

@@ -31,11 +31,15 @@ export {
 export type { APIErrorType, ConnectionErrorDetails } from './core/api-errors.js';
 export {
   DEFAULT_MAX_RETRIES,
+  DEFAULT_MODEL_MAX_RETRIES,
+  DEFAULT_MODEL_TIMEOUT_MS,
   parseRetryAfter,
   getRetryDelay,
   shouldRetry,
   extractErrorCode,
   sleep,
+  withDeadline,
+  resolveModelCallPolicy,
 } from './core/retry.js';
 export type { LLMRetryData, ToolProgressData } from './core/notification.js';
 export { subscribeSessionEvents, emitSessionEvent } from './core/session-events.js';

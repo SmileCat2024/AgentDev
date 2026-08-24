@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HTTP_BODY_TIMEOUT_MS,
   HTTP_CONNECT_TIMEOUT_MS,
   HTTP_HEADERS_TIMEOUT_MS,
   buildHttpDispatcherOptions,
@@ -13,6 +14,7 @@ describe('llm http client ownership and timeouts', () => {
     expect(options).toEqual({
       noProxy: 'localhost,127.0.0.1',
       headersTimeout: HTTP_HEADERS_TIMEOUT_MS,
+      bodyTimeout: HTTP_BODY_TIMEOUT_MS,
       connect: { timeout: HTTP_CONNECT_TIMEOUT_MS },
     });
     expect(options).not.toHaveProperty('connectTimeout');

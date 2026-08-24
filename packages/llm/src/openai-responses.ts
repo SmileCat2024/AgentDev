@@ -12,7 +12,7 @@ import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageIn
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from '@agentdev/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdev/core';
 import { classifyAndWrapError, ClassifiedAPIError } from '@agentdev/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
@@ -82,6 +82,8 @@ export class OpenAIResponsesLLM implements LLMClient {
   private visionEnabled: boolean;
   private responsesProfile: OpenAIResponsesProfile;
   private initPromise: Promise<void>;
+  private maxRetries: number;
+  private deadlineMs: number | undefined;
 
   /** 返回当前 LLM 实例使用的模型名 */
   get modelName(): string { return this._modelName; }
@@ -97,7 +99,11 @@ export class OpenAIResponsesLLM implements LLMClient {
     customHeaders?: CustomHeaderEntry[],
     visionEnabled: boolean = false,
     responsesProfile: OpenAIResponsesProfile = 'standard',
+    callPolicy?: { maxRetries?: number; timeoutMs?: number },
   ) {
+    const resolved = resolveModelCallPolicy(callPolicy);
+    this.maxRetries = resolved.maxRetries;
+    this.deadlineMs = resolved.timeoutMs;
     this.client = new OpenAI({
       apiKey,
       baseURL: baseUrl,
@@ -146,11 +152,12 @@ export class OpenAIResponsesLLM implements LLMClient {
       responsesProfile: this.responsesProfile,
     });
     let preferNonStreaming = false;
+    const signal = withDeadline(options?.signal, this.deadlineMs);
 
-    for (let attempt = 1; attempt <= DEFAULT_MAX_RETRIES + 1; attempt++) {
+    for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
       let sawAnyStreamEvent = false;
       try {
-        if (options?.signal?.aborted) {
+        if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
         }
 
@@ -163,7 +170,7 @@ export class OpenAIResponsesLLM implements LLMClient {
             ...compiled,
             stream: true,
           } as any,
-          { signal: options?.signal },
+          { signal },
         );
 
         let content = '';
@@ -179,7 +186,7 @@ export class OpenAIResponsesLLM implements LLMClient {
 
         for await (const event of stream) {
           sawAnyStreamEvent = true;
-          if (options?.signal?.aborted) {
+          if (signal?.aborted) {
             throw new DOMException('Aborted', 'AbortError');
           }
 
@@ -370,14 +377,14 @@ export class OpenAIResponsesLLM implements LLMClient {
             }
 
             const fallbackStatus = (fallbackError as any)?.status as number | undefined;
-            if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(fallbackError, fallbackStatus)) {
+            if (attempt <= this.maxRetries && shouldRetry(fallbackError, fallbackStatus)) {
               const retryAfterMs = parseRetryAfter((fallbackError as any)?.headers);
               const delayMs = getRetryDelay(attempt, retryAfterMs);
               await emitRetryObservability({
                 attempt,
-                maxRetries: DEFAULT_MAX_RETRIES,
+                maxRetries: this.maxRetries,
                 delayMs,
-                signal: options?.signal,
+                signal,
                 error: fallbackError,
                 status: fallbackStatus,
               });
@@ -389,14 +396,14 @@ export class OpenAIResponsesLLM implements LLMClient {
         }
 
         const status = (error as any)?.status as number | undefined;
-        if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(error, status)) {
+        if (attempt <= this.maxRetries && shouldRetry(error, status)) {
           const retryAfterMs = parseRetryAfter((error as any)?.headers);
           const delayMs = getRetryDelay(attempt, retryAfterMs);
           await emitRetryObservability({
             attempt,
-            maxRetries: DEFAULT_MAX_RETRIES,
+            maxRetries: this.maxRetries,
             delayMs,
-            signal: options?.signal,
+            signal,
             error,
             status,
           });
@@ -903,6 +910,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.defaultModel.customHeaders,
       configOrApiKey.defaultModel.vision ?? false,
       configOrApiKey.defaultModel.responsesProfile ?? 'standard',
+      { maxRetries: configOrApiKey.defaultModel.maxRetries, timeoutMs: configOrApiKey.defaultModel.timeoutMs },
     );
   }
 
@@ -918,6 +926,7 @@ export function createOpenAIResponsesLLM(
       configOrApiKey.customHeaders,
       configOrApiKey.vision ?? false,
       configOrApiKey.responsesProfile ?? 'standard',
+      { maxRetries: configOrApiKey.maxRetries, timeoutMs: configOrApiKey.timeoutMs },
     );
   }
 

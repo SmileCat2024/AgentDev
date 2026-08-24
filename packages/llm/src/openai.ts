@@ -11,7 +11,7 @@ import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import OpenAI from 'openai';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from '@agentdev/core';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdev/core';
 import { classifyAndWrapError, ClassifiedAPIError } from '@agentdev/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
@@ -119,6 +119,8 @@ export class OpenAILLM implements LLMClient {
   private customHeaders?: CustomHeaderEntry[];
   private visionEnabled: boolean;
   private initPromise: Promise<void>;
+  private maxRetries: number;
+  private deadlineMs: number | undefined;
 
   /** 返回当前 LLM 实例使用的模型名 */
   get modelName(): string { return this._modelName; }
@@ -132,7 +134,11 @@ export class OpenAILLM implements LLMClient {
     providerOptions?: Record<string, unknown>,
     customHeaders?: CustomHeaderEntry[],
     visionEnabled: boolean = false,
+    callPolicy?: { maxRetries?: number; timeoutMs?: number },
   ) {
+    const resolved = resolveModelCallPolicy(callPolicy);
+    this.maxRetries = resolved.maxRetries;
+    this.deadlineMs = resolved.timeoutMs;
     this.client = new OpenAI({
       apiKey,
       baseURL: baseUrl,
@@ -173,6 +179,8 @@ export class OpenAILLM implements LLMClient {
   async chat(messages: Message[], tools: Tool[], options?: { signal?: AbortSignal }): Promise<LLMResponse> {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
+    // 整体时限：deadline 到达以 AbortError 中止，不进入重试
+    const signal = withDeadline(options?.signal, this.deadlineMs);
     // 转换消息格式为 OpenAI 格式
     const chatMessages = compileChatMessages(messages, this.visionEnabled);
 
@@ -199,15 +207,15 @@ export class OpenAILLM implements LLMClient {
       ...(this.providerOptions ?? {}),
     } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 
-    for (let attempt = 1; attempt <= DEFAULT_MAX_RETRIES + 1; attempt++) {
+    for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
       try {
         // 检查中断信号
-        if (options?.signal?.aborted) {
+        if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
         }
 
         const stream = await this.client.chat.completions.create(requestBody, {
-          signal: options?.signal,
+          signal,
         });
 
         // ========== 流式处理（内部） ==========
@@ -234,7 +242,7 @@ export class OpenAILLM implements LLMClient {
         // 迭代流式响应
         for await (const chunk of stream) {
           // 在流式读取中检查中断信号
-          if (options?.signal?.aborted) {
+          if (signal?.aborted) {
             throw new DOMException('Aborted', 'AbortError');
           }
 
@@ -376,14 +384,14 @@ export class OpenAILLM implements LLMClient {
 
         // OpenAI SDK 错误对象上通常有 status 和 headers
         const status = (error as any)?.status as number | undefined;
-        if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(error, status)) {
+        if (attempt <= this.maxRetries && shouldRetry(error, status)) {
           const retryAfterMs = parseRetryAfter((error as any)?.headers);
           const delayMs = getRetryDelay(attempt, retryAfterMs);
           await emitRetryObservability({
             attempt,
-            maxRetries: DEFAULT_MAX_RETRIES,
+            maxRetries: this.maxRetries,
             delayMs,
-            signal: options?.signal,
+            signal,
             error,
             status,
           });
@@ -443,6 +451,7 @@ export function createOpenAILLM(
       configOrApiKey.defaultModel.providerOptions,
       configOrApiKey.defaultModel.customHeaders,
       configOrApiKey.defaultModel.vision ?? false,
+      { maxRetries: configOrApiKey.defaultModel.maxRetries, timeoutMs: configOrApiKey.defaultModel.timeoutMs },
     );
   }
   // 处理 ModelConfig
@@ -456,6 +465,7 @@ export function createOpenAILLM(
       configOrApiKey.providerOptions,
       configOrApiKey.customHeaders,
       configOrApiKey.vision ?? false,
+      { maxRetries: configOrApiKey.maxRetries, timeoutMs: configOrApiKey.timeoutMs },
     );
   }
   // 处理单独传参

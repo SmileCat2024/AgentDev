@@ -6,6 +6,10 @@ import {
   extractErrorCode,
   sleep,
   DEFAULT_MAX_RETRIES,
+  DEFAULT_MODEL_MAX_RETRIES,
+  DEFAULT_MODEL_TIMEOUT_MS,
+  resolveModelCallPolicy,
+  withDeadline,
 } from '../../src/core/retry.js';
 
 describe('retry', () => {
@@ -218,6 +222,97 @@ describe('retry', () => {
       const promise = sleep(5000, controller.signal);
       setTimeout(() => controller.abort(), 30);
       await expect(promise).rejects.toThrow();
+    });
+  });
+
+  // ========== resolveModelCallPolicy ==========
+
+  describe('resolveModelCallPolicy', () => {
+    it('should fill defaults when config is missing', () => {
+      expect(resolveModelCallPolicy()).toEqual({
+        maxRetries: DEFAULT_MODEL_MAX_RETRIES,
+        timeoutMs: DEFAULT_MODEL_TIMEOUT_MS,
+      });
+      expect(resolveModelCallPolicy(undefined)).toEqual({
+        maxRetries: DEFAULT_MODEL_MAX_RETRIES,
+        timeoutMs: DEFAULT_MODEL_TIMEOUT_MS,
+      });
+    });
+
+    it('should fill only the missing side when partially configured', () => {
+      const resolved = resolveModelCallPolicy({ maxRetries: 2 });
+      expect(resolved.maxRetries).toBe(2);
+      expect(resolved.timeoutMs).toBe(DEFAULT_MODEL_TIMEOUT_MS);
+
+      const resolved2 = resolveModelCallPolicy({ timeoutMs: 60000 });
+      expect(resolved2.maxRetries).toBe(DEFAULT_MODEL_MAX_RETRIES);
+      expect(resolved2.timeoutMs).toBe(60000);
+    });
+
+    it('should floor fractional maxRetries', () => {
+      expect(resolveModelCallPolicy({ maxRetries: 2.9 }).maxRetries).toBe(2);
+    });
+
+    it('should reject invalid maxRetries and fall back to default', () => {
+      for (const invalid of [-1, NaN, Infinity]) {
+        const resolved = resolveModelCallPolicy({ maxRetries: invalid });
+        expect(resolved.maxRetries).toBe(DEFAULT_MODEL_MAX_RETRIES);
+      }
+    });
+
+    it('should allow maxRetries 0 (no retry)', () => {
+      expect(resolveModelCallPolicy({ maxRetries: 0 }).maxRetries).toBe(0);
+    });
+
+    it('should disable deadline when timeoutMs is invalid', () => {
+      for (const invalid of [0, -1000, NaN, Infinity] as number[]) {
+        expect(resolveModelCallPolicy({ timeoutMs: invalid }).timeoutMs).toBeUndefined();
+      }
+    });
+  });
+
+  // ========== withDeadline ==========
+
+  describe('withDeadline', () => {
+    it('should pass through when no timeout configured', () => {
+      const controller = new AbortController();
+      expect(withDeadline(controller.signal, undefined)).toBe(controller.signal);
+      expect(withDeadline(controller.signal, Infinity)).toBe(controller.signal);
+    });
+
+    it('should create a standalone signal when only deadline given', () => {
+      const signal = withDeadline(undefined, 60000)!;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal.aborted).toBe(false);
+    });
+
+    it('should abort with TimeoutError when deadline is reached', async () => {
+      const signal = withDeadline(undefined, 30)!;
+      const event = await new Promise<AbortSignal>((resolve) => {
+        signal.addEventListener('abort', () => resolve(signal), { once: true });
+      });
+      expect(event.aborted).toBe(true);
+      expect((event.reason as Error).name).toBe('TimeoutError');
+    });
+
+    it('should propagate external abort through merged signal', async () => {
+      const controller = new AbortController();
+      const signal = withDeadline(controller.signal, 60000)!;
+      const reason = new Error('user interrupt');
+      const event = await new Promise<AbortSignal>((resolve) => {
+        signal.addEventListener('abort', () => resolve(signal), { once: true });
+        controller.abort(reason);
+      });
+      expect(event.reason).toBe(reason);
+    });
+
+    it('should return already-aborted signal immediately', () => {
+      const controller = new AbortController();
+      const reason = new DOMException('Aborted', 'AbortError');
+      controller.abort(reason);
+      const signal = withDeadline(controller.signal, 60000)!;
+      expect(signal.aborted).toBe(true);
+      expect(signal.reason).toBe(reason);
     });
   });
 });

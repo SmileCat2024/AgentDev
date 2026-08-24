@@ -2,7 +2,7 @@ import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } 
 import { resolveCustomHeaders } from './custom-headers.js';
 import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo, ImageInput } from '@agentdev/core';
 import type { LLMPhase } from '@agentdev/core';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry } from '@agentdev/core';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdev/core';
 import { classifyAPIError, classifyAndWrapError, ClassifiedAPIError } from '@agentdev/core';
 import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
@@ -126,6 +126,8 @@ const DEFAULT_MAX_TOKENS = 4096;
 
 export class AnthropicLLM implements LLMClient {
   private initPromise: Promise<void>;
+  private maxRetries: number;
+  private deadlineMs: number | undefined;
 
   /** 返回当前 LLM 实例使用的模型名 */
   get modelName(): string { return this._modelName; }
@@ -140,21 +142,27 @@ export class AnthropicLLM implements LLMClient {
     private readonly _thinkingKeepTurns: number = 5,
     private readonly customHeaders?: CustomHeaderEntry[],
     private readonly visionEnabled: boolean = false,
+    callPolicy?: { maxRetries?: number; timeoutMs?: number },
   ) {
+    const resolved = resolveModelCallPolicy(callPolicy);
+    this.maxRetries = resolved.maxRetries;
+    this.deadlineMs = resolved.timeoutMs;
     this.initPromise = ensureHttpClientInitialized();
   }
 
   async chat(messages: Message[], tools: Tool[], options?: LLMChatOptions): Promise<LLMResponse> {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
+    // 整体时限：deadline 到达以 AbortError 中止，不进入重试
+    const signal = withDeadline(options?.signal, this.deadlineMs);
     const compiled = compileContextForAnthropic(messages, tools, this.visionEnabled);
     const noStream = options?.noStream === true;
 
-    for (let attempt = 1; attempt <= DEFAULT_MAX_RETRIES + 1; attempt++) {
+    for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
       let response: Response | undefined;
       try {
         // 检查中断信号
-        if (options?.signal?.aborted) {
+        if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
         }
 
@@ -194,7 +202,7 @@ export class AnthropicLLM implements LLMClient {
             messages: compiled.messages,
             ...(compiled.tools && compiled.tools.length > 0 ? { tools: compiled.tools } : {}),
           }),
-          signal: options?.signal,
+          signal,
         });
 
         if (!response.ok) {
@@ -229,7 +237,7 @@ export class AnthropicLLM implements LLMClient {
           throw new Error('Anthropic API returned an empty response body');
         }
 
-        return await readAnthropicStream(response.body, options?.signal);
+        return await readAnthropicStream(response.body, signal);
       } catch (error) {
         // 中断错误不重试，直接传播
         if (error instanceof DOMException && error.name === 'AbortError') {
@@ -240,14 +248,14 @@ export class AnthropicLLM implements LLMClient {
         }
 
         const status = (error as any)?.status as number | undefined;
-        if (attempt <= DEFAULT_MAX_RETRIES && shouldRetry(error, status)) {
+        if (attempt <= this.maxRetries && shouldRetry(error, status)) {
           const retryAfterMs = parseRetryAfter(response?.headers);
           const delayMs = getRetryDelay(attempt, retryAfterMs);
           await emitRetryObservability({
             attempt,
-            maxRetries: DEFAULT_MAX_RETRIES,
+            maxRetries: this.maxRetries,
             delayMs,
-            signal: options?.signal,
+            signal,
             error,
             status,
           });
@@ -993,6 +1001,7 @@ export function createAnthropicLLM(
       configOrApiKey.defaultModel.thinkingKeepTurns ?? 5,
       configOrApiKey.defaultModel.customHeaders,
       configOrApiKey.defaultModel.vision ?? false,
+      { maxRetries: configOrApiKey.defaultModel.maxRetries, timeoutMs: configOrApiKey.defaultModel.timeoutMs },
     );
   }
 
@@ -1007,6 +1016,7 @@ export function createAnthropicLLM(
       configOrApiKey.thinkingKeepTurns ?? 5,
       configOrApiKey.customHeaders,
       configOrApiKey.vision ?? false,
+      { maxRetries: configOrApiKey.maxRetries, timeoutMs: configOrApiKey.timeoutMs },
     );
   }
 

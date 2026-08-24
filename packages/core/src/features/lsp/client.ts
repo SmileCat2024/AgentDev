@@ -18,6 +18,9 @@ import type { LspServerHandle } from './types.js';
 const DIAGNOSTICS_DEBOUNCE_MS = 150;
 const INIT_TIMEOUT_MS = 45000;
 const DIAGNOSTICS_WAIT_TIMEOUT_MS = 3000;
+// 单次查询请求的超时：LSP server 进程假死（活着但不回话）时，
+// 底层 JSON-RPC 永远不会 settle，统一在此兜底
+const REQUEST_TIMEOUT_MS = 15000;
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, '/');
@@ -189,88 +192,81 @@ export class LspClient extends EventEmitter {
   }
 
   // LSP request methods
+
+  /**
+   * 带超时的查询请求：超时或出错时降级为 fallback 值（与既有 catch 语义一致），
+   * 避免语言服务器无响应时请求永久挂起。
+   */
+  private sendRequestWithTimeout(method: string, params: unknown, fallback: unknown): Promise<unknown> {
+    return withTimeout(this.connection.sendRequest(method, params), REQUEST_TIMEOUT_MS).catch(() => fallback);
+  }
+
   async definition(filePath: string, line: number, character: number): Promise<unknown> {
-    return this.connection
-      .sendRequest('textDocument/definition', {
-        textDocument: { uri: pathToFileURL(filePath).href },
-        position: { line, character },
-      })
-      .catch(() => null);
+    return this.sendRequestWithTimeout('textDocument/definition', {
+      textDocument: { uri: pathToFileURL(filePath).href },
+      position: { line, character },
+    }, null);
   }
 
   async references(filePath: string, line: number, character: number): Promise<unknown> {
-    return this.connection
-      .sendRequest('textDocument/references', {
-        textDocument: { uri: pathToFileURL(filePath).href },
-        position: { line, character },
-        context: { includeDeclaration: true },
-      })
-      .catch(() => []);
+    return this.sendRequestWithTimeout('textDocument/references', {
+      textDocument: { uri: pathToFileURL(filePath).href },
+      position: { line, character },
+      context: { includeDeclaration: true },
+    }, []);
   }
 
   async hover(filePath: string, line: number, character: number): Promise<unknown> {
-    return this.connection
-      .sendRequest('textDocument/hover', {
-        textDocument: { uri: pathToFileURL(filePath).href },
-        position: { line, character },
-      })
-      .catch(() => null);
+    return this.sendRequestWithTimeout('textDocument/hover', {
+      textDocument: { uri: pathToFileURL(filePath).href },
+      position: { line, character },
+    }, null);
   }
 
   async documentSymbol(uri: string): Promise<unknown> {
-    return this.connection
-      .sendRequest('textDocument/documentSymbol', { textDocument: { uri } })
-      .catch(() => []);
+    return this.sendRequestWithTimeout('textDocument/documentSymbol', { textDocument: { uri } }, []);
   }
 
   async workspaceSymbol(query: string): Promise<unknown> {
-    return this.connection.sendRequest('workspace/symbol', { query }).catch(() => []);
+    return this.sendRequestWithTimeout('workspace/symbol', { query }, []);
   }
 
   async implementation(filePath: string, line: number, character: number): Promise<unknown> {
-    return this.connection
-      .sendRequest('textDocument/implementation', {
-        textDocument: { uri: pathToFileURL(filePath).href },
-        position: { line, character },
-      })
-      .catch(() => null);
+    return this.sendRequestWithTimeout('textDocument/implementation', {
+      textDocument: { uri: pathToFileURL(filePath).href },
+      position: { line, character },
+    }, null);
   }
 
   async prepareCallHierarchy(filePath: string, line: number, character: number): Promise<unknown> {
-    return this.connection
-      .sendRequest('textDocument/prepareCallHierarchy', {
-        textDocument: { uri: pathToFileURL(filePath).href },
-        position: { line, character },
-      })
-      .catch(() => []);
+    return this.sendRequestWithTimeout('textDocument/prepareCallHierarchy', {
+      textDocument: { uri: pathToFileURL(filePath).href },
+      position: { line, character },
+    }, []);
   }
 
   async incomingCalls(filePath: string, line: number, character: number): Promise<unknown> {
-    return this.connection
-      .sendRequest('callHierarchy/incomingCalls', {
-        item: {
-          uri: pathToFileURL(filePath).href,
-          range: {
-            start: { line, character },
-            end: { line, character },
-          },
+    return this.sendRequestWithTimeout('callHierarchy/incomingCalls', {
+      item: {
+        uri: pathToFileURL(filePath).href,
+        range: {
+          start: { line, character },
+          end: { line, character },
         },
-      })
-      .catch(() => []);
+      },
+    }, []);
   }
 
   async outgoingCalls(filePath: string, line: number, character: number): Promise<unknown> {
-    return this.connection
-      .sendRequest('callHierarchy/outgoingCalls', {
-        item: {
-          uri: pathToFileURL(filePath).href,
-          range: {
-            start: { line, character },
-            end: { line, character },
-          },
+    return this.sendRequestWithTimeout('callHierarchy/outgoingCalls', {
+      item: {
+        uri: pathToFileURL(filePath).href,
+        range: {
+          start: { line, character },
+          end: { line, character },
         },
-      })
-      .catch(() => []);
+      },
+    }, []);
   }
 
   async shutdown(): Promise<void> {

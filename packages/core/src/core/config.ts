@@ -71,6 +71,17 @@ export interface ModelConfig {
   responsesProfile?: 'standard' | 'codex';
   /** 是否启用视觉（多模态图片输入）支持，默认 false */
   vision?: boolean;
+  /**
+   * 单次模型请求的最大重试次数（不含首次）。
+   * 缺省时由 LLM 工厂自动填充 DEFAULT_MODEL_MAX_RETRIES。
+   */
+  maxRetries?: number;
+  /**
+   * 单次模型调用的整体时限（毫秒，覆盖建连、排队与流式传输全程）。
+   * 超时以 AbortError 中止本次调用，交由上层按中断处理（不重试）。
+   * 缺省时由 LLM 工厂自动填充 DEFAULT_MODEL_TIMEOUT_MS。
+   */
+  timeoutMs?: number;
   // 未来可扩展
   region?: string;
   projectId?: string;

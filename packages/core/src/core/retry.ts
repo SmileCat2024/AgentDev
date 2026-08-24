@@ -14,6 +14,17 @@
 export const DEFAULT_MAX_RETRIES = 10;
 
 /**
+ * 模型调用默认最大重试次数（ModelConfig.maxRetries 缺省时由 LLM 工厂填充）
+ */
+export const DEFAULT_MODEL_MAX_RETRIES = 10;
+
+/**
+ * 模型调用默认整体时限：10 分钟（ModelConfig.timeoutMs 缺省时由 LLM 工厂填充）。
+ * 与 OpenAI SDK 默认单请求 timeout 对齐；流式传输全程受此 deadline 约束。
+ */
+export const DEFAULT_MODEL_TIMEOUT_MS = 600_000;
+
+/**
  * 基础退避延迟 500ms（与 Claude Code 一致）
  */
 const BASE_DELAY_MS = 500;
@@ -196,4 +207,51 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+/**
+ * 合并外部中断信号与整体时限为单一 AbortSignal。
+ *
+ * - 任一先触发即生效；deadline 到达时以 TimeoutError DOMException 中止，
+ *   上游按 AbortError 处理（不重试、直接传播）。
+ * - timeoutMs 为 undefined / Infinity 时仅透传外部信号（不额外建 controller）。
+ */
+export function withDeadline(signal: AbortSignal | undefined, timeoutMs?: number): AbortSignal | undefined {
+  if (!timeoutMs || timeoutMs === Infinity || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return signal;
+  }
+  const merged = new AbortController();
+  if (signal) {
+    if (signal.aborted) {
+      merged.abort(signal.reason);
+      return merged.signal;
+    }
+    signal.addEventListener('abort', () => merged.abort(signal.reason), { once: true });
+  }
+  const timer = setTimeout(
+    () => merged.abort(new DOMException(`Model call deadline exceeded after ${timeoutMs}ms`, 'TimeoutError')),
+    timeoutMs,
+  );
+  // deadline 触发后定时器自然释放；提前结束时由 GC 回收，无需显式清理
+  void timer;
+  return merged.signal;
+}
+
+/**
+ * 从 ModelConfig 解析生效的重试上限与整体时限，缺省时填充框架默认值。
+ */
+export function resolveModelCallPolicy(config?: { maxRetries?: number; timeoutMs?: number }): {
+  maxRetries: number;
+  timeoutMs: number | undefined;
+} {
+  let maxRetries = DEFAULT_MODEL_MAX_RETRIES;
+  if (typeof config?.maxRetries === 'number' && Number.isFinite(config.maxRetries) && config.maxRetries >= 0) {
+    maxRetries = Math.floor(config.maxRetries);
+  }
+  let timeoutMs: number | undefined = DEFAULT_MODEL_TIMEOUT_MS;
+  if (config?.timeoutMs !== undefined) {
+    const v = config.timeoutMs;
+    timeoutMs = typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
+  }
+  return { maxRetries, timeoutMs };
 }

@@ -40,6 +40,15 @@ describe('CapabilityRegistry.register', () => {
     expect(reg.list()[0].title).toBe('compact');
   });
 
+  it('should default kind to invoke and pass through declared kind', () => {
+    const reg = new CapabilityRegistry();
+    reg.register('f', makeDef('go'));
+    reg.register('f', makeDef('grill', { kind: 'prompt' }));
+    const snaps = reg.list();
+    expect(snaps.find((s) => s.name === 'go')?.kind).toBe('invoke');
+    expect(snaps.find((s) => s.name === 'grill')?.kind).toBe('prompt');
+  });
+
   it('should throw on duplicate ref', () => {
     const reg = new CapabilityRegistry();
     reg.register('f', makeDef('go'));

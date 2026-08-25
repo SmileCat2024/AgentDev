@@ -228,6 +228,81 @@ describe('SkillFeature', () => {
     });
   });
 
+  // ========== capabilities（slash 命令） ==========
+
+  describe('getCapabilities()', () => {
+    it('should return empty before onInitiate and dynamic prompt commands after', async () => {
+      const f = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
+      expect(f.getCapabilities()).toEqual([]);
+
+      const ws = join(tempDir, 'ws');
+      const skillDir = join(ws, 'skills');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: grill\ndescription: grill me\n---\nbody');
+      await f.onInitiate({
+        agentId: 't', config: { workspaceDir: ws } as any, logger: console as any,
+        getFeature: () => undefined, registerTool: () => {}, dataSourceRegistry: new DataSourceRegistry(),
+      });
+
+      const caps = f.getCapabilities();
+      expect(caps).toHaveLength(1);
+      expect(caps[0]).toMatchObject({ name: 'grill', kind: 'prompt', entryPoints: ['slash', 'feature'] });
+    });
+  });
+
+  describe('onCallStart() slash activation injection', () => {
+    async function setup() {
+      const f = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
+      const ws = join(tempDir, 'ws');
+      const skillDir = join(ws, 'skills');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: grill\ndescription: grill me\n---\nDOC-BODY');
+      await f.onInitiate({
+        agentId: 't', config: { workspaceDir: ws } as any, logger: console as any,
+        getFeature: () => undefined, registerTool: () => {}, dataSourceRegistry: new DataSourceRegistry(),
+      });
+      return { f };
+    }
+
+    it('should inject activated skill doc as system message then clear pending', async () => {
+      const { f } = await setup();
+      const [cap] = f.getCapabilities();
+      await cap.execute({}, { agentId: 't', getFeature: () => undefined, logger: console as any });
+
+      const add = vi.fn();
+      await (f as any).onCallStart({ input: '开始吧', context: { add }, isFirstCall: false });
+      expect(add).toHaveBeenCalledTimes(1);
+      const [msg] = add.mock.calls[0];
+      expect(msg.role).toBe('system');
+      expect(msg.content).toContain('DOC-BODY');
+      expect(msg.content).toContain('grill');
+
+      // pending 已清除：下一轮不再注入
+      await (f as any).onCallStart({ input: 'next', context: { add }, isFirstCall: false });
+      expect(add).toHaveBeenCalledTimes(1);
+    });
+
+    it('should do nothing when no pending activation', async () => {
+      const { f } = await setup();
+      const add = vi.fn();
+      await (f as any).onCallStart({ input: '普通消息', context: { add }, isFirstCall: false });
+      expect(add).not.toHaveBeenCalled();
+    });
+
+    it('should not throw when skill file is unreadable', async () => {
+      const { f } = await setup();
+      const [cap] = f.getCapabilities();
+      await cap.execute({}, { agentId: 't', getFeature: () => undefined, logger: console as any });
+      rmSync(join(tempDir, 'ws', 'skills', 'SKILL.md'));
+
+      const add = vi.fn();
+      await expect(
+        (f as any).onCallStart({ input: 'x', context: { add }, isFirstCall: false }),
+      ).resolves.toBeUndefined();
+      expect(add).not.toHaveBeenCalled();
+    });
+  });
+
   // ========== invoke_skill tool execution ==========
 
   describe('invoke_skill tool execution', () => {

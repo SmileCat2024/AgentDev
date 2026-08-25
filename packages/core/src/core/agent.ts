@@ -1705,14 +1705,6 @@ class AgentBase {
       }
     }
 
-    // Capability 收集：先清该 feature 旧条目再注册，热载重挂路径不误报 duplicate。
-    this.capabilities.unregisterFeature(name);
-    if (feature.getCapabilities) {
-      for (const def of runWithLogScope({ feature: name, namespace: `feature.${name}` }, () => feature.getCapabilities!()) || []) {
-        this.capabilities.register(name, def);
-      }
-    }
-
     if (feature.getAsyncTools) {
       try {
         const tools = await runWithLogScope({
@@ -1755,6 +1747,16 @@ class AgentBase {
           throw initError;
         }
         console.warn(`[Agent] Feature ${name} onInitiate failed: ${errorMsg}`);
+      }
+    }
+
+    // Capability 收集（onInitiate 之后）：能力可依赖初始化产物（如 SkillFeature
+    // 的 skills 扫描在 onInitiate 中完成）。strict 模式下 init 失败会先抛出，
+    // 自然跳过收集。先清该 feature 旧条目再注册，热载重挂路径不误报 duplicate。
+    this.capabilities.unregisterFeature(name);
+    if (feature.getCapabilities) {
+      for (const def of runWithLogScope({ feature: name, namespace: `feature.${name}` }, () => feature.getCapabilities!()) || []) {
+        this.capabilities.register(name, def);
       }
     }
 

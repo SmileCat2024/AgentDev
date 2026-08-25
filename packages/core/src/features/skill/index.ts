@@ -15,6 +15,8 @@
  */
 
 import { fileURLToPath } from 'url';
+import { readFile } from 'fs/promises';
+import { normalize, dirname } from 'path';
 import type {
   AgentFeature,
   FeatureInitContext,
@@ -25,6 +27,9 @@ import type {
 } from '../../core/feature.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
+import type { CapabilityDefinition } from '../../core/capability.js';
+import type { Logger } from '../../core/logging.js';
+import type { CallStartContext } from '../../core/lifecycle.js';
 import { invokeSkillTool } from './tools.js';
 import { discoverMulti } from '../../skills/loader.js';
 import type { SkillMetadata, SkillsOptions } from '../../skills/types.js';
@@ -63,12 +68,21 @@ export class SkillFeature implements AgentFeature {
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '发现本地 skills，并提供 invoke_skill 工具与技能数据源。';
 
+  /** CallStart 注入声明：消费 pendingActivation（slash 激活的技能），注入后清除 */
+  static hooks = {
+    onCallStart: { lifecycle: 'CallStart', kind: 'observe' },
+  } as const;
+
   private skillsDir?: string;
   private skills: SkillMetadata[] = [];
   private featureSkills: SkillMetadata[] = [];
   private scanAgentdevDir: boolean = true;
   private scanClaudeDir: boolean = false;
   private extraDirs: string[] = [];
+
+  /** slash 激活的技能暂存：下一轮 call start 逐个注入后清空（支持多技能叠加） */
+  private pendingActivations: string[] = [];
+  private logger?: Logger;
 
   /**
    * 缓存包信息
@@ -113,6 +127,71 @@ export class SkillFeature implements AgentFeature {
    */
   getTools(): Tool[] {
     return [invokeSkillTool];
+  }
+
+  /**
+   * 将已发现的 skills 动态注册为 capability 命令。
+   *
+   * 每个 skill 一条 `skill.<name>` 命令，双入口：用户经 slash 菜单激活，
+   * 或其他 feature / 编排经 registry invoke 激活。execute 只写暂存态，
+   * 不立即注入——下一轮 call start 由 onCallStart 消费（skill 文档以
+   * system 位置注入，与 flow 提示词 / force-continuation 的既有形态一致）。
+   */
+  getCapabilities(): CapabilityDefinition[] {
+    return this.skills.map((skill) => ({
+      name: skill.name,
+      kind: 'prompt' as const,
+      title: `技能：${skill.name}`,
+      description: skill.description,
+      entryPoints: ['slash', 'feature'],
+      execute: () => {
+        if (!this.pendingActivations.includes(skill.name)) {
+          this.pendingActivations.push(skill.name);
+        }
+        return Promise.resolve({
+          activated: skill.name,
+          note: `技能「${skill.name}」已激活，将在下一轮对话自动加载`,
+        });
+      },
+    }));
+  }
+
+  /**
+   * CallStart：消费 slash 激活暂存，注入技能文档。
+   *
+   * 注入失败（文件缺失等）时清除暂存并记录日志，不阻断本轮 call。
+   */
+  async onCallStart(ctx: CallStartContext): Promise<void> {
+    if (this.pendingActivations.length === 0) return;
+    const names = this.pendingActivations;
+    this.pendingActivations = [];
+
+    for (const skillName of names) {
+      const skill = this.skills.find((s) => s.name === skillName);
+      if (!skill) {
+        this.logger?.warn(`Activated skill "${skillName}" no longer exists, skipped injection`);
+        continue;
+      }
+
+      try {
+        const content = await readFile(skill.path, 'utf-8');
+        const basePath = normalize(dirname(skill.path)).replace(/\\/g, '/');
+        ctx.context.add({
+          role: 'system',
+          content: [
+            `[技能激活：${skill.name}]`,
+            `用户已显式激活技能「${skill.name}」。请在本轮及后续工作中遵循该技能文档的指引执行。`,
+            `技能基础目录：\`${basePath}\``,
+            '---',
+            content,
+          ].join('\n'),
+        });
+        this.logger?.info(`Skill "${skill.name}" injected via slash activation`);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger?.warn(`Failed to inject activated skill "${skillName}": ${msg}`);
+      }
+    }
   }
 
   /**
@@ -199,6 +278,7 @@ export class SkillFeature implements AgentFeature {
    * 路径解析以 agent 的 workspaceDir 为基准。
    */
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
+    this.logger = ctx.logger;
     // 从 featureConfig 读取运行时配置，覆盖构造函数默认值
     const fc = ctx.featureConfig;
     let scanAgentdevDir = this.scanAgentdevDir;

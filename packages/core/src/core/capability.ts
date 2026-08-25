@@ -30,11 +30,24 @@ import type { Logger } from './logging.js';
 export type CapabilityEntryPoint = 'slash' | 'feature';
 
 /**
+ * 命令类型。框架层仅定义形状并透传——两种 kind 在框架眼里同质
+ * （收到 invoke 一律执行 execute）；行为差异（表单/pill/toast/触发
+ * 时机）由应用层（宿主前端）按 kind 消费。
+ *
+ * - invoke（缺省）：选中即执行的触发型命令（配置开关等）
+ * - prompt：调用指令以文本形式嵌入输入的命令（skill 等），
+ *   应用层负责其呈现与发送时机，feature 在自身生命周期内消费
+ */
+export type CapabilityKind = 'invoke' | 'prompt';
+
+/**
  * Feature 声明的可调用命令
  */
 export interface CapabilityDefinition {
   /** 命令名（标识符），注册表内以 `featureName.commandName` 寻址 */
   name: string;
+  /** 命令类型，缺省 'invoke'。框架透传不解释，语义由应用层消费 */
+  kind?: CapabilityKind;
   /** 菜单显示标题，缺省用 name */
   title?: string;
   /** 菜单描述 */
@@ -86,6 +99,8 @@ export interface CapabilitySnapshot {
   feature: string;
   name: string;
   ref: string;
+  /** 命令类型（缺省 'invoke'），透传给应用层消费 */
+  kind: CapabilityKind;
   title: string;
   description?: string;
   parameters?: Record<string, FeatureManifestSettingProperty>;
@@ -161,6 +176,7 @@ export class CapabilityRegistry {
         feature,
         name: def.name,
         ref: `${feature}.${def.name}`,
+        kind: def.kind ?? 'invoke',
         title: def.title ?? def.name,
         description: def.description,
         parameters: def.parameters,

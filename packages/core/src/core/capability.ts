@@ -122,6 +122,16 @@ export class CapabilityRegistry {
   }
 
   /**
+   * 移除指定 feature 的全部命令（幂等）。
+   * initSingleFeature 重挂路径先调它，避免热载时误报 duplicate ref。
+   */
+  unregisterFeature(featureName: string): void {
+    for (const [ref, entry] of this.defs) {
+      if (entry.feature === featureName) this.defs.delete(ref);
+    }
+  }
+
+  /**
    * 清单快照。传入 entryPoint 时过滤出该入口可见的命令
    * （宿主下发 slash 菜单清单时用 { entryPoint: 'slash' }）。
    */

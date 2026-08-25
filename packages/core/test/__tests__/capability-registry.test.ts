@@ -51,6 +51,17 @@ describe('CapabilityRegistry.register', () => {
     expect(() => reg.register('f', makeDef('has space'))).toThrow(/invalid command name/);
     expect(() => reg.register('f', makeDef(''))).toThrow(/invalid command name/);
   });
+
+  it('should unregister all commands of a feature idempotently', () => {
+    const reg = new CapabilityRegistry();
+    reg.register('f', makeDef('a'));
+    reg.register('f', makeDef('b'));
+    reg.register('other', makeDef('a'));
+    reg.unregisterFeature('f');
+    expect(reg.list().map((s) => s.ref)).toEqual(['other.a']);
+    reg.unregisterFeature('f'); // 幂等
+    expect(reg.list().map((s) => s.ref)).toEqual(['other.a']);
+  });
 });
 
 describe('CapabilityRegistry.list filter', () => {

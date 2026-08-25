@@ -21,6 +21,13 @@ import { runWithNotificationScope } from './notification.js';
 import { captureFeatureSnapshots, restoreFeatureSnapshots } from './checkpoint.js';
 import { loadFeatureModule, isFeatureInitFailureError, type FeatureReloadOptions, type FeatureReloadResult, type FeatureInitFailureError, type FeatureReloadFailureError } from './feature-reload.js';
 import { preflightAssembly } from './feature-preflight.js';
+import { CapabilityRegistry } from './capability.js';
+import type {
+  CapabilityContext,
+  CapabilityEntryPoint,
+  CapabilityInvokeResult,
+  CapabilitySnapshot,
+} from './capability.js';
 import type { CallContinuationRequest } from './continuation.js';
 import {
   getDefaultSessionStore,
@@ -129,6 +136,9 @@ class AgentBase {
   }> = [];
   private featureToolsReady: boolean = false;
   private featureToolsReadyPromise?: Promise<void>;
+
+  // Capability 注册表（统一控制面，Feature 声明的命令平面寻址）
+  private capabilities = new CapabilityRegistry();
 
   // 同一 Agent 实例维护单条会话状态链，因此 call 必须按提交顺序执行。
   // 队列始终被错误吸收，避免一次失败阻塞后续调用。
@@ -1606,6 +1616,39 @@ class AgentBase {
   }
 
   /**
+   * 调用已注册的 capability 命令。
+   *
+   * entryPoint 由调用方声明：进程内 Feature 调用传 'feature'，
+   * 宿主前端转发的用户触发传 'slash'。注册表据此执行 entryPoints
+   * 契约检查（不匹配返回 entry_point_denied）。
+   */
+  async invokeCapability(
+    ref: string,
+    args: Record<string, unknown>,
+    entryPoint: CapabilityEntryPoint,
+    opts?: { timeoutMs?: number },
+  ): Promise<CapabilityInvokeResult> {
+    await this.ensureFeatureTools();
+    const ctx: CapabilityContext = {
+      agentId: this.agentId,
+      getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
+        return this.features.get(featureName) as T | undefined;
+      },
+      logger: createLogger('capability', { agentId: this.agentId }),
+    };
+    return this.capabilities.invoke(ref, { args, entryPoint, timeoutMs: opts?.timeoutMs }, ctx);
+  }
+
+  /**
+   * Capability 清单快照。宿主下发用户命令菜单时用
+   * { entryPoint: 'slash' } 过滤；确保 Feature 初始化完成后返回。
+   */
+  async getCapabilitySnapshot(filter?: { entryPoint?: CapabilityEntryPoint }): Promise<CapabilitySnapshot[]> {
+    await this.ensureFeatureTools();
+    return this.capabilities.list(filter);
+  }
+
+  /**
    * 为单个 Feature 执行工具注册、onInitiate 和 hooks 收集。
    *
    * 被 ensureFeatureTools() 和 mountFeature() 共用。
@@ -1641,6 +1684,14 @@ class AgentBase {
     if (feature.getTools) {
       for (const tool of runWithLogScope({ feature: name, namespace: `feature.${name}`, tags: [`feature:${name}`] }, () => feature.getTools!()) || []) {
         this.tools.register(tool, name);  // 传递来源
+      }
+    }
+
+    // Capability 收集：先清该 feature 旧条目再注册，热载重挂路径不误报 duplicate。
+    this.capabilities.unregisterFeature(name);
+    if (feature.getCapabilities) {
+      for (const def of runWithLogScope({ feature: name, namespace: `feature.${name}` }, () => feature.getCapabilities!()) || []) {
+        this.capabilities.register(name, def);
       }
     }
 

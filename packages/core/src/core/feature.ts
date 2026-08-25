@@ -244,6 +244,17 @@ export interface AgentFeature {
   getFeatureManifest?(): FeatureManifestDefinition | null;
 
   /**
+   * 声明可调用命令（Capability）
+   *
+   * 命令以 `featureName.commandName` 在注册表内平面寻址，两类消费入口：
+   * - 用户命令菜单：宿主下发清单时按 entryPoints 含 'slash' 过滤
+   * - 其他 Feature：进程内 invokeCapability，entryPoint 为 'feature'；
+   *   宿主前端转发的用户触发同样经注册表，entryPoint 为 'slash'。
+   * entryPoints 是契约约束（不匹配返回 entry_point_denied），不是安全边界。
+   */
+  getCapabilities?(): import('./capability.js').CapabilityDefinition[];
+
+  /**
    * 声明上下文注入器
    */
   getContextInjectors?(): Map<string | RegExp, ContextInjector>;

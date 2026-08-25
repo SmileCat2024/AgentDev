@@ -250,13 +250,16 @@ describe('SkillFeature', () => {
     });
   });
 
-  describe('onCallStart() slash activation injection', () => {
-    async function setup() {
+  describe('onCallStart() command-token injection', () => {
+    async function setup(names: string[] = ['grill']) {
       const f = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
       const ws = join(tempDir, 'ws');
       const skillDir = join(ws, 'skills');
       mkdirSync(skillDir, { recursive: true });
-      writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: grill\ndescription: grill me\n---\nDOC-BODY');
+      for (const name of names) {
+        mkdirSync(join(skillDir, name), { recursive: true });
+        writeFileSync(join(skillDir, `${name}`, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} me\n---\nDOC-${name}`);
+      }
       await f.onInitiate({
         agentId: 't', config: { workspaceDir: ws } as any, logger: console as any,
         getFeature: () => undefined, registerTool: () => {}, dataSourceRegistry: new DataSourceRegistry(),
@@ -264,40 +267,52 @@ describe('SkillFeature', () => {
       return { f };
     }
 
-    it('should inject activated skill doc as system message then clear pending', async () => {
+    it('injects skill doc as system message when input carries /name token', async () => {
       const { f } = await setup();
-      const [cap] = f.getCapabilities();
-      await cap.execute({}, { agentId: 't', getFeature: () => undefined, logger: console as any });
-
       const add = vi.fn();
-      await (f as any).onCallStart({ input: '开始吧', context: { add }, isFirstCall: false });
+      await (f as any).onCallStart({ input: '/grill 拷问我这个方案', context: { add }, isFirstCall: false });
       expect(add).toHaveBeenCalledTimes(1);
       const [msg] = add.mock.calls[0];
       expect(msg.role).toBe('system');
-      expect(msg.content).toContain('DOC-BODY');
-      expect(msg.content).toContain('grill');
+      expect(msg.content).toContain('DOC-grill');
 
-      // pending 已清除：下一轮不再注入
+      // 无 token 的后续轮不再注入
       await (f as any).onCallStart({ input: 'next', context: { add }, isFirstCall: false });
       expect(add).toHaveBeenCalledTimes(1);
     });
 
-    it('should do nothing when no pending activation', async () => {
+    it('matches full form /skill.name token too', async () => {
+      const { f } = await setup();
+      const add = vi.fn();
+      await (f as any).onCallStart({ input: '/skill.grill 开始', context: { add }, isFirstCall: false });
+      expect(add).toHaveBeenCalledTimes(1);
+    });
+
+    it('injects multiple skills when input carries multiple tokens', async () => {
+      const { f } = await setup(['grill', 'lark']);
+      const add = vi.fn();
+      await (f as any).onCallStart({ input: '/grill 和 /lark 都用上', context: { add }, isFirstCall: false });
+      expect(add).toHaveBeenCalledTimes(2);
+      expect(add.mock.calls[0][0].content).toContain('DOC-grill');
+      expect(add.mock.calls[1][0].content).toContain('DOC-lark');
+    });
+
+    it('does nothing for plain messages or glued substrings', async () => {
       const { f } = await setup();
       const add = vi.fn();
       await (f as any).onCallStart({ input: '普通消息', context: { add }, isFirstCall: false });
+      await (f as any).onCallStart({ input: '看下/grill的实现', context: { add }, isFirstCall: false });
+      await (f as any).onCallStart({ input: '/grill-me 不存在的技能', context: { add }, isFirstCall: false });
       expect(add).not.toHaveBeenCalled();
     });
 
-    it('should not throw when skill file is unreadable', async () => {
+    it('does not throw when skill file is unreadable', async () => {
       const { f } = await setup();
-      const [cap] = f.getCapabilities();
-      await cap.execute({}, { agentId: 't', getFeature: () => undefined, logger: console as any });
-      rmSync(join(tempDir, 'ws', 'skills', 'SKILL.md'));
+      rmSync(join(tempDir, 'ws', 'skills', 'grill', 'SKILL.md'));
 
       const add = vi.fn();
       await expect(
-        (f as any).onCallStart({ input: 'x', context: { add }, isFirstCall: false }),
+        (f as any).onCallStart({ input: '/grill x', context: { add }, isFirstCall: false }),
       ).resolves.toBeUndefined();
       expect(add).not.toHaveBeenCalled();
     });

@@ -3,4 +3,4 @@
  */
 
 export type { SkillMetadata, SkillsOptions } from './types.js';
-export { discover } from './loader.js';
+export { discover, splitFrontmatter } from './loader.js';

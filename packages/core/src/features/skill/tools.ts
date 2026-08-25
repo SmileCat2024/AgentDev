@@ -8,6 +8,7 @@ import { readFile } from 'fs/promises';
 import { dirname, normalize } from 'path';
 import type { Tool } from '../../core/types.js';
 import type { SkillMetadata } from '../../skills/types.js';
+import { splitFrontmatter } from '../../skills/loader.js';
 import { createTool } from '../../core/tool.js';
 
 /**
@@ -51,8 +52,13 @@ export const invokeSkillTool: Tool = createTool({
     }
 
     try {
-      // 读取 SKILL.md 文件
-      const content = await readFile(skillMetadata.path, 'utf-8');
+      // frontmatter 原样保留但包进 yaml 围栏代码块，避免 markdown 渲染异常
+      const raw = await readFile(skillMetadata.path, 'utf-8');
+      const { frontmatter, body } = splitFrontmatter(raw);
+      const content = [
+        frontmatter ? ['```yaml', frontmatter, '```', ''].join('\n') : '',
+        body,
+      ].filter(Boolean).join('\n');
 
       // 获取技能目录路径，并规范化路径格式
       const basePath = normalize(dirname(skillMetadata.path));

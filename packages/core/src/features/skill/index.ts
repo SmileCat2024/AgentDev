@@ -30,7 +30,7 @@ import type { Tool } from '../../core/types.js';
 import type { CapabilityDefinition } from '../../core/capability.js';
 import type { Logger } from '../../core/logging.js';
 import { invokeSkillTool } from './tools.js';
-import { discoverMulti } from '../../skills/loader.js';
+import { discoverMulti, splitFrontmatter } from '../../skills/loader.js';
 import type { SkillMetadata, SkillsOptions } from '../../skills/types.js';
 import type { PlaceholderContext } from '../../template/types.js';
 import { PlaceholderResolver } from '../../template/resolver.js';
@@ -186,14 +186,22 @@ export class SkillFeature implements AgentFeature {
       }
 
       try {
-        const content = await readFile(skill.path, 'utf-8');
+        // frontmatter 原样保留但包进 yaml 围栏代码块：直接拼进 markdown 时
+        // `---` 会渲染成水平线、YAML 文本被 setext 语法解析成大标题
+        const { frontmatter, body } = splitFrontmatter(await readFile(skill.path, 'utf-8'));
+        const content = [
+          frontmatter ? ['```yaml', frontmatter, '```', ''].join('\n') : '',
+          body,
+        ].filter(Boolean).join('\n');
         const basePath = normalize(dirname(skill.path)).replace(/\\/g, '/');
         ctx.context.add({
           role: 'system',
           content: [
             `[技能激活：${skill.name}]`,
             `技能基础目录：\`${basePath}\``,
+            '',
             '---',
+            '',
             demoteHeadings(content),
           ].join('\n'),
         });

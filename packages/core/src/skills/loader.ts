@@ -100,6 +100,28 @@ function parseFrontmatterFallback(frontmatterStr: string, path: string): SkillMe
 }
 
 /**
+ * 拆分 SKILL.md 开头的 YAML frontmatter，返回 [frontmatter 原文, 正文]。
+ *
+ * frontmatter 含 name/description 之外的用户元数据，注入时必须原样保留；
+ * 但若直接拼进 markdown，开头的 `---` 会被渲染成水平线、紧随的 YAML 文本
+ * 被 setext 语法解析成大标题。调用方应将 frontmatter 包进 ```yaml 围栏
+ * 代码块后再拼接，使其渲染为代码块。
+ */
+export function splitFrontmatter(content: string): { frontmatter: string; body: string } {
+  const trimmed = content.trimStart();
+  if (!trimmed.startsWith('---')) return { frontmatter: '', body: content };
+
+  const frontmatterEnd = trimmed.indexOf('\n---', 3);
+  if (frontmatterEnd === -1) return { frontmatter: '', body: content };
+
+  const rest = trimmed.slice(trimmed.indexOf('\n', frontmatterEnd + 1) + 1);
+  return {
+    frontmatter: trimmed.slice(0, frontmatterEnd + 4).trim(),
+    body: rest.trimStart(),
+  };
+}
+
+/**
  * 扫描目录下的 SKILL.md 文件（仅一级结构）
  *
  * 标准结构：每个一级子目录代表一个 skill，其内部直接包含 SKILL.md。

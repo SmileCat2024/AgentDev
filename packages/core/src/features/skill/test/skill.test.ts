@@ -2,11 +2,28 @@ import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SkillFeature } from '../index.js';
 import { invokeSkillTool } from '../tools.js';
+import { splitFrontmatter } from '../../../skills/loader.js';
 import { TemplateComposer } from '../../../template/composer.js';
 import { DataSourceRegistry } from '../../../template/data-source.js';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+
+describe('splitFrontmatter', () => {
+  it('splits leading YAML frontmatter and keeps body', () => {
+    const { frontmatter, body } = splitFrontmatter('---\nname: x\ndescription: y\n---\n# Body\n\ntext');
+    expect(frontmatter).toBe('---\nname: x\ndescription: y\n---');
+    expect(body).toBe('# Body\n\ntext');
+  });
+
+  it('returns frontmatter empty when no frontmatter', () => {
+    expect(splitFrontmatter('# Just a heading\n')).toEqual({ frontmatter: '', body: '# Just a heading\n' });
+  });
+
+  it('returns frontmatter empty when unterminated', () => {
+    expect(splitFrontmatter('---\nname: x')).toEqual({ frontmatter: '', body: '---\nname: x' });
+  });
+});
 
 describe('SkillFeature', () => {
   let tempDir: string;
@@ -281,6 +298,23 @@ describe('SkillFeature', () => {
       expect(add).toHaveBeenCalledTimes(1);
     });
 
+    it('wraps frontmatter in code fence when injecting via turn activation', async () => {
+      const { f } = await setup();
+      writeFileSync(
+        join(tempDir, 'ws', 'skills', 'grill', 'SKILL.md'),
+        '---\nname: grill\ndescription: grill me\n---\nDOC-grill',
+      );
+      const add = vi.fn();
+      await (f as any).onCapabilityActivations(['skill.grill'], { context: { add } });
+      expect(add).toHaveBeenCalledTimes(1);
+      const [msg] = add.mock.calls[0];
+      expect(msg.role).toBe('system');
+      expect(msg.content).toContain('[技能激活：grill]');
+      // frontmatter 原文保留，但包进 yaml 围栏代码块
+      expect(msg.content).toContain('```yaml\n---\nname: grill');
+      expect(msg.content).toContain('DOC-grill');
+    });
+
     it('ignores refs belonging to other features', async () => {
       const { f } = await setup();
       const add = vi.fn();
@@ -353,6 +387,32 @@ describe('SkillFeature', () => {
       expect(result).toContain('test-skill');
       expect(result).toContain('A test skill');
       expect(result).toContain('This is a test skill.');
+    });
+
+    it('should wrap YAML frontmatter in code fence in injected SKILL.md content', async () => {
+      const skillDir = join(tempDir, 'frontmatter-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        '---\nname: fm-skill\ndescription: has frontmatter\nhomepage: https://example.com\n---\n# Body Heading\n\nBody text.',
+      );
+
+      const result = await invokeSkillTool.execute!(
+        { skill: 'fm-skill' },
+        {
+          _context: {
+            skills: [
+              { name: 'fm-skill', description: 'has frontmatter', path: join(skillDir, 'SKILL.md') },
+            ],
+          },
+        } as any,
+      );
+
+      // frontmatter 原文保留，但包进 yaml 围栏代码块（渲染为代码块而非大标题）
+      expect(result).toContain('name: fm-skill');
+      expect(result).toContain('homepage: https://example.com');
+      expect(result).toContain('```yaml\n---\nname: fm-skill');
+      expect(result).toContain('# Body Heading');
     });
 
     it('should handle missing context gracefully', async () => {

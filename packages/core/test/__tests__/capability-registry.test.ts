@@ -65,6 +65,23 @@ describe('CapabilityRegistry.register', () => {
 });
 
 describe('CapabilityRegistry.list filter', () => {
+  it('exposes currentValues from readCurrentValues and tolerates its failure', () => {
+    const reg = new CapabilityRegistry();
+    reg.register('cfg', {
+      name: 'set',
+      execute: async () => 'ok',
+      readCurrentValues: () => ({ level: 3 }),
+    });
+    reg.register('broken', {
+      name: 'set',
+      execute: async () => 'ok',
+      readCurrentValues: () => { throw new Error('boom'); },
+    });
+    const byRef = Object.fromEntries(reg.list().map((s) => [s.ref, s]));
+    expect(byRef['cfg.set'].currentValues).toEqual({ level: 3 });
+    expect(byRef['broken.set'].currentValues).toBeUndefined();
+  });
+
   it('should filter by entryPoint', () => {
     const reg = new CapabilityRegistry();
     reg.register('f', makeDef('userCmd', { entryPoints: ['slash', 'feature'] }));

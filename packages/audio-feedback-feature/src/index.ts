@@ -4,6 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type {
   AgentFeature,
+  CapabilityDefinition,
   FeatureContext,
   FeatureInitContext,
   FeatureStateSnapshot,
@@ -131,6 +132,50 @@ export class AudioFeedbackFeature implements AgentFeature {
         title: '提醒音播放次数',
         description: '当前会话中已经播放提醒音的次数。',
         resolver: () => this.runtime.playCount,
+      },
+    ];
+  }
+
+  getCapabilities(): CapabilityDefinition[] {
+    return [
+      {
+        name: 'configure',
+        title: '声音反馈设置',
+        description: '开关提醒音频并调整音量（当前会话生效）。',
+        entryPoints: ['slash', 'feature'],
+        parameters: {
+          enabled: {
+            type: 'boolean',
+            title: '播放提醒音',
+            description: 'call 结束时是否播放提醒音频。',
+            default: this.config.enabled,
+          },
+          volume: {
+            type: 'number',
+            title: '音量',
+            description: '播放音量，范围 0 到 1。',
+            default: this.config.volume,
+            min: 0,
+            max: 1,
+            step: 0.05,
+          },
+        },
+        readCurrentValues: () => ({
+          enabled: this.runtime.enabled,
+          volume: this.runtime.volume,
+        }),
+        execute: async (args) => {
+          const applied: string[] = [];
+          if (typeof args.enabled === 'boolean') {
+            this.setEnabled(args.enabled);
+            applied.push('enabled');
+          }
+          if (typeof args.volume === 'number' && Number.isFinite(args.volume)) {
+            this.setVolume(args.volume);
+            applied.push('volume');
+          }
+          return { applied, enabled: this.runtime.enabled, volume: this.runtime.volume };
+        },
       },
     ];
   }

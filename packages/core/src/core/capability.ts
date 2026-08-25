@@ -49,6 +49,12 @@ export interface CapabilityDefinition {
    * 进 slash 菜单必须是显式主动行为。
    */
   entryPoints?: CapabilityEntryPoint[];
+  /**
+   * 参数当前生效值（配置回显）：参数表单打开时优先于 parameters 的
+   * default 显示。返回普通对象，键与 parameters 对齐；缺省或抛错
+   * 时表单回退 default。读取必须无副作用。
+   */
+  readCurrentValues?: () => Record<string, unknown>;
   /** 执行体。抛出的任何错误归一为 execute_failed */
   execute(args: Record<string, unknown>, ctx: CapabilityContext): Promise<unknown>;
 }
@@ -84,6 +90,8 @@ export interface CapabilitySnapshot {
   description?: string;
   parameters?: Record<string, FeatureManifestSettingProperty>;
   entryPoints: CapabilityEntryPoint[];
+  /** 参数当前生效值（readCurrentValues 收集；读取失败时缺省） */
+  currentValues?: Record<string, unknown>;
 }
 
 const NAME_PATTERN = /^[a-zA-Z][\w-]*$/;
@@ -140,6 +148,15 @@ export class CapabilityRegistry {
     for (const { feature, def } of this.defs.values()) {
       const entryPoints = normalizeEntryPoints(def.entryPoints);
       if (filter?.entryPoint && !entryPoints.includes(filter.entryPoint)) continue;
+      let currentValues: Record<string, unknown> | undefined;
+      if (typeof def.readCurrentValues === 'function') {
+        try {
+          const values = def.readCurrentValues();
+          if (values && typeof values === 'object') currentValues = values;
+        } catch {
+          // 回显失败不影响清单下发，表单回退 default
+        }
+      }
       snapshots.push({
         feature,
         name: def.name,
@@ -148,6 +165,7 @@ export class CapabilityRegistry {
         description: def.description,
         parameters: def.parameters,
         entryPoints,
+        currentValues,
       });
     }
     return snapshots;

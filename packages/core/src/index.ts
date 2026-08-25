@@ -290,6 +290,16 @@ export type {
 // 重新导出核心功能模块
 export { getPackageInfoFromSource } from './core/feature.js';
 export type { FeatureManifestDefinition, FeatureManifestSettingProperty } from './core/feature.js';
+
+// Capability 能力注册表（统一控制面）
+export { CapabilityRegistry } from './core/capability.js';
+export type {
+  CapabilityDefinition,
+  CapabilityContext,
+  CapabilityInvokeResult,
+  CapabilitySnapshot,
+  CapabilityEntryPoint,
+} from './core/capability.js';
 export { preflightAssembly } from './core/feature-preflight.js';
 export type {
   PreflightCheck,

@@ -47,6 +47,7 @@ export class ReActLoopRunner {
       hooksRegistry: HooksRegistry;
       recordUsage(callIndex: number, step: number, usage: UsageInfo): void;
       endCallUsage(callIndex: number): void;
+      dispatchTurnActivations(refs: string[], context: Context): Promise<void>;
       stepSaveFn?: () => Promise<void>;
       peekContinuationRequest?: () => CallContinuationRequest | null;
     },
@@ -745,7 +746,7 @@ export class ReActLoopRunner {
           // 排队消息在 call 内注入（不触发新 onCall），其携带的能力激活
           // 通知在此消息落地点派发给对应 feature
           if (qi.capabilityActivations?.length) {
-            await (this.agent as any).dispatchTurnActivations?.(qi.capabilityActivations, context);
+            await this.agent.dispatchTurnActivations(qi.capabilityActivations, context);
           }
           context.addUserMessage(qi.text, callIndex, qi.images);
         }

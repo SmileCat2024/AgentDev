@@ -39,6 +39,17 @@ import { PlaceholderResolver } from '../../template/resolver.js';
 const __filename = fileURLToPath(import.meta.url);
 
 /**
+ * 技能文档注入时统一降级标题层级（+3，封顶 h6）。
+ * SKILL.md 惯例以 `#` 开篇，聊天界面按 h1 渲染会撑爆消息块；
+ * 注入场景只需要最小标题 + 正文的密度，保留相对层级即可。
+ */
+function demoteHeadings(md: string): string {
+  return md.replace(/^(#{1,6})(\s)/gm, (_m, hashes: string, sep: string) => {
+    return `${'#'.repeat(Math.min(hashes.length + 3, 6))}${sep}`;
+  });
+}
+
+/**
  * Skill Feature 配置类型
  */
 export interface SkillFeatureConfig extends SkillsOptions {
@@ -181,10 +192,9 @@ export class SkillFeature implements AgentFeature {
           role: 'system',
           content: [
             `[技能激活：${skill.name}]`,
-            `用户已显式激活技能「${skill.name}」。请在本轮及后续工作中遵循该技能文档的指引执行。`,
             `技能基础目录：\`${basePath}\``,
             '---',
-            content,
+            demoteHeadings(content),
           ].join('\n'),
         });
         this.logger?.info(`Skill "${skill.name}" injected via turn activation notification`);

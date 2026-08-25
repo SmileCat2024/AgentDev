@@ -2193,6 +2193,7 @@ class AgentBase {
         hooksRegistry: this.hooksRegistry,
         recordUsage: (callIndex: number, step: number, usage: UsageInfo) => this.recordUsage(callIndex, step, usage),
         endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
+        dispatchTurnActivations: (refs: string[], context: import('./context.js').Context) => this.dispatchTurnActivations(refs, context),
         stepSaveFn: this._createStepSaveFn(),
         peekContinuationRequest: () => this._continuationRequest,
       },

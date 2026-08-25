@@ -1629,14 +1629,32 @@ class AgentBase {
     opts?: { timeoutMs?: number },
   ): Promise<CapabilityInvokeResult> {
     await this.ensureFeatureTools();
+    const logger = createLogger('capability', { agentId: this.agentId });
     const ctx: CapabilityContext = {
       agentId: this.agentId,
       getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
         return this.features.get(featureName) as T | undefined;
       },
-      logger: createLogger('capability', { agentId: this.agentId }),
+      logger,
     };
-    return this.capabilities.invoke(ref, { args, entryPoint, timeoutMs: opts?.timeoutMs }, ctx);
+    // 审计兜底：invoke 生命周期不依赖 Feature 自觉写日志，在此统一落
+    // DebugHub（Web UI query_logs / debugger MCP 可查；无头时 stdio）。
+    const startedAt = Date.now();
+    const result = await this.capabilities.invoke(ref, { args, entryPoint, timeoutMs: opts?.timeoutMs }, ctx);
+    const base = {
+      ref,
+      entryPoint,
+      durationMs: Date.now() - startedAt,
+      argKeys: Object.keys(args ?? {}),
+    };
+    if (result.ok) {
+      logger.info('capability invoked', base);
+    } else if (result.code === 'not_found' || result.code === 'entry_point_denied') {
+      logger.warn('capability invoke rejected', { ...base, code: result.code, message: result.message });
+    } else {
+      logger.error('capability invoke failed', { ...base, code: result.code, message: result.message });
+    }
+    return result;
   }
 
   /**

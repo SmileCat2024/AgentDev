@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Agent } from '../../src/core/agent.js';
 import type { AgentFeature } from '../../src/core/feature.js';
 import type { CapabilityDefinition } from '../../src/core/capability.js';
@@ -76,5 +76,30 @@ describe('Agent capability integration', () => {
     const res = await agent.invokeCapability('cmd-feature.reload', {}, 'slash');
     expect(res).toEqual({ ok: true, result: 'reloaded' });
     expect(feature.executedArgs).toEqual([{}]);
+  });
+
+  // 审计兜底：无论 Feature 自己是否写日志，invoke 生命周期必须在
+  // logger 通路留痕（hub 连接时进 DebugHub / query_logs；测试环境无
+  // hub，走 stdio fallback，故以 spy 捕获）。
+  it('emits an audit log line on every capability invocation', async () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const errWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 }).use(new CommandFeature());
+
+      await agent.invokeCapability('cmd-feature.reload', { force: true }, 'slash');
+      let out = write.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toContain('capability invoked');
+      expect(out).toContain('cmd-feature.reload');
+
+      await agent.invokeCapability('cmd-feature.user-only', {}, 'feature'); // denied
+      out = write.mock.calls.map((c) => String(c[0])).join('');
+      const errOut = errWrite.mock.calls.map((c) => String(c[0])).join('');
+      expect(out + errOut).toContain('capability invoke rejected');
+      expect(out + errOut).toContain('entry_point_denied');
+    } finally {
+      write.mockRestore();
+      errWrite.mockRestore();
+    }
   });
 });

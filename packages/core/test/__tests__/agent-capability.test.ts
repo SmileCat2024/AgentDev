@@ -103,3 +103,60 @@ describe('Agent capability integration', () => {
     }
   });
 });
+
+class PromptFeature implements AgentFeature {
+  name = 'pf';
+  activations: Array<{ refs: string[]; hasContext: boolean }> = [];
+
+  getCapabilities(): CapabilityDefinition[] {
+    return [
+      {
+        name: 'load',
+        kind: 'prompt',
+        entryPoints: ['slash', 'feature'],
+        execute: async () => ({ ack: true }),
+      },
+    ];
+  }
+
+  async onCapabilityActivations(refs: string[], ctx: { context: unknown }): Promise<void> {
+    this.activations.push({ refs, hasContext: !!ctx.context });
+  }
+}
+
+describe('Agent turn activation dispatch', () => {
+  it('dispatches onCall activations to owning feature before user message', async () => {
+    const pf = new PromptFeature();
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 }).use(pf);
+
+    await agent.onCall('go', undefined, ['pf.load']);
+
+    expect(pf.activations).toEqual([{ refs: ['pf.load'], hasContext: true }]);
+    // 注入发生在用户消息之前：activations 派发时 context 尚不含本条 user 消息
+    const ctxMessages = (agent as any).persistentContext.getAll();
+    const userIdx = ctxMessages.findIndex((m: Message) => m.role === 'user');
+    expect(userIdx).toBeGreaterThan(-1);
+  });
+
+  it('feature-entry prompt invoke dispatches into current context; slash entry does not', async () => {
+    const pf = new PromptFeature();
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 }).use(pf);
+
+    await agent.onCall('prime'); // 建立 persistentContext
+    expect(pf.activations).toHaveLength(0);
+
+    await agent.invokeCapability('pf.load', {}, 'slash');
+    expect(pf.activations).toHaveLength(0); // slash 入口由宿主输入管线随消息投递
+
+    await agent.invokeCapability('pf.load', {}, 'feature');
+    expect(pf.activations).toEqual([{ refs: ['pf.load'], hasContext: true }]);
+  });
+
+  it('ignores unknown refs without throwing', async () => {
+    const pf = new PromptFeature();
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 }).use(pf);
+
+    await agent.dispatchTurnActivations(['nope.nope', 'pf.load', 'pf.load'], {} as any);
+    expect(pf.activations).toEqual([{ refs: ['pf.load'], hasContext: true }]); // 去重 + 未知 ref 忽略
+  });
+});

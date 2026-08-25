@@ -20,6 +20,7 @@ export interface WorkThreadBridgeSubmitTurnParams {
   text: string;
   source: string;
   sourceRef: string;
+  capabilityActivations?: string[];
 }
 
 export interface WorkThreadDeliveryOutcome {
@@ -70,7 +71,7 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
 
   async deliver(params: {
     thread: { agentId?: string; headSessionId?: string; threadId?: string };
-    command: { commandId?: string; text?: string };
+    command: { commandId?: string; text?: string; capabilityActivations?: string[] };
   }): Promise<WorkThreadDeliveryOutcome> {
     const { thread, command } = params;
     if (!this.isEnabled()) {
@@ -97,6 +98,9 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
         text: command.text || '',
         source: 'thread',
         sourceRef: command.commandId || '',
+        ...(Array.isArray(command.capabilityActivations) && command.capabilityActivations.length > 0
+          ? { capabilityActivations: command.capabilityActivations }
+          : {}),
       });
     } catch (error) {
       if (isUserTurnDeliveryError(error)) {

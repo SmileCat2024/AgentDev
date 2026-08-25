@@ -849,6 +849,12 @@ class ViewerWorker {
       && (typeof input.sourceRef !== 'string' || input.sourceRef.length === 0 || input.sourceRef.length > 512)) {
       return { success: false, code: 'invalid_input', error: 'sourceRef must be a non-empty string up to 512 characters' };
     }
+    if (input.capabilityActivations !== undefined
+      && (!Array.isArray(input.capabilityActivations)
+        || input.capabilityActivations.length > 16
+        || input.capabilityActivations.some((a) => typeof a !== 'string' || a.length === 0 || a.length > 128))) {
+      return { success: false, code: 'invalid_input', error: 'capabilityActivations must be an array of up to 16 non-empty strings (max 128 chars each)' };
+    }
 
     const session = this.agentSessions.get(agentId);
     if (!session) {
@@ -903,7 +909,7 @@ class ViewerWorker {
         error: 'This runtime does not accept external user turns',
       };
     }
-    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef);
+    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations);
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
       success: true,
@@ -982,6 +988,9 @@ class ViewerWorker {
     if (Array.isArray(input.images) && input.images.length > 0) payload.images = input.images;
     if (input.source) payload.source = input.source;
     if (input.sourceRef) payload.sourceRef = input.sourceRef;
+    if (Array.isArray(input.capabilityActivations) && input.capabilityActivations.length > 0) {
+      payload.capabilityActivations = input.capabilityActivations;
+    }
     return {
       kind: 'text',
       text: input.text,
@@ -995,6 +1004,7 @@ class ViewerWorker {
     images?: ImageInput[],
     source?: string,
     sourceRef?: string,
+    capabilityActivations?: string[],
   ): QueuedInput {
     if (!session.queuedInputs) {
       (session as any).queuedInputs = [];
@@ -1006,6 +1016,7 @@ class ViewerWorker {
       ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
       ...(source ? { source } : {}),
       ...(sourceRef ? { sourceRef } : {}),
+      ...(Array.isArray(capabilityActivations) && capabilityActivations.length > 0 ? { capabilityActivations } : {}),
     };
     session.queuedInputs.push(queuedInput);
     return queuedInput;

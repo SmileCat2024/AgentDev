@@ -144,6 +144,17 @@ export class CapabilityRegistry {
     return this.defs.has(ref);
   }
 
+  /** ref → 所属 feature 名（dispatchTurnActivations 按 owner 分组派发用） */
+  ownerOf(ref: string): string | null {
+    return this.defs.get(ref)?.feature ?? null;
+  }
+
+  /** ref → 命令类型（缺省 'invoke'）；未注册返回 null */
+  kindOf(ref: string): CapabilityKind | null {
+    const entry = this.defs.get(ref);
+    return entry ? (entry.def.kind ?? 'invoke') : null;
+  }
+
   /**
    * 移除指定 feature 的全部命令（幂等）。
    * initSingleFeature 重挂路径先调它，避免热载时误报 duplicate ref。

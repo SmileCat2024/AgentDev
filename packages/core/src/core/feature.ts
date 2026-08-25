@@ -255,6 +255,20 @@ export interface AgentFeature {
   getCapabilities?(): import('./capability.js').CapabilityDefinition[];
 
   /**
+   * 消费"随消息到达的能力激活通知"（可选）。
+   *
+   * 激活通知（capability refs 数组）作为用户输入的结构化元数据随消息
+   * 本体流动：新 call 开始时（onCall 第三参）与 busy 排队消息的步边界
+   * 注入时（react-loop drain）两个消息落地点，Agent 会按 ref 归属分组
+   * 调用对应 feature 的本方法。refs 是完整引用（`featureName.commandName`），
+   * feature 只需处理自己前缀的条目。
+   *
+   * 这是 prompt 型命令（skill 等）的唯一消费口——不解析输入文本，
+   * 不维护跨消息的 pending 状态。
+   */
+  onCapabilityActivations?(refs: string[], ctx: { context: import('./context.js').Context }): Promise<void>;
+
+  /**
    * 声明上下文注入器
    */
   getContextInjectors?(): Map<string | RegExp, ContextInjector>;

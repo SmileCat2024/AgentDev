@@ -305,8 +305,8 @@ class AgentBase {
    *
    * 同一实例的会话状态不可并发访问；后续调用会按提交顺序排队。
    */
-  async onCall(input: string, images?: ImageInput[]): Promise<string> {
-    const outcome = await this.onCallDetailed(input, images);
+  async onCall(input: string, images?: ImageInput[], activations?: string[]): Promise<string> {
+    const outcome = await this.onCallDetailed(input, images, activations);
     return outcome.response;
   }
 
@@ -315,8 +315,12 @@ class AgentBase {
    *
    * `onCall()` 保持字符串返回以兼容既有 Agent；宿主、CLI 与自动化调用
    * 应使用本方法根据 status/reason/error 判断实际执行结果。
+   *
+   * `activations` 是随本条输入流动的能力激活通知（capability refs），
+   * 由输入管线（user-turn 元数据）携带，在 CallStart 反向钩子前派发给
+   * 对应 feature 消费（见 dispatchTurnActivations）。
    */
-  async onCallDetailed(input: string, images?: ImageInput[]): Promise<import('./lifecycle.js').CallOutcome> {
+  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[]): Promise<import('./lifecycle.js').CallOutcome> {
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
     }
@@ -326,7 +330,7 @@ class AgentBase {
         throw new Error('Agent is disposing or has been disposed');
       }
 
-      const execution = this.executeCall(input, images);
+      const execution = this.executeCall(input, images, activations);
       const completion = execution.then(() => undefined, () => undefined);
       this._activeCallPromise = completion;
       try {
@@ -348,7 +352,7 @@ class AgentBase {
     return this._lastCallOutcome ? { ...this._lastCallOutcome } : null;
   }
 
-  private async executeCall(input: string, images?: ImageInput[]): Promise<import('./lifecycle.js').CallOutcome> {
+  private async executeCall(input: string, images?: ImageInput[], activations?: string[]): Promise<import('./lifecycle.js').CallOutcome> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
     if (this._lifecycleState !== 'active') {
@@ -432,6 +436,12 @@ class AgentBase {
 
       // 设置输入缓存（Feature 可以在钩子中通过 setUserInput 修改）
       this._pendingInput = input;
+
+      // 随本条输入流动的能力激活通知：在用户消息之前派发，feature 注入
+      // 的内容（skill 文档等）得以先于触发它的消息落位
+      if (activations && activations.length > 0) {
+        await this.dispatchTurnActivations(activations, context);
+      }
 
       // 执行反向钩子，Feature 可以在此期间修改 _pendingInput
       await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall, agent: this });
@@ -1649,6 +1659,14 @@ class AgentBase {
     };
     if (result.ok) {
       logger.info('capability invoked', base);
+      // feature 入口的 prompt 型命令没有后续 user-turn 携带激活通知，
+      // 在当前上下文即时派发（slash 入口由宿主输入管线随消息投递，
+      // 此处不重复派发）
+      if (entryPoint === 'feature') {
+        if (this.capabilities.kindOf(ref) === 'prompt' && this.persistentContext) {
+          await this.dispatchTurnActivations([ref], this.persistentContext);
+        }
+      }
     } else if (result.code === 'not_found' || result.code === 'entry_point_denied') {
       logger.warn('capability invoke rejected', { ...base, code: result.code, message: result.message });
     } else {
@@ -1664,6 +1682,53 @@ class AgentBase {
   async getCapabilitySnapshot(filter?: { entryPoint?: CapabilityEntryPoint }): Promise<CapabilitySnapshot[]> {
     await this.ensureFeatureTools();
     return this.capabilities.list(filter);
+  }
+
+  /**
+   * 把"随消息到达的能力激活通知"派发给对应 feature 消费。
+   *
+   * 两个调用点：executeCall（新 call 的激活，onCall 第三参）与
+   * react-loop 的排队消息步边界注入（busy 时排队的消息不触发新 call，
+   * 激活随注入点派发）。refs 按 capability registry 的归属分组，逐
+   * feature 调用可选方法 onCapabilityActivations；单个 feature 失败
+   * 不阻断其余派发，也不阻断本轮 call。
+   */
+  async dispatchTurnActivations(refs: string[], context: import('./context.js').Context): Promise<void> {
+    if (!Array.isArray(refs) || refs.length === 0) return;
+    // 直接调用（测试 / 宿主工具）时 registry 可能尚未收集，确保幂等初始化
+    await this.ensureFeatureTools();
+    const logger = createLogger('capability', { agentId: this.agentId });
+
+    const byFeature = new Map<string, string[]>();
+    const unknown: string[] = [];
+    for (const ref of refs) {
+      if (typeof ref !== 'string') continue;
+      const owner = this.capabilities.ownerOf(ref);
+      if (!owner) {
+        unknown.push(ref);
+        continue;
+      }
+      const group = byFeature.get(owner) ?? [];
+      if (!group.includes(ref)) group.push(ref);
+      byFeature.set(owner, group);
+    }
+    if (unknown.length > 0) {
+      logger.warn('turn activations ignored (refs not registered)', { refs: unknown });
+    }
+    for (const [featureName, groupRefs] of byFeature) {
+      const feature = this.features.get(featureName) as AgentFeature | undefined;
+      if (!feature || typeof (feature as any).onCapabilityActivations !== 'function') continue;
+      try {
+        await (feature as any).onCapabilityActivations(groupRefs, { context });
+        logger.info('turn activations dispatched', { feature: featureName, refs: groupRefs });
+      } catch (error) {
+        logger.error('turn activation dispatch failed', {
+          feature: featureName,
+          refs: groupRefs,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   /**

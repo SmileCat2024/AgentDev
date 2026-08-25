@@ -250,7 +250,7 @@ describe('SkillFeature', () => {
     });
   });
 
-  describe('onCallStart() command-token injection', () => {
+  describe('onCapabilityActivations() turn activation injection', () => {
     async function setup(names: string[] = ['grill']) {
       const f = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
       const ws = join(tempDir, 'ws');
@@ -267,42 +267,40 @@ describe('SkillFeature', () => {
       return { f };
     }
 
-    it('injects skill doc as system message when input carries /name token', async () => {
+    it('injects skill doc as system message when refs carry skill.grill', async () => {
       const { f } = await setup();
       const add = vi.fn();
-      await (f as any).onCallStart({ input: '/grill 拷问我这个方案', context: { add }, isFirstCall: false });
+      await (f as any).onCapabilityActivations(['skill.grill'], { context: { add } });
       expect(add).toHaveBeenCalledTimes(1);
       const [msg] = add.mock.calls[0];
       expect(msg.role).toBe('system');
       expect(msg.content).toContain('DOC-grill');
 
-      // 无 token 的后续轮不再注入
-      await (f as any).onCallStart({ input: 'next', context: { add }, isFirstCall: false });
+      // 无激活通知的后续轮不再注入
+      await (f as any).onCapabilityActivations([], { context: { add } });
       expect(add).toHaveBeenCalledTimes(1);
     });
 
-    it('matches full form /skill.name token too', async () => {
+    it('ignores refs belonging to other features', async () => {
       const { f } = await setup();
       const add = vi.fn();
-      await (f as any).onCallStart({ input: '/skill.grill 开始', context: { add }, isFirstCall: false });
-      expect(add).toHaveBeenCalledTimes(1);
+      await (f as any).onCapabilityActivations(['review.review', 'todo.clear'], { context: { add } });
+      expect(add).not.toHaveBeenCalled();
     });
 
-    it('injects multiple skills when input carries multiple tokens', async () => {
+    it('injects multiple skills when refs carry multiple activations', async () => {
       const { f } = await setup(['grill', 'lark']);
       const add = vi.fn();
-      await (f as any).onCallStart({ input: '/grill 和 /lark 都用上', context: { add }, isFirstCall: false });
+      await (f as any).onCapabilityActivations(['skill.grill', 'skill.lark'], { context: { add } });
       expect(add).toHaveBeenCalledTimes(2);
       expect(add.mock.calls[0][0].content).toContain('DOC-grill');
       expect(add.mock.calls[1][0].content).toContain('DOC-lark');
     });
 
-    it('does nothing for plain messages or glued substrings', async () => {
+    it('skips unknown skill names without throwing', async () => {
       const { f } = await setup();
       const add = vi.fn();
-      await (f as any).onCallStart({ input: '普通消息', context: { add }, isFirstCall: false });
-      await (f as any).onCallStart({ input: '看下/grill的实现', context: { add }, isFirstCall: false });
-      await (f as any).onCallStart({ input: '/grill-me 不存在的技能', context: { add }, isFirstCall: false });
+      await (f as any).onCapabilityActivations(['skill.nonexistent'], { context: { add } });
       expect(add).not.toHaveBeenCalled();
     });
 
@@ -312,12 +310,11 @@ describe('SkillFeature', () => {
 
       const add = vi.fn();
       await expect(
-        (f as any).onCallStart({ input: '/grill x', context: { add }, isFirstCall: false }),
+        (f as any).onCapabilityActivations(['skill.grill'], { context: { add } }),
       ).resolves.toBeUndefined();
       expect(add).not.toHaveBeenCalled();
     });
   });
-
   // ========== invoke_skill tool execution ==========
 
   describe('invoke_skill tool execution', () => {

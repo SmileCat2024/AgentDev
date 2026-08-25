@@ -63,6 +63,8 @@ export interface WorkThreadCommand {
   updatedAt: number;
   deliveredAt: number | null;
   deliveryRef?: string | null;
+  /** 随指令流动的能力激活通知（capability refs），投递时随 user-turn 元数据转发 */
+  capabilityActivations?: string[];
 }
 
 /**
@@ -74,6 +76,7 @@ export function createCommandRecord(opts: {
   text?: string;
   source?: string;
   idempotencyKey?: string;
+  capabilityActivations?: string[];
 }): WorkThreadCommand {
   const now = Date.now();
   return {
@@ -90,6 +93,9 @@ export function createCommandRecord(opts: {
     createdAt: now,
     updatedAt: now,
     deliveredAt: null,
+    ...(Array.isArray(opts.capabilityActivations) && opts.capabilityActivations.length > 0
+      ? { capabilityActivations: opts.capabilityActivations.filter((a) => typeof a === 'string') }
+      : {}),
   };
 }
 

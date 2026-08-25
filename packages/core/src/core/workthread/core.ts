@@ -283,6 +283,7 @@ export class WorkThread {
     text: string;
     source?: string;
     idempotencyKey?: string;
+    capabilityActivations?: string[];
   }): Promise<{ command: WorkThreadCommand; duplicate: boolean; threadRevision: number }> {
     const threadId = validateId(opts.threadId, 'threadId');
     const normalizedKind =
@@ -309,6 +310,7 @@ export class WorkThread {
       text: normalizedText,
       source: cleanText(opts.source) || 'ui',
       idempotencyKey: cleanText(opts.idempotencyKey),
+      ...(Array.isArray(opts.capabilityActivations) ? { capabilityActivations: opts.capabilityActivations } : {}),
     });
 
     let appendOutcome = { command, duplicate: false };

@@ -29,7 +29,6 @@ import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import type { CapabilityDefinition } from '../../core/capability.js';
 import type { Logger } from '../../core/logging.js';
-import type { CallStartContext } from '../../core/lifecycle.js';
 import { invokeSkillTool } from './tools.js';
 import { discoverMulti } from '../../skills/loader.js';
 import type { SkillMetadata, SkillsOptions } from '../../skills/types.js';
@@ -67,11 +66,6 @@ export class SkillFeature implements AgentFeature {
   readonly name = 'skill';
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '发现本地 skills，并提供 invoke_skill 工具与技能数据源。';
-
-  /** CallStart 注入声明：按输入文本中的命令 token 注入对应技能文档 */
-  static hooks = {
-    onCallStart: { lifecycle: 'CallStart', kind: 'observe' },
-  } as const;
 
   private skillsDir?: string;
   private skills: SkillMetadata[] = [];
@@ -131,11 +125,11 @@ export class SkillFeature implements AgentFeature {
    * 将已发现的 skills 动态注册为 capability 命令。
    *
    * 每个 skill 一条 `skill.<name>` 命令，双入口：用户经 slash 菜单激活，
-   * 或其他 feature / 编排经 registry invoke 激活。激活的真正凭证是随
-   * 消息发出的 `/name` 文本（见 onCallStart）——invoke 只做选中校验与
-   * 审计，不承载激活态：排队投递、线程交接、后继会话等"消息晚到 /
-   * 换进程"的场景下，进程内暂存会丢失或被中间轮误消费，文本凭证则
-   * 始终随消息本体到达。
+   * 或其他 feature / 编排经 registry invoke 激活。激活凭证是随消息流动
+   * 的结构化通知（user-turn 的 capabilityActivations 元数据，见
+   * onCapabilityActivations）——invoke 只做选中校验与审计，不承载激活态：
+   * 排队投递、线程交接、后继会话等"消息晚到 / 换进程"场景下，激活通知
+   * 始终作为消息本体的元数据到达，不依赖进程内暂存或输入文本解析。
    */
   getCapabilities(): CapabilityDefinition[] {
     return this.skills.map((skill) => ({
@@ -157,15 +151,21 @@ export class SkillFeature implements AgentFeature {
   }
 
   /**
-   * CallStart：按输入文本中的命令 token 注入技能文档。
+   * 消费随消息到达的技能激活通知，注入对应技能文档。
    *
-   * 文本 `/name`（或全名 `/skill.name`）作为独立词元出现即视为激活凭证，
-   * 匹配到的技能以 system 位置注入（与 flow 提示词 / force-continuation
-   * 的既有形态一致）。注入失败（文件缺失等）记日志，不阻断本轮 call。
+   * Agent 在两个消息落地点派发（新 call 的 onCall 第三参 / busy 排队
+   * 消息的步边界注入），refs 只含本 feature 前缀的条目。文档以 system
+   * 位置注入（与 flow 提示词 / force-continuation 的既有形态一致）。
+   * 注入失败（文件缺失等）记日志，不阻断本轮 call。
    */
-  async onCallStart(ctx: CallStartContext): Promise<void> {
-    const names = this.matchSkillTokens(ctx.input);
-    if (names.length === 0) return;
+  async onCapabilityActivations(refs: string[], ctx: { context: import('../../core/context.js').Context }): Promise<void> {
+    const names = new Set<string>();
+    for (const ref of refs) {
+      if (typeof ref !== 'string') continue;
+      if (!ref.startsWith('skill.')) continue;
+      names.add(ref.slice('skill.'.length));
+    }
+    if (names.size === 0) return;
 
     for (const skillName of names) {
       const skill = this.skills.find((s) => s.name === skillName);
@@ -187,36 +187,12 @@ export class SkillFeature implements AgentFeature {
             content,
           ].join('\n'),
         });
-        this.logger?.info(`Skill "${skill.name}" injected via /${skill.name} command token`);
+        this.logger?.info(`Skill "${skill.name}" injected via turn activation notification`);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         this.logger?.warn(`Failed to inject activated skill "${skillName}": ${msg}`);
       }
     }
-  }
-
-  /**
-   * 从输入文本提取命中的技能名：`/name` 或 `/skill.name` 作为独立词元
-   * （空白分隔）出现即命中；子串不算（讨论命令本身的对话不会误触发）。
-   */
-  private matchSkillTokens(input: string): string[] {
-    if (!input || this.skills.length === 0) return [];
-    const byToken = new Map<string, string>(); // token(去斜杠) -> skill name
-    for (const skill of this.skills) {
-      byToken.set(skill.name, skill.name);
-      byToken.set(`skill.${skill.name}`, skill.name);
-    }
-    const matched: string[] = [];
-    const seen = new Set<string>();
-    for (const word of input.split(/\s+/)) {
-      if (!word.startsWith('/') || word.length < 2) continue;
-      const name = byToken.get(word.slice(1));
-      if (name && !seen.has(name)) {
-        seen.add(name);
-        matched.push(name);
-      }
-    }
-    return matched;
   }
 
   /**

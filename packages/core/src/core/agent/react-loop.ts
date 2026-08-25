@@ -686,7 +686,7 @@ export class ReActLoopRunner {
    * @param agentId Agent ID
    * @returns 排队消息（文本 + 图片），如果没有则返回 null
    */
-  private async fetchQueuedInput(agentId: string): Promise<{ text: string; images?: ImageInput[] } | null> {
+  private async fetchQueuedInput(agentId: string): Promise<{ text: string; images?: ImageInput[]; capabilityActivations?: string[] } | null> {
     // 从环境变量获取 ViewerWorker 端口
     const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
     const viewerUrl = `http://127.0.0.1:${viewerPort}`;
@@ -707,6 +707,9 @@ export class ReActLoopRunner {
           text: data.input.text,
           ...(Array.isArray(data.input.images) && data.input.images.length > 0
             ? { images: data.input.images }
+            : {}),
+          ...(Array.isArray(data.input.capabilityActivations) && data.input.capabilityActivations.length > 0
+            ? { capabilityActivations: data.input.capabilityActivations.filter((a: unknown): a is string => typeof a === 'string') }
             : {}),
         };
       }
@@ -730,7 +733,7 @@ export class ReActLoopRunner {
   ): Promise<boolean> {
     if (!this.agent.agentId) return false;
     try {
-      const items: Array<{ text: string; images?: ImageInput[] }> = [];
+      const items: Array<{ text: string; images?: ImageInput[]; capabilityActivations?: string[] }> = [];
       while (true) {
         const qi = await this.fetchQueuedInput(this.agent.agentId);
         if (!qi) break;
@@ -739,6 +742,11 @@ export class ReActLoopRunner {
       if (items.length > 0) {
         logger.info(`${logLabel}：注入排队消息`, { count: items.length });
         for (const qi of items) {
+          // 排队消息在 call 内注入（不触发新 onCall），其携带的能力激活
+          // 通知在此消息落地点派发给对应 feature
+          if (qi.capabilityActivations?.length) {
+            await (this.agent as any).dispatchTurnActivations?.(qi.capabilityActivations, context);
+          }
           context.addUserMessage(qi.text, callIndex, qi.images);
         }
         this.pushToDebug(context.getAll());

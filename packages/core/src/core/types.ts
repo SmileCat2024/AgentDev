@@ -720,6 +720,8 @@ export interface QueuedInput {
   source?: string;
   /** 来源侧事件/请求标识，不承担全局幂等语义 */
   sourceRef?: string;
+  /** 随消息流动的能力激活通知（capability refs，如 skill.grill-me） */
+  capabilityActivations?: string[];
 }
 
 /**
@@ -734,6 +736,8 @@ export interface UserTurnInput {
   images?: ImageInput[];
   source?: string;
   sourceRef?: string;
+  /** 随消息流动的能力激活通知（capability refs）；经 lease 响应 payload 与排队项原样随行 */
+  capabilityActivations?: string[];
 }
 
 export type UserTurnSubmissionResult =

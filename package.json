@@ -16,6 +16,7 @@
     "lint:fix": "eslint packages/core/src packages/llm/src packages/viewer/src packages/mcp/src --fix",
     "typecheck": "npm run typecheck -w @agentdevjs/core && npm run typecheck -w @agentdevjs/llm -w @agentdevjs/viewer -w @agentdevjs/mcp",
     "check:versions": "node scripts/check-versions.mjs",
+    "check:deps": "node scripts/dep-audit.mjs",
     "check:core-deps": "node scripts/assert-core-deps.mjs",
     "build-and-pack-features": "node scripts/build-and-pack-features.mjs"
   },
@@ -35,5 +36,14 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.2": true,
+    "protobufjs@7.6.5": true,
+    "sharp@0.35.3": true
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  }
 }

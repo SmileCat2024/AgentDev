@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "openai": "^4.73.0",
-    "sharp": "^0.33.0"
+    "sharp": "^0.35.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

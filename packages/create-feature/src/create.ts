@@ -3,6 +3,9 @@
  *
  * 只创建基础的文件夹结构和必要的文件
  * 不生成详细的示例代码
+ *
+ * dep-audit-ignore-file：本文件中的 import 语句多为生成到目标项目的模板字符串内容，
+ * 非本包真实依赖（真实依赖仅 node 内置模块）。
  */
 
 import { mkdirSync, writeFileSync, existsSync as fsExistsSync } from 'fs';

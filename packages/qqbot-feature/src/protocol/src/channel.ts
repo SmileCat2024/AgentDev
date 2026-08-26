@@ -1,3 +1,8 @@
+/**
+ * dep-audit-ignore-file：vendored 上游（@sliverp/qqbot）的 openclaw 宿主环境代码，
+ * openclaw/plugin-sdk 依赖刻意不引入（体积原因）；本文件不在 standalone 入口可达
+ * 闭包内，不会进入 dist 产物。
+ */
 import {
   type ChannelPlugin,
   type OpenClawConfig,

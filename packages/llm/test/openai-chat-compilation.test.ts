@@ -155,9 +155,9 @@ describe('OpenAI Chat Completions compilation', () => {
     expect(compiled[2]).toEqual({ role: 'user', content: '<reminder>mid system</reminder>\n\nagain' });
   });
 
-  it('should keep assistant tool_calls paired with tool messages when reminders are pending', () => {
-    // reminder 不得插入 assistant(tool_calls) 与 tool 之间，否则严格后端
-    // 会因配对断裂返回 400
+  it('should flush a pending reminder before the next assistant without breaking tool pairing', () => {
+    // reminder 不能插入 assistant(tool_calls) 与 tool 之间，否则严格后端
+    // 会因配对断裂返回 400；但也不能等到整个上下文末尾才输出。
     const messages: Message[] = [
       { role: 'system', content: 'sys' },
       { role: 'user', content: '列目录' },
@@ -177,10 +177,15 @@ describe('OpenAI Chat Completions compilation', () => {
     const toolIndex = compiled.findIndex(m => m.role === 'tool');
     expect(toolIndex).toBe(assistantIndex + 1);
 
-    // reminder 最终拼进下一个 user turn，而非插在配对之间
+    const reminderIndex = compiled.findIndex(m =>
+      m.role === 'user' && typeof m.content === 'string' && m.content.includes('<reminder>注入提醒</reminder>'),
+    );
+    expect(reminderIndex).toBe(assistantIndex - 1);
+    expect(reminderIndex).toBeLessThan(toolIndex);
+
+    // reminder 不应被拖到最后一个 user turn
     const finalUser = compiled[compiled.length - 1] as { role: string; content: string };
-    expect(finalUser.content).toContain('<reminder>注入提醒</reminder>');
-    expect(finalUser.content).toContain('继续');
+    expect(finalUser.content).toBe('继续');
   });
 
   it('should not double-wrap content that already starts with reminder tag', () => {

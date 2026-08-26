@@ -68,6 +68,16 @@ export function compileChatMessages(
       continue;
     }
 
+    // 中途 system 不能原样放入 Chat Completions messages：兼容性最差的
+    // 后端只允许开头的 system。它们会以 user reminder 形式落地，但必须
+    // 在下一个 assistant 之前落地，不能一直等到遇到下一个 user；否则
+    // 历史提醒会被重新编译到整个上下文的末尾，看起来像最新状态。
+    // tool 分支刻意在此之前不 flush，以保持 assistant(tool_calls) 与
+    // tool(result) 的相邻配对。
+    if (m.role === 'assistant') {
+      flushRemindersAsUserMessage();
+    }
+
     if (m.role === 'tool') {
       compiled.push({ role: 'tool', content: m.content, tool_call_id: m.toolCallId! });
       // tool 消息附带图片

@@ -22,7 +22,7 @@ export async function emitRetryObservability(params: {
   status?: number;
 }): Promise<void> {
   const { attempt, maxRetries, delayMs, signal, error, status } = params;
-  const base: LLMRetryData = {
+  const base: Omit<LLMRetryData, 'phase'> = {
     attempt,
     maxRetries,
     ...(delayMs !== undefined ? { delayMs } : {}),

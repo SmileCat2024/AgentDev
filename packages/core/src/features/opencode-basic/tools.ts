@@ -5,8 +5,8 @@
 
 import { createTool } from '../../core/tool.js';
 import { withDisplay } from '../../core/tool-result-display.js';
-import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
-import { glob } from 'glob';
+import { open, readFile, writeFile, opendir, stat, mkdir } from 'fs/promises';
+import { globIterate } from 'glob';
 import { spawn } from 'child_process';
 import { createTwoFilesPatch, diffLines } from 'diff';
 import path from 'path';
@@ -19,7 +19,6 @@ import { homedir } from 'os';
 const DEFAULT_READ_LIMIT = 2000;
 const MAX_LINE_LENGTH = 2000;
 const MAX_BYTES = 50 * 1024;
-const LS_LIMIT = 100;
 const SEARCH_LIMIT = 100;
 const DEFAULT_WORKSPACE_DIR = process.cwd();
 
@@ -165,14 +164,6 @@ function expandPath(inputPath: string, baseDir: string = DEFAULT_WORKSPACE_DIR):
   return resolved.normalize('NFC');
 }
 
-/**
- * 检查是否为 UNC 路径（Windows 网络路径）。
- * 访问 UNC 路径会触发 SMB 认证，可能泄露 NTLM 凭据。
- */
-function isUncPath(filePath: string): boolean {
-  return filePath.startsWith('\\\\') || filePath.startsWith('//');
-}
-
 // ============================================================================
 // 设备文件阻断 — 防止读取无限输出或阻塞输入的设备文件
 // ============================================================================
@@ -209,12 +200,6 @@ function isBlockedDevicePath(filePath: string): boolean {
 
 type FileEncoding = 'utf8' | 'utf16le';
 type LineEndingType = 'LF' | 'CRLF';
-
-interface FileMetadata {
-  content: string;
-  encoding: FileEncoding;
-  lineEndings: LineEndingType;
-}
 
 /**
  * 从 Buffer 检测编码（UTF-16LE BOM 检测）
@@ -312,24 +297,26 @@ async function isBinaryFile(filepath: string): Promise<boolean> {
     return true;
   }
 
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    const content = await readFile(filepath, { encoding: null });
-    if (content.length === 0) return false;
-
-    const bufferSize = Math.min(4096, content.length);
-    const bytes = content.subarray(0, bufferSize);
+    handle = await open(filepath, 'r');
+    const buffer = Buffer.allocUnsafe(4096);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead === 0) return false;
 
     let nonPrintableCount = 0;
-    for (let i = 0; i < bytes.length; i++) {
-      if (bytes[i] === 0) return true;
-      if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) {
-        nonPrintableCount++;
+    for (let i = 0; i < bytesRead; i += 1) {
+      if (buffer[i] === 0) return true;
+      if (buffer[i]! < 9 || (buffer[i]! > 13 && buffer[i]! < 32)) {
+        nonPrintableCount += 1;
       }
     }
 
-    return nonPrintableCount / bytes.length > 0.3;
+    return nonPrintableCount / bytesRead > 0.3;
   } catch {
     return false;
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
@@ -370,7 +357,6 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       ? (args as Record<string, unknown>).limit as number
       : undefined;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
-    console.log(`[read] ${resolvedFilePath}`);
 
     if (offsetParam !== undefined && offsetParam < 1) {
       throw new Error('offset must be greater than or equal to 1');
@@ -388,40 +374,55 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
 
     // 处理目录
     if (stats.isDirectory()) {
-      const dirents = await readdir(resolvedFilePath, { withFileTypes: true });
-      const entries: string[] = [];
-
-      for (const dirent of dirents) {
-        if (dirent.isDirectory()) {
-          entries.push(dirent.name + path.sep);
-        } else if (dirent.isSymbolicLink()) {
-          try {
-            const targetStats = await stat(path.join(resolvedFilePath, dirent.name));
-            entries.push(targetStats.isDirectory() ? dirent.name + path.sep : dirent.name);
-          } catch {
-            entries.push(dirent.name);
-          }
-        } else {
-          entries.push(dirent.name);
-        }
-      }
-
-      entries.sort((a, b) => a.localeCompare(b));
-
       const limit = limitParam ?? DEFAULT_READ_LIMIT;
       const offset = offsetParam ?? 1;
       const start = offset - 1;
-      const sliced = entries.slice(start, start + limit);
-      const truncated = start + sliced.length < entries.length;
+      const end = start + limit;
+      const candidates: Array<{ name: string; isDirectory: boolean; isSymbolicLink: boolean }> = [];
+      let totalEntries = 0;
+      const directory = await opendir(resolvedFilePath);
 
+      try {
+        for await (const dirent of directory) {
+          totalEntries += 1;
+          candidates.push({
+            name: dirent.name,
+            isDirectory: dirent.isDirectory(),
+            isSymbolicLink: dirent.isSymbolicLink(),
+          });
+          candidates.sort((left, right) => left.name.localeCompare(right.name));
+          if (candidates.length > end) candidates.pop();
+        }
+      } finally {
+        await directory.close().catch(() => {});
+      }
+
+      const visibleCandidates = candidates.slice(start, end);
+      const entries: string[] = [];
+      for (const candidate of visibleCandidates) {
+        if (candidate.isDirectory) {
+          entries.push(candidate.name + path.sep);
+        } else if (candidate.isSymbolicLink) {
+          try {
+            const targetStats = await stat(path.join(resolvedFilePath, candidate.name));
+            entries.push(targetStats.isDirectory() ? candidate.name + path.sep : candidate.name);
+          } catch {
+            entries.push(candidate.name);
+          }
+        } else {
+          entries.push(candidate.name);
+        }
+      }
+
+      const truncated = totalEntries > end;
       return {
         type: 'directory',
         path: resolvedFilePath,
-        totalEntries: entries.length,
+        totalEntries,
         offset,
         limit,
         truncated,
-        entries: sliced
+        entries
       };
     }
 
@@ -528,7 +529,6 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
     const content = (args as Record<string, unknown>).content as string;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
-    console.log(`[write] ${resolvedFilePath}`);
 
     // 检测现有文件的编码
     let encoding: FileEncoding = 'utf8';
@@ -1086,7 +1086,6 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const newString = (args as Record<string, unknown>).newString as string;
     const replaceAll = (args as Record<string, unknown>).replaceAll as boolean | undefined;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
-    console.log(`[edit] ${resolvedFilePath}`);
 
     if (oldString === newString) {
       throw new Error('No changes to apply: oldString and newString are identical.');
@@ -1195,13 +1194,161 @@ export const editTool = createEditTool();
 // LS Tool - 目录列表
 // ============================================================================
 
+const LS_MAX_DEPTH = 2;
+const LS_ROOT_LIMIT = 100;
+const LS_CHILD_LIMIT = 12;
+
+type DirectoryTreeEntry = {
+  name: string;
+  relativePath: string;
+  isDirectory: boolean;
+  children: DirectoryTreeEntry[];
+  droppedCount: number;
+};
+
+interface DirectoryTreeResult {
+  root: DirectoryTreeEntry;
+  fileCount: number;
+  truncated: boolean;
+}
+
+/** 将常用 glob 忽略规则编译成匹配相对路径的正则表达式。 */
+function compileIgnorePattern(pattern: string): RegExp | null {
+  let normalized = pattern.trim().replaceAll('\\', '/').replace(/^\.\//, '');
+  if (!normalized) return null;
+  if (normalized.endsWith('/**')) {
+    normalized = normalized.slice(0, -3).replace(/\/$/, '');
+    if (!normalized) return null;
+    return new RegExp(`^(?:${globPatternToRegexSource(normalized)})(?:/.*)?$`);
+  }
+  if (!/[?*[]/.test(normalized)) {
+    return new RegExp(`^(?:${globPatternToRegexSource(normalized)})(?:/.*)?$`);
+  }
+  return new RegExp(`^${globPatternToRegexSource(normalized)}$`);
+}
+
+function globPatternToRegexSource(pattern: string): string {
+  let source = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === '*') {
+      if (pattern[index + 1] === '*') {
+        source += '.*';
+        index += 1;
+      } else {
+        source += '[^/]*';
+      }
+    } else if (char === '?') {
+      source += '[^/]';
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return source;
+}
+
+function shouldIgnoreDirectoryEntry(relativePath: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some(pattern => pattern.test(relativePath));
+}
+
+async function buildLimitedDirectoryTree(
+  rootPath: string,
+  ignorePatterns: readonly string[],
+  maxDepth = LS_MAX_DEPTH,
+  rootLimit = LS_ROOT_LIMIT,
+  childLimit = LS_CHILD_LIMIT,
+): Promise<DirectoryTreeResult> {
+  const compiledPatterns = ignorePatterns
+    .map(compileIgnorePattern)
+    .filter((pattern): pattern is RegExp => pattern !== null);
+  let fileCount = 0;
+  let truncated = false;
+
+  const visit = async (absolutePath: string, relativePath: string, depth: number): Promise<DirectoryTreeEntry[]> => {
+    const limit = depth === 0 ? rootLimit : childLimit;
+    const entries: DirectoryTreeEntry[] = [];
+    let droppedCount = 0;
+    // 目录不可读（Windows 回收站等系统目录）时按空目录继续，不中断整个列表。
+    const directory = await opendir(absolutePath).catch(() => null);
+    if (directory === null) return entries;
+    const compareEntries = (left: DirectoryTreeEntry, right: DirectoryTreeEntry): number => {
+      if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    };
+
+    try {
+      for await (const dirent of directory) {
+        const childRelativePath = relativePath ? `${relativePath}/${dirent.name}` : dirent.name;
+        if (shouldIgnoreDirectoryEntry(childRelativePath, compiledPatterns)) continue;
+
+        const entry: DirectoryTreeEntry = {
+          name: dirent.name,
+          relativePath: childRelativePath,
+          isDirectory: dirent.isDirectory(),
+          children: [],
+          droppedCount: 0,
+        };
+        const insertAt = entries.findIndex(existing => compareEntries(entry, existing) < 0);
+        if (insertAt === -1) entries.push(entry);
+        else entries.splice(insertAt, 0, entry);
+
+        if (entries.length > limit) {
+          entries.pop();
+          droppedCount += 1;
+        }
+      }
+    } finally {
+      await directory.close().catch(() => {});
+    }
+
+    if (droppedCount > 0) {
+      truncated = true;
+      if (entries.length > 0) entries[entries.length - 1]!.droppedCount = droppedCount;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory) {
+        fileCount += 1;
+        continue;
+      }
+      if (depth >= maxDepth) continue;
+      entry.children = await visit(path.join(rootPath, entry.relativePath), entry.relativePath, depth + 1);
+    }
+
+    return entries;
+  };
+
+  const root: DirectoryTreeEntry = {
+    name: '.',
+    relativePath: '',
+    isDirectory: true,
+    children: await visit(rootPath, '', 0),
+    droppedCount: 0,
+  };
+  return { root, fileCount, truncated };
+}
+
+function renderLimitedDirectoryTree(root: DirectoryTreeEntry, rootPath: string): string {
+  const lines = [`${rootPath}${path.sep}`];
+  const render = (entry: DirectoryTreeEntry, depth: number): void => {
+    const indent = '  '.repeat(depth);
+    lines.push(`${indent}${entry.name}${entry.isDirectory ? '/' : ''}`);
+    if (entry.droppedCount > 0) {
+      lines.push(`${'  '.repeat(depth + 1)}… ${entry.droppedCount} more`);
+    }
+    for (const child of entry.children) render(child, depth + 1);
+  };
+  for (const entry of root.children) render(entry, 0);
+  return `${lines.join('\n')}\n`;
+}
+
 /**
- * 目录列表工具
+ * 目录列表工具。只遍历有限深度，并在每个目录边界截断，避免对大仓库做全量 glob 扫描。
  */
 export function createLsTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   return createTool({
   name: 'ls',
-  description: 'List files in a directory with tree structure output. Automatically ignores common build/cache directories.',
+  description: 'List a bounded directory tree. It shows up to two levels, ignores common build/cache directories, and truncates large directories per level.',
   render: 'ls',
   parallelizable: true,
   parameters: {
@@ -1222,82 +1369,22 @@ export function createLsTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   },
   execute: async (args = {}) => {
     const dirPath = normalizeNamedPathArg(args, 'dirPath', 'dirpath', 'path', 'filePath', 'filepath');
-    const ignore = ((args as Record<string, unknown>).ignore as string[]) ?? [];
+    const rawIgnore = (args as Record<string, unknown>).ignore;
+    const ignore = Array.isArray(rawIgnore) ? rawIgnore.filter((item): item is string => typeof item === 'string') : [];
     const resolvedDirPath = resolveWorkspacePath(dirPath, workspaceDir);
-    console.log(`[ls] ${resolvedDirPath}`);
+    const stats = await stat(resolvedDirPath).catch(() => null);
+    if (!stats) throw new Error(`Directory not found: ${resolvedDirPath}`);
+    if (!stats.isDirectory()) throw new Error(`Path is not a directory: ${resolvedDirPath}`);
 
-    const ignoreGlobs = [...IGNORE_PATTERNS, ...ignore.map((p: string) => `${p}/**`)];
-
-    // glob 返回 Promise<string[]>，不是异步迭代器
-    const matches = await glob('**/*', {
-      cwd: resolvedDirPath,
-      absolute: false,
-      dot: true,
-      ignore: ignoreGlobs,
-      nodir: true
-    });
-
-    const files: string[] = [];
-    for (const file of matches) {
-      files.push(file);
-      if (files.length >= LS_LIMIT) break;
-    }
-
-    // 构建目录结构
-    const dirs = new Set<string>();
-    const filesByDir = new Map<string, string[]>();
-
-    for (const file of files) {
-      const dir = path.dirname(file);
-      const parts = dir === '.' ? [] : dir.split(path.sep);
-
-      // 添加所有父目录
-      for (let i = 0; i <= parts.length; i++) {
-        const dirPath = i === 0 ? '.' : parts.slice(0, i).join(path.sep);
-        dirs.add(dirPath);
-      }
-
-      // 将文件添加到其目录
-      if (!filesByDir.has(dir)) {
-        filesByDir.set(dir, []);
-      }
-      filesByDir.get(dir)!.push(path.basename(file));
-    }
-
-    // 渲染目录树
-    function renderDir(dirPath: string, depth: number): string {
-      const indent = '  '.repeat(depth);
-      let output = '';
-
-      if (depth > 0) {
-        output += `${indent}${path.basename(dirPath)}/\n`;
-      }
-
-      const children = Array.from(dirs)
-        .filter((d) => path.dirname(d) === dirPath && d !== dirPath)
-        .sort();
-
-      // 先渲染子目录
-      for (const child of children) {
-        output += renderDir(child, depth + 1);
-      }
-
-      // 渲染文件
-      const dirFiles = filesByDir.get(dirPath) || [];
-      for (const file of dirFiles.sort()) {
-        output += `${'  '.repeat(depth + 1)}${file}\n`;
-      }
-
-      return output;
-    }
-
-    const treeOutput = `${resolvedDirPath}${path.sep}\n${renderDir('.', 0)}`;
-
+    const result = await buildLimitedDirectoryTree(
+      resolvedDirPath,
+      [...IGNORE_PATTERNS, ...ignore.map(pattern => pattern.endsWith('/**') ? pattern : `${pattern}/**`)],
+    );
     return {
       path: resolvedDirPath,
-      count: files.length,
-      truncated: files.length >= LS_LIMIT,
-      tree: treeOutput
+      count: result.fileCount,
+      truncated: result.truncated,
+      tree: renderLimitedDirectoryTree(result.root, resolvedDirPath),
     };
   }
   });
@@ -1337,39 +1424,36 @@ export function createGlobTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const pattern = (args as Record<string, unknown>).pattern as string;
     const searchPath = tryNamedPathArg(args, 'searchPath', 'searchpath', 'path', 'filePath', 'filepath');
     const resolvedSearchPath = resolveWorkspaceSearchPath(searchPath, workspaceDir);
-    console.log(`[glob] ${pattern} in ${resolvedSearchPath}`);
 
     const files: Array<{ path: string; mtime: number }> = [];
+    let truncated = false;
 
-    // 使用 glob 进行文件搜索
-    const matches = await glob(pattern, {
+    for await (const file of globIterate(pattern, {
       cwd: resolvedSearchPath,
       absolute: true,
       windowsPathsNoEscape: true,
       nodir: true,
-    });
-
-    for (const file of matches) {
-      if (files.length >= SEARCH_LIMIT) break;
+      ignore: IGNORE_PATTERNS,
+    })) {
+      if (files.length >= SEARCH_LIMIT) {
+        truncated = true;
+        break;
+      }
 
       try {
         const stats = await stat(file);
-        files.push({
-          path: file,
-          mtime: stats.mtimeMs
-        });
+        files.push({ path: file, mtime: stats.mtimeMs });
       } catch {
-        // File may have been deleted, skip
+        // File may have been deleted, skip.
       }
     }
 
-    // 按修改时间排序
-    files.sort((a, b) => b.mtime - a.mtime);
+    files.sort((a, b) => b.mtime - a.mtime || a.path.localeCompare(b.path));
 
     return {
       count: files.length,
-      truncated: files.length >= SEARCH_LIMIT,
-      files: files.map(f => f.path)
+      truncated,
+      files: files.map(file => file.path),
     };
   }
   });
@@ -1439,7 +1523,6 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const searchPath = tryNamedPathArg(args, 'searchPath', 'searchpath', 'path', 'filePath', 'filepath');
     const include = (args as Record<string, unknown>).include as string | undefined;
     const resolvedSearchPath = resolveWorkspaceSearchPath(searchPath, workspaceDir);
-    console.log(`[grep] ${pattern} in ${resolvedSearchPath}`);
 
     const rgPath = await getRipgrepPath();
     const rgArgs = ['-nH', '--hidden', '--no-messages', '--field-match-separator=|', '--regexp', pattern];
@@ -1450,23 +1533,65 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     rgArgs.push(resolvedSearchPath);
 
     try {
-      // 使用 spawn 避免在 Windows 上 shell 解析特殊字符（如 |）的问题
-      const stdout = await new Promise<string>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        const child = spawn(rgPath, rgArgs, {
-          windowsHide: true
-        });
+      // 使用 spawn 避免在 Windows 上 shell 解析特殊字符（如 |）的问题。
+      // 逐行消费 stdout，并在达到上限后终止 rg，避免把整个仓库的结果读入内存。
+      const { matches, truncated } = await new Promise<{
+        matches: Array<{ path: string; lineNum: number; lineText: string }>;
+        truncated: boolean;
+      }>((resolve, reject) => {
+        const child = spawn(rgPath, rgArgs, { windowsHide: true });
+        const collected: Array<{ path: string; lineNum: number; lineText: string }> = [];
+        let pending = '';
+        let truncated = false;
+        let killRequested = false;
 
-        child.stdout.on('data', (chunk) => chunks.push(chunk));
-        child.stderr.on('data', (chunk) => {
-          // ripgrep 将匹配结果输出到 stdout，错误信息到 stderr
-        });
+        const stopSearch = (): void => {
+          if (killRequested) return;
+          killRequested = true;
+          child.kill();
+        };
 
-        // 支持取消
-        const onSearchAbort = () => child.kill();
+        const processLine = (line: string): void => {
+          if (!line || truncated) return;
+          const parts = line.split('|');
+          if (parts.length < 3) return;
+
+          const [filePath, lineNumStr, ...lineTextParts] = parts;
+          const lineNum = parseInt(lineNumStr, 10);
+          if (!filePath || !Number.isFinite(lineNum)) return;
+          const lineText = lineTextParts.join('|');
+
+          if (collected.length >= SEARCH_LIMIT) {
+            truncated = true;
+            stopSearch();
+            return;
+          }
+          collected.push({
+            path: filePath,
+            lineNum,
+            lineText: lineText.length > MAX_LINE_LENGTH ? `${lineText.substring(0, MAX_LINE_LENGTH)}...` : lineText,
+          });
+        };
+
+        const onSearchAbort = () => {
+          stopSearch();
+        };
         if (context?.signal) {
           context.signal.addEventListener('abort', onSearchAbort, { once: true });
         }
+
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', (chunk: string) => {
+          pending += chunk;
+          let newlineIndex = pending.indexOf(String.fromCharCode(10));
+          while (newlineIndex !== -1) {
+            processLine(pending.slice(0, newlineIndex).replace(new RegExp(String.fromCharCode(13) + '$'), ''));
+            pending = pending.slice(newlineIndex + 1);
+            if (killRequested) return;
+            newlineIndex = pending.indexOf(String.fromCharCode(10));
+          }
+        });
+        child.stderr.resume();
 
         child.on('error', (err) => {
           context?.signal?.removeEventListener('abort', onSearchAbort);
@@ -1475,47 +1600,29 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         child.on('close', (code) => {
           context?.signal?.removeEventListener('abort', onSearchAbort);
           if (context?.signal?.aborted) {
-            return reject(new Error('Search was aborted'));
+            reject(new Error('Search was aborted'));
+            return;
           }
-          // code 1 表示没有匹配，不是错误
-          if (code !== 0 && code !== 1) {
-            return reject(new Error(`rg exited with code ${code}`));
+          if (!killRequested) {
+            processLine(pending);
           }
-          resolve(Buffer.concat(chunks).toString('utf-8'));
+          // code 1 表示没有匹配；被我们主动终止时的非零状态也是预期结果。
+          if (!killRequested && code !== 0 && code !== 1) {
+            reject(new Error(`rg exited with code ${code}`));
+            return;
+          }
+          resolve({ matches: collected, truncated });
         });
       });
 
-      const lines = stdout.trim().split(/\r?\n/);
-      const matches: Array<{ path: string; lineNum: number; lineText: string }> = [];
-
-      for (const line of lines) {
-        if (!line) continue;
-
-        const parts = line.split('|');
-        if (parts.length < 3) continue;
-
-        const [filePath, lineNumStr, ...lineTextParts] = parts;
-        const lineNum = parseInt(lineNumStr, 10);
-        const lineText = lineTextParts.join('|');
-
-        matches.push({
-          path: filePath,
-          lineNum,
-          lineText: lineText.length > MAX_LINE_LENGTH ? lineText.substring(0, MAX_LINE_LENGTH) + '...' : lineText,
-        });
-      }
-
       // 按文件路径 + 行号排序
       matches.sort((a, b) => a.path === b.path ? a.lineNum - b.lineNum : a.path < b.path ? -1 : 1);
-
-      const truncated = matches.length > SEARCH_LIMIT;
-      const finalMatches = truncated ? matches.slice(0, SEARCH_LIMIT) : matches;
 
       return {
         pattern,
         matches: matches.length,
         truncated,
-        results: finalMatches
+        results: matches,
       };
     } catch (error: any) {
       if (error.message?.includes('Search was aborted') || context?.signal?.aborted) {

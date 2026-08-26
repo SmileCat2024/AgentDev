@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // itself was built and tested against. An unconstrained `latest` type surface
 // can disagree with the runtime used by Studio or other consumers.
 // Feature 包依赖 `@agentdev/core`（ADR-0003 决策 2，票 010）。版本与锁步组对齐。
-const AGENTDEV_COMPAT_VERSION = '^0.3.0';
+const AGENTDEV_COMPAT_VERSION = '^0.1.0';
 
 export interface CreateFeatureProjectOptions {
   /** npm package name, with or without the @agentdev/ scope. */

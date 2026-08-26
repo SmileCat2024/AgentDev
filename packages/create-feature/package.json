@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/create-feature",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "description": "CLI tool to create AgentDev Feature packages",
   "type": "module",
   "main": "dist/index.js",

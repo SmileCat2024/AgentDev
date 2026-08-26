@@ -17,7 +17,7 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.3.0"
+    "@agentdev/core": "^0.1.0"
   },
   "dependencies": {
     "@sliverp/qqbot": "file:../../vendor/@sliverp/qqbot"

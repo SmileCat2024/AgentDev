@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/core",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "description": "AgentDev core runtime: Agent / Context / Feature system / continuity / WorkThread / logging / template / skills",
   "type": "module",
   "main": "dist/index.js",

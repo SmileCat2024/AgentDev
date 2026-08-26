@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/visual-feature",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Visual understanding feature for AgentDev - provides window capture and vision model analysis",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "sourcemap": true
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdev/core": "^0.3.0"
   },
   "dependencies": {
     "openai": "^4.73.0",

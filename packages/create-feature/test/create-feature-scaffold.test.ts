@@ -12,8 +12,8 @@ describe('create-feature scaffold', () => {
       const created = await createFeatureProject({ featureName: 'compatibility-demo', parentDir });
       const packageJson = JSON.parse(await readFile(path.join(created.targetDir, 'package.json'), 'utf8'));
 
-      expect(packageJson.peerDependencies['@agentdev/core']).toBe('^0.1.0');
-      expect(packageJson.devDependencies['@agentdev/core']).toBe('^0.1.0');
+      expect(packageJson.peerDependencies['@agentdev/core']).toBe('^0.3.0');
+      expect(packageJson.devDependencies['@agentdev/core']).toBe('^0.3.0');
     } finally {
       await rm(parentDir, { recursive: true, force: true });
     }

@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/image-reader-feature",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Image reader feature for AgentDev - provides read_image tool to inject local images into conversation context",
   "type": "module",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdev/core": "^0.3.0"
   },
   "dependencies": {},
   "devDependencies": {

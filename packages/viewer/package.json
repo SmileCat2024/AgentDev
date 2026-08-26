@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/viewer",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "AgentDev debugger viewer: ViewerWorker HTTP/UDS host, web UI, read-only debugger MCP",
   "type": "module",
   "main": "dist/index.js",
@@ -28,7 +28,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@agentdev/core": "^0.1.0",
+    "@agentdev/core": "^0.3.0",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "open": "^11.0.0",

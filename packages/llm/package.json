@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/llm",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "AgentDev LLM adapters: AnthropicLLM / OpenAILLM / OpenAIResponsesLLM / createLLM / message compilation",
   "type": "module",
   "main": "dist/index.js",
@@ -24,7 +24,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@agentdev/core": "^0.1.0",
+    "@agentdev/core": "^0.3.0",
     "openai": "^4.73.0",
     "undici": "^7.25.0"
   },

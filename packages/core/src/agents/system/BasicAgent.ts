@@ -56,6 +56,8 @@ export interface BasicAgentConfig {
   projectRoot?: string;
   /** 工具默认操作的工作目录 */
   workspaceDir?: string;
+  /** 模型预设解析器（可选；运行期 setModel / setThinkingEffort 消费，未注入时二者抛错） */
+  modelResolver?: AgentConfig['modelResolver'];
 }
 
 /**
@@ -93,6 +95,7 @@ export class BasicAgent extends Agent {
       projectRoot: config.projectRoot,
       workspaceDir,
       features: config.features,
+      modelResolver: config.modelResolver,
     };
 
     super(agentConfig);

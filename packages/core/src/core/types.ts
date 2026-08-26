@@ -464,6 +464,35 @@ export interface LLMMeta {
   compressRatio?: number;
   presetName?: string;
   thinkingEffort?: string | null;
+  /** 模型协议（'anthropic' | 'openai' 等），由 resolver 提供时携带，供档位切换等消费方推断协议 */
+  provider?: string;
+  /** 本次切换的发起方标记：'boot' | 'user' | 'feature:<name>' 等，供让位策略区分用户手动切换与 Feature 切换 */
+  source?: string;
+}
+
+/**
+ * resolver 解析产物：成品 LLM 客户端 + 对齐 LLMMeta 的元数据。
+ * 资产（apiKey / OAuth token / 配置文件）由注入方持有，永不进入本结构。
+ */
+export interface ResolvedModelPreset {
+  llm: AgentConfig['llm'];
+  meta: LLMMeta;
+}
+
+/**
+ * 模型 preset 解析服务契约（应用层注入，core 不提供实现）。
+ *
+ * 框架只编排"怎么换"（resolve → setLLM → 贴标 → 通知）；
+ * "有哪些 preset、凭证在哪、客户端怎么造"归应用层。每次调用都应现读
+ * 配置源（不缓存快照），调用方可安全地以任意频率重复调用。
+ */
+export interface ModelPresetResolver {
+  /**
+   * @param presetName preset 名（应用层命名空间，如 Claw 的 presets.json 条目名）
+   * @param overrides 运行时覆盖；thinkingEffort 为 null 表示清除为厂商默认。
+   * @returns 解析失败（名字不存在 / 凭证缺失）返回 null，不抛错
+   */
+  resolve(presetName: string, overrides?: { thinkingEffort?: string | null }): ResolvedModelPreset | null;
 }
 
 // 占位符上下文类型
@@ -485,6 +514,11 @@ export interface AgentConfig {
   name?: string;  // Agent 显示名称（用于调试）
   projectRoot?: string;
   workspaceDir?: string;
+  /**
+   * 模型 preset 解析服务（可选注入）。
+   * 注入后 setModel / setThinkingEffort 可用；资产留在注入方，agent 只拿成品客户端。
+   */
+  modelResolver?: ModelPresetResolver;
 
   // ========== Feature 系统 ==========
   /**

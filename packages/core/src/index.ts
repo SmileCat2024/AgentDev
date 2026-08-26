@@ -146,6 +146,8 @@ export type {
   LLMResponse,
   LLMClient,
   LLMMeta,
+  ResolvedModelPreset,
+  ModelPresetResolver,
   AgentConfig,
   ContextMiddleware,
   ToolRenderConfig,

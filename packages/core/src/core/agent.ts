@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot, ImageInput, LLMMeta } from './types.js';
+import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver } from './types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -188,12 +188,15 @@ class AgentBase {
   private _llmMeta: LLMMeta = {};
   /** 外部消费者通过 onLLMSwap() 注册的回调 */
   private _llmSwapCallbacks: Array<(newLLM: AgentConfig['llm'], oldLLM: AgentConfig['llm']) => void> = [];
+  /** 应用层注入的 preset 解析服务（构造时注入；资产留在注入方） */
+  private _modelResolver: ModelPresetResolver | null = null;
 
   constructor(config: AgentConfig) {
     installConsoleBridge();
     this.agentId = DebugHub.getInstance().allocateAgentId();
     this.config = config;
     this.llm = config.llm;
+    this._modelResolver = config.modelResolver ?? null;
     this.maxTurns = config.maxTurns ?? 10;
     this.systemMessage = config.systemMessage;
     this.templateLoader = new TemplateLoader();
@@ -917,6 +920,53 @@ class AgentBase {
    */
   getLLMMeta(): LLMMeta {
     return { ...this._llmMeta };
+  }
+
+  /**
+   * 按 preset 名一键切换模型
+   *
+   * 编排：resolver.resolve → setLLM（换实例 / 贴 meta 标 / 通知 Feature / 推 Overview）。
+   * preset 表与凭证由应用层注入的 resolver 提供，本方法只编排流程，因此宿主与
+   * Feature 消费同一入口，切换后的模型状态以 getLLMMeta() 为唯一权威。
+   *
+   * 允许在 onCall 运行期间调用（mid-turn swap），语义同 setLLM。
+   *
+   * @param presetName preset 名
+   * @param opts.thinkingEffort 运行时档位覆盖；null 表示清除为厂商默认
+   * @param opts.source 切换发起方标记（'user' / 'feature:<name>' 等），写入 meta 供让位策略区分
+   * @returns false 表示 preset 解析失败（名字不存在 / 凭证缺失），模型未变
+   * @throws 未注入 modelResolver 时抛出 —— 装配缺失应显式失败而非静默
+   */
+  setModel(presetName: string, opts?: { thinkingEffort?: string | null; source?: string }): boolean {
+    if (!this._modelResolver) {
+      throw new Error('setModel: no modelResolver injected (pass config.modelResolver at assembly time)');
+    }
+    const overrides = opts && 'thinkingEffort' in opts
+      ? { thinkingEffort: opts.thinkingEffort ?? null }
+      : undefined;
+    const resolved = this._modelResolver.resolve(presetName, overrides);
+    if (!resolved?.llm) return false;
+    this.setLLM(resolved.llm, {
+      ...resolved.meta,
+      ...(opts?.source ? { source: opts.source } : {}),
+    });
+    return true;
+  }
+
+  /**
+   * 仅调整思考档位（不动模型）：按当前 presetName 重 resolve。
+   * 档位固化在 LLM 实例构造里，因此调整档位 = 以覆盖档位重造客户端。
+   *
+   * @param effort 档位；null 表示清除为厂商默认
+   * @returns false 表示当前模型无 presetName 可锚定或解析失败
+   */
+  setThinkingEffort(effort: string | null, opts?: { source?: string }): boolean {
+    const presetName = this._llmMeta.presetName;
+    if (!presetName) return false;
+    return this.setModel(presetName, {
+      thinkingEffort: effort,
+      ...(opts?.source ? { source: opts.source } : {}),
+    });
   }
 
   async rollbackToCall(callIndex: number): Promise<{ draftInput: string }> {
@@ -2448,6 +2498,9 @@ class AgentBase {
         : {}),
       ...(this._llmMeta.thinkingEffort != null
         ? { thinkingEffort: this._llmMeta.thinkingEffort }
+        : {}),
+      ...(typeof this._llmMeta.provider === 'string' && this._llmMeta.provider
+        ? { provider: this._llmMeta.provider }
         : {}),
       ...(typeof this._llmMeta.contextLength === 'number' && this._llmMeta.contextLength > 0
         ? { contextLength: this._llmMeta.contextLength }

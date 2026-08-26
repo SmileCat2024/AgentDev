@@ -1,4 +1,4 @@
-# @agentdev/weixin-bot
+# @agentdevjs/weixin-bot
 
 微信 Bot feature for AgentDev - 让 Agent 获得对接微信机器人的能力。
 
@@ -16,7 +16,7 @@
 ### 安装
 
 ```bash
-npm install @agentdev/weixin-bot
+npm install @agentdevjs/weixin-bot
 ```
 
 ### 简单测试 Demo（推荐）
@@ -59,7 +59,7 @@ node dist/examples/weixinbot-full-example.js
 ### 简单回显 Bot
 
 ```typescript
-import { WeixinBot } from '@agentdev/weixin-bot';
+import { WeixinBot } from '@agentdevjs/weixin-bot';
 
 class SimpleEchoAgent {
   private weixinBot = new WeixinBot();
@@ -87,7 +87,7 @@ await agent.start();
 
 ```typescript
 import { BasicAgent } from 'agentdev';
-import { WeixinBot } from '@agentdev/weixin-bot';
+import { WeixinBot } from '@agentdevjs/weixin-bot';
 
 const weixinBot = new WeixinBot();
 const agent = new BasicAgent({ llm }).use(weixinBot);

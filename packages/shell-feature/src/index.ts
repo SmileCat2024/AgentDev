@@ -6,8 +6,8 @@
  *
  * @example
  * ```typescript
- * import { ShellFeature } from '@agentdev/shell-feature';
- * import { BasicAgent } from '@agentdev/core';
+ * import { ShellFeature } from '@agentdevjs/shell-feature';
+ * import { BasicAgent } from '@agentdevjs/core';
  *
  * const agent = new BasicAgent().use(new ShellFeature());
  * ```
@@ -16,9 +16,9 @@
 import { readFile } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { resolve } from 'path';
-import type { AgentFeature, FeatureInitContext, FeatureManifestDefinition, PackageInfo } from '@agentdev/core';
-import type { Tool } from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
+import type { AgentFeature, FeatureInitContext, FeatureManifestDefinition, PackageInfo } from '@agentdevjs/core';
+import type { Tool } from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
 import { createShellCommandTool, findGitBashPath } from './tools.js';
 import { createPowerShellTool, findPowerShellPath } from './powershell.js';
 import { createSafeTrashDeleteTool, createSafeTrashListTool, createSafeTrashRestoreTool } from './tools-trash.js';

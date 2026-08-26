@@ -1,11 +1,11 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
-import { createTool } from '@agentdev/core';
-import { Agent } from '@agentdev/core';
-import type { AgentFeature, FeatureInitContext } from '@agentdev/core';
-import type { LLMClient, LLMResponse, Message, Tool } from '@agentdev/core';
-import { DebugHub } from '@agentdev/core';
+import { createTool } from '@agentdevjs/core';
+import { Agent } from '@agentdevjs/core';
+import type { AgentFeature, FeatureInitContext } from '@agentdevjs/core';
+import type { LLMClient, LLMResponse, Message, Tool } from '@agentdevjs/core';
+import { DebugHub } from '@agentdevjs/core';
 import { ViewerWorker } from '../src/viewer-worker.js';
-import { UserInputFeature } from '@agentdev/core';
+import { UserInputFeature } from '@agentdevjs/core';
 
 function getTestUdsPath(): string {
   if (process.platform === 'win32') {

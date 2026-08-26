@@ -5,7 +5,7 @@ import {
   createAnthropicLLM,
   createOpenAIResponsesLLM,
 } from '../src/index.js';
-import { DEFAULT_MODEL_MAX_RETRIES, DEFAULT_MODEL_TIMEOUT_MS } from '@agentdev/core';
+import { DEFAULT_MODEL_MAX_RETRIES, DEFAULT_MODEL_TIMEOUT_MS } from '@agentdevjs/core';
 
 const MODEL_CONFIG_BASE = {
   apiKey: 'test-key',

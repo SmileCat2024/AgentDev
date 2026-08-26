@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { DebugHub } from '@agentdev/core';
-import { emitLog, runWithLogScope } from '@agentdev/core';
+import { DebugHub } from '@agentdevjs/core';
+import { emitLog, runWithLogScope } from '@agentdevjs/core';
 import { ViewerWorker } from '../src/viewer-worker.js';
 
 function getTestUdsPath(): string {

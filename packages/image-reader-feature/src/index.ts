@@ -8,8 +8,8 @@
  */
 
 import { fileURLToPath } from 'url';
-import type { AgentFeature, Tool, PackageInfo, FeatureManifestDefinition } from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
+import type { AgentFeature, Tool, PackageInfo, FeatureManifestDefinition } from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
 import { createReadImageTool } from './tools.js';
 
 export interface ImageReaderFeatureConfig {

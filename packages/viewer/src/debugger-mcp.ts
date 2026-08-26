@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport as StreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import * as z from 'zod/v4';
-import type { AgentLogsResponse, AgentSession, DebugLogEntry, HookInspectorSnapshot } from '@agentdev/core';
+import type { AgentLogsResponse, AgentSession, DebugLogEntry, HookInspectorSnapshot } from '@agentdevjs/core';
 
 const QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT = 200;
 

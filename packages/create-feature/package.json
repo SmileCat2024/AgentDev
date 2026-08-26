@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/create-feature",
+  "name": "@agentdevjs/create-feature",
   "version": "0.1.0",
   "description": "CLI tool to create AgentDev Feature packages",
   "type": "module",

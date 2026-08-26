@@ -1,4 +1,4 @@
-import type { Tool } from '@agentdev/core';
+import type { Tool } from '@agentdevjs/core';
 import { type MCPConnectionManager } from './connection-manager.js';
 import {
   MCPClient,

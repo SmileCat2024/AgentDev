@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/mcp",
+  "name": "@agentdevjs/mcp",
   "version": "0.1.0",
   "description": "AgentDev MCP integration: connection manager, tool mount/adapter, MCPFeature",
   "type": "module",
@@ -24,7 +24,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@agentdev/core": "^0.1.0",
+    "@agentdevjs/core": "^0.1.0",
     "@modelcontextprotocol/client": "^2.0.0"
   },
   "devDependencies": {

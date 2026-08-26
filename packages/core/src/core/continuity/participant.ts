@@ -86,8 +86,8 @@ type AnyFeatureConstructor = new (...args: any[]) => AgentFeature;
  *
  * @example
  * ```ts
- * import { OpencodeBasicFeature } from '@agentdev/core';
- * import { declareContinuity, GENERIC_CONTINUITY_PROTOCOL } from '@agentdev/core';
+ * import { OpencodeBasicFeature } from '@agentdevjs/core';
+ * import { declareContinuity, GENERIC_CONTINUITY_PROTOCOL } from '@agentdevjs/core';
  *
  * export const ContinuityAwareOpencodeBasic = declareContinuity(OpencodeBasicFeature, {
  *   protocol: GENERIC_CONTINUITY_PROTOCOL,

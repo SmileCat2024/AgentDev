@@ -14,11 +14,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Keep generated Feature projects on the framework version that the scaffold
 // itself was built and tested against. An unconstrained `latest` type surface
 // can disagree with the runtime used by Studio or other consumers.
-// Feature 包依赖 `@agentdev/core`（ADR-0003 决策 2，票 010）。版本与锁步组对齐。
+// Feature 包依赖 `@agentdevjs/core`（ADR-0003 决策 2，票 010）。版本与锁步组对齐。
 const AGENTDEV_COMPAT_VERSION = '^0.1.0';
 
 export interface CreateFeatureProjectOptions {
-  /** npm package name, with or without the @agentdev/ scope. */
+  /** npm package name, with or without the @agentdevjs/ scope. */
   featureName: string;
   /** Parent directory for the generated package. Defaults to process.cwd(). */
   parentDir?: string;
@@ -31,11 +31,11 @@ export interface CreateFeatureProjectOptions {
 export async function createFeatureProject(options: CreateFeatureProjectOptions): Promise<{ packageName: string; featureSlug: string; targetDir: string }> {
   const featureName = String(options?.featureName || '').trim();
   if (!featureName) throw new Error('Feature name is required.');
-  const packageName = featureName.startsWith('@agentdev/')
+  const packageName = featureName.startsWith('@agentdevjs/')
     ? featureName
-    : `@agentdev/${featureName}`;
-  const featureClass = toPascalCase(featureName.replace('@agentdev/', ''));
-  const featureSlug = toKebabCase(featureName.replace('@agentdev/', ''));
+    : `@agentdevjs/${featureName}`;
+  const featureClass = toPascalCase(featureName.replace('@agentdevjs/', ''));
+  const featureSlug = toKebabCase(featureName.replace('@agentdevjs/', ''));
   const targetDir = join(options.parentDir || process.cwd(), featureSlug);
 
   if (existsSync(targetDir)) {
@@ -86,13 +86,13 @@ function generatePackageJson(targetDir: string, packageName: string, featureSlug
       prepublishOnly: 'npm run build'
     },
     peerDependencies: {
-      '@agentdev/core': AGENTDEV_COMPAT_VERSION
+      '@agentdevjs/core': AGENTDEV_COMPAT_VERSION
     },
     devDependencies: {
       '@types/node': '^20.11.0',
       tsup: '^8.3.5',
       typescript: '^5.3.3',
-      '@agentdev/core': AGENTDEV_COMPAT_VERSION
+      '@agentdevjs/core': AGENTDEV_COMPAT_VERSION
     },
     keywords: ['agentdev', 'feature', featureSlug],
     license: 'MIT'
@@ -172,9 +172,9 @@ import type {
   AgentFeature,
   FeatureInitContext,
   PackageInfo,
-} from '@agentdev/core';
-import type { Tool } from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
+} from '@agentdevjs/core';
+import type { Tool } from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
 
 export interface ${featureClass}Config {
   /** 配置选项 */
@@ -263,7 +263,7 @@ npm install ${packageName}
 ## Usage
 
 \`\`\`typescript
-import { Agent } from '@agentdev/core';
+import { Agent } from '@agentdevjs/core';
 import { ${toPascalCase(featureSlug)} } from '${packageName}';
 
 const agent = new Agent().use(new ${toPascalCase(featureSlug)}());

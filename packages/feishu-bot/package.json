@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/feishu-bot",
+  "name": "@agentdevjs/feishu-bot",
   "version": "0.1.0",
   "description": "feishu-bot feature for AgentDev",
   "type": "module",
@@ -26,13 +26,13 @@
     "sourcemap": true
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdevjs/core": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "tsup": "^8.3.5",
     "typescript": "^5.3.3",
-    "@agentdev/core": "file:../core"
+    "@agentdevjs/core": "file:../core"
   },
   "keywords": [
     "agentdev",

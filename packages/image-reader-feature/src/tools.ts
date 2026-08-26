@@ -9,8 +9,8 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
-import { createTool, withImages } from '@agentdev/core';
-import type { Tool } from '@agentdev/core';
+import { createTool, withImages } from '@agentdevjs/core';
+import type { Tool } from '@agentdevjs/core';
 
 /** 扩展名 → MIME 类型映射 */
 const MEDIA_TYPES: Record<string, string> = {

@@ -8,7 +8,7 @@
  *
  * @example
  * ```typescript
- * import { TTSFeature } from '@agentdev/tts-feature';
+ * import { TTSFeature } from '@agentdevjs/tts-feature';
  *
  * // 使用默认配置
  * const agent = new Agent({ ... }).use(new TTSFeature());
@@ -44,11 +44,11 @@ import type {
   FeatureContext,
   FeatureStateSnapshot,
   PackageInfo,
-} from '@agentdev/core';
-import { CoreLifecycle } from '@agentdev/core';
-import type { HookDeclarations } from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
-import type { StepFinishedContext } from '@agentdev/core';
+} from '@agentdevjs/core';
+import { CoreLifecycle } from '@agentdevjs/core';
+import type { HookDeclarations } from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
+import type { StepFinishedContext } from '@agentdevjs/core';
 import type {
   TTSFeatureConfig,
   TTSResult,

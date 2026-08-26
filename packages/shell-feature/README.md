@@ -1,18 +1,18 @@
-# @agentdev/shell-feature
+# @agentdevjs/shell-feature
 
 Shell execution feature for AgentDev framework.
 
 ## Installation
 
 ```bash
-npm install @agentdev/shell-feature
+npm install @agentdevjs/shell-feature
 ```
 
 ## Usage
 
 ```typescript
 import { BasicAgent } from 'agentdev';
-import { ShellFeature } from '@agentdev/shell-feature';
+import { ShellFeature } from '@agentdevjs/shell-feature';
 
 const agent = new BasicAgent().use(new ShellFeature());
 ```

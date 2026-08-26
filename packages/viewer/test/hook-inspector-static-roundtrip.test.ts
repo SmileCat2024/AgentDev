@@ -15,16 +15,16 @@
 import { describe, it, expect } from 'vitest';
 import vm from 'node:vm';
 import { VIEWER_JS_INSPECTOR } from '../src/viewer-html/js-inspector.js';
-import { HooksRegistry } from '@agentdev/core';
-import { CoreLifecycle, Decision } from '@agentdev/core';
-import type { AgentFeature } from '@agentdev/core';
+import { HooksRegistry } from '@agentdevjs/core';
+import { CoreLifecycle, Decision } from '@agentdevjs/core';
+import type { AgentFeature } from '@agentdevjs/core';
 import type {
   ToolContext,
   StepStartContext,
   StepFinishDecisionContext,
   ToolResultTransformContext,
-} from '@agentdev/core';
-import type { ToolExecResult } from '@agentdev/core';
+} from '@agentdevjs/core';
+import type { ToolExecResult } from '@agentdevjs/core';
 
 function createInspectorSandbox(): Record<string, unknown> {
   const sandbox: Record<string, unknown> = {};

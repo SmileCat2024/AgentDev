@@ -20,7 +20,7 @@ export { createLogger, emitLog, installConsoleBridge, runWithLogScope } from './
 export type { Logger, LoggerBindings } from './core/logging.js';
 export { createLLMRetry, emitNotification, createLLMCharCount, createLLMComplete, createToolProgress } from './core/notification.js';
 
-// LLM 重试与错误分类契约（ReAct 循环与 @agentdev/llm 共同消费）
+// LLM 重试与错误分类契约（ReAct 循环与 @agentdevjs/llm 共同消费）
 export {
   ClassifiedAPIError,
   classifyAPIError,
@@ -71,13 +71,13 @@ export * from './agents/index.js';
 export { CoreLifecycle, Decision, normalizeDecision } from './core/lifecycle.js';
 export type { ToolContext, ToolResult, HookResult, AgentInitiateContext, DecisionResult } from './core/lifecycle.js';
 
-// Hook 注册表（inspector 快照契约消费方，如 @agentdev/viewer）
+// Hook 注册表（inspector 快照契约消费方，如 @agentdevjs/viewer）
 export { HooksRegistry } from './core/hooks-registry.js';
 
 // 注意：所有工具现在通过 Feature 系统提供
 // - 文件操作工具：OpencodeBasicFeature
 // - 系统工具（web_fetch, calculator）：SystemToolsFeature
-// - Shell 工具：ShellFeature（独立包 @agentdev/shell-feature）
+// - Shell 工具：ShellFeature（独立包 @agentdevjs/shell-feature）
 // - Skill 工具：SkillFeature
 
 // 消息
@@ -89,7 +89,7 @@ export type { WithImagesResult } from './core/tool-result-images.js';
 
 // LLM
 // 注：LLM 实现（AnthropicLLM / OpenAILLM / OpenAIResponsesLLM / createLLM / compile*）
-// 已拆分到 @agentdev/llm 包；此处仅保留 LLM 契约类型（见下方 core/types.js 导出）。
+// 已拆分到 @agentdevjs/llm 包；此处仅保留 LLM 契约类型（见下方 core/types.js 导出）。
 
 // 配置
 export { loadConfig, loadConfigSync, listConfigs } from './core/config.js';
@@ -106,10 +106,10 @@ export { getClawRuntimeUrl, resolveDebugTransportMode } from './core/debug-trans
 export type { CustomHeaderEntry } from './core/config.js';
 
 // Viewer
-// 注：ViewerWorker / viewer-html / 调试 MCP server 已拆分到 @agentdev/viewer 包。
+// 注：ViewerWorker / viewer-html / 调试 MCP server 已拆分到 @agentdevjs/viewer 包。
 export { getDefaultUDSPath } from './core/types.js';
 
-// 渲染（Render）契约：@agentdev/viewer 与 @agentdev/mcp 共同消费
+// 渲染（Render）契约：@agentdevjs/viewer 与 @agentdevjs/mcp 共同消费
 export {
   RENDER_TEMPLATES,
   SYSTEM_RENDER_MAP,
@@ -130,7 +130,7 @@ export * from './template/index.js';
 export * from './skills/index.js';
 
 // MCP
-// 注：MCP 集成实现（连接管理 / 工具挂载 / MCPFeature）已拆分到 @agentdev/mcp 包；
+// 注：MCP 集成实现（连接管理 / 工具挂载 / MCPFeature）已拆分到 @agentdevjs/mcp 包；
 // 此处仅保留 MCP 契约类型（AgentConfig.mcp 等框架契约依赖，见下方导出）。
 
 // 类型
@@ -160,11 +160,11 @@ export type {
   EnrichedMessage,
   MessageTag,
   ParsedContent,
-  // LLM 契约类型（@agentdev/llm 消费）
+  // LLM 契约类型（@agentdevjs/llm 消费）
   LLMChatOptions,
   LLMPhase,
   ThinkingBlock,
-  // 调试 / 通知快照类型（@agentdev/viewer 与下游 UI 消费）
+  // 调试 / 通知快照类型（@agentdevjs/viewer 与下游 UI 消费）
   DebugLogEntry,
   AgentLogsResponse,
   AgentOverviewSnapshot,
@@ -183,7 +183,7 @@ export type { DebugCapabilities } from './core/debug-capabilities.js';
 export type { AgentSessionSnapshot, SessionStore, NamedCheckpoint } from './core/session-store.js';
 export type { FeatureCheckpoint } from './core/checkpoint.js';
 
-// MCP 契约类型（@agentdev/mcp 实现层消费并 re-export）
+// MCP 契约类型（@agentdevjs/mcp 实现层消费并 re-export）
 export type {
   MCPTransportType,
   MCPServerConfig,

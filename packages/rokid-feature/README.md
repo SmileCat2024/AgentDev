@@ -1,4 +1,4 @@
-# @agentdev/rokid-bot
+# @agentdevjs/rokid-bot
 
 Rokid 眼镜 Bot Feature for AgentDev。
 
@@ -33,7 +33,7 @@ Rokid 眼镜 Bot Feature for AgentDev。
 ## 使用
 
 ```typescript
-import { RokidBot } from '@agentdev/rokid-bot';
+import { RokidBot } from '@agentdevjs/rokid-bot';
 
 const rokidBot = new RokidBot({ configPath: '.agentdev/rokid.config.json' });
 agent.use(rokidBot);

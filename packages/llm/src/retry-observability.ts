@@ -5,8 +5,8 @@
  * 通知发射失败（无 notification scope / 模块不可用）不影响重试本身。
  */
 
-import { classifyAPIError } from '@agentdev/core';
-import type { LLMRetryData } from '@agentdev/core';
+import { classifyAPIError } from '@agentdevjs/core';
+import type { LLMRetryData } from '@agentdevjs/core';
 
 /**
  * 在适配器重试点发射 llm.retry 通知（waiting → sleep → requesting）。
@@ -37,7 +37,7 @@ export async function emitRetryObservability(params: {
 async function emitRetryNotification(data: LLMRetryData): Promise<void> {
   try {
     // 动态导入避免 llm → core 的静态依赖加重；模块缓存后开销可忽略
-    const { emitNotification, createLLMRetry } = await import('@agentdev/core');
+    const { emitNotification, createLLMRetry } = await import('@agentdevjs/core');
     emitNotification(createLLMRetry(data));
   } catch {
     // 通知失败不影响重试
@@ -45,6 +45,6 @@ async function emitRetryNotification(data: LLMRetryData): Promise<void> {
 }
 
 async function sleepQuietly(ms: number, signal?: AbortSignal): Promise<void> {
-  const { sleep } = await import('@agentdev/core');
+  const { sleep } = await import('@agentdevjs/core');
   await sleep(ms, signal);
 }

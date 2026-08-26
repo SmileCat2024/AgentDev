@@ -6,14 +6,14 @@
  */
 
 import OpenAI from 'openai';
-import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '@agentdev/core';
-import { OPENAI_THINKING_EFFORTS } from '@agentdev/core';
-import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '@agentdev/core';
+import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '@agentdevjs/core';
+import { OPENAI_THINKING_EFFORTS } from '@agentdevjs/core';
+import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '@agentdevjs/core';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
-import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdev/core';
-import { classifyAndWrapError, ClassifiedAPIError } from '@agentdev/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { classifyAndWrapError, ClassifiedAPIError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
 
@@ -313,7 +313,7 @@ export class OpenAIResponsesLLM implements LLMClient {
           }
 
           try {
-            const { emitNotification, createLLMCharCount } = await import('@agentdev/core');
+            const { emitNotification, createLLMCharCount } = await import('@agentdevjs/core');
             // 各 phase 独立计数：正文阶段不应延续思考阶段的累计值
             const phaseCharCount = currentPhase === 'thinking' ? reasoning.length : content.length;
             if (phaseCharCount > 0 || functionCalls.size > 0) {

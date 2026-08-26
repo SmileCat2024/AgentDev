@@ -26,32 +26,32 @@ const featuresToPackage = [
 // Feature 元信息
 const featureMeta = {
   'audio-feedback': {
-    name: '@agentdev/audio-feedback-feature',
+    name: '@agentdevjs/audio-feedback-feature',
     description: 'Audio feedback feature for AgentDev - plays sound notifications on call completion',
     dependencies: [],
   },
   'audit': {
-    name: '@agentdev/audit-feature',
+    name: '@agentdevjs/audit-feature',
     description: 'Audit feature for AgentDev - tracks and logs tool usage',
     dependencies: ['better-sqlite3'],
   },
   'memory': {
-    name: '@agentdev/memory-feature',
+    name: '@agentdevjs/memory-feature',
     description: 'Memory feature for AgentDev - provides persistent key-value storage',
     dependencies: [],
   },
   'plugin-compat': {
-    name: '@agentdev/plugin-compat-feature',
+    name: '@agentdevjs/plugin-compat-feature',
     description: 'Plugin compatibility layer for AgentDev - loads OpenClaw-style plugins',
     dependencies: [],
   },
   'qqbot': {
-    name: '@agentdev/qqbot-feature',
+    name: '@agentdevjs/qqbot-feature',
     description: 'QQ Bot feature for AgentDev - enables QQ bot integration',
     dependencies: [], // qqbot 依赖 @sliverp/qqbot/standalone，需要单独配置
   },
   'tts': {
-    name: '@agentdev/tts-feature',
+    name: '@agentdevjs/tts-feature',
     description: 'Text-to-Speech feature for AgentDev - converts text to speech',
     dependencies: [],
   },

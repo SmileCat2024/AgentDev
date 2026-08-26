@@ -469,7 +469,7 @@ export interface LLMMeta {
 // 占位符上下文类型
 import type { PlaceholderContext, TemplateSource } from '../template/types.js';
 
-// MCP 类型导入（契约类型，协议中性；实现在 @agentdev/mcp）
+// MCP 类型导入（契约类型，协议中性；实现在 @agentdevjs/mcp）
 import type { MCPConfig } from './mcp-contract.js';
 import type { UsageInfo, UsageStatsSnapshot } from './usage.js';
 

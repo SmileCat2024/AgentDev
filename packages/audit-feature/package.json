@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/audit-feature",
+  "name": "@agentdevjs/audit-feature",
   "version": "0.1.0",
   "description": "Audit feature for AgentDev - tracks and logs tool usage",
   "type": "module",
@@ -14,7 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdevjs/core": "^0.1.0"
   },
   "dependencies": {
     "better-sqlite3": "latest"
@@ -23,7 +23,7 @@
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
     "@types/better-sqlite3": "^7.6.0",
-    "@agentdev/core": "file:../core"
+    "@agentdevjs/core": "file:../core"
   },
   "keywords": [
     "agentdev",

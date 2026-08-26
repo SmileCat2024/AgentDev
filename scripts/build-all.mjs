@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 一次构建全部 @agentdev/* 包（4 框架包 + create-feature + 14 生态包）。
+ * 一次构建全部 @agentdevjs/* 包（4 框架包 + create-feature + 14 生态包）。
  *
  * 全部包均为 npm workspace 成员，统一用 `npm run build -w <name>` 编排。
  * 任何一步失败都会以非零退出码结束，保证「一次 build = 全部可用」。
@@ -12,25 +12,25 @@ const root = resolve(import.meta.dirname, '..');
 
 // 全部 workspace 成员包（4 框架包 + create-feature + 14 生态包）
 const WORKSPACE_PACKAGES = [
-  '@agentdev/core',
-  '@agentdev/llm',
-  '@agentdev/viewer',
-  '@agentdev/mcp',
-  '@agentdev/create-feature',
-  '@agentdev/audio-feedback-feature',
-  '@agentdev/audit-feature',
-  '@agentdev/feishu-bot',
-  '@agentdev/image-reader-feature',
-  '@agentdev/memory-feature',
-  '@agentdev/plugin-compat-feature',
-  '@agentdev/qqbot-feature',
-  '@agentdev/rokid-bot',
-  '@agentdev/shell-feature',
-  '@agentdev/tts-feature',
-  '@agentdev/visual-feature',
-  '@agentdev/websearch-feature',
-  '@agentdev/wecom-bot',
-  '@agentdev/weixin-bot',
+  '@agentdevjs/core',
+  '@agentdevjs/llm',
+  '@agentdevjs/viewer',
+  '@agentdevjs/mcp',
+  '@agentdevjs/create-feature',
+  '@agentdevjs/audio-feedback-feature',
+  '@agentdevjs/audit-feature',
+  '@agentdevjs/feishu-bot',
+  '@agentdevjs/image-reader-feature',
+  '@agentdevjs/memory-feature',
+  '@agentdevjs/plugin-compat-feature',
+  '@agentdevjs/qqbot-feature',
+  '@agentdevjs/rokid-bot',
+  '@agentdevjs/shell-feature',
+  '@agentdevjs/tts-feature',
+  '@agentdevjs/visual-feature',
+  '@agentdevjs/websearch-feature',
+  '@agentdevjs/wecom-bot',
+  '@agentdevjs/weixin-bot',
 ];
 
 function run(cmd, label) {

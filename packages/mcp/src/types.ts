@@ -1,11 +1,11 @@
 /**
  * MCP 集成类型定义
  *
- * 契约类型（服务器配置形状）的权威定义在 @agentdev/core（core/mcp-contract），
+ * 契约类型（服务器配置形状）的权威定义在 @agentdevjs/core（core/mcp-contract），
  * 此处 re-export 保持旧导入路径兼容；连接管理与调用的运行时类型定义在本包。
  */
 
-// 契约类型：权威定义在 @agentdev/core
+// 契约类型：权威定义在 @agentdevjs/core
 export type {
   MCPTransportType,
   MCPServerConfig,
@@ -14,7 +14,7 @@ export type {
   MCPSSEConfig,
   MCPConfig,
   MCPToolMappingConfig,
-} from '@agentdev/core';
+} from '@agentdevjs/core';
 
 /**
  * MCP 连接状态

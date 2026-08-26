@@ -15,8 +15,8 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Agent } from '@agentdev/core';
-import type { LLMClient, LLMResponse, Message, ToolExecutionContext, ToolTerminationReason } from '@agentdev/core';
+import { Agent } from '@agentdevjs/core';
+import type { LLMClient, LLMResponse, Message, ToolExecutionContext, ToolTerminationReason } from '@agentdevjs/core';
 import {
   createShellCommandTool,
   createPowerShellTool,

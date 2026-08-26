@@ -3,10 +3,10 @@
  *
  * 只负责：系统环境信息上下文、AgentConfig 组装。
  * 不内置任何 Feature 装配，也不自动创建 LLM——LLM 实现位于
- * @agentdev/llm（core 零重 SDK 纪律），由宿主显式传入：
+ * @agentdevjs/llm（core 零重 SDK 纪律），由宿主显式传入：
  *
- *   import { loadConfigSync } from '@agentdev/core';
- *   import { createLLM } from '@agentdev/llm';
+ *   import { loadConfigSync } from '@agentdevjs/core';
+ *   import { createLLM } from '@agentdevjs/llm';
  *   new BasicAgent({ llm: createLLM(loadConfigSync()) })
  */
 
@@ -42,7 +42,7 @@ export interface SystemContext {
  * 需要工具或上下文注入时，构造后通过 use() 显式挂载 Feature。
  */
 export interface BasicAgentConfig {
-  /** LLM 客户端（必传；实现见 @agentdev/llm 的 createLLM） */
+  /** LLM 客户端（必传；实现见 @agentdevjs/llm 的 createLLM） */
   llm: LLMClient;
   /** Agent 显示名称（可选） */
   name?: string;

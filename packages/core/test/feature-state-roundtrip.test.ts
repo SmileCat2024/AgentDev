@@ -24,7 +24,7 @@ import { UserInputFeature } from '../src/features/user-input/index.js';
 /**
  * 内置 feature 状态契约摸底登记表（B 热载前置，2026-08）。
  *
- * 010 包拆分后本表只登记 @agentdev/core 白名单 feature；
+ * 010 包拆分后本表只登记 @agentdevjs/core 白名单 feature；
  * 移出 core 的 feature（shell / memory / tts / visual / audio-feedback 等）
  * 的状态契约登记随源码归属迁移至各自生态包的测试。
  *

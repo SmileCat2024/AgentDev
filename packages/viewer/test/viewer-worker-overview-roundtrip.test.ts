@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ViewerWorker } from '../src/viewer-worker.js';
-import type { AgentOverviewSnapshot } from '@agentdev/core';
+import type { AgentOverviewSnapshot } from '@agentdevjs/core';
 
 /**
  * Round-trip 测试：验证 overview snapshot 经过 ViewerWorker 的

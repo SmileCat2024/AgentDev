@@ -31,11 +31,11 @@ import { mkdtemp, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { DebugHub } from '@agentdev/core';
+import { DebugHub } from '@agentdevjs/core';
 import { ViewerWorker } from '../src/viewer-worker.js';
-import { Agent } from '@agentdev/core';
+import { Agent } from '@agentdevjs/core';
 import { filterDebuggerLogs } from '../src/debugger-mcp.js';
-import type { DebugLogEntry } from '@agentdev/core';
+import type { DebugLogEntry } from '@agentdevjs/core';
 
 const EVENT_TYPES = [
   'feature.mounted', 'feature.removed', 'feature.reloaded',

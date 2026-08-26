@@ -11,10 +11,10 @@
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, isAbsolute } from 'path';
-import { CoreLifecycle } from '@agentdev/core';
-import type { HookDeclarations } from '@agentdev/core';
-import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot, FeatureManifestDefinition } from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
+import { CoreLifecycle } from '@agentdevjs/core';
+import type { HookDeclarations } from '@agentdevjs/core';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo, FeatureStateSnapshot, FeatureManifestDefinition } from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
 
 export interface MemoryFeatureConfig {
   /** 读取 CLAUDE.md 的工作目录 */
@@ -128,7 +128,7 @@ export class MemoryFeature implements AgentFeature {
    * CallStart 钩子：仅在首次对话开始时注入文档内容
    */
   async injectCLAUDEContent(
-    ctx: import('@agentdev/core').CallStartContext
+    ctx: import('@agentdevjs/core').CallStartContext
   ): Promise<void> {
     // 只在首轮注入
     if (!ctx.isFirstCall) {

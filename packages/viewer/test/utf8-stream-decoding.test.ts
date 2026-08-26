@@ -2,7 +2,7 @@ import { once } from 'node:events';
 import { connect, createServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { DebugHub } from '@agentdev/core';
+import { DebugHub } from '@agentdevjs/core';
 import { ViewerWorker } from '../src/viewer-worker.js';
 
 function getTestUdsPath(): string {

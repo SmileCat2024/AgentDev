@@ -1,8 +1,8 @@
 /**
  * MCP 契约类型（协议中性，零运行时依赖）
  *
- * AgentConfig.mcp 等框架核心契约依赖这些配置形状，因此它们留在 @agentdev/core。
- * MCP 集成实现（连接管理 / 工具挂载 / MCPFeature）在 @agentdev/mcp 包，
+ * AgentConfig.mcp 等框架核心契约依赖这些配置形状，因此它们留在 @agentdevjs/core。
+ * MCP 集成实现（连接管理 / 工具挂载 / MCPFeature）在 @agentdevjs/mcp 包，
  * 并从这里 re-export 契约类型以保持单一权威定义。
  */
 

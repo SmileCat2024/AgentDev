@@ -12,10 +12,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { withImages, isWithImagesResult } from '@agentdev/core';
-import { Context } from '@agentdev/core';
-import type { ToolExecResult } from '@agentdev/core';
-import type { ToolCall, ImageInput } from '@agentdev/core';
+import { withImages, isWithImagesResult } from '@agentdevjs/core';
+import { Context } from '@agentdevjs/core';
+import type { ToolExecResult } from '@agentdevjs/core';
+import type { ToolCall, ImageInput } from '@agentdevjs/core';
 import { compileContextForAnthropic } from '../../src/anthropic.js';
 import { compileContextForOpenAIResponses } from '../../src/openai-responses.js';
 

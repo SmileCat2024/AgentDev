@@ -4,8 +4,8 @@
  * 提供 web_fetch 工具，用于获取网页内容
  */
 
-import type { Tool } from '@agentdev/core';
-import { createTool } from '@agentdev/core';
+import type { Tool } from '@agentdevjs/core';
+import { createTool } from '@agentdevjs/core';
 
 /**
  * 创建 web_fetch 工具

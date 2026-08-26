@@ -1,17 +1,17 @@
-# @agentdev/websearch-feature
+# @agentdevjs/websearch-feature
 
 Web search and content fetching feature for AgentDev.
 
 ## Installation
 
 ```bash
-npm install @agentdev/websearch-feature
+npm install @agentdevjs/websearch-feature
 ```
 
 ## Usage
 
 ```typescript
-import { WebSearchFeature } from '@agentdev/websearch-feature';
+import { WebSearchFeature } from '@agentdevjs/websearch-feature';
 
 const agent = new Agent({ ... }).use(new WebSearchFeature());
 ```
@@ -24,7 +24,7 @@ const agent = new Agent({ ... }).use(new WebSearchFeature());
 ## Configuration
 
 ```typescript
-import { WebSearchFeature } from '@agentdev/websearch-feature';
+import { WebSearchFeature } from '@agentdevjs/websearch-feature';
 
 const agent = new Agent({ ... }).use(new WebSearchFeature({
   crawl4ai: {

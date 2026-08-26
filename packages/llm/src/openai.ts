@@ -3,16 +3,16 @@
  * 实现 LLMClient 接口
  */
 
-import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo, ImageInput } from '@agentdev/core';
-import type { LLMPhase } from '@agentdev/core';
-import type { CustomHeaderEntry, ThinkingEffort } from '@agentdev/core';
-import { OPENAI_THINKING_EFFORTS } from '@agentdev/core';
+import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo, ImageInput } from '@agentdevjs/core';
+import type { LLMPhase } from '@agentdevjs/core';
+import type { CustomHeaderEntry, ThinkingEffort } from '@agentdevjs/core';
+import { OPENAI_THINKING_EFFORTS } from '@agentdevjs/core';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import OpenAI from 'openai';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdev/core';
-import { classifyAndWrapError, ClassifiedAPIError } from '@agentdev/core';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { classifyAndWrapError, ClassifiedAPIError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
 import { wrapReminder } from './reminder.js';
@@ -372,7 +372,7 @@ export class OpenAILLM implements LLMClient {
           }
 
           try {
-            const { emitNotification, createLLMCharCount } = await import('@agentdev/core');
+            const { emitNotification, createLLMCharCount } = await import('@agentdevjs/core');
             // 各 phase 独立计数：正文阶段不应延续思考阶段的累计值
             const phaseCharCount = currentPhase === 'thinking' ? reasoning.length : content.length;
             if (phaseCharCount > 0 || accumulatedToolCalls.size > 0) {
@@ -464,7 +464,7 @@ export class OpenAILLM implements LLMClient {
   }
 }
 
-import type { ModelConfig, AgentConfigFile } from '@agentdev/core';
+import type { ModelConfig, AgentConfigFile } from '@agentdevjs/core';
 
 /**
  * 从配置创建 OpenAI LLM 实例

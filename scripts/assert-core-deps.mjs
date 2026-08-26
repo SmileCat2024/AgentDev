@@ -3,7 +3,7 @@
 /**
  * core 依赖纪律断言（ADR-0003 决策 3，票 010 步骤 6）：
  *
- * `@agentdev/core` 必须保持：
+ * `@agentdevjs/core` 必须保持：
  *   - 零原生依赖（需编译源码 / 含二进制 .node 的包）
  *   - 零重 SDK（openai、@openai/agents、anthropic 等大体积 SDK）
  *   - 零 feature 包反向依赖（core 永不 import packages/* 生态包）
@@ -32,7 +32,7 @@ const HEAVY_OR_NATIVE_PREFIXES = [
 ];
 
 // feature 生态包范围：packages/* 下除锁步组与脚手架外的目录名
-const FEATURE_PREFIX = '@agentdev/';
+const FEATURE_PREFIX = '@agentdevjs/';
 
 function fail(message) {
   console.error(`✗ ${message}`);
@@ -69,8 +69,8 @@ function main() {
   }
   if (!heavyViolation) ok('core 无重 SDK / 原生依赖');
 
-  // 3. 零 feature 包反向依赖：core 只能依赖自身域内的基础包，不得依赖任何 @agentdev/feature-*
-  const featureDeps = depNames.filter((n) => n.startsWith(FEATURE_PREFIX) && n !== '@agentdev/core');
+  // 3. 零 feature 包反向依赖：core 只能依赖自身域内的基础包，不得依赖任何 @agentdevjs/feature-*
+  const featureDeps = depNames.filter((n) => n.startsWith(FEATURE_PREFIX) && n !== '@agentdevjs/core');
   if (featureDeps.length) {
     fail(`core 不得反向依赖 feature 生态包：${featureDeps.join(', ')}`);
   } else {

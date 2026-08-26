@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/websearch-feature",
+  "name": "@agentdevjs/websearch-feature",
   "version": "0.1.0",
   "description": "Web search and content fetching feature for AgentDev",
   "type": "module",
@@ -26,8 +26,8 @@
     "sourcemap": true
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0",
-    "@agentdev/mcp": "^0.1.0"
+    "@agentdevjs/core": "^0.1.0",
+    "@agentdevjs/mcp": "^0.1.0"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"
@@ -37,8 +37,8 @@
     "@types/js-yaml": "^4.0.5",
     "tsup": "^8.3.5",
     "typescript": "^5.3.3",
-    "@agentdev/core": "file:../core",
-    "@agentdev/mcp": "file:../mcp"
+    "@agentdevjs/core": "file:../core",
+    "@agentdevjs/mcp": "file:../mcp"
   },
   "keywords": [
     "agentdev",

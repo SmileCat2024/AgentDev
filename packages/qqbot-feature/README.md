@@ -1,18 +1,18 @@
-# @agentdev/qqbot-feature
+# @agentdevjs/qqbot-feature
 
 QQ Bot feature for AgentDev - enables QQ bot integration.
 
 ## Installation
 
 ```bash
-npm install @agentdev/qqbot-feature
+npm install @agentdevjs/qqbot-feature
 ```
 
 ## Usage
 
 ```typescript
 import { BasicAgent } from 'agentdev';
-import { QQBotFeature } from '@agentdev/qqbot-feature';
+import { QQBotFeature } from '@agentdevjs/qqbot-feature';
 
 const qqbotFeature = new QQBotFeature({ appId, clientSecret });
 const agent = new BasicAgent({ llm }).use(qqbotFeature);

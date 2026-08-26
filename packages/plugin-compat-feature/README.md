@@ -1,17 +1,17 @@
-# @agentdev/plugin-compat-feature
+# @agentdevjs/plugin-compat-feature
 
 Plugin compatibility layer for AgentDev - loads OpenClaw-style plugins
 
 ## Installation
 
 ```bash
-npm install @agentdev/plugin-compat-feature
+npm install @agentdevjs/plugin-compat-feature
 ```
 
 ## Usage
 
 ```typescript
-import { PluginCompat } from '@agentdev/plugin-compat-feature';
+import { PluginCompat } from '@agentdevjs/plugin-compat-feature';
 
 const agent = new Agent({ ... }).use(new PluginCompat());
 ```

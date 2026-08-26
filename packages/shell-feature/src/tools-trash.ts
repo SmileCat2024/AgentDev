@@ -3,8 +3,8 @@
  */
 
 import { join } from 'path';
-import { createTool } from '@agentdev/core';
-import type { Tool } from '@agentdev/core';
+import { createTool } from '@agentdevjs/core';
+import type { Tool } from '@agentdevjs/core';
 import { safeRm, listTrashed, restore } from './lib/index.js';
 
 function formatSize(bytes: number): string {

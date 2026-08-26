@@ -1,5 +1,5 @@
 /**
- * Vitest 全局 setup（@agentdev/llm）
+ * Vitest 全局 setup（@agentdevjs/llm）
  */
 if (!process.env.AGENTDEV_TEST_VERBOSE) {
   const origInfo = console.info;

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { sanitizeToolSchema } from '../src/schema-sanitizer.js';
 import { compileContextForAnthropic } from '../src/anthropic.js';
 import { compileContextForOpenAIResponses } from '../src/openai-responses.js';
-import type { Tool } from '@agentdev/core';
+import type { Tool } from '@agentdevjs/core';
 
 function makeTool(name: string, parameters?: Record<string, unknown>): Tool {
   return {

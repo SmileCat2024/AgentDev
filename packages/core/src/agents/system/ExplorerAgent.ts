@@ -3,7 +3,7 @@
  *
  * 专注于代码库探索和理解的轻量级 Agent 基类。
  * 纯基类：零内置 Feature 装配，也不自动创建 LLM（core 零重 SDK 纪律，
- * LLM 实现位于 @agentdev/llm，由宿主显式传入）。只读定位通过装配层的
+ * LLM 实现位于 @agentdevjs/llm，由宿主显式传入）。只读定位通过装配层的
  * 工具裁剪实现，本类不代劳。
  */
 
@@ -39,7 +39,7 @@ export interface SystemContext {
  * llm 必传（LLM 装配权在宿主）；其余参数可选。
  */
 export interface ExplorerAgentConfig {
-  /** LLM 客户端（必传；实现见 @agentdev/llm 的 createLLM） */
+  /** LLM 客户端（必传；实现见 @agentdevjs/llm 的 createLLM） */
   llm: LLMClient;
   /** Agent 显示名称（可选） */
   name?: string;

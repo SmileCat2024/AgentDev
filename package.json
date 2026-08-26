@@ -1,7 +1,7 @@
 {
   "name": "agentdev",
   "version": "0.3.0",
-  "description": "AgentDev monorepo (npm package `agentdev` is retired; use @agentdev/core, @agentdev/llm, @agentdev/viewer, @agentdev/mcp and @agentdev/feature-*)",
+  "description": "AgentDev monorepo (npm package `agentdev` is retired; use @agentdevjs/core, @agentdevjs/llm, @agentdevjs/viewer, @agentdevjs/mcp and @agentdevjs/feature-*)",
   "type": "module",
   "private": true,
   "workspaces": [
@@ -9,12 +9,12 @@
   ],
   "scripts": {
     "build": "node scripts/build-all.mjs",
-    "dev": "npm run dev -w @agentdev/core",
+    "dev": "npm run dev -w @agentdevjs/core",
     "test": "npm test --workspaces --if-present",
     "test:ci": "npm test --workspaces --if-present",
     "lint": "eslint packages/core/src packages/llm/src packages/viewer/src packages/mcp/src",
     "lint:fix": "eslint packages/core/src packages/llm/src packages/viewer/src packages/mcp/src --fix",
-    "typecheck": "npm run typecheck -w @agentdev/core && npm run typecheck -w @agentdev/llm -w @agentdev/viewer -w @agentdev/mcp",
+    "typecheck": "npm run typecheck -w @agentdevjs/core && npm run typecheck -w @agentdevjs/llm -w @agentdevjs/viewer -w @agentdevjs/mcp",
     "check:versions": "node scripts/check-versions.mjs",
     "check:core-deps": "node scripts/assert-core-deps.mjs",
     "build-and-pack-features": "node scripts/build-and-pack-features.mjs"

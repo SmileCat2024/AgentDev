@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/shell-feature",
+  "name": "@agentdevjs/shell-feature",
   "version": "0.1.0",
   "description": "Shell execution feature for AgentDev - provides bash execution and safe trash operations",
   "type": "module",
@@ -27,14 +27,14 @@
     "sourcemap": true
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdevjs/core": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "tsup": "^8.3.5",
     "typescript": "^5.3.3",
     "vitest": "^4.1.10",
-    "@agentdev/core": "file:../core"
+    "@agentdevjs/core": "file:../core"
   },
   "keywords": [
     "agentdev",

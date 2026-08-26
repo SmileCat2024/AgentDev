@@ -125,11 +125,11 @@ class RecordFeature {
 Viewer 根据包类型生成 URL：
 
 ```text
-独立 @agentdev 包:
-/template/@agentdev/record-feature/record-update.render.js
+独立 @agentdevjs 包:
+/template/@agentdevjs/record-feature/record-update.render.js
 
-agentdev 内置 Feature:
-/template/agentdev/record/record-update.render.js
+@agentdevjs/core 内置 Feature:
+/template/@agentdevjs/core/record/record-update.render.js
 ```
 
 `getTemplateNames()` 返回不带 `.render.js` 的名称。

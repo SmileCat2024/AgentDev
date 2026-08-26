@@ -1,17 +1,17 @@
-# @agentdev/image-reader-feature
+# @agentdevjs/image-reader-feature
 
 图片读取 Feature，提供 `read_image` 工具，让 Agent 能主动读取本地图片文件并直接注入到对话上下文中。
 
 ## 安装
 
 ```bash
-npm install @agentdev/image-reader-feature
+npm install @agentdevjs/image-reader-feature
 ```
 
 ## 使用
 
 ```typescript
-import { ImageReaderFeature } from '@agentdev/image-reader-feature';
+import { ImageReaderFeature } from '@agentdevjs/image-reader-feature';
 
 agent.use(new ImageReaderFeature({
   workspaceDir: '/path/to/project',

@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { OutputGuardFeature } from '@agentdev/core';
+ * import { OutputGuardFeature } from '@agentdevjs/core';
  * const agent = new Agent({ ... }).use(new OutputGuardFeature());
  * ```
  */

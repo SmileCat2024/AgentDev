@@ -10,11 +10,11 @@
  * 使用内化的 standalone 协议层独立接入（src/protocol/，上游 @sliverp/qqbot 1.5.5）
  */
 
-import { CoreLifecycle } from '@agentdev/core';
-import type { HookDeclarations } from '@agentdev/core';
-import type { Tool } from '@agentdev/core';
-import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
+import { CoreLifecycle } from '@agentdevjs/core';
+import type { HookDeclarations } from '@agentdevjs/core';
+import type { Tool } from '@agentdevjs/core';
+import type { AgentFeature, FeatureInitContext, FeatureContext, PackageInfo } from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';

@@ -27,9 +27,9 @@ import type {
   ContextInjector,
   ToolContextValue,
   PackageInfo,
-} from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
-import type { Tool } from '@agentdev/core';
+} from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
+import type { Tool } from '@agentdevjs/core';
 import { loadAllMCPConfigs, loadMCPConfigFromInput } from '../config.js';
 import { MCPConnectionManager } from '../connection-manager.js';
 import { mountMCPToolsFromConfig } from '../mount.js';

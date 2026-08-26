@@ -1,11 +1,11 @@
-# @agentdev/visual-feature
+# @agentdevjs/visual-feature
 
 Visual understanding feature for AgentDev - provides window capture and vision model analysis.
 
 ## Installation
 
 ```bash
-npm install @agentdev/visual-feature
+npm install @agentdevjs/visual-feature
 ```
 
 ## Requirements
@@ -28,7 +28,7 @@ pip install pywin32 psutil Pillow
 ## Usage
 
 ```typescript
-import { VisualFeature } from '@agentdev/visual-feature';
+import { VisualFeature } from '@agentdevjs/visual-feature';
 
 // Use default python command
 const agent = new Agent({ ... }).use(new VisualFeature());

@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/memory-feature",
+  "name": "@agentdevjs/memory-feature",
   "version": "0.1.0",
   "description": "Memory feature for AgentDev - provides persistent key-value storage",
   "type": "module",
@@ -14,13 +14,13 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdevjs/core": "^0.1.0"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
-    "@agentdev/core": "file:../core"
+    "@agentdevjs/core": "file:../core"
   },
   "keywords": [
     "agentdev",

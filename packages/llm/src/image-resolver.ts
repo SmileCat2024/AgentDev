@@ -9,7 +9,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import type { ImageInput } from '@agentdev/core';
+import type { ImageInput } from '@agentdevjs/core';
 
 /**
  * Resolve an ImageInput to raw base64 data (no data-URI prefix).

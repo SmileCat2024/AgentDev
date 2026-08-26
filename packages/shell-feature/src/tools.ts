@@ -19,8 +19,8 @@
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
-import type { Tool } from '@agentdev/core';
-import { createTool } from '@agentdev/core';
+import type { Tool } from '@agentdevjs/core';
+import { createTool } from '@agentdevjs/core';
 import {
   quoteShellCommand,
   shouldAddStdinRedirect,

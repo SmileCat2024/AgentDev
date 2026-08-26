@@ -1,12 +1,12 @@
 /**
  * Features 模块导出
  *
- * @agentdev/core 内置的轻量 Features（零原生依赖、零重 SDK，白名单验证通过）：
+ * @agentdevjs/core 内置的轻量 Features（零原生依赖、零重 SDK，白名单验证通过）：
  * lsp / todo / user-input / skill / subagent / file-history / opencode-basic /
  * output-guard，外加框架原生的 handoff-seed（continuity 基座）与
  * example-feature（开发参考骨架）。
  *
- * 其余 Features 为独立生态包（@agentdev/feature-* / @agentdev/mcp），
+ * 其余 Features 为独立生态包（@agentdevjs/feature-* / @agentdevjs/mcp），
  * 需要单独安装：
  *   - shell / audit / audio-feedback / memory / qqbot / tts / visual /
  *     websearch / plugin-compat 等

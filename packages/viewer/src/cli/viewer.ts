@@ -19,7 +19,7 @@
  */
 
 import { ViewerWorker } from '../viewer-worker.js';
-import { getDefaultUDSPath } from '@agentdev/core';
+import { getDefaultUDSPath } from '@agentdevjs/core';
 
 const DEFAULT_PORT = 2026;
 

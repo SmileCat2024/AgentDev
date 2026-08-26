@@ -8,10 +8,10 @@ import type {
   FeatureContext,
   FeatureInitContext,
   FeatureStateSnapshot,
-} from '@agentdev/core';
-import { CoreLifecycle } from '@agentdev/core';
-import type { HookDeclarations } from '@agentdev/core';
-import type { CallFinishContext } from '@agentdev/core';
+} from '@agentdevjs/core';
+import { CoreLifecycle } from '@agentdevjs/core';
+import type { HookDeclarations } from '@agentdevjs/core';
+import type { CallFinishContext } from '@agentdevjs/core';
 import type {
   AudioFeedbackConfig,
   AudioFeedbackRuntimeState,

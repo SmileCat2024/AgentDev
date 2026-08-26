@@ -14,11 +14,11 @@ import type {
   FeatureInitContext,
   FeatureContext,
   PackageInfo,
-} from '@agentdev/core';
-import { CoreLifecycle } from '@agentdev/core';
-import type { HookDeclarations } from '@agentdev/core';
-import type { Tool } from '@agentdev/core';
-import { getPackageInfoFromSource } from '@agentdev/core';
+} from '@agentdevjs/core';
+import { CoreLifecycle } from '@agentdevjs/core';
+import type { HookDeclarations } from '@agentdevjs/core';
+import type { Tool } from '@agentdevjs/core';
+import { getPackageInfoFromSource } from '@agentdevjs/core';
 
 // ─── 配置 ───────────────────────────────────────────
 

@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createReadImageTool } from '../src/tools.js';
-import { isWithImagesResult } from '@agentdev/core';
+import { isWithImagesResult } from '@agentdevjs/core';
 
 describe('read_image managed snapshots', () => {
   it('should preserve the bytes read at tool-call time after the source changes or moves', async () => {

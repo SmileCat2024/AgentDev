@@ -1,17 +1,17 @@
-# @agentdev/memory-feature
+# @agentdevjs/memory-feature
 
 Memory feature for AgentDev - provides persistent key-value storage
 
 ## Installation
 
 ```bash
-npm install @agentdev/memory-feature
+npm install @agentdevjs/memory-feature
 ```
 
 ## Usage
 
 ```typescript
-import { Memory } from '@agentdev/memory-feature';
+import { Memory } from '@agentdevjs/memory-feature';
 
 const agent = new Agent({ ... }).use(new Memory());
 ```

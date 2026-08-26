@@ -2,7 +2,7 @@
  * MCP 工具渲染模板
  */
 
-import type { InlineRenderTemplate } from '@agentdev/core';
+import type { InlineRenderTemplate } from '@agentdevjs/core';
 
 /**
  * HTML 转义辅助函数

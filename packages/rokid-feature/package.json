@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/rokid-bot",
+  "name": "@agentdevjs/rokid-bot",
   "version": "0.1.0",
   "description": "rokid-bot feature for AgentDev — bridge to Rokid glasses via WebSocket",
   "type": "module",
@@ -26,14 +26,14 @@
     "sourcemap": true
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdevjs/core": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/ws": "^8.5.10",
     "tsup": "^8.3.5",
     "typescript": "^5.3.3",
-    "@agentdev/core": "file:../core"
+    "@agentdevjs/core": "file:../core"
   },
   "keywords": [
     "agentdev",

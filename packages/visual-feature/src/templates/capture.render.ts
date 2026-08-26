@@ -2,7 +2,7 @@
  * capture_and_understand_window 工具渲染模板
  */
 
-import type { InlineRenderTemplate } from '@agentdev/core';
+import type { InlineRenderTemplate } from '@agentdevjs/core';
 
 function escapeHtml(text: unknown): string {
   const str = String(text);

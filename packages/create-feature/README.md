@@ -1,4 +1,4 @@
-# @agentdev/create-feature
+# @agentdevjs/create-feature
 
 CLI tool to create AgentDev Feature packages with zero configuration.
 
@@ -117,7 +117,7 @@ npm publish
 
 ```typescript
 import { Agent } from 'agentdev';
-import { MyCoolFeature } from '@agentdev/my-cool-feature';
+import { MyCoolFeature } from '@agentdevjs/my-cool-feature';
 
 const agent = new Agent({
   // ... config

@@ -9,7 +9,7 @@ import { BasicAgent } from '../src/agents/index.js';
 import type { BasicAgentConfig } from '../src/agents/index.js';
 import { TemplateComposer } from '../src/template/composer.js';
 import { MCPFeature, OpencodeBasicFeature, SkillFeature, AuditFeature, TodoFeature, VisualFeature, WebSearchFeature } from '../src/features/index.js';
-import { QQBotFeature } from '@agentdev/qqbot-feature';
+import { QQBotFeature } from '@agentdevjs/qqbot-feature';
 import type { AgentInitiateContext } from '../src/core/lifecycle.js';
 import { cwd } from 'process';
 

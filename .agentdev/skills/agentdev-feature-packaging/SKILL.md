@@ -66,7 +66,7 @@ tar tzvf agentdev-<name>-feature-<version>.tgz | grep media
 
 | 位置 | 角色 | 消费方式 |
 |---|---|---|
-| `packages/<name>-feature/` | 独立 npm 包源码 | `npm pack` → tgz → Claw 以 `@agentdev/<name>-feature` 安装 |
+| `packages/<name>-feature/` | 独立 npm 包源码 | `npm pack` → tgz → Claw 以 `@agentdevjs/<name>-feature` 安装 |
 | `src/features/<name>/` | 框架内部副本 | 被 tsup bundle 进框架 dist，随 `agentdev` npm 包发布 |
 
 当前已知双路径 feature：`shell`、`audit`、`audio-feedback`、`memory`、`qqbot`、`tts`、`visual`、`websearch`、`plugin-compat`。
@@ -93,7 +93,7 @@ cp agentdev-<name>-feature-<version>.tgz <Claw>/resources/features/
 
 | 变更内容 | 重启范围 |
 |---|---|
-| 仅 tgz 包（`node_modules/@agentdev/*`） | 重启对应 agent 子进程即可 |
+| 仅 tgz 包（`node_modules/@agentdevjs/*`） | 重启对应 agent 子进程即可 |
 | 框架 dist（`node_modules/agentdev` → junction） | 必须重启整个 Claw 服务 |
 
 ## integrity hash 处理
@@ -106,7 +106,7 @@ tgz **文件名不变但内容变更**（版本号未升级）时，npm 会因 `
 cd <Claw>
 # 方案 1（推荐）：删掉 lock 中该包条目的 integrity 字段，让 npm 重算
 # 方案 2：从 npm install 报错信息中取 "got" 后的新 hash，替换 lock 中旧值
-rm -rf node_modules/@agentdev/<name>
+rm -rf node_modules/@agentdevjs/<name>
 npm install
 ```
 
@@ -116,8 +116,8 @@ file: 依赖的 lock 条目通常没有 integrity 字段，此时直接 `rm -rf`
 
 安装完成后，在 Claw 仓库验证（**必须用工具 grep，不要用 bash grep**——Windows 编码问题会假阴性）：
 
-1. 新代码已就位：grep 新增的标识性代码片段，确认 `node_modules/@agentdev/<name>/dist/index.js` 包含本次改动；
-2. 资源已就位：确认 `node_modules/@agentdev/<name>/dist/media/`（或 templates/、skills/）存在且非空；
+1. 新代码已就位：grep 新增的标识性代码片段，确认 `node_modules/@agentdevjs/<name>/dist/index.js` 包含本次改动；
+2. 资源已就位：确认 `node_modules/@agentdevjs/<name>/dist/media/`（或 templates/、skills/）存在且非空；
 3. 运行时生效：重启 agent 后在 inspector 或日志中确认新行为。
 
 ## 批量流水线

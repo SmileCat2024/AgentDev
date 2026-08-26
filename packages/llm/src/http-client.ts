@@ -11,7 +11,7 @@
  * 2. OpenAI SDK 的 node-fetch → 自带 agentkeepalive，无需额外处理
  */
 
-import { createLogger } from '@agentdev/core';
+import { createLogger } from '@agentdevjs/core';
 
 const logger = createLogger('llm.http-client');
 

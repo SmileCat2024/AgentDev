@@ -1,9 +1,9 @@
-import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '@agentdev/core';
+import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '@agentdevjs/core';
 import { resolveCustomHeaders } from './custom-headers.js';
-import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo, ImageInput } from '@agentdev/core';
-import type { LLMPhase } from '@agentdev/core';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdev/core';
-import { classifyAPIError, classifyAndWrapError, ClassifiedAPIError } from '@agentdev/core';
+import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo, ImageInput } from '@agentdevjs/core';
+import type { LLMPhase } from '@agentdevjs/core';
+import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { classifyAPIError, classifyAndWrapError, ClassifiedAPIError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
@@ -863,7 +863,7 @@ async function emitAnthropicProgress(
   contentChars?: number,
 ): Promise<void> {
   try {
-    const { emitNotification, createLLMCharCount } = await import('@agentdev/core');
+    const { emitNotification, createLLMCharCount } = await import('@agentdevjs/core');
     if (charCount > 0 || toolCallCount > 0) {
       emitNotification(createLLMCharCount(charCount, phase, {
         toolCallCount,
@@ -879,7 +879,7 @@ async function emitAnthropicProgress(
 
 async function emitAnthropicComplete(charCount: number): Promise<void> {
   try {
-    const { emitNotification, createLLMComplete } = await import('@agentdev/core');
+    const { emitNotification, createLLMComplete } = await import('@agentdevjs/core');
     emitNotification(createLLMComplete(charCount));
   } catch {
     // Ignore notification failures.

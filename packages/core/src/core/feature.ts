@@ -66,7 +66,7 @@ export type FeatureStateSnapshot = unknown;
  * 包信息
  */
 export interface PackageInfo {
-  /** 包名，如 '@agentdev/shell-feature' 或 'agentdev' */
+  /** 包名，如 '@agentdevjs/shell-feature' 或 'agentdev' */
   name: string;
   /** 版本号（可选） */
   version?: string;
@@ -189,7 +189,7 @@ export interface AgentFeature {
    * ```typescript
    * getPackageInfo(): PackageInfo | null {
    *   return {
-   *     name: '@agentdev/shell-feature',
+   *     name: '@agentdevjs/shell-feature',
    *     version: '1.0.0',
    *     root: '/path/to/package/root'
    *   };

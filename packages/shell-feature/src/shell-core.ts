@@ -15,8 +15,8 @@
 import { spawn } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
 import * as path from 'path';
-import type { ToolTerminationReason } from '@agentdev/core';
-import { emitNotification, createToolProgress } from '@agentdev/core';
+import type { ToolTerminationReason } from '@agentdevjs/core';
+import { emitNotification, createToolProgress } from '@agentdevjs/core';
 
 /** drain 上限：kill 后等待管道 EOF 的时间（孙进程占 pipe 兜底）。 */
 const TERMINATION_DRAIN_FALLBACK_MS = 1000;

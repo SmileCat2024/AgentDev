@@ -1,5 +1,5 @@
 {
-  "name": "@agentdev/audio-feedback-feature",
+  "name": "@agentdevjs/audio-feedback-feature",
   "version": "0.1.0",
   "description": "Audio feedback feature for AgentDev - plays sound notifications on call completion",
   "type": "module",
@@ -26,14 +26,14 @@
     "external": []
   },
   "peerDependencies": {
-    "@agentdev/core": "^0.1.0"
+    "@agentdevjs/core": "^0.1.0"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.11.0",
     "tsup": "^8.3.5",
     "typescript": "^5.3.3",
-    "@agentdev/core": "file:../core"
+    "@agentdevjs/core": "file:../core"
   },
   "keywords": [
     "agentdev",

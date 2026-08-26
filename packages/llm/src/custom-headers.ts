@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { CustomHeaderEntry } from '@agentdev/core';
+import type { CustomHeaderEntry } from '@agentdevjs/core';
 
 /**
  * 将 CustomHeaderEntry[] 解析为扁平的 Record<string,string>。

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * @agentdev/create-feature CLI
+ * @agentdevjs/create-feature CLI
  *
  * 创建新的 AgentDev Feature 包
  *
  * 使用方式：
  *   create-agentdev-feature my-feature
  *   npm init agentdev-feature my-feature
- *   npx @agentdev/create-feature my-feature
+ *   npx @agentdevjs/create-feature my-feature
  */
 
 import { createFeature } from './create.js';

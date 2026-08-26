@@ -12,7 +12,7 @@ export default defineConfig({
   sourcemap: true,
   platform: 'node',
   external: [
-    '@agentdev/core',
+    '@agentdevjs/core',
     'node:*',
     'fs', 'path', 'url', 'module', 'os', 'crypto', 'http', 'https', 'net', 'tls',
   ],

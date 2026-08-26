@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ViewerWorker } from '../src/viewer-worker.js';
-import type { TodoPlanSnapshot } from '@agentdev/core';
+import type { TodoPlanSnapshot } from '@agentdevjs/core';
 
 /**
  * Round-trip 测试：验证 todo plan 数据经过 ViewerWorker 的

@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/memory-feature",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Memory feature for AgentDev - provides persistent key-value storage",
   "type": "module",
   "main": "dist/index.js",

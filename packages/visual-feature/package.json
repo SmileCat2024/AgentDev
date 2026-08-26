@@ -1,6 +1,6 @@
 {
   "name": "@agentdev/visual-feature",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Visual understanding feature for AgentDev - provides window capture and vision model analysis",
   "type": "module",
   "main": "dist/index.js",

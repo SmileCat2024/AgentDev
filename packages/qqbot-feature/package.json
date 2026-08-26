@@ -9,23 +9,33 @@
     "dist",
     "README.md"
   ],
-  "bundleDependencies": [
-    "@sliverp/qqbot"
-  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
     "@agentdev/core": "^0.1.0"
   },
   "dependencies": {
-    "@sliverp/qqbot": "file:../../vendor/@sliverp/qqbot"
+    "mpg123-decoder": "^1.0.3",
+    "silk-wasm": "^3.7.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
+    "tsup": "^8.3.5",
     "@agentdev/core": "file:../core"
+  },
+  "tsup": {
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": "esm",
+    "splitting": false,
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
   },
   "keywords": [
     "agentdev",

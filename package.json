@@ -5,8 +5,7 @@
   "type": "module",
   "private": true,
   "workspaces": [
-    "packages/*",
-    "!packages/qqbot-feature"
+    "packages/*"
   ],
   "scripts": {
     "build": "node scripts/build-all.mjs",

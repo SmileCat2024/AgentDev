@@ -7,7 +7,7 @@
  * - 自动将 Agent 的响应发送回 QQ
  * - 提供 upload_attachment 工具，支持图片/语音/视频/文件的上传与发送
  *
- * 使用 `@sliverp/qqbot/standalone` 独立接入
+ * 使用内化的 standalone 协议层独立接入（src/protocol/，上游 @sliverp/qqbot 1.5.5）
  */
 
 import { CoreLifecycle } from '@agentdev/core';
@@ -28,7 +28,7 @@ import type {
   QQBotAgentOutput,
   QQBotAgentDeliverInfo,
   OutboundResult,
-} from '@sliverp/qqbot/standalone';
+} from './protocol/standalone.js';
 import {
   startGateway,
   getAccessToken,
@@ -37,7 +37,7 @@ import {
   uploadGroupMedia,
   sendC2CMediaMessage,
   sendGroupMediaMessage,
-} from '@sliverp/qqbot/standalone';
+} from './protocol/standalone.js';
 
 // ============ 类型定义 ============
 

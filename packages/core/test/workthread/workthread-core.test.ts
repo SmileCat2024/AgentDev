@@ -81,6 +81,47 @@ describe('WorkThreadStore', () => {
     expect(entry!.chainEdges).toEqual([]);
   });
 
+  it('remove deletes record file and index entry; absent thread is idempotent success', async () => {
+    const store = new WorkThreadStore({ rootDir: root });
+    const makeRecord = (threadId: string, sessionId: string): any => ({
+      threadId,
+      agentId: 'programming-helper',
+      workspaceId: 'programming-helper',
+      title: '',
+      status: 'open',
+      rootSessionId: sessionId,
+      headSessionId: sessionId,
+      sessionChain: [
+        { sessionId, role: 'head', startedAt: 1, endedAt: null, endKind: null, successorSessionId: null },
+      ],
+      commands: [],
+      pendingSuccession: null,
+      hold: false,
+      lifecycleEvents: [],
+      lastLifecycleEvent: null,
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await store.create(makeRecord('wt-remove-me', 'sess-rm'));
+    await store.create(makeRecord('wt-keep', 'sess-keep'));
+
+    const removed = await store.remove('wt-remove-me');
+    expect(removed).toEqual({ removed: true, alreadyAbsent: false });
+    expect(await store.get('wt-remove-me')).toBeNull();
+    const list = (await store.list()) as Array<{ threadId: string }>;
+    expect(list.some((t) => t.threadId === 'wt-remove-me')).toBe(false);
+    // 并发创建的其它线程 index 条目不受删除影响（同 _indexLock 串行链）
+    expect(list.some((t) => t.threadId === 'wt-keep')).toBe(true);
+
+    // 幂等：不存在视为已删除（宿主级联删除的重试收敛终态）
+    const again = await store.remove('wt-remove-me');
+    expect(again).toEqual({ removed: false, alreadyAbsent: true });
+
+    // 非法 id：明确失败而不是静默成功
+    await expect(store.remove('')).rejects.toBeInstanceOf(WorkThreadNotFoundError);
+  });
+
   it('index summary exposes relay edges for non-root legs', async () => {
     const store = new WorkThreadStore({ rootDir: root });
     const record: any = {

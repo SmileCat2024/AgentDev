@@ -364,6 +364,54 @@ export class WorkThreadStore {
       if (this._threadLocks.get(threadId) === next) this._threadLocks.delete(threadId);
     }
   }
+
+  /**
+   * 删除线程记录文件与 index 条目（破坏性生命周期操作的存储原语）。
+   *
+   * 幂等：记录不存在时返回 { removed: false, alreadyAbsent: true }——
+   * 已删除对象视为删除成功，供宿主的级联删除重试收敛。
+   * 走与 create / update 相同的 per-thread 串行锁；index 条目移除走
+   * _indexLock 串行链（与 updateIndexEntry 同链，并发创建 / 更新其它
+   * 线程时双方的 index 快照不会互相覆盖丢失对方的条目）。
+   */
+  async remove(threadId: string): Promise<{ removed: boolean; alreadyAbsent: boolean }> {
+    if (!threadId || typeof threadId !== 'string') {
+      throw new WorkThreadNotFoundError(String(threadId || ''));
+    }
+    const prev = this._threadLocks.get(threadId) || Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((r) => (release = r));
+    this._threadLocks.set(threadId, next);
+    await prev.catch(() => {});
+    try {
+      const record = await this.get(threadId);
+      if (!record) return { removed: false, alreadyAbsent: true };
+
+      await unlink(this.threadFilePath(threadId)).catch(() => {});
+
+      const indexPrev = this._indexLock;
+      let indexRelease!: () => void;
+      const indexNext = new Promise<void>((r) => (indexRelease = r));
+      this._indexLock = indexNext;
+      try {
+        await indexPrev.catch(() => {});
+        const index = await this.readIndex();
+        if (index.threads.some((t) => (t as { threadId?: string })?.threadId === threadId)) {
+          index.threads = index.threads.filter(
+            (t) => (t as { threadId?: string })?.threadId !== threadId,
+          );
+          index.revision = (Number(index.revision) || 0) + 1;
+          await this.writeIndex(index);
+        }
+      } finally {
+        indexRelease();
+      }
+      return { removed: true, alreadyAbsent: false };
+    } finally {
+      release();
+      if (this._threadLocks.get(threadId) === next) this._threadLocks.delete(threadId);
+    }
+  }
 }
 
 function buildChainEdges(record: WorkThreadRecord): Array<{

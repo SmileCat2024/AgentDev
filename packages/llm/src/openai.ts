@@ -15,6 +15,7 @@ import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resol
 import { classifyAndWrapError, ClassifiedAPIError } from '@agentdev/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
+import { wrapReminder } from './reminder.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
@@ -33,17 +34,42 @@ interface ExtendedChatCompletionMessage extends OpenAI.Chat.ChatCompletionMessag
 /**
  * 将内部 Message[] 编译为 OpenAI Chat Completions wire 格式。
  * 与 compileContextForAnthropic / compileContextForOpenAIResponses 对称的导出编译函数。
+ *
+ * system 消息按 source 二分处理（对齐 compileContextForAnthropic）：
+ * - 无 source（agent 系统提示词及经 context.add 注入的同级文档）→ 合并为
+ *   开头恰好一条 system 消息。部分 OpenAI 兼容后端（vLLM Qwen chat template 等）
+ *   仅接受一条位于开头的 system，多条返回 400 "System message must be at the beginning."。
+ * - 有 source（Feature 注入，如 handoff-seed、partial-compact）→ 包 <reminder>
+ *   嵌入下一个 user turn（作为文本前缀）；若后续无 user 消息则以独立 user
+ *   消息落尾。不插入 assistant/tool 之间，避免破坏 tool_calls 配对。
  */
 export function compileChatMessages(
   messages: Message[],
   visionEnabled = false,
 ): OpenAI.Chat.ChatCompletionMessageParam[] {
-  // 使用 flatMap 而非 map，因为带图片的 tool 消息需要额外追加一条 user 消息
-  return messages.flatMap(m => {
+  const systemPromptParts: string[] = [];
+  const compiled: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+  let seenFirstUser = false;
+  let pendingReminders: string[] = [];
+
+  const flushRemindersAsUserMessage = (): void => {
+    if (pendingReminders.length === 0) return;
+    compiled.push({ role: 'user', content: pendingReminders.join('\n\n') });
+    pendingReminders = [];
+  };
+
+  for (const m of messages) {
+    if (m.role === 'system') {
+      if (!seenFirstUser && !m.source) {
+        systemPromptParts.push(m.content);
+      } else {
+        pendingReminders.push(wrapReminder(m.content));
+      }
+      continue;
+    }
+
     if (m.role === 'tool') {
-      const results: OpenAI.Chat.ChatCompletionMessageParam[] = [
-        { role: 'tool', content: m.content, tool_call_id: m.toolCallId! },
-      ];
+      compiled.push({ role: 'tool', content: m.content, tool_call_id: m.toolCallId! });
       // tool 消息附带图片
       if (m.images && m.images.length > 0) {
         if (visionEnabled) {
@@ -57,22 +83,23 @@ export function compileChatMessages(
               parts.push({ type: 'image_url', image_url: { url } });
             }
           }
-          results.push({ role: 'user', content: parts });
+          compiled.push({ role: 'user', content: parts });
         } else {
           // 非视觉模式：降级为文字占位符，追加到 tool 消息后
           const placeholders = m.images
             .map(img => `【Image】${img.source || '(inline image)'}`)
             .join('\n');
-          results.push({ role: 'user', content: `[Tool image placeholders]\n${placeholders}` });
+          compiled.push({ role: 'user', content: `[Tool image placeholders]\n${placeholders}` });
         }
       }
-      return results;
+      continue;
     }
+
     // assistant 消息携带 toolCalls 时必须序列化为 tool_calls，
     // 否则后续 tool 消息会成为孤儿（严格校验的 OpenAI 兼容后端会返回 400：
     // "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"）
     if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
-      return [{
+      compiled.push({
         role: 'assistant' as const,
         content: m.content ?? '',
         tool_calls: m.toolCalls.map(tc => ({
@@ -83,14 +110,21 @@ export function compileChatMessages(
             arguments: JSON.stringify(tc.arguments ?? {}),
           },
         })),
-      }];
+      });
+      continue;
     }
-    // 处理 user 消息中的图片
+
+    // user 消息：待嵌入的 reminder 作为文本前缀拼入 content
     if (m.role === 'user' && m.images && m.images.length > 0) {
+      seenFirstUser = true;
+      const prefix = pendingReminders.length > 0 ? `${pendingReminders.join('\n\n')}\n\n` : '';
+      pendingReminders = [];
       if (visionEnabled) {
         const parts: OpenAI.Chat.ChatCompletionContentPart[] = [];
         if (m.content) {
-          parts.push({ type: 'text', text: m.content });
+          parts.push({ type: 'text', text: `${prefix}${m.content}` });
+        } else if (prefix) {
+          parts.push({ type: 'text', text: prefix.trimEnd() });
         }
         for (const img of m.images) {
           const url = resolveImageDataUri(img) || img.source;
@@ -98,16 +132,39 @@ export function compileChatMessages(
             parts.push({ type: 'image_url', image_url: { url } });
           }
         }
-        return [{ role: 'user', content: parts }];
+        compiled.push({ role: 'user', content: parts });
+      } else {
+        // 非视觉模式：将图片降级为文字占位符
+        const placeholders = m.images
+          .map(img => `【Image】${img.source || '(inline image)'}`)
+          .join('\n');
+        compiled.push({ role: 'user', content: `${prefix}${m.content}\n${placeholders}` });
       }
-      // 非视觉模式：将图片降级为文字占位符
-      const placeholders = m.images
-        .map(img => `【Image】${img.source || '(inline image)'}`)
-        .join('\n');
-      return [{ role: 'user', content: `${m.content}\n${placeholders}` }];
+      continue;
     }
-    return [{ role: m.role, content: m.content }] as OpenAI.Chat.ChatCompletionMessageParam[];
-  });
+
+    if (m.role === 'user') {
+      seenFirstUser = true;
+      if (pendingReminders.length > 0) {
+        compiled.push({ role: 'user', content: `${pendingReminders.join('\n\n')}\n\n${m.content}` });
+        pendingReminders = [];
+      } else {
+        compiled.push({ role: 'user', content: m.content });
+      }
+      continue;
+    }
+
+    compiled.push({ role: m.role, content: m.content } as OpenAI.Chat.ChatCompletionMessageParam);
+  }
+
+  flushRemindersAsUserMessage();
+
+  const result: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+  if (systemPromptParts.length > 0) {
+    result.push({ role: 'system', content: systemPromptParts.join('\n\n') });
+  }
+  result.push(...compiled);
+  return result;
 }
 
 export class OpenAILLM implements LLMClient {

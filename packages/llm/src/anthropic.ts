@@ -8,6 +8,7 @@ import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import { emitRetryObservability } from './retry-observability.js';
+import { wrapReminder } from './reminder.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
@@ -389,11 +390,6 @@ export function compileContextForAnthropic(messages: Message[], tools: Tool[], v
     messages: compiledMessages,
     ...(tools.length > 0 ? { tools: tools.map(toolToAnthropicDefinition) } : {}),
   };
-}
-
-function wrapReminder(text: string): string {
-  const trimmed = text.trim();
-  return /^<reminder[\s>]/.test(trimmed) ? trimmed : `<reminder>${trimmed}</reminder>`;
 }
 
 function toolToAnthropicDefinition(tool: Tool): AnthropicToolDef {

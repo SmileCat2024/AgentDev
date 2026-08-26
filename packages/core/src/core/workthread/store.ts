@@ -58,6 +58,12 @@ export interface WorkThreadRecord {
   workspaceId?: string;
   title?: string;
   status: WorkThreadStatus;
+  /**
+   * 线程的产品身份归属（T001：身份连续性不变量的事实来源）。
+   * 新建线程时从 root Session 解析确定；`null` = 身份未知（历史数据缺少
+   * 该字段时的读时归一值——明确「未知」，绝不静默回填为任何具体身份）。
+   */
+  identity?: string | null;
   rootSessionId: string;
   headSessionId: string;
   sessionChain: WorkThreadChainEntry[];
@@ -125,8 +131,16 @@ const LEGACY_STATUS_MAP: Record<string, WorkThreadStatus> = {
 };
 
 function normalizeThreadRecord(record: WorkThreadRecord): WorkThreadRecord {
-  if (record && typeof record === 'object' && LEGACY_STATUS_MAP[record.status]) {
-    record.status = LEGACY_STATUS_MAP[record.status];
+  if (record && typeof record === 'object') {
+    if (LEGACY_STATUS_MAP[record.status]) {
+      record.status = LEGACY_STATUS_MAP[record.status];
+    }
+    // T001 身份归属读时归一：缺失 / 空串统一为 null（身份未知）。
+    // 不可静默把历史线程成员当成 main——未知是明确的机器可判定状态。
+    record.identity =
+      typeof record.identity === 'string' && record.identity.trim()
+        ? record.identity.trim()
+        : null;
   }
   return record;
 }
@@ -220,6 +234,11 @@ export class WorkThreadStore {
         status: LEGACY_STATUS_MAP[record.status] || record.status || 'open',
         rootSessionId: record.rootSessionId || '',
         headSessionId: record.headSessionId || '',
+        // T001：线程身份归属（轻量事实，供成员/head 查询统一取用）；
+        // 旧记录缺字段时为 null（身份未知，前端不得据此默认渲染）。
+        identity: typeof record.identity === 'string' && record.identity.trim()
+          ? record.identity.trim()
+          : null,
         // 链成员 id 列表（轻量，供前端徽标判定「会话是否属于线程」）
         sessionIds: (Array.isArray(record.sessionChain) ? record.sessionChain : []).map(
           (entry) => entry?.sessionId || '',
@@ -298,7 +317,9 @@ export class WorkThreadStore {
    */
   async update(
     threadId: string,
-    mutFn: (record: WorkThreadRecord) => WorkThreadRecord | null | undefined,
+    mutFn: (
+      record: WorkThreadRecord,
+    ) => WorkThreadRecord | null | undefined | Promise<WorkThreadRecord | null | undefined>,
     options: { expectedRevision?: number } = {},
   ): Promise<{ record: WorkThreadRecord; changed: boolean }> {
     const prev = this._threadLocks.get(threadId) || Promise.resolve();

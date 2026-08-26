@@ -81,20 +81,37 @@ export interface WorkThreadStartOptions {
   sessionRef: { agentId: string; sessionId: string };
   title?: string;
   workspaceId?: string;
+  /**
+   * T001：显式指定线程身份归属。缺省时由 identitySource 从 root Session
+   * 解析；解析不到（身份未知）时归属为 null，而不是默认成某个具体身份。
+   */
+  identity?: string | null;
 }
 
 export interface WorkThreadOptions {
   store: WorkThreadStore;
   bridge?: WorkThreadBridge;
+  /**
+   * T001：线程身份解析器（宿主注入的会话身份真相源，如 Claw 的 session
+   * index）。框架不内置产品身份词汇：返回值即线程归属；空值 = 身份未知。
+   */
+  identitySource?: (agentId: string, sessionId: string) => Promise<string | null> | string | null;
+}
+
+function threadIdentityError(message: string, code: string, status: number): Error {
+  return Object.assign(new Error(message), { code, status });
 }
 
 export class WorkThread {
   readonly store: WorkThreadStore;
   private readonly _bridge: WorkThreadBridge;
+  private readonly _identitySource?: (agentId: string, sessionId: string) => Promise<string | null> | string | null;
 
-  constructor({ store, bridge }: WorkThreadOptions) {
+  constructor({ store, bridge, identitySource }: WorkThreadOptions) {
     this.store = store;
     this._bridge = bridge || new WorkThreadRuntimeBridge();
+    this._identitySource =
+      identitySource && typeof identitySource === 'function' ? identitySource : undefined;
   }
 
   // ── 查询 ─────────────────────────────────────────────────────────
@@ -129,18 +146,58 @@ export class WorkThread {
     return this.store.get(matched.threadId);
   }
 
+  /**
+   * 按成员查线程（T001）：sessionId 是该线程任一成员（root / predecessor /
+   * head）时返回线程完整记录。成员事实唯一来自 sessionChain 链记录，
+   * 不用 UI 投影或运行时扫描推导；记录上的 identity 即为该成员统一的
+   * 身份归属事实（root / head / 历史成员同属一条记录，取值一致）。
+   */
+  async findThreadBySession(agentId: string, sessionId: string): Promise<WorkThreadRecord | null> {
+    const normalizedAgentId = cleanText(agentId);
+    const normalizedSessionId = cleanText(sessionId);
+    if (!normalizedAgentId || !normalizedSessionId) return null;
+    const threads = await this.listThreads({ agentId: normalizedAgentId });
+    for (const summary of threads as Array<{ threadId?: string }>) {
+      if (!summary?.threadId) continue;
+      const record = await this.store.get(summary.threadId);
+      if (Array.isArray(record?.sessionChain)
+        && record.sessionChain.some((entry) => entry?.sessionId === normalizedSessionId)) {
+        return record;
+      }
+    }
+    return null;
+  }
+
   // ── 创建（显式 opt-in，Q5=B）────────────────────────────────────
+
+  /** 解析线程身份归属（T001）：显式参数优先，否则经 identitySource 从 root
+   *  Session 解析；解析不到归一为 null（身份未知，绝不默认成具体身份）。 */
+  private async resolveIdentity(
+    explicit: string | null | undefined,
+    agentId: string,
+    sessionId: string,
+  ): Promise<string | null> {
+    const normalizedExplicit = cleanText(explicit);
+    if (explicit === null) return null;
+    if (normalizedExplicit) return normalizedExplicit;
+    if (!this._identitySource) return null;
+    const resolved = await this._identitySource(agentId, sessionId);
+    return cleanText(resolved) || null;
+  }
 
   /**
    * 唯一创建入口：把一个既有会话认作 root 并成为初始 head。
    * 不提供「session 创建即自动建线程」的框架语义——那是宿主策略（integration 层）。
+   *
+   * T001：创建时从 root Session 确定线程身份归属（record.identity）。
    */
-  async start({ sessionRef, title = '', workspaceId = '' }: WorkThreadStartOptions): Promise<WorkThreadRecord> {
+  async start({ sessionRef, title = '', workspaceId = '', identity }: WorkThreadStartOptions): Promise<WorkThreadRecord> {
     if (!sessionRef || typeof sessionRef !== 'object') {
       throw Object.assign(new Error('start requires sessionRef'), { code: 'invalid_request', status: 400 });
     }
     const agentId = validateId(sessionRef.agentId, 'agentId');
     const sessionId = validateId(sessionRef.sessionId, 'sessionId');
+    const threadIdentity = await this.resolveIdentity(identity, agentId, sessionId);
 
     const now = Date.now();
     const record: WorkThreadRecord = {
@@ -149,6 +206,7 @@ export class WorkThread {
       workspaceId: cleanText(workspaceId) || agentId,
       title: cleanText(title),
       status: 'open',
+      identity: threadIdentity,
       rootSessionId: sessionId,
       headSessionId: sessionId,
       sessionChain: [
@@ -474,6 +532,15 @@ export class WorkThread {
    * 要么明确指向新 head；推进与指令状态 / 清挡板在同一次落盘中变更。
    *
    * 交接挡板（pendingSuccession）与 head 推进原子成对清除（换代 + 清挡板）。
+   *
+   * T001 身份连续性不变量：successor 加入前必须通过三道校验，任何一道失败
+   * 都抛稳定错误且线程记录零变更（旧 head 保持有效）：
+   *   - thread_identity_missing：线程身份归属未知（旧数据缺字段），拒绝静默
+   *     放行；须宿主显式补全后重试；
+   *   - session_workspace_mismatch：successor 不属于线程同一工作空间宿主；
+   *   - thread_identity_mismatch：successor 身份与线程身份不一致；
+   *   - session_already_in_thread：successor 已是某条线程成员（本线程的重复
+   *     成员由既有 duplicate_session 覆盖）。
    */
   async advanceHead(opts: {
     threadId: string;
@@ -486,9 +553,18 @@ export class WorkThread {
     const normalizedTo = validateId(opts.toSessionId, 'toSessionId');
     const normalizedFrom = opts.fromSessionId ? validateId(opts.fromSessionId, 'fromSessionId') : null;
 
+    // T001 身份连续性不变量：successor 加入前的三道校验在下方 store 事务内
+    // 执行（per-thread 串行锁保护，结构守卫在前）；任一失败抛稳定错误且
+    // 线程记录零变更（旧 head 保持有效）：
+    //   - session_workspace_mismatch：successor 不属于线程的工作空间宿主；
+    //   - thread_identity_mismatch：successor 身份与线程身份不一致；
+    //   - thread_identity_missing：线程身份未知且无法从 root Session 再推导
+    //     （旧数据缺字段的明确失败，绝不静默放行或默认成具体身份）；
+    //   - session_already_in_thread：successor 已是其它线程的成员。
+    // 未注入 identitySource 时（框架独立使用）保持既有行为：不校验身份。
     const { record } = await this.store.update(
       threadId,
-      (draft) => {
+      async (draft) => {
         if (draft.status === WORKTHREAD_TERMINAL_STATUS) {
           throw Object.assign(new Error(`WorkThread "${threadId}" is closed`), {
             code: 'thread_closed',
@@ -514,6 +590,63 @@ export class WorkThread {
             new Error(`Session "${normalizedTo}" already appears in the chain of workthread "${threadId}"`),
             { code: 'duplicate_session', status: 409 },
           );
+        }
+
+        // T001 身份连续性不变量（事务内校验，结构守卫在前）：
+        //   - session_workspace_mismatch：successor 不属于线程的工作空间宿主
+        //     （identitySource 以线程自身 agentId 定位不到该会话 = 非本宿主）；
+        //   - thread_identity_missing：线程身份未知且无法从 root Session 再推导
+        //     （旧数据缺字段的明确失败，绝不静默放行或默认成具体身份）；
+        //   - thread_identity_mismatch：successor 身份与线程身份不一致；
+        //   - session_already_in_thread：successor 已是其它线程的成员。
+        if (this._identitySource) {
+          const threadAgentId = cleanText(draft.agentId);
+          const toIdentity = cleanText(await this._identitySource(threadAgentId, normalizedTo));
+          if (!toIdentity) {
+            throw threadIdentityError(
+              `Session "${normalizedTo}" does not belong to workspace host "${threadAgentId}" of thread "${threadId}"`,
+              'session_workspace_mismatch',
+              409,
+            );
+          }
+          // 线程身份归属：优先盘上事实；旧记录缺字段（null）时从 root Session
+          // 的真实身份再推导并回填（事实推导，非默认值）；仍不可得则明确失败。
+          let effectiveThreadIdentity = draft.identity;
+          if (!effectiveThreadIdentity) {
+            effectiveThreadIdentity =
+              cleanText(await this._identitySource(threadAgentId, draft.rootSessionId)) || null;
+            if (!effectiveThreadIdentity) {
+              throw threadIdentityError(
+                `Thread "${threadId}" has no identity attribution and its root session identity is unknown; backfill the root identity before advancing the head`,
+                'thread_identity_missing',
+                409,
+              );
+            }
+            // 回填与 head 推进同盘原子落盘（下方 draft.identity 赋值）。
+            draft.identity = effectiveThreadIdentity;
+          }
+          if (toIdentity !== effectiveThreadIdentity) {
+            throw threadIdentityError(
+              `Session "${normalizedTo}" has identity "${toIdentity}" but thread "${threadId}" is bound to identity "${effectiveThreadIdentity}"`,
+              'thread_identity_mismatch',
+              409,
+            );
+          }
+          // 成员独占：successor 不得已是其它线程的成员（本线程内的重复由
+          // 上方 duplicate_session 覆盖）。
+          const summaries = await this.store.list();
+          for (const summary of summaries as Array<{ threadId?: string }>) {
+            if (!summary?.threadId || summary.threadId === threadId) continue;
+            const other = await this.store.get(summary.threadId);
+            if (Array.isArray(other?.sessionChain)
+              && other.sessionChain.some((entry) => entry?.sessionId === normalizedTo)) {
+              throw threadIdentityError(
+                `Session "${normalizedTo}" is already a member of thread "${summary.threadId}"`,
+                'session_already_in_thread',
+                409,
+              );
+            }
+          }
         }
 
         const now = Date.now();

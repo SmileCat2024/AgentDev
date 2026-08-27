@@ -111,6 +111,12 @@ export interface FeatureManifestSettingProperty {
   properties?: Record<string, FeatureManifestSettingProperty>;
   /** 条件可见性：仅当同级指定属性值在 values 中时渲染此字段 */
   showWhen?: { property: string; values: (string | number | boolean)[] };
+  /**
+   * select 类型下的动态选项来源：options 由宿主在渲染时提供（活数据，
+   * 无法静态枚举），options 字段省略。当前定义 'model-presets' =
+   * 宿主模型 preset 清单。静态 options 存在时本字段被忽略。
+   */
+  dynamicOptions?: 'model-presets';
 }
 
 export interface FeatureManifestDefinition {

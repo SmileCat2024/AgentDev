@@ -254,6 +254,13 @@ export { WorkThreadRuntimeBridge } from './core/workthread/index.js';
 export {
   WorkThreadCommandStatus,
   WorkThreadCommandKind,
+  MAX_RETAINED_TERMINAL_COMMANDS,
+  createCommandRecord,
+  appendCommand,
+  pendingCommands,
+  findCommand,
+  pruneCommands,
+  generateCommandId,
   generateWorkThreadId,
 } from './core/workthread/index.js';
 export type {

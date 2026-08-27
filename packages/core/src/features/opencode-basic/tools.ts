@@ -237,43 +237,84 @@ function writeTextContent(
 }
 
 // ============================================================================
-// 引号标准化（curly quotes ↔ straight quotes）
-// 参考 Claude Code 的 findActualString / normalizeQuotes
+// 字符归一化（弯引号、Unicode 空白、零宽字符）
+// 参考 Claude Code 的 findActualString / normalizeQuotes，空白与零宽字符
+// 视为复制粘贴事故残留：归一化只用于把 oldString 对位到文件原文，
+// 命中即视为精确匹配（与弯引号语义一致）。
 // ============================================================================
 
-const CURLY_QUOTES: Array<[string, string]> = [
-  ['\u2018', "'"],  // LEFT SINGLE
-  ['\u2019', "'"],  // RIGHT SINGLE
-  ['\u201C', '"'],  // LEFT DOUBLE
-  ['\u201D', '"'],  // RIGHT DOUBLE
-];
+/** 等长归一表：弯引号与 Unicode 空白统一为 ASCII 等价字符 */
+const EQUIVALENT_CHARS: Map<string, string> = new Map([
+  ['\u2018', "'"],  // LEFT SINGLE QUOTATION MARK
+  ['\u2019', "'"],  // RIGHT SINGLE QUOTATION MARK
+  ['\u201C', '"'],  // LEFT DOUBLE QUOTATION MARK
+  ['\u201D', '"'],  // RIGHT DOUBLE QUOTATION MARK
+  ['\u00A0', ' '],  // NO-BREAK SPACE
+  ['\u1680', ' '],  // OGHAM SPACE MARK
+  ['\u2002', ' '],  // EN QUAD
+  ['\u2003', ' '],  // EM QUAD
+  ['\u2004', ' '],  // THREE-PER-EM SPACE
+  ['\u2005', ' '],  // FOUR-PER-EM SPACE
+  ['\u2006', ' '],  // SIX-PER-EM SPACE
+  ['\u2007', ' '],  // FIGURE SPACE
+  ['\u2008', ' '],  // PUNCTUATION SPACE
+  ['\u2009', ' '],  // THIN SPACE
+  ['\u200A', ' '],  // HAIR SPACE
+  ['\u202F', ' '],  // NARROW NO-BREAK SPACE
+  ['\u205F', ' '],  // MEDIUM MATHEMATICAL SPACE
+  ['\u3000', ' '],  // IDEOGRAPHIC SPACE（全角空格）
+]);
 
-function normalizeQuotes(str: string): string {
-  let result = str;
-  for (const [curly, straight] of CURLY_QUOTES) {
-    result = result.replaceAll(curly, straight);
+/** 删除型归一：零宽字符与 BOM，在匹配视图中剔除（不参与长度计算） */
+const INVISIBLE_CHARS = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF']);
+
+/** 任意一侧含特殊字符时才值得进入归一化匹配，避免大文件白付归一化成本 */
+const SPECIAL_CHARS_RE = /[\u00A0\u1680\u2002-\u200A\u200B-\u200D\u2018\u2019\u201C\u201D\u202F\u205F\u3000\uFEFF]/;
+
+function normalizeForMatch(str: string): string {
+  let result = '';
+  for (const ch of str) {
+    if (INVISIBLE_CHARS.has(ch)) continue;
+    result += EQUIVALENT_CHARS.get(ch) ?? ch;
   }
   return result;
 }
 
 /**
  * 在文件内容中查找匹配字符串。
- * 先精确匹配，失败后做引号标准化再匹配。
- * 返回文件中实际存在的字符串（可能带 curly quotes），或 null。
+ * 先精确匹配，失败后做字符归一化（弯引号、Unicode 空白、零宽字符）再匹配。
+ * 返回文件中实际存在的字符串，或 null。
+ * 零宽字符会使归一化视图与原文长度不一致，因此记录视图字符到原文
+ * 下标的映射，命中后换算回原文区间（区间外的零宽字符保留在文件中）。
  */
 function findActualString(fileContent: string, searchString: string): string | null {
   if (fileContent.includes(searchString)) {
     return searchString;
   }
-
-  const normalizedSearch = normalizeQuotes(searchString);
-  const normalizedFile = normalizeQuotes(fileContent);
-  const index = normalizedFile.indexOf(normalizedSearch);
-  if (index !== -1) {
-    return fileContent.substring(index, index + searchString.length);
+  if (!SPECIAL_CHARS_RE.test(fileContent) && !SPECIAL_CHARS_RE.test(searchString)) {
+    return null;
   }
 
-  return null;
+  let normalizedFile = '';
+  const sourceIndex: number[] = [];
+  for (let i = 0; i < fileContent.length; i++) {
+    const ch = fileContent[i]!;
+    if (INVISIBLE_CHARS.has(ch)) continue;
+    normalizedFile += EQUIVALENT_CHARS.get(ch) ?? ch;
+    sourceIndex.push(i);
+  }
+  const normalizedSearch = normalizeForMatch(searchString);
+  if (!normalizedSearch) {
+    return null;
+  }
+
+  const index = normalizedFile.indexOf(normalizedSearch);
+  if (index === -1) {
+    return null;
+  }
+  const start = sourceIndex[index]!;
+  const end = sourceIndex[index + normalizedSearch.length - 1]! + 1;
+  return fileContent.substring(start, end);
 }
 
 // ============================================================================

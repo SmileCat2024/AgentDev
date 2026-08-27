@@ -165,3 +165,39 @@ describe('Model preset swap (setModel / setThinkingEffort)', () => {
     expect(agent.getLLMMeta()).toMatchObject({ presetName: 'big-model', source: 'user' });
   });
 });
+
+// ========== Facade 转发（StepStart ctx.agent） ==========
+
+class FacadeSwapFeature implements AgentFeature {
+  readonly name = 'facade-swap';
+  static hooks = { onStepStart: { lifecycle: 'StepStart', kind: 'observe' } };
+  seen: { hasSetModel: boolean; result?: boolean; metaSource?: string } | null = null;
+
+  getTools() { return []; }
+
+  onStepStart(ctx: any): void {
+    const a = ctx?.agent;
+    this.seen = { hasSetModel: typeof a?.setModel === 'function' };
+    if (this.seen.hasSetModel) {
+      this.seen.result = a.setModel('p1', { source: 'feature:facade-swap' });
+      this.seen.metaSource = typeof a.getLLMMeta === 'function' ? (a.getLLMMeta().source ?? '') : 'missing';
+    }
+  }
+}
+
+describe('StepStart ctx.agent facade 转发（模型热切换 API）', () => {
+  it('hook ctx 拿到的 facade 转发 setModel / getLLMMeta 到 Agent 本体', async () => {
+    const resolver = new MockResolver();
+    const feature = new FacadeSwapFeature();
+    const agent = new TestAgent({ llm: new MockLLM('boot-model'), name: 'FacadeAgent', modelResolver: resolver });
+    agent.use(feature);
+
+    await agent.onCall('hi');
+
+    expect(feature.seen?.hasSetModel).toBe(true);
+    expect(feature.seen?.result).toBe(true);
+    expect(feature.seen?.metaSource).toBe('feature:facade-swap');
+    expect(resolver.calls.some((c) => c.presetName === 'p1')).toBe(true);
+    expect(agent.getLLMMeta().modelName).toBe('p1-model');
+  });
+});

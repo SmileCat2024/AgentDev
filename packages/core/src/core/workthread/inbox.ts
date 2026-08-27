@@ -17,7 +17,6 @@ import { randomUUID } from 'crypto';
 
 export const WorkThreadCommandStatus = Object.freeze({
   PENDING: 'pending',
-  IN_FLIGHT: 'in_flight',
   DELIVERED: 'delivered',
   FAILED: 'failed',
   CANCELLED: 'cancelled',
@@ -65,6 +64,8 @@ export interface WorkThreadCommand {
   deliveryRef?: string | null;
   /** 随指令流动的能力激活通知（capability refs），投递时随 user-turn 元数据转发 */
   capabilityActivations?: string[];
+  /** 随指令流动的图片引用（附件名/路径/URL），投递时转发给 viewer user-turn */
+  images?: string[];
 }
 
 /**
@@ -77,6 +78,7 @@ export function createCommandRecord(opts: {
   source?: string;
   idempotencyKey?: string;
   capabilityActivations?: string[];
+  images?: string[];
 }): WorkThreadCommand {
   const now = Date.now();
   return {
@@ -96,11 +98,14 @@ export function createCommandRecord(opts: {
     ...(Array.isArray(opts.capabilityActivations) && opts.capabilityActivations.length > 0
       ? { capabilityActivations: opts.capabilityActivations.filter((a) => typeof a === 'string') }
       : {}),
+    ...(Array.isArray(opts.images) && opts.images.filter((i) => typeof i === 'string' && i.length > 0).length > 0
+      ? { images: opts.images.filter((i) => typeof i === 'string' && i.length > 0) }
+      : {}),
   };
 }
 
 /**
- * 幂等追加指令。若 idempotencyKey 命中既有的 pending / in_flight / delivered
+ * 幂等追加指令。若 idempotencyKey 命中既有的 pending / delivered
  * 指令，直接返回既有指令（重复提交不产生副作用）。
  * @returns {{command: WorkThreadCommand, duplicate: boolean}}
  */
@@ -116,7 +121,6 @@ export function appendCommand(
       (c) =>
         c.idempotencyKey === command.idempotencyKey &&
         (c.status === WorkThreadCommandStatus.PENDING ||
-          c.status === WorkThreadCommandStatus.IN_FLIGHT ||
           c.status === WorkThreadCommandStatus.DELIVERED),
     );
     if (existing) {
@@ -145,7 +149,7 @@ export function findCommand(
 }
 
 /**
- * 裁剪终态指令，保留最近 maxRetained 条。pending / in_flight 永不裁剪。
+ * 裁剪终态指令，保留最近 maxRetained 条。pending 永不裁剪。
  * @returns 是否有被裁掉的（内容变更）
  */
 export function pruneCommands(

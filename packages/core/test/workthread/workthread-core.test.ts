@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { WorkThreadStore, WorkThreadNotFoundError, WorkThreadRevisionConflictError } from '../../src/core/workthread/store.js';
-import { WorkThread, WorkThreadNotFoundError as CoreThreadNotFound } from '../../src/core/workthread/core.js';
+import { WorkThread, WorkThreadNotFoundError as CoreThreadNotFound, DEFAULT_SUCCESSION_INSTRUCTION } from '../../src/core/workthread/core.js';
 import { WorkThreadRuntimeBridge } from '../../src/core/workthread/bridge.js';
 import {
   appendCommand,
@@ -31,9 +31,13 @@ async function makeTempRoot(): Promise<string> {
 }
 
 /** 锚点层套件：构造 WorkThread（无看板）。 */
-function makeThread(root: string, bridge: WorkThreadRuntimeBridge = new WorkThreadRuntimeBridge()) {
+function makeThread(
+  root: string,
+  bridge: WorkThreadRuntimeBridge = new WorkThreadRuntimeBridge(),
+  options: { continuationPolicy?: { composeSuccessionInstruction: (ctx: { threadId: string; fromSessionId: string; reason: string }) => string } } = {},
+) {
   const store = new WorkThreadStore({ rootDir: root });
-  return { store, bridge, thread: new WorkThread({ store, bridge }) };
+  return { store, bridge, thread: new WorkThread({ store, bridge, ...options }) };
 }
 
 describe('WorkThreadStore', () => {
@@ -354,24 +358,34 @@ describe('WorkThread (anchor layer)', () => {
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 's1' } });
 
     await expect(
-      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', expectedRevision: 999 }),
+      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 's1', expectedRevision: 999 }),
     ).rejects.toThrow(WorkThreadRevisionConflictError);
     await expect(
       () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 'wrong' }),
     ).rejects.toMatchObject({ code: 'head_mismatch' });
 
-    await thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2' });
+    await thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 's1' });
     await expect(
-      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2' }),
+      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 's2' }),
     ).rejects.toMatchObject({ code: 'already_head' });
     await expect(
-      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's1' }),
+      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's1', fromSessionId: 's2' }),
     ).rejects.toMatchObject({ code: 'duplicate_session' });
 
     await thread.closeThread(wt.threadId);
     await expect(
-      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's3' }),
+      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's3', fromSessionId: 's2' }),
     ).rejects.toMatchObject({ code: 'thread_closed' });
+  });
+
+  it('advanceHead requires fromSessionId (head CAS is mandatory, K23)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 's1' } });
+    // 缺 fromSessionId 不再是「跳过 head 校验」，而是显式 400：
+    // 幽灵任务防串台不允许合法绕过。
+    await expect(
+      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2' } as any),
+    ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
   });
 
   it('closeThread closes and cancels pending commands', async () => {
@@ -429,6 +443,18 @@ describe('WorkThread (anchor layer)', () => {
     await expect(() => thread.appendCommand({ threadId: 'wt-none', text: 'x' })).rejects.toThrow(
       CoreThreadNotFound,
     );
+  });
+
+  it('appendCommand rejects writes to a closed thread (terminal state holds)', async () => {
+    // 网关队列化（R6）后线程域输入一律入 Inbox；closed 是硬终态，指令
+    // 入箱只会在无投递触发的状态下永久滞留——终态禁入由对象自身把守。
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 's1' } });
+    await thread.closeThread(wt.threadId, { reason: 'done' });
+    await expect(() => thread.appendCommand({ threadId: wt.threadId, text: 'late' }))
+      .rejects.toMatchObject({ code: 'thread_closed', status: 409 });
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.commands.every((c) => c.text !== 'late')).toBe(true);
   });
 
   it('findThreadByHeadSession returns full record for current head only', async () => {
@@ -555,14 +581,16 @@ describe('WorkThread delivery gating (anchor layer only)', () => {
     expect(record!.commands[0].status).toBe(WorkThreadCommandStatus.PENDING);
     expect(record!.pendingSuccession!.fromSessionId).toBe('hd-s1');
 
-    // head 推进：同一次落盘清除交接意图，随后投递恢复
+    // head 推进：同一次落盘清除交接意图，随后投递恢复（begin 播种的恢复指令
+    // 随积压一同投递，R3 前移后 delivered=2）
     const outcome = await thread.advanceHead({ threadId: wt.threadId, fromSessionId: 'hd-s1', toSessionId: 'hd-s2', endKind: 'trim' });
     expect(outcome.pendingSuccession).toBeNull();
 
     const delivered = await thread.deliverPendingCommands(wt.threadId);
-    expect(delivered.delivered).toBe(1);
+    expect(delivered.delivered).toBe(2);
     record = await thread.getThread(wt.threadId);
     expect(record!.commands[0].status).toBe(WorkThreadCommandStatus.DELIVERED);
+    expect(record!.commands[1].status).toBe(WorkThreadCommandStatus.DELIVERED);
   });
 
   it('advanceHead lands on open with pendingSuccession cleared atomically', async () => {
@@ -599,6 +627,272 @@ describe('WorkThread delivery gating (anchor layer only)', () => {
     expect(failed.pendingSuccession!.fromSessionId).toBe('rot-s1', '交接意图必须保留在盘上');
     expect(failed.lastLifecycleEvent?.reason).toBe('compact_crashed');
     expect(failed.lastLifecycleEvent?.stage).toBe('compact_or_successor');
+  });
+});
+
+describe('WorkThread succession gates (K3 / K9 / R8 / R3)', () => {
+  let root: string;
+  beforeAll(async () => {
+    root = await makeTempRoot();
+  });
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('beginSessionHandoff on held thread is rejected with thread_held (K9)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-hold' } });
+    await thread.setHold(wt.threadId, true);
+
+    await expect(
+      () => thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-hold', reason: 'trim' }),
+    ).rejects.toMatchObject({ code: 'thread_held', status: 409 });
+
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.status).toBe('open');
+    expect(record!.pendingSuccession).toBeNull();
+  });
+
+  it('second begin while a fresh handoff is running is rejected, not refreshed (R8 single-flight)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-conc' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-conc', reason: 'trim' });
+    const firstStartedAt = (await thread.getThread(wt.threadId))!.pendingSuccession!.startedAt;
+
+    await expect(
+      () => thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-conc', reason: 'trim' }),
+    ).rejects.toMatchObject({ code: 'handoff_in_progress', status: 409 });
+
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.pendingSuccession!.startedAt).toBe(firstStartedAt, '拒绝请求不得续命既有挡板时间戳');
+  });
+
+  it('begin over a stale rotating intent is allowed (recovery re-begin)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-stale' } });
+    await thread.store.update(wt.threadId, (draft) => {
+      draft.status = 'rotating';
+      draft.pendingSuccession = { fromSessionId: 'sg-stale', reason: 'trim', stage: 'started', startedAt: Date.now() - 10 * 60 * 1000 };
+      return draft;
+    });
+
+    const begun = await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-stale', reason: 'manual_recovery' });
+    expect(begun.status).toBe('rotating');
+    expect(begun.pendingSuccession!.reason).toBe('manual_recovery');
+  });
+
+  it('beginSessionHandoff seeds the continuation instruction atomically with the barrier (R3)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'sg-seed' } });
+
+    const begun = await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-seed', reason: 'trim' });
+    const record = await thread.getThread(wt.threadId);
+
+    const instruction = record!.commands.find((c) => c.kind === 'system_continuation');
+    expect(instruction).toBeTruthy();
+    expect(instruction!.idempotencyKey).toBe(`succession:${wt.threadId}:sg-seed`);
+    expect(instruction!.text).toBe(DEFAULT_SUCCESSION_INSTRUCTION);
+    expect(instruction!.createdAt).toBe(record!.pendingSuccession!.startedAt, '指令与挡板同拍，排序早于一切交接期积压');
+    expect(begun.commands.find((c) => c.commandId === instruction!.commandId)).toBeTruthy();
+  });
+
+  it('a custom continuation policy replaces the official default text (R3)', async () => {
+    const { thread } = makeThread(root, new WorkThreadRuntimeBridge(), {
+      continuationPolicy: { composeSuccessionInstruction: (ctx) => `resume ${ctx.fromSessionId} (${ctx.reason})` },
+    });
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'sg-policy' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-policy', reason: 'trim' });
+
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.commands.find((c) => c.kind === 'system_continuation')!.text).toBe('resume sg-policy (trim)');
+  });
+
+  it('a throwing continuation policy fails begin without persisting a barrier', async () => {
+    const { thread } = makeThread(root, new WorkThreadRuntimeBridge(), {
+      continuationPolicy: {
+        composeSuccessionInstruction: () => { throw new Error('policy broken'); },
+      },
+    });
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'sg-throw' } });
+
+    await expect(
+      () => thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-throw', reason: 'trim' }),
+    ).rejects.toThrow('policy broken');
+
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.status).toBe('open');
+    expect(record!.pendingSuccession).toBeNull();
+    expect(record!.commands.length).toBe(0);
+  });
+
+  it('failSessionHandoff never overwrites a closed thread (K3 / C8)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-close' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-close', reason: 'trim' });
+    await thread.closeThread(wt.threadId, { reason: 'head_session_deleted' });
+
+    const after = await thread.failSessionHandoff(wt.threadId, { reason: 'late_failure', stage: 'advance_head' });
+    expect(after.status).toBe('closed');
+    expect(after.lastLifecycleEvent!.type).toBe('closed', 'closed 之上不得叠加 handoff_failed 事件');
+  });
+
+  it('failSessionHandoff without a live dossier is a no-op (K3 / C9: late loser cannot poison a healthy thread)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-late' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-late', reason: 'trim' });
+    // 竞争者成功推进：挡板已清、线程回到 open
+    await thread.advanceHead({ threadId: wt.threadId, fromSessionId: 'sg-late', toSessionId: 'sg-late-2', endKind: 'trim' });
+
+    const after = await thread.failSessionHandoff(wt.threadId, { reason: 'late_failure', stage: 'advance_head' });
+    expect(after.status).toBe('open');
+    expect(after.pendingSuccession).toBeNull();
+    expect(after.lastLifecycleEvent!.type).toBe('handoff_completed');
+  });
+
+  it('failSessionHandoff on an idle open thread (no dossier ever) is a no-op (K3 / N-9)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-idle' } });
+
+    const after = await thread.failSessionHandoff(wt.threadId, { reason: 'unwarranted', stage: 'unknown' });
+    expect(after.status).toBe('open');
+    expect(after.lastLifecycleEvent).toBeNull();
+  });
+});
+
+describe('WorkThread delivery loop freshness (K20)', () => {
+  let root: string;
+  beforeAll(async () => {
+    root = await makeTempRoot();
+  });
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('stops with head_changed when the head advances mid-loop; the rest stays pending', async () => {
+    const turns: Array<Record<string, unknown>> = [];
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: () => 'viewer-x',
+        submitTurn: async (params) => {
+          turns.push(params);
+          if (turns.length === 1) {
+            // 第一条投递期间换代（模拟并发 advanceHead）
+            await thread.advanceHead({ threadId: wt.threadId, fromSessionId: 'dl-s1', toSessionId: 'dl-s2', endKind: 'trim' });
+          }
+          return { success: true };
+        },
+      }),
+    );
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'dl-s1' } });
+    await thread.appendCommand({ threadId: wt.threadId, text: 'first', idempotencyKey: 'k1' });
+    await thread.appendCommand({ threadId: wt.threadId, text: 'second', idempotencyKey: 'k2' });
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(1);
+    expect(result.reason).toBe('head_changed');
+
+    const record = await thread.getThread(wt.threadId);
+    const statuses = new Map(record!.commands.map((c) => [c.text, c.status]));
+    expect(statuses.get('first')).toBe(WorkThreadCommandStatus.DELIVERED);
+    expect(statuses.get('second')).toBe(WorkThreadCommandStatus.PENDING);
+  });
+
+  it('skips commands cancelled mid-loop without marking them failed', async () => {
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: () => 'viewer-x',
+        submitTurn: async () => ({ success: true }),
+      }),
+    );
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'dl-c1' } });
+    const first = await thread.appendCommand({ threadId: wt.threadId, text: 'first', idempotencyKey: 'c1' });
+    const second = await thread.appendCommand({ threadId: wt.threadId, text: 'second', idempotencyKey: 'c2' });
+
+    // 首条投递期间取消第二条（模拟归档/用户取消并发）
+    const bridge = thread.getBridge();
+    const originalDeliver = bridge.deliver.bind(bridge);
+    bridge.deliver = async (params: { command?: { commandId?: string } }) => {
+      const outcome = await originalDeliver(params);
+      if (params.command?.commandId === first.command.commandId) {
+        await thread.cancelCommand(wt.threadId, second.command.commandId);
+      }
+      return outcome;
+    };
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(1);
+    expect(result.results.length).toBe(1, '被取消的指令不进入结果集');
+
+    const record = await thread.getThread(wt.threadId);
+    const statuses = new Map(record!.commands.map((c) => [c.text, c.status]));
+    expect(statuses.get('first')).toBe(WorkThreadCommandStatus.DELIVERED);
+    expect(statuses.get('second')).toBe(WorkThreadCommandStatus.CANCELLED);
+  });
+
+  it('stops with handoff_in_progress when a handoff begins mid-loop', async () => {
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: () => 'viewer-x',
+        submitTurn: async () => ({ success: true }),
+      }),
+    );
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'dl-b1' } });
+    await thread.appendCommand({ threadId: wt.threadId, text: 'first', idempotencyKey: 'b1' });
+    await thread.appendCommand({ threadId: wt.threadId, text: 'second', idempotencyKey: 'b2' });
+
+    const bridge = thread.getBridge();
+    const originalDeliver = bridge.deliver.bind(bridge);
+    let deliverCount = 0;
+    bridge.deliver = async (params: Parameters<typeof originalDeliver>[0]) => {
+      deliverCount += 1;
+      if (deliverCount === 1) {
+        await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'dl-b1', reason: 'trim' });
+      }
+      return originalDeliver(params);
+    };
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(1);
+    expect(result.reason).toBe('handoff_in_progress');
+  });
+});
+
+describe('WorkThread command status contract (K8) and image passthrough', () => {
+  let root: string;
+  beforeAll(async () => {
+    root = await makeTempRoot();
+  });
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('in_flight is no longer part of the command status vocabulary', () => {
+    expect((WorkThreadCommandStatus as Record<string, string>).IN_FLIGHT).toBeUndefined();
+    expect(Object.values(WorkThreadCommandStatus).sort()).toEqual(['cancelled', 'delivered', 'failed', 'pending']);
+  });
+
+  it('appendCommand carries image references and the bridge forwards them to submitTurn', async () => {
+    const turns: Array<Record<string, unknown>> = [];
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: () => 'viewer-img',
+        submitTurn: async (params) => { turns.push(params); return { success: true }; },
+      }),
+    );
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'img-s1' } });
+    await thread.appendCommand({ threadId: wt.threadId, text: '看这张图', images: ['/tmp/a.png', '/tmp/b.png'] });
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(1);
+    expect(turns[0].images).toEqual(['/tmp/a.png', '/tmp/b.png']);
   });
 });
 

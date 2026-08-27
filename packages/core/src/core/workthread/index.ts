@@ -15,8 +15,14 @@ export {
   WorkThreadNotFoundError,
   WORKTHREAD_TERMINAL_STATUS,
   HANDOFF_STALE_MS,
+  DEFAULT_SUCCESSION_INSTRUCTION,
 } from './core.js';
-export type { WorkThreadStartOptions, WorkThreadOptions } from './core.js';
+export type {
+  WorkThreadStartOptions,
+  WorkThreadOptions,
+  WorkThreadSuccessionContext,
+  WorkThreadContinuationPolicy,
+} from './core.js';
 
 export { WorkThreadBoard, WORKTHREAD_BOARD_STATUSES, WORKTHREAD_BOARD_OPEN_STATUSES } from './board.js';
 export type {

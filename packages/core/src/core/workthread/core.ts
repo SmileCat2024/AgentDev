@@ -96,7 +96,31 @@ export interface WorkThreadOptions {
    * index）。框架不内置产品身份词汇：返回值即线程归属；空值 = 身份未知。
    */
   identitySource?: (agentId: string, sessionId: string) => Promise<string | null> | string | null;
+  /**
+   * R3：接续恢复指令策略。官方默认为静态文案；宿主可注入替换。
+   * 策略必须是纯同步文本生成——恢复路径禁止叠加 LLM 调用等易碎件。
+   */
+  continuationPolicy?: WorkThreadContinuationPolicy;
 }
+
+/** 交接移交易上下文（beginSessionHandoff 播种恢复指令时传入策略）。 */
+export interface WorkThreadSuccessionContext {
+  threadId: string;
+  fromSessionId: string;
+  reason: string;
+}
+
+/** R3：接续恢复指令策略接口。compose 必须同步、纯函数。 */
+export interface WorkThreadContinuationPolicy {
+  composeSuccessionInstruction(ctx: WorkThreadSuccessionContext): string;
+}
+
+/** R3 官方默认恢复指令（随挡板播种，睁眼第一句：先核对现实再继续）。 */
+export const DEFAULT_SUCCESSION_INSTRUCTION = [
+  '上下文已精简接力。先检查当前工作树、已有变更、测试结果和上一棒摘要，',
+  '确认哪些步骤已经完成；不要重复可能已有副作用的操作，然后继续当前任务。',
+  '需要人工决策或无法安全判断时，明确说明原因。',
+].join('');
 
 function threadIdentityError(message: string, code: string, status: number): Error {
   return Object.assign(new Error(message), { code, status });
@@ -106,12 +130,17 @@ export class WorkThread {
   readonly store: WorkThreadStore;
   private readonly _bridge: WorkThreadBridge;
   private readonly _identitySource?: (agentId: string, sessionId: string) => Promise<string | null> | string | null;
+  private readonly _continuationPolicy: WorkThreadContinuationPolicy;
 
-  constructor({ store, bridge, identitySource }: WorkThreadOptions) {
+  constructor({ store, bridge, identitySource, continuationPolicy }: WorkThreadOptions) {
     this.store = store;
     this._bridge = bridge || new WorkThreadRuntimeBridge();
     this._identitySource =
       identitySource && typeof identitySource === 'function' ? identitySource : undefined;
+    this._continuationPolicy =
+      continuationPolicy && typeof continuationPolicy.composeSuccessionInstruction === 'function'
+        ? continuationPolicy
+        : { composeSuccessionInstruction: () => DEFAULT_SUCCESSION_INSTRUCTION };
   }
 
   // ── 查询 ─────────────────────────────────────────────────────────
@@ -244,8 +273,16 @@ export class WorkThread {
   }
 
   /**
-   * 标记线程进入交接：写入 pendingSuccession（幂等，重复调用刷新时间戳）。
-   * 同步置 status=rotating（接续编排状态归锚点层）。
+   * 标记线程进入交接：原子写入 pendingSuccession + status=rotating，并在同
+   * 一笔事务内播种接续恢复指令（R3：createdAt 与挡板同拍，早于一切交接期
+   * 积压；幂等键绑移交易 (threadId, fromSessionId)，失败恢复重走不会重复）。
+   *
+   * 门禁（按序）：
+   *   - closed → thread_closed（硬终态）
+   *   - hold → thread_held（归档/行政冻结期不开新交接，K9）
+   *   - 已有 fresh 交接在办 → handoff_in_progress（并发竞争显式拒绝而非
+   *     幂等刷新续命，R8 跨入口 single-flight 锚点；stale 残卷可覆写重开）
+   *   - fromSessionId ≠ 当前 head → head_mismatch
    */
   async beginSessionHandoff(opts: {
     threadId: string;
@@ -262,6 +299,22 @@ export class WorkThread {
           status: 409,
         });
       }
+      if (draft.hold === true) {
+        throw Object.assign(new Error(`WorkThread "${threadId}" is held (administrative freeze)`), {
+          code: 'thread_held',
+          status: 409,
+        });
+      }
+      if (
+        draft.status === 'rotating'
+        && draft.pendingSuccession?.startedAt
+        && Date.now() - draft.pendingSuccession.startedAt < HANDOFF_STALE_MS
+      ) {
+        throw Object.assign(
+          new Error(`WorkThread "${threadId}" already has a handoff in progress; concurrent succession requests are rejected`),
+          { code: 'handoff_in_progress', status: 409 },
+        );
+      }
       if (draft.headSessionId !== normalizedFrom) {
         throw Object.assign(
           new Error(`Handoff source is not the current head of workthread "${threadId}"`),
@@ -276,6 +329,25 @@ export class WorkThread {
         stage: 'started',
         startedAt: now,
       };
+      // R3：恢复指令随挡板同笔原子写入。策略抛错 = 整个 begin 失败，
+      // 不留半套挡板（显式失败优于静默缺指令）。
+      const instructionText = this._continuationPolicy.composeSuccessionInstruction({
+        threadId,
+        fromSessionId: normalizedFrom,
+        reason: normalizedReason,
+      });
+      if (typeof instructionText === 'string' && instructionText.trim()) {
+        const instruction = createCommandRecord({
+          threadId,
+          kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
+          text: instructionText,
+          source: 'thread-succession',
+          idempotencyKey: `succession:${threadId}:${normalizedFrom}`,
+        });
+        instruction.createdAt = now;
+        appendCommandToRecord(draft, instruction);
+        pruneCommands(draft);
+      }
       pushLifecycleEvent(draft, {
         type: 'handoff_started',
         status: 'rotating',
@@ -304,18 +376,24 @@ export class WorkThread {
   /**
    * 标记交接失败为接续编排状态 rotation_failed，不折叠成通用执行失败。
    * pendingSuccession 保留在盘上，供后续 resume 检查被打断的确切 stage。
+   *
+   * K3 守卫（事务内）：失败记录的资格来自「在办移交」本身——
+   *   - closed 线程：硬终态，任何迟到失败不得覆写（返回原记录，零写入）；
+   *   - 无 pendingSuccession（移交已成功推进 / 从未开始）：迟到的失败者
+   *     没有立卷资格，no-op 返回。这两条共同保证：只有「挡板仍在」的在办
+   *     移交失败才会落 rotation_failed。
    */
   async failSessionHandoff(
     threadId: string,
     opts: { reason?: string; stage?: string; error?: unknown } = {},
   ): Promise<WorkThreadRecord> {
-    const thread = await this.store.get(threadId);
-    if (!thread) throw new WorkThreadNotFoundError(threadId);
-    const { record } = await this.store.update(threadId, (draft) => {
-      draft.status = 'rotation_failed';
-      if (draft.pendingSuccession) {
-        draft.pendingSuccession.stage = cleanText(opts.stage) || draft.pendingSuccession.stage || 'unknown';
+    const tid = validateId(threadId, 'threadId');
+    const { record } = await this.store.update(tid, (draft) => {
+      if (draft.status === WORKTHREAD_TERMINAL_STATUS || !draft.pendingSuccession) {
+        return draft;
       }
+      draft.status = 'rotation_failed';
+      draft.pendingSuccession.stage = cleanText(opts.stage) || draft.pendingSuccession.stage || 'unknown';
       pushLifecycleEvent(draft, {
         type: 'handoff_failed',
         status: 'rotation_failed',
@@ -342,6 +420,7 @@ export class WorkThread {
     source?: string;
     idempotencyKey?: string;
     capabilityActivations?: string[];
+    images?: string[];
   }): Promise<{ command: WorkThreadCommand; duplicate: boolean; threadRevision: number }> {
     const threadId = validateId(opts.threadId, 'threadId');
     const normalizedKind =
@@ -349,7 +428,11 @@ export class WorkThread {
         ? opts.kind
         : WorkThreadCommandKind.USER_MESSAGE;
     const normalizedText = String(opts.text || '');
-    if (!normalizedText.trim()) {
+    const normalizedImages = Array.isArray(opts.images)
+      ? opts.images.filter((entry) => typeof entry === 'string' && entry.trim())
+      : [];
+    // K8：images 与 text 至少其一非空——图片优先的输入不应被强制携带占位文本
+    if (!normalizedText.trim() && normalizedImages.length === 0) {
       throw Object.assign(new Error('Command text must be non-empty'), {
         code: 'invalid_request',
         status: 400,
@@ -369,10 +452,17 @@ export class WorkThread {
       source: cleanText(opts.source) || 'ui',
       idempotencyKey: cleanText(opts.idempotencyKey),
       ...(Array.isArray(opts.capabilityActivations) ? { capabilityActivations: opts.capabilityActivations } : {}),
+      ...(normalizedImages.length > 0 ? { images: normalizedImages } : {}),
     });
 
     let appendOutcome = { command, duplicate: false };
     const { record } = await this.store.update(threadId, (draft) => {
+      if (draft.status === WORKTHREAD_TERMINAL_STATUS) {
+        throw Object.assign(new Error(`WorkThread "${threadId}" is closed; terminal threads hold no new commands`), {
+          code: 'thread_closed',
+          status: 409,
+        });
+      }
       appendOutcome = appendCommandToRecord(draft, command);
       pruneCommands(draft);
       return draft;
@@ -457,8 +547,36 @@ export class WorkThread {
     let deliveredCount = 0;
     let stopReason: string | null = null;
 
+    // K20：逐条投递前重读线程记录。HTTP 投递是慢操作，循环期间 head 可能
+    // 换代、挡板可能竖起、指令可能被取消——按入口快照盲投会把指令送进已
+    // 退役的会话（delivered 但结果留在旧棒）。每条指令以「当下事实」投递；
+    // 客观门禁任一失守即停（剩余指令保持 pending，交给下一个触发点）。
     for (const command of pending) {
-      const outcome = await this._bridge.deliver({ thread, command });
+      const fresh = await this.store.get(tid);
+      if (!fresh) throw new WorkThreadNotFoundError(tid);
+      if (this.isTerminal(fresh)) {
+        stopReason = 'thread_closed';
+        break;
+      }
+      if (fresh.hold === true) {
+        stopReason = 'thread_held';
+        break;
+      }
+      if (fresh.pendingSuccession && this.isHandoffActive(fresh)) {
+        stopReason = 'handoff_in_progress';
+        break;
+      }
+      if (fresh.headSessionId !== thread.headSessionId) {
+        stopReason = 'head_changed';
+        break;
+      }
+      const freshCommand = (fresh.commands || []).find((c) => c?.commandId === command.commandId) || null;
+      if (!freshCommand || freshCommand.status !== WorkThreadCommandStatus.PENDING) {
+        // 循环期间被取消/已终态：跳过（不投递、不标记、不进结果集）
+        continue;
+      }
+
+      const outcome = await this._bridge.deliver({ thread: fresh, command: freshCommand });
       results.push({ commandId: command.commandId, ...outcome });
 
       if (outcome.accepted) {
@@ -528,6 +646,10 @@ export class WorkThread {
   /**
    * 推进线程 head：headSessionId: fromSessionId → toSessionId。
    *
+   * fromSessionId 必填（K23）：它是调用方声明的 CAS 期望值——不传即
+   * 「接受任意当前 head」，幽灵任务防串台将被合法绕过。调用方若不知道
+   * 当前 head，应先读线程再用读到的值调用（CLI 的自动填充即此语义）。
+   *
    * 关键不变量（与 store 原子写共同保证）：任一时刻线程要么明确指向旧 head，
    * 要么明确指向新 head；推进与指令状态 / 清挡板在同一次落盘中变更。
    *
@@ -545,13 +667,13 @@ export class WorkThread {
   async advanceHead(opts: {
     threadId: string;
     toSessionId: string;
-    fromSessionId?: string;
+    fromSessionId: string;
     expectedRevision?: number;
     endKind?: string;
   }): Promise<WorkThreadRecord> {
     const threadId = validateId(opts.threadId, 'threadId');
     const normalizedTo = validateId(opts.toSessionId, 'toSessionId');
-    const normalizedFrom = opts.fromSessionId ? validateId(opts.fromSessionId, 'fromSessionId') : null;
+    const normalizedFrom = validateId(opts.fromSessionId, 'fromSessionId');
 
     // T001 身份连续性不变量：successor 加入前的三道校验在下方 store 事务内
     // 执行（per-thread 串行锁保护，结构守卫在前）；任一失败抛稳定错误且
@@ -571,15 +693,14 @@ export class WorkThread {
             status: 409,
           });
         }
-        if (normalizedFrom && draft.headSessionId !== normalizedFrom) {
+        if (draft.headSessionId !== normalizedFrom) {
           throw Object.assign(
             new Error(
               `Head mismatch on workthread "${threadId}": expected ${normalizedFrom}, current ${draft.headSessionId}`,
             ),
             { code: 'head_mismatch', status: 409 },
           );
-        }
-        if (draft.headSessionId === normalizedTo) {
+        }        if (draft.headSessionId === normalizedTo) {
           throw Object.assign(
             new Error(`Session "${normalizedTo}" is already the head of workthread "${threadId}"`),
             { code: 'already_head', status: 409 },
@@ -677,7 +798,7 @@ export class WorkThread {
           type: 'handoff_completed',
           status: 'open',
           at: now,
-          fromSessionId: normalizedFrom || currentHead?.sessionId || null,
+          fromSessionId: normalizedFrom,
           toSessionId: normalizedTo,
           reason: cleanText(opts.endKind) || 'manual',
         });

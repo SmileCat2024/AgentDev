@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver } from './types.js';
+import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver } from './types.js';
 import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -1217,9 +1217,10 @@ class AgentBase {
    * @param callIndex Call 序号
    * @param step Step 序号
    * @param usage 用量数据
+   * @param model 该次请求的模型归因（缺省不计入分段）
    */
-  recordUsage(callIndex: number, step: number, usage: UsageInfo): void {
-    this.usageStats.record(callIndex, step, usage);
+  recordUsage(callIndex: number, step: number, usage: UsageInfo, model?: ModelUsageKey): void {
+    this.usageStats.record(callIndex, step, usage, model);
     this.pushOverviewSnapshot();
   }
 
@@ -2241,11 +2242,17 @@ class AgentBase {
         debugPusher,
         features: this.features,
         hooksRegistry: this.hooksRegistry,
-        recordUsage: (callIndex: number, step: number, usage: UsageInfo) => this.recordUsage(callIndex, step, usage),
+        recordUsage: (callIndex: number, step: number, usage: UsageInfo, model?: ModelUsageKey) => this.recordUsage(callIndex, step, usage, model),
         endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
         dispatchTurnActivations: (refs: string[], context: import('./context.js').Context) => this.dispatchTurnActivations(refs, context),
         stepSaveFn: this._createStepSaveFn(),
         peekContinuationRequest: () => this._continuationRequest,
+        // 模型热切换族（ADR-0009）：hook ctx 的 agent 是 facade，转发到本体，
+        // 保证 ctx.agent.setModel / setLLM / getLLMMeta 与直调行为一致。
+        setModel: (presetName: string, opts?: { thinkingEffort?: string | null; source?: string }) => this.setModel(presetName, opts),
+        setThinkingEffort: (effort: string | null, opts?: { source?: string }) => this.setThinkingEffort(effort, opts),
+        setLLM: (llm: AgentConfig['llm'], meta?: LLMMeta) => this.setLLM(llm, meta),
+        getLLMMeta: () => this.getLLMMeta(),
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (call, input, context, step, callIndex) => this.toolExecutor!.execute(call, input, context, step, callIndex),

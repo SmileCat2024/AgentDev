@@ -500,10 +500,10 @@ import type { PlaceholderContext, TemplateSource } from '../template/types.js';
 
 // MCP 类型导入（契约类型，协议中性；实现在 @agentdevjs/mcp）
 import type { MCPConfig } from './mcp-contract.js';
-import type { UsageInfo, UsageStatsSnapshot } from './usage.js';
+import type { UsageInfo, UsageStatsSnapshot, ModelUsageKey, ModelUsageSegment, CallUsageSummary } from './usage.js';
 
 // UsageInfo 权威定义位于 usage.ts；此处 re-export 保持 types.js 的既有导入路径
-export type { UsageInfo };
+export type { UsageInfo, ModelUsageKey, ModelUsageSegment, CallUsageSummary };
 
 // Agent 配置
 export interface AgentConfig {

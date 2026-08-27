@@ -48,6 +48,32 @@ interface StepUsageRecord {
 }
 
 /**
+ * 单次 LLM 调用的模型归因（轮换 / mid-turn 热切换场景下每次请求可能不同）
+ */
+export interface ModelUsageKey {
+  /** 模型名（getLLMMeta().modelName） */
+  modelName?: string;
+  /** preset 名（getLLMMeta().presetName） */
+  presetName?: string;
+}
+
+/**
+ * Call 内按模型分段的用量汇总。
+ *
+ * 一次 call 内发生模型切换时，用量归因以每次 LLM 请求发出时刻的模型为准；
+ * totalUsage 仍是整 call 聚合，分段是它的模型维度拆分。
+ */
+export interface ModelUsageSegment {
+  modelName: string;
+  presetName: string;
+  usage: UsageInfo;
+  /** 该模型承担的 LLM 请求数 */
+  requests: number;
+  /** 该模型命中缓存的请求数 */
+  cacheHitRequests: number;
+}
+
+/**
  * 单次 Call 用量汇总
  */
 export interface CallUsageSummary {
@@ -57,6 +83,8 @@ export interface CallUsageSummary {
   cacheHitRequests: number;
   startTime: number;
   endTime?: number;
+  /** 按模型分段的用量（record 未携带模型归因时为空） */
+  modelSegments?: ModelUsageSegment[];
 }
 
 /**
@@ -106,8 +134,9 @@ export class UsageStats {
    * @param callIndex Call 序号
    * @param step Step 序号
    * @param usage 用量数据
+   * @param model 该次请求的模型归因；缺省时不产生分段
    */
-  record(callIndex: number, step: number, usage: UsageInfo): void {
+  record(callIndex: number, step: number, usage: UsageInfo, model?: ModelUsageKey): void {
     // 累加到总计
     this.totalUsage.inputTokens += usage.inputTokens;
     this.totalUsage.outputTokens += usage.outputTokens;
@@ -171,6 +200,45 @@ export class UsageStats {
       callSummary.totalUsage.audioTokens = (callSummary.totalUsage.audioTokens || 0) + usage.audioTokens;
     }
 
+    // 按模型分段累计（轮换 / 热切换场景的归因真相；未携带归因则不记）
+    if (model) {
+      if (!callSummary.modelSegments) callSummary.modelSegments = [];
+      const segModelName = model.modelName || '';
+      const segPresetName = model.presetName || '';
+      let segment = callSummary.modelSegments.find(
+        (s) => s.modelName === segModelName && s.presetName === segPresetName,
+      );
+      if (!segment) {
+        segment = {
+          modelName: segModelName,
+          presetName: segPresetName,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          requests: 0,
+          cacheHitRequests: 0,
+        };
+        callSummary.modelSegments.push(segment);
+      }
+      segment.usage.inputTokens += usage.inputTokens;
+      segment.usage.outputTokens += usage.outputTokens;
+      segment.usage.totalTokens += usage.totalTokens;
+      if (usage.cacheCreationTokens) {
+        segment.usage.cacheCreationTokens = (segment.usage.cacheCreationTokens || 0) + usage.cacheCreationTokens;
+      }
+      if (usage.cacheReadTokens) {
+        segment.usage.cacheReadTokens = (segment.usage.cacheReadTokens || 0) + usage.cacheReadTokens;
+      }
+      if (usage.reasoningTokens) {
+        segment.usage.reasoningTokens = (segment.usage.reasoningTokens || 0) + usage.reasoningTokens;
+      }
+      if (usage.audioTokens) {
+        segment.usage.audioTokens = (segment.usage.audioTokens || 0) + usage.audioTokens;
+      }
+      segment.requests++;
+      if (usage.cacheReadTokens) {
+        segment.cacheHitRequests++;
+      }
+    }
+
     // 更新最后一次请求的用量（用于UI显示当前上下文占用）
     this.lastRequestUsage = { ...usage };
   }
@@ -193,20 +261,31 @@ export class UsageStats {
     return { ...this.totalUsage };
   }
 
+  /** Call 汇总的深拷贝（totalUsage 与 modelSegments 均独立副本） */
+  private cloneCallSummary(summary: CallUsageSummary): CallUsageSummary {
+    return {
+      ...summary,
+      totalUsage: { ...summary.totalUsage },
+      ...(summary.modelSegments ? {
+        modelSegments: summary.modelSegments.map((s) => ({ ...s, usage: { ...s.usage } })),
+      } : {}),
+    };
+  }
+
   /**
    * 获取指定 Call 的用量汇总
    * @param callIndex Call 序号
    */
   getCallUsage(callIndex: number): CallUsageSummary | undefined {
     const summary = this.currentCallUsage.get(callIndex);
-    return summary ? { ...summary, totalUsage: { ...summary.totalUsage } } : undefined;
+    return summary ? this.cloneCallSummary(summary) : undefined;
   }
 
   /**
    * 获取所有 Call 的用量汇总
    */
   getAllCallUsage(): CallUsageSummary[] {
-    return Array.from(this.currentCallUsage.values()).map(s => ({ ...s, totalUsage: { ...s.totalUsage } }));
+    return Array.from(this.currentCallUsage.values()).map((s) => this.cloneCallSummary(s));
   }
 
   /**
@@ -276,7 +355,7 @@ export class UsageStats {
     this.totalCacheHitRequests = snapshot.totalCacheHitRequests ?? 0;
     this.currentCallUsage.clear();
     for (const call of snapshot.calls) {
-      this.currentCallUsage.set(call.callIndex, { ...call });
+      this.currentCallUsage.set(call.callIndex, this.cloneCallSummary(call));
     }
     // 恢复最后一次请求的用量
     this.lastRequestUsage = snapshot.lastRequestUsage ? { ...snapshot.lastRequestUsage } : null;

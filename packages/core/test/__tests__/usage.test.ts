@@ -130,6 +130,81 @@ describe('UsageStats', () => {
       const last = stats.getLastRequestUsage();
       expect(last).toEqual(makeUsage(200, 80));
     });
+
+    // ========== 模型归因分段（record 的 model 参数）==========
+
+    it('同 call 内不同模型应分成独立分段', () => {
+      stats.record(0, 0, makeUsage(100, 50), { modelName: 'model-a', presetName: 'preset-a' });
+      stats.record(0, 1, makeUsage(200, 80), { modelName: 'model-b', presetName: 'preset-b' });
+
+      const call = stats.getCallUsage(0);
+      expect(call!.modelSegments).toHaveLength(2);
+
+      const [segA, segB] = call!.modelSegments!;
+      expect(segA.modelName).toBe('model-a');
+      expect(segA.presetName).toBe('preset-a');
+      expect(segA.usage.totalTokens).toBe(150);
+      expect(segA.requests).toBe(1);
+      expect(segB.modelName).toBe('model-b');
+      expect(segB.usage.totalTokens).toBe(280);
+      expect(segB.requests).toBe(1);
+    });
+
+    it('同一模型的多次 record 应合并到同一段', () => {
+      stats.record(0, 0, makeUsage(100, 50), { modelName: 'model-a' });
+      stats.record(0, 1, makeUsage(200, 80), { modelName: 'model-a' });
+      stats.record(0, 2, makeUsage(50, 20), { modelName: 'model-b' });
+
+      const call = stats.getCallUsage(0);
+      expect(call!.modelSegments).toHaveLength(2);
+      expect(call!.modelSegments![0].usage.inputTokens).toBe(300);
+      expect(call!.modelSegments![0].requests).toBe(2);
+    });
+
+    it('分段累计应与 totalUsage 对账', () => {
+      stats.record(0, 0, makeFullUsage(100, 50, { cacheReadTokens: 20 }), { presetName: 'p-strong' });
+      stats.record(0, 1, makeFullUsage(200, 80, { reasoningTokens: 10 }), { presetName: 'p-strong' });
+      stats.record(0, 2, makeFullUsage(50, 25, { cacheReadTokens: 5 }), { presetName: 'p-cheap' });
+      stats.endCall(0);
+
+      const call = stats.getCallUsage(0)!;
+      const segTotal = call.modelSegments!
+        .map((s) => s.usage)
+        .reduce((acc, u) => ({
+          inputTokens: acc.inputTokens + u.inputTokens,
+          outputTokens: acc.outputTokens + u.outputTokens,
+          totalTokens: acc.totalTokens + u.totalTokens,
+        }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+
+      expect(call.totalUsage.inputTokens).toBe(segTotal.inputTokens);
+      expect(call.totalUsage.outputTokens).toBe(segTotal.outputTokens);
+      expect(call.totalUsage.totalTokens).toBe(segTotal.totalTokens);
+
+      const cheap = call.modelSegments!.find((s) => s.presetName === 'p-cheap')!;
+      expect(cheap.usage.cacheReadTokens).toBe(5);
+      expect(cheap.cacheHitRequests).toBe(1);
+      const strong = call.modelSegments!.find((s) => s.presetName === 'p-strong')!;
+      expect(strong.usage.reasoningTokens).toBe(10);
+      expect(strong.requests).toBe(2);
+    });
+
+    it('不携带模型归因的 record 不产生分段', () => {
+      stats.record(0, 0, makeUsage(100, 50));
+
+      const call = stats.getCallUsage(0);
+      expect(call!.modelSegments).toBeUndefined();
+    });
+
+    it('分段数据应为副本（修改不影响原对象）', () => {
+      stats.record(0, 0, makeUsage(100, 50), { modelName: 'm', presetName: 'p' });
+
+      const call = stats.getCallUsage(0)!;
+      call.modelSegments![0].usage.inputTokens = 9999;
+      call.modelSegments![0].requests = 9999;
+
+      expect(stats.getCallUsage(0)!.modelSegments![0].usage.inputTokens).toBe(100);
+      expect(stats.getCallUsage(0)!.modelSegments![0].requests).toBe(1);
+    });
   });
 
   // ========== endCall ==========
@@ -376,6 +451,37 @@ describe('UsageStats', () => {
       // Original should be unchanged
       expect(stats.getTotalUsage().inputTokens).toBe(100);
       expect(stats.getCallUsage(0)!.stepCount).toBe(1);
+    });
+
+    it('fromSnapshot 应保留 modelSegments', () => {
+      stats.record(0, 0, makeUsage(100, 50), { modelName: 'model-a', presetName: 'p-a' });
+      stats.record(0, 1, makeUsage(200, 80), { modelName: 'model-b', presetName: 'p-b' });
+      stats.endCall(0);
+
+      const restored = new UsageStats();
+      restored.fromSnapshot(stats.toSnapshot());
+
+      const restoredSegs = restored.getCallUsage(0)!.modelSegments!;
+      expect(restoredSegs).toHaveLength(2);
+      expect(restoredSegs.map((s) => s.presetName)).toEqual(['p-a', 'p-b']);
+    });
+
+    it('旧快照（无 modelSegments 字段）应可安全恢复', () => {
+      const restored = new UsageStats();
+      restored.fromSnapshot({
+        totalUsage: makeUsage(1, 1),
+        calls: [{ callIndex: 3, totalUsage: makeUsage(1, 1), stepCount: 1, cacheHitRequests: 0, startTime: Date.now() }],
+        totalRequests: 1,
+        totalCacheHitRequests: 0,
+      });
+      expect(restored.getCallUsage(3)).toBeDefined();
+
+      // 恢复后再继续 record，分段应照常累计
+      restored.record(3, 0, makeUsage(10, 5), { modelName: 'new-model' });
+      const segs = restored.getCallUsage(3)!.modelSegments!;
+      expect(segs).toHaveLength(1);
+      expect(segs[0].modelName).toBe('new-model');
+      expect(segs[0].requests).toBe(1);
     });
   });
 

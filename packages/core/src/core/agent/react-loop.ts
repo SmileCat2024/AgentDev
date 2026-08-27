@@ -11,13 +11,14 @@
 import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
-import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput } from '../types.js';
+import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta } from '../types.js';
 import type { ToolResult, HookResult, StepFinishDecisionContext } from '../lifecycle.js';
 import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
 import type { ReActContext, ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
 import type { HooksRegistry } from '../hooks-registry.js';
 import type { CallContinuationRequest } from '../continuation.js';
+import type { ModelUsageKey } from '../usage.js';
 import { CoreLifecycle, Decision, normalizeDecision } from '../lifecycle.js';
 import { createStepCheckpoint, rollbackToStepCheckpoint } from '../checkpoint.js';
 import { createLogger, runWithLogScope } from '../logging.js';
@@ -45,11 +46,17 @@ export class ReActLoopRunner {
       debugPusher?: DebugPusher;
       features?: Map<string, AgentFeature>;
       hooksRegistry: HooksRegistry;
-      recordUsage(callIndex: number, step: number, usage: UsageInfo): void;
+      recordUsage(callIndex: number, step: number, usage: UsageInfo, model?: ModelUsageKey): void;
       endCallUsage(callIndex: number): void;
       dispatchTurnActivations(refs: string[], context: Context): Promise<void>;
       stepSaveFn?: () => Promise<void>;
       peekContinuationRequest?: () => CallContinuationRequest | null;
+      // 模型热切换族（ADR-0009）：StepStart 等 hook ctx 的 agent 引用是本 facade，
+      // 必须转发到 Agent 本体，否则 Feature 侧 ctx.agent.setModel 与直调不等价。
+      setModel(presetName: string, opts?: { thinkingEffort?: string | null; source?: string }): boolean;
+      setThinkingEffort(effort: string | null, opts?: { source?: string }): boolean;
+      setLLM(llm: any, meta?: LLMMeta): void;
+      getLLMMeta(): LLMMeta;
     },
     private executeHookFn: (
       hookName: string,
@@ -139,6 +146,9 @@ export class ReActLoopRunner {
           let hasToolCalls = false;
           for (let emptyAttempt = 0; emptyAttempt <= MAX_EMPTY_RETRIES; emptyAttempt++) {
             const llmStartTime = Date.now();
+            // 模型归因以请求发出时刻的 meta 为准：mid-turn swap 会即时替换 llm
+            // 引用，而用量在响应返回后才记录，必须用发出时的快照归因。
+            const modelAtRequest = this.agent.getLLMMeta();
             response = await runWithLogScope({
               lifecycle: 'LLM',
               namespace: 'agent.llm',
@@ -161,7 +171,10 @@ export class ReActLoopRunner {
 
             // 收集用量数据
             if (response.usage) {
-              this.agent.recordUsage(callIndex, step, response.usage);
+              this.agent.recordUsage(callIndex, step, response.usage, {
+                ...(modelAtRequest.modelName ? { modelName: modelAtRequest.modelName } : {}),
+                ...(modelAtRequest.presetName ? { presetName: modelAtRequest.presetName } : {}),
+              });
             }
 
             hasToolCalls = !!(response.toolCalls && response.toolCalls.length > 0);

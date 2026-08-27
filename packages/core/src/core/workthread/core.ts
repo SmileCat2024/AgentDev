@@ -423,10 +423,19 @@ export class WorkThread {
     images?: string[];
   }): Promise<{ command: WorkThreadCommand; duplicate: boolean; threadRevision: number }> {
     const threadId = validateId(opts.threadId, 'threadId');
-    const normalizedKind =
-      opts.kind && Object.values(WorkThreadCommandKind).includes(opts.kind as never)
-        ? opts.kind
-        : WorkThreadCommandKind.USER_MESSAGE;
+    // kind 为官方封闭词表：未传按 user_message；显式传入未知值直接拒绝——
+    // 静默降级会让自定义词汇的调用方误以为意图已按原样入箱。
+    const normalizedKind = opts.kind === undefined || opts.kind === ''
+      ? WorkThreadCommandKind.USER_MESSAGE
+      : opts.kind;
+    if (!Object.values(WorkThreadCommandKind).includes(normalizedKind as never)) {
+      throw Object.assign(
+        new Error(
+          `Unknown command kind "${normalizedKind}" (expected one of: ${Object.values(WorkThreadCommandKind).join(', ')})`,
+        ),
+        { code: 'invalid_request', status: 400 },
+      );
+    }
     const normalizedText = String(opts.text || '');
     const normalizedImages = Array.isArray(opts.images)
       ? opts.images.filter((entry) => typeof entry === 'string' && entry.trim())
@@ -599,6 +608,8 @@ export class WorkThread {
     if (deliveredIds.size > 0 || failedResults.size > 0) {
       const { record } = await this.store.update(tid, (draft) => {
         for (const c of draft.commands || []) {
+          // 循环期间被并发 cancel 的指令不覆写终态：取消意图保留
+          if (c.status !== WorkThreadCommandStatus.PENDING) continue;
           if (deliveredIds.has(c.commandId)) {
             c.status = WorkThreadCommandStatus.DELIVERED;
             c.deliveryRef = results.find((r) => r.commandId === c.commandId)?.deliveryRef || null;
@@ -700,7 +711,8 @@ export class WorkThread {
             ),
             { code: 'head_mismatch', status: 409 },
           );
-        }        if (draft.headSessionId === normalizedTo) {
+        }
+        if (draft.headSessionId === normalizedTo) {
           throw Object.assign(
             new Error(`Session "${normalizedTo}" is already the head of workthread "${threadId}"`),
             { code: 'already_head', status: 409 },

@@ -457,6 +457,20 @@ describe('WorkThread (anchor layer)', () => {
     expect(record!.commands.every((c) => c.text !== 'late')).toBe(true);
   });
 
+  it('appendCommand rejects unknown kind with 400 (no silent downgrade)', async () => {
+    // kind 是官方封闭词表：未知值必须当场拒绝，而不是静默降级为
+    // user_message——降级会让调用方误以为自定义意图已按原样入箱。
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'k1' } });
+    await expect(() => thread.appendCommand({ threadId: wt.threadId, text: 'x', kind: 'custom_kind' as never }))
+      .rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    // 未传 / 空串仍按官方默认
+    await thread.appendCommand({ threadId: wt.threadId, text: 'a' });
+    await thread.appendCommand({ threadId: wt.threadId, text: 'b', kind: '' });
+    const after = await thread.getThread(wt.threadId);
+    expect(after!.commands.map((c) => c.kind)).toEqual(['user_message', 'user_message']);
+  });
+
   it('findThreadByHeadSession returns full record for current head only', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'h1' } });
@@ -860,6 +874,38 @@ describe('WorkThread delivery loop freshness (K20)', () => {
     const result = await thread.deliverPendingCommands(wt.threadId);
     expect(result.delivered).toBe(1);
     expect(result.reason).toBe('handoff_in_progress');
+  });
+
+  it('landing does not overwrite a cancel that lands during the command own delivery', async () => {
+    // 与上一条不同窗口：cancel 发生在该指令自己的 deliver 内部——fresh 重读
+    // 已读到 PENDING，投递也已在 runtime 侧完成，随后落盘阶段才并发 cancel。
+    // 落盘只改 PENDING：delivered 结果不得覆写取消终态（取消意图保留）。
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: () => 'viewer-x',
+        submitTurn: async () => ({ success: true }),
+      }),
+    );
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'dl-w1' } });
+    const target = await thread.appendCommand({ threadId: wt.threadId, text: 'only', idempotencyKey: 'w1' });
+
+    const bridge = thread.getBridge();
+    const originalDeliver = bridge.deliver.bind(bridge);
+    bridge.deliver = async (params: Parameters<typeof originalDeliver>[0]) => {
+      const outcome = await originalDeliver(params);
+      if (params.command?.commandId === target.command.commandId) {
+        await thread.cancelCommand(wt.threadId, target.command.commandId);
+      }
+      return outcome;
+    };
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(1, 'runtime 侧确实收到了投递');
+
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.commands[0].status).toBe(WorkThreadCommandStatus.CANCELLED, '盘上保留取消终态，不被 delivered 覆写');
   });
 });
 

@@ -86,9 +86,11 @@ class ViewerWorker {
         }
       });
 
-      this.server.listen(this.port, async () => {
-        const url = `http://localhost:${this.port}`;
-        console.log(`[Viewer Worker] ${url}`);
+      // ViewerWorker is an internal debug/control transport for Claw. Keep its
+      // HTTP surface on loopback; the product server is the public gateway.
+      this.server.listen(this.port, '127.0.0.1', async () => {
+        const url = `http://127.0.0.1:${this.port}`;
+        console.log(`[Viewer Worker] ${url} (loopback only)`);
         console.log(`[Viewer Worker] MCP endpoint: ${url}/mcp`);
 
         // 打开浏览器（仅在 openBrowser 为 true 时）

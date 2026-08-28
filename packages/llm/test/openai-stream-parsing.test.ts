@@ -41,6 +41,21 @@ describe('OpenAI streaming delta robustness', () => {
     expect(result.reasoning).toBe('thinking... done');
   });
 
+  it('recognizes the reasoning field as thinking deltas (OpenRouter-style gateways)', async () => {
+    const llm = makeLLM();
+    mockStream(llm, [
+      makeChunk({ choices: [{ index: 0, delta: { reasoning: 'plan: ' }, finish_reason: null }] }),
+      // 过渡 chunk：reasoning 尾巴 + 正文开头同包
+      makeChunk({ choices: [{ index: 0, delta: { reasoning: 'check files', content: 'Done.' }, finish_reason: null }] }),
+      makeChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    ]);
+
+    const result = await llm.chat([{ role: 'user', content: 'hi' }], []);
+
+    expect(result.content).toBe('Done.');
+    expect(result.reasoning).toBe('plan: check files');
+  });
+
   it('accumulates tool calls that omit the index field', async () => {
     const llm = makeLLM();
     mockStream(llm, [

@@ -26,9 +26,11 @@ function ensureHttpClientInitialized() {
   return httpClientInitPromise;
 }
 
-// GLM-4.7等模型扩展了OpenAI的响应格式，添加了reasoning_content字段
+// DeepSeek / GLM 等模型扩展了OpenAI的响应格式：reasoning_content 与 reasoning
+// 是不同后端承载思考增量的两种扩展字段
 interface ExtendedChatCompletionMessage extends OpenAI.Chat.ChatCompletionMessage {
   reasoning_content?: string;
+  reasoning?: string;
 }
 
 /**
@@ -337,12 +339,14 @@ export class OpenAILLM implements LLMClient {
             continue;
           }
 
-          const rawDelta = delta as { reasoning_content?: string; content?: string | null };
-          // reasoning 与 content 独立累积：过渡 chunk 可能同包携带两者（reasoning 尾巴 +
-          // 正文开头），else-if 结构会永久丢弃正文开头片段
-          if (rawDelta.reasoning_content) {
+          const rawDelta = delta as { reasoning_content?: string; reasoning?: string; content?: string | null };
+          // reasoning_content（DeepSeek/GLM 等）与 reasoning（OpenRouter 等网关）是两种
+          // 后端扩展字段，都识别为思考增量。reasoning 与 content 独立累积：过渡 chunk
+          // 可能同包携带两者（reasoning 尾巴 + 正文开头），else-if 结构会永久丢弃正文开头片段
+          const reasoningDelta = rawDelta.reasoning_content || rawDelta.reasoning;
+          if (reasoningDelta) {
             currentPhase = 'thinking';
-            reasoning += rawDelta.reasoning_content;
+            reasoning += reasoningDelta;
           }
           if (delta.content) {
             currentPhase = 'content';

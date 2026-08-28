@@ -689,6 +689,8 @@ export class WorkThread {
     // T001 身份连续性不变量：successor 加入前的三道校验在下方 store 事务内
     // 执行（per-thread 串行锁保护，结构守卫在前）；任一失败抛稳定错误且
     // 线程记录零变更（旧 head 保持有效）：
+    //   - thread_held：行政冻结期（归档）head 不得推进——归档宣告终局后，
+    //     在途接力的迟到推进同样被拒（与 begin 的 K9 门禁同源）；
     //   - session_workspace_mismatch：successor 不属于线程的工作空间宿主；
     //   - thread_identity_mismatch：successor 身份与线程身份不一致；
     //   - thread_identity_missing：线程身份未知且无法从 root Session 再推导
@@ -703,6 +705,12 @@ export class WorkThread {
             code: 'thread_closed',
             status: 409,
           });
+        }
+        if (draft.hold === true) {
+          throw Object.assign(
+            new Error(`WorkThread "${threadId}" is held (administrative freeze); head cannot advance`),
+            { code: 'thread_held', status: 409 },
+          );
         }
         if (draft.headSessionId !== normalizedFrom) {
           throw Object.assign(

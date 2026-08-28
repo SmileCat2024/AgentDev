@@ -667,6 +667,39 @@ describe('WorkThread succession gates (K3 / K9 / R8 / R3)', () => {
     expect(record!.pendingSuccession).toBeNull();
   });
 
+  it('advanceHead on held thread is rejected with thread_held (hold gates succession too)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-adv-hold' } });
+    await thread.setHold(wt.threadId, true);
+
+    await expect(
+      () => thread.advanceHead({ threadId: wt.threadId, fromSessionId: 'sg-adv-hold', toSessionId: 'sg-adv-s2' }),
+    ).rejects.toMatchObject({ code: 'thread_held', status: 409 });
+
+    // 线程记录零变更：旧 head 保持有效，无 succession 边落盘
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.headSessionId).toBe('sg-adv-hold');
+    expect(record!.sessionChain).toHaveLength(1);
+    expect(record!.pendingSuccession).toBeNull();
+  });
+
+  it('in-flight succession arriving at a held thread is rejected, pendingSuccession preserved', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-race' } });
+    // 模拟竞态：归档 setHold 竖起前 begin 已在办，advance 迟到
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-race', reason: 'context_guard' });
+    await thread.setHold(wt.threadId, true);
+
+    await expect(
+      () => thread.advanceHead({ threadId: wt.threadId, fromSessionId: 'sg-race', toSessionId: 'sg-race-s2' }),
+    ).rejects.toMatchObject({ code: 'thread_held', status: 409 });
+
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.headSessionId).toBe('sg-race');
+    // 挡板保留：失败/残留交由既有 resume / stale 自愈路径处置，不在 hold 门禁内静默吞掉
+    expect(record!.pendingSuccession!.fromSessionId).toBe('sg-race');
+  });
+
   it('second begin while a fresh handoff is running is rejected, not refreshed (R8 single-flight)', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'sg-conc' } });

@@ -31,6 +31,23 @@ import { generateViewerHtml } from './viewer-html/index.js';
 
 const QUERY_LOGS_DEFAULT_UNBOUNDED_LIMIT = 200;
 
+/**
+ * 消息变更分类（跨仓库契约，见 docs/adr/0012-message-poll-probe-tail.md）：
+ * append=尾部新增、tail=末条改写、rewrite=中段替换 / 条数减少。
+ */
+type MessageChangeKind = 'append' | 'tail' | 'rewrite';
+
+/**
+ * 消息探测数据：挂在 /overview 响应 HTTP 组装层（不进 AgentOverviewSnapshot
+ * 类型、不进 session.overview 存储），供前端把全量转录轮询降为按需取增量。
+ */
+interface MessagesProbe {
+  count: number;
+  changeKind: MessageChangeKind | null;
+  sinceIndex: number | null;
+  fakeFullBytes: number;
+}
+
 // ============= Worker 类 =============
 
 class ViewerWorker {
@@ -333,7 +350,7 @@ class ViewerWorker {
     // GET /api/agents/:id/messages - 指定 Agent 的消息
     const msgMatch = url.match(/^\/api\/agents\/([^/]+)\/messages$/);
     if (msgMatch && req.method === 'GET') {
-      this.handleGetAgentMessages(req, res, msgMatch[1]);
+      this.handleGetAgentMessages(req, res, msgMatch[1], urlObj.searchParams);
       return;
     }
 
@@ -556,12 +573,41 @@ class ViewerWorker {
 
   /**
    * GET /api/agents/:id/messages - 获取指定 Agent 的消息
+   *
+   * 增量取数（ADR-0012）：?since=<n> 返回自下标 n 起的尾部切片（附 baseCount）；
+   * ?tail=1 返回最后一条。无参数路径的响应形状与历史完全一致（全量数组）。
    */
-  private handleGetAgentMessages(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+  private handleGetAgentMessages(req: IncomingMessage, res: ServerResponse, agentId: string, searchParams?: URLSearchParams): void {
     const session = this.agentSessions.get(agentId);
     if (!session) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    const since = searchParams?.get('since');
+    if (since !== null && since !== undefined) {
+      const n = Number.parseInt(since, 10);
+      if (Number.isNaN(n) || n < 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Invalid since parameter' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      // n > length 时 slice 自然返回空数组，客户端按长度校验降级全量拉
+      res.end(JSON.stringify({
+        messages: session.messages.slice(n),
+        baseCount: n,
+      }));
+      return;
+    }
+
+    if (searchParams?.get('tail') === '1') {
+      const last = session.messages.length > 0 ? session.messages[session.messages.length - 1] : null;
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        messages: last ? [last] : [],
+      }));
       return;
     }
 
@@ -612,7 +658,12 @@ class ViewerWorker {
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(this.getMergedOverview(session)));
+    // 消息探测只挂 HTTP 组装层（ADR-0012）：前端 normalizeOverviewSnapshot
+    // 剥离未知字段，快照类型与 session.overview 存储不受污染。探测不可用
+    // （未走过推送路径）时字段整体缺省。
+    const overview = this.getMergedOverview(session);
+    const probe = this.getMessagesProbe(session);
+    res.end(JSON.stringify(probe ? { ...overview, _messagesProbe: probe } : overview));
   }
 
   private handleGetAgentTodoPlan(req: IncomingMessage, res: ServerResponse, agentId: string): void {
@@ -1201,21 +1252,40 @@ class ViewerWorker {
 
   /**
    * 应用内存限制
+   *
+   * 字节限制基于增量缓存 _totalBytes（推送时维护，修剪时扣减）：未超限
+   * 零序列化开销；未初始化（旧路径未走过推送）时先全量求和建立基线。
+   * 切点语义与原实现一致：超出 MAX_BYTES 时保留首个超限条目之后的尾部。
    */
   public enforceMemoryLimits(session: AgentSession): void {
+    const store = session as any;
+
     // 消息数量限制
     while (session.messages.length > this.MAX_MESSAGES) {
-      session.messages.shift();
+      const removed = session.messages.shift();
+      if (typeof store._totalBytes === 'number') {
+        store._totalBytes -= JSON.stringify(removed).length;
+      }
     }
 
     // 字节限制
-    let byteSize = 0;
-    for (let i = 0; i < session.messages.length; i++) {
-      byteSize += JSON.stringify(session.messages[i]).length;
-      if (byteSize > this.MAX_BYTES) {
-        // 删除超出部分
-        session.messages = session.messages.slice(i + 1);
-        break;
+    if (typeof store._totalBytes !== 'number') {
+      let total = 0;
+      for (let i = 0; i < session.messages.length; i++) {
+        total += JSON.stringify(session.messages[i]).length;
+      }
+      store._totalBytes = total;
+    }
+    if (store._totalBytes > this.MAX_BYTES) {
+      let byteSize = 0;
+      for (let i = 0; i < session.messages.length; i++) {
+        byteSize += JSON.stringify(session.messages[i]).length;
+        if (byteSize > this.MAX_BYTES) {
+          // 删除超出部分
+          session.messages = session.messages.slice(i + 1);
+          store._totalBytes -= byteSize;
+          break;
+        }
       }
     }
   }
@@ -1363,23 +1433,45 @@ class ViewerWorker {
   /**
    * 处理推送消息（带去重优化）
    *
-   * 只有在消息真正变化时才更新会话并触发前端更新
+   * 只有在消息真正变化时才更新会话并触发前端更新。推送时刻新旧数组都在手上，
+   * 顺带完成变更分类（ADR-0012）并增量维护总字节缓存；分类为 rewrite 时
+   * 照常更新 session.messages——修正"中段变化但 count 与末条签名均不变"
+   * 被静默丢弃的盲区。
    */
   public handlePushMessages(msg: any): void {
     const { agentId, messages } = msg;
     const session = this.agentSessions.get(agentId);
     if (!session) return;
 
-    // 消息变化检测
-    const messagesChanged = this.hasMessagesChanged(session, messages);
+    const oldMessages = session.messages;
+    const change = this.classifyMessagesChange(oldMessages, messages);
 
-    // 只有消息真正变化时才更新
-    if (messagesChanged) {
+    if (change) {
       session.messages = messages;
+      this.updateTotalBytes(session, oldMessages, messages, change.changeKind);
       // 更新最后一条消息的签名，用于下次比较
       session._lastMessageSig = this.getLastMessageSignature(messages);
       this.updateSessionActivity(agentId);
+      // 修剪前先记录条数：数量修剪经 shift() 原地缩短数组，而该数组与
+      // 新推送数组同引用，事后比较会失真
+      const preTrimCount = messages.length;
       this.enforceMemoryLimits(session);
+      // 修剪（数量/字节超限）会移除前端已持有的历史条目，增量拼接不再
+      // 安全：无论原分类为何，一律按 rewrite（ADR 语义含"修剪"）下发
+      const trimmed = session.messages.length < preTrimCount;
+      // fakeFullBytes 取修剪后的总字节：即此刻全量响应体的假想字节数
+      (session as any)._messagesChange = {
+        changeKind: trimmed ? 'rewrite' : change.changeKind,
+        sinceIndex: trimmed ? 0 : change.sinceIndex,
+        fakeFullBytes: (session as any)._totalBytes,
+      };
+    } else if (typeof (session as any)._totalBytes === 'number') {
+      // 未变化：清空分类（probe 保持可达，changeKind = null）
+      (session as any)._messagesChange = {
+        changeKind: null,
+        sinceIndex: null,
+        fakeFullBytes: (session as any)._totalBytes,
+      };
     }
   }
 
@@ -1530,24 +1622,92 @@ class ViewerWorker {
   }
 
   /**
-   * 检查消息是否发生变化
+   * 变更分类（ADR-0012，推送时刻新旧数组都在手上）：
+   * - append：新数组以旧数组为前缀且变长（sinceIndex = 旧数组长度）
+   * - tail：条数不变，仅最后一条不同（流式输出）
+   * - rewrite：其余（中段替换 / 条数减少，含 count 与末条签名均不变的盲区）
+   * 返回 null 表示未变化。
    */
-  private hasMessagesChanged(session: AgentSession, newMessages: any[]): boolean {
-    // 快速检查：消息数量
-    if (newMessages.length !== session.messages.length) {
-      return true;
+  private classifyMessagesChange(oldMessages: any[], newMessages: any[]): { changeKind: MessageChangeKind; sinceIndex: number } | null {
+    const oldLen = oldMessages.length;
+    const newLen = newMessages.length;
+
+    if (newLen > oldLen && this.isSameMessagePrefix(oldMessages, newMessages, oldLen)) {
+      return { changeKind: 'append', sinceIndex: oldLen };
     }
 
-    // 如果没有消息，直接返回 false
-    if (newMessages.length === 0) {
-      return false;
+    if (newLen === oldLen) {
+      if (newLen === 0) return null;
+      const lastSigChanged =
+        this.getLastMessageSignature(newMessages) !== this.getLastMessageSignature(oldMessages);
+      // 末条签名不同时前缀只比到倒数第二条：除末条外全等即 tail，中段
+      // 也变了是 rewrite；末条签名相同时全量比对，以识别中段盲区
+      const prefixLen = lastSigChanged ? newLen - 1 : newLen;
+      if (this.isSameMessagePrefix(oldMessages, newMessages, prefixLen)) {
+        return lastSigChanged ? { changeKind: 'tail', sinceIndex: newLen - 1 } : null;
+      }
+      return { changeKind: 'rewrite', sinceIndex: 0 };
     }
 
-    // 比较最后一条消息的签名（新消息总是追加到末尾）
-    const newSig = this.getLastMessageSignature(newMessages);
-    const oldSig = (session as any)._lastMessageSig;
+    // 条数减少，或条数增加但前缀不同：rollback / compact / 中段替换
+    return { changeKind: 'rewrite', sinceIndex: 0 };
+  }
 
-    return newSig !== oldSig;
+  /**
+   * 判断两数组前 len 条是否逐条一致：先比引用（运行时对未变化条目通常
+   * 复用同一对象），不一致再退回 JSON 全等（消息对象可能被重建）。
+   */
+  private isSameMessagePrefix(oldMessages: any[], newMessages: any[], len: number): boolean {
+    for (let i = 0; i < len; i++) {
+      if (oldMessages[i] === newMessages[i]) continue;
+      if (JSON.stringify(oldMessages[i]) !== JSON.stringify(newMessages[i])) return false;
+    }
+    return true;
+  }
+
+  /**
+   * 消息探测数据（/overview HTTP 组装用，ADR-0012）。count 取当前消息数，
+   * 其余为最近一次推送记录下的分类与假想全量字节；未走过推送路径
+   * （_totalBytes 未初始化）时返回 null，调用方据此整体省略 _messagesProbe。
+   */
+  private getMessagesProbe(session: AgentSession): MessagesProbe | null {
+    const change = (session as any)._messagesChange as
+      | { changeKind: MessageChangeKind | null; sinceIndex: number | null; fakeFullBytes: number }
+      | undefined;
+    if (!change || typeof (session as any)._totalBytes !== 'number') return null;
+    return {
+      count: session.messages.length,
+      changeKind: change.changeKind,
+      sinceIndex: change.sinceIndex,
+      fakeFullBytes: change.fakeFullBytes,
+    };
+  }
+
+  /**
+   * 增量维护 session 总字节缓存（_totalBytes = 全量响应体假想字节数）：
+   * append 只序列化新增条目，tail 只序列化末条新旧两份；rewrite（rollback /
+   * compact 等低频路径）与未初始化基线时全量重建。
+   */
+  private updateTotalBytes(session: AgentSession, oldMessages: any[], newMessages: any[], changeKind: MessageChangeKind): void {
+    const store = session as any;
+    if (typeof store._totalBytes !== 'number' || changeKind === 'rewrite') {
+      let total = 0;
+      for (let i = 0; i < newMessages.length; i++) {
+        total += JSON.stringify(newMessages[i]).length;
+      }
+      store._totalBytes = total;
+      return;
+    }
+    if (changeKind === 'append') {
+      for (let i = oldMessages.length; i < newMessages.length; i++) {
+        store._totalBytes += JSON.stringify(newMessages[i]).length;
+      }
+      return;
+    }
+    // tail：末条被改写，减旧加新
+    store._totalBytes +=
+      JSON.stringify(newMessages[newMessages.length - 1]).length -
+      JSON.stringify(oldMessages[oldMessages.length - 1]).length;
   }
 
   /**

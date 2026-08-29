@@ -42,6 +42,12 @@ type MessageChangeKind = 'append' | 'tail' | 'rewrite';
  * 类型、不进 session.overview 存储），供前端把全量转录轮询降为按需取增量。
  */
 interface MessagesProbe {
+  /**
+   * 同步版本号（ADR-0012 v2）：仅在真实变更时单调递增。前端与已应用的
+   * seq 对账决定是否取数——changeKind 只是"最近一次真实变更"的取数策略
+   * 提示，不是同步真相；后到的 no-op 推送不得清掉未消费的变更记录。
+   */
+  seq: number;
   count: number;
   changeKind: MessageChangeKind | null;
   sinceIndex: number | null;
@@ -1448,6 +1454,11 @@ class ViewerWorker {
 
     if (change) {
       session.messages = messages;
+      const store = session as any;
+      // seq 只在真实变更时递增（ADR-0012 v2）：它是前端对账的同步版本号。
+      // no-op 推送不清槽——后到的相同内容推送覆盖先到的未消费变更记录，
+      // 正是"首条 user 消息已进转录却报无变化"延迟显示的根因。
+      store._messagesChangeSeq = (typeof store._messagesChangeSeq === 'number' ? store._messagesChangeSeq : 0) + 1;
       this.updateTotalBytes(session, oldMessages, messages, change.changeKind);
       // 更新最后一条消息的签名，用于下次比较
       session._lastMessageSig = this.getLastMessageSignature(messages);
@@ -1460,18 +1471,13 @@ class ViewerWorker {
       // 安全：无论原分类为何，一律按 rewrite（ADR 语义含"修剪"）下发
       const trimmed = session.messages.length < preTrimCount;
       // fakeFullBytes 取修剪后的总字节：即此刻全量响应体的假想字节数
-      (session as any)._messagesChange = {
+      store._messagesChange = {
         changeKind: trimmed ? 'rewrite' : change.changeKind,
         sinceIndex: trimmed ? 0 : change.sinceIndex,
-        fakeFullBytes: (session as any)._totalBytes,
+        fakeFullBytes: store._totalBytes,
       };
-    } else if (typeof (session as any)._totalBytes === 'number') {
-      // 未变化：清空分类（probe 保持可达，changeKind = null）
-      (session as any)._messagesChange = {
-        changeKind: null,
-        sinceIndex: null,
-        fakeFullBytes: (session as any)._totalBytes,
-      };
+    } else if (typeof (session as any)._totalBytes !== 'number') {
+      // 从未走过真实变更（如 runtime 恢复推送相同内容）：probe 整体保持缺省
     }
   }
 
@@ -1676,6 +1682,7 @@ class ViewerWorker {
       | undefined;
     if (!change || typeof (session as any)._totalBytes !== 'number') return null;
     return {
+      seq: (session as any)._messagesChangeSeq || 0,
       count: session.messages.length,
       changeKind: change.changeKind,
       sinceIndex: change.sinceIndex,

@@ -158,29 +158,51 @@ describe('changeKind classification (push-time)', () => {
     expect(probe.changeKind).toBe('rewrite');
   });
 
-  it('reports changeKind null when pushed messages are unchanged (same refs)', () => {
+  it('preserves the last real change (and seq) when a no-op push follows', () => {
     const { worker, agentId } = createWorker();
     const m1 = makeMsg('user', 'hello');
     const m2 = makeMsg('assistant', 'hi');
 
     push(worker, agentId, [m1, m2]);
-    // 同一组引用重复推送：未变化
+    const probeAfterChange = readOverview(worker, agentId)._messagesProbe;
+    expect(probeAfterChange.seq).toBe(1);
+
+    // 同一组引用重复推送：未变化——不得清掉未消费的变更记录
+    // （根因回归：旧实现把 changeKind 清成 null，导致"append 后紧跟
+    // no-op 推送"的变更对前端不可见，首条消息延迟显示）
     push(worker, agentId, [m1, m2]);
 
     const probe = readOverview(worker, agentId)._messagesProbe;
-    expect(probe.changeKind).toBeNull();
+    expect(probe.seq).toBe(1);
+    expect(probe.changeKind).toBe('append');
+    // 首推即为 [m1, m2]（空会话 → append sinceIndex=0）
+    expect(probe.sinceIndex).toBe(0);
     expect(probe.count).toBe(2);
   });
 
-  it('reports changeKind null when pushed messages are deep-equal but rebuilt', () => {
+  it('preserves the last real change when a deep-equal rebuilt push follows', () => {
     const { worker, agentId } = createWorker();
     push(worker, agentId, [makeMsg('user', 'hello'), makeMsg('assistant', 'hi')]);
 
-    // 全部重建但内容全等：未变化
+    // 全部重建但内容全等：未变化——变更记录与 seq 保持不变
     push(worker, agentId, [makeMsg('user', 'hello'), makeMsg('assistant', 'hi')]);
 
     const probe = readOverview(worker, agentId)._messagesProbe;
-    expect(probe.changeKind).toBeNull();
+    expect(probe.seq).toBe(1);
+    expect(probe.changeKind).toBe('append');
+  });
+
+  it('increments seq only on real changes', () => {
+    const { worker, agentId } = createWorker();
+    const m1 = makeMsg('user', 'hello');
+
+    push(worker, agentId, [m1]);
+    push(worker, agentId, [m1]); // no-op
+    push(worker, agentId, [m1, makeMsg('assistant', 'hi')]); // real change
+    push(worker, agentId, [m1, makeMsg('assistant', 'hi')]); // no-op
+
+    const probe = readOverview(worker, agentId)._messagesProbe;
+    expect(probe.seq).toBe(2);
   });
 });
 
@@ -367,7 +389,7 @@ describe('_messagesProbe on overview response', () => {
     expect(overview).toHaveProperty('runtime');
   });
 
-  it('updates the probe to changeKind null after an unchanged push', () => {
+  it('keeps the pending real change (seq unchanged) after an unchanged push', () => {
     const { worker, agentId } = createWorker();
     const msgs = [makeMsg('user', 'hello')];
     push(worker, agentId, msgs);
@@ -375,7 +397,8 @@ describe('_messagesProbe on overview response', () => {
     push(worker, agentId, [makeMsg('user', 'hello')]);
 
     const probe = readOverview(worker, agentId)._messagesProbe;
-    expect(probe.changeKind).toBeNull();
+    expect(probe.seq).toBe(1);
+    expect(probe.changeKind).toBe('append');
     expect(probe.fakeFullBytes).toBe(bytesOf(msgs));
   });
 

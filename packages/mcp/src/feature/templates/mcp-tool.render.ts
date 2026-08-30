@@ -39,7 +39,7 @@ function renderJsonHighlight(data: any): string {
   return '<div class="code-read-container">' + lines.map((line: string, i: number) => {
     let highlighted: string;
     try { highlighted = (hljs as any).highlight(line, { language: 'json' }).value; }
-    catch (e) { highlighted = escapeHtml(line); }
+    catch { highlighted = escapeHtml(line); }
     return '<div class="code-read-line"><span class="code-read-line-num">' + (i + 1) + '</span><span class="code-read-content">' + highlighted + '</span></div>';
   }).join('') + '</div>';
 }
@@ -50,7 +50,7 @@ declare const hljs: any;
  * MCP 工具调用渲染模板
  */
 export default {
-  call: (args: any) => {
+  call: (_args: any) => {
     return `<div class="bash-command">MCP Tool Call</div>`;
   },
   result: (data: any, success?: boolean) => {

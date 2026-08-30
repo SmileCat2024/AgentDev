@@ -131,7 +131,7 @@ export const MCP_RENDER_TEMPLATES = {
 /**
  * 获取 MCP 渲染模板
  */
-export function getMCPRenderTemplate(toolName: string): string {
+export function getMCPRenderTemplate(_toolName: string): string {
   return 'mcp-tool';
 }
 

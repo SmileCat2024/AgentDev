@@ -8,7 +8,7 @@
  */
 
 import { readFile, readdir } from 'fs/promises';
-import { readFileSync, readdirSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve, join } from 'path';
 import { cwd } from 'process';
 

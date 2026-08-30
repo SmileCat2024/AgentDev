@@ -13,6 +13,7 @@
  */
 
 import { connect, type Socket } from 'net';
+import type { ChildProcess } from 'child_process';
 import {
   getDefaultUDSPath,
   type Message,
@@ -27,7 +28,6 @@ import {
   type UserInputRequest,
   type UserInputResponse,
   type UserInputAction,
-  type ImageInput,
 } from './types.js';
 import { ClawDebugClient } from './claw-debug-client.js';
 import { getClawRuntimeUrl, resolveDebugTransportMode } from './debug-transport.js';
@@ -180,7 +180,7 @@ export class DebugHub {
     try {
       await this.connectToWorker();
       console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
-    } catch (err) {
+    } catch {
       // 连接失败，尝试自动启动 ViewerWorker
       console.log(`[DebugHub] ViewerWorker 未运行，正在自动启动...`);
       try {
@@ -205,7 +205,7 @@ export class DebugHub {
    * 自动启动 ViewerWorker 进程
    */
   private openBrowser: boolean = true;
-  private viewerWorkerProcess?: ReturnType<typeof import('child_process').spawn>;
+  private viewerWorkerProcess?: ChildProcess;
 
   private async spawnViewerWorker(): Promise<void> {
     const { spawn } = await import('child_process');

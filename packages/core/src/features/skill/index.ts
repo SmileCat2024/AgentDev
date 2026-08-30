@@ -17,6 +17,7 @@
 import { fileURLToPath } from 'url';
 import { readFile } from 'fs/promises';
 import { normalize, dirname } from 'path';
+import type { Context } from '../../core/context.js';
 import type {
   AgentFeature,
   FeatureInitContext,
@@ -169,7 +170,7 @@ export class SkillFeature implements AgentFeature {
    * 位置注入（与 flow 提示词 / force-continuation 的既有形态一致）。
    * 注入失败（文件缺失等）记日志，不阻断本轮 call。
    */
-  async onCapabilityActivations(refs: string[], ctx: { context: import('../../core/context.js').Context }): Promise<void> {
+  async onCapabilityActivations(refs: string[], ctx: { context: Context }): Promise<void> {
     const names = new Set<string>();
     for (const ref of refs) {
       if (typeof ref !== 'string') continue;

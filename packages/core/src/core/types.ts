@@ -136,7 +136,8 @@ export interface AgentRuntimeStateSnapshot {
   lastErrorType?: string | null;
   lastErrorMessage?: string | null;
   /** 最近一次已结束 Call 的结构化终态。 */
-  lastOutcome?: import('./lifecycle.js').CallOutcome | null;
+  /** 最近一次已结束 Call 的结构化终态。 */
+  lastOutcome?: CallOutcome | null;
   updatedAt: number;
 }
 
@@ -367,9 +368,9 @@ export interface Message {
  * CallOutcome 的可序列化子集；不重复 response/steps 等会话级信息。
  */
 export interface MessageExecutionMeta {
-  status: import('./lifecycle.js').ExecutionStatus;
-  reason: import('./lifecycle.js').ExecutionReason;
-  error?: import('./lifecycle.js').ExecutionError;
+  status: ExecutionStatus;
+  reason: ExecutionReason;
+  error?: ExecutionError;
 }
 
 /**
@@ -496,10 +497,9 @@ export interface ModelPresetResolver {
 }
 
 // 占位符上下文类型
-import type { PlaceholderContext, TemplateSource } from '../template/types.js';
+import type { TemplateSource } from '../template/types.js';
 
 // MCP 类型导入（契约类型，协议中性；实现在 @agentdevjs/mcp）
-import type { MCPConfig } from './mcp-contract.js';
 import type { UsageInfo, UsageStatsSnapshot, ModelUsageKey, ModelUsageSegment, CallUsageSummary } from './usage.js';
 
 // UsageInfo 权威定义位于 usage.ts；此处 re-export 保持 types.js 的既有导入路径
@@ -1114,6 +1114,24 @@ export interface EnrichedMessage extends Message {
 
 // ========== 生命周期类型 re-export ==========
 // 生命周期类型从 lifecycle.ts 导出，保持类型定义集中管理
+import type {
+  AgentInitiateContext,
+  AgentDestroyContext,
+  CallStartContext,
+  CallFinishContext,
+  StepStartContext,
+  StepFinishedContext,
+  ToolContext,
+  ToolResult,
+  StepFinishDecisionContext,
+  ToolFinishedDecisionContext,
+  ToolResultTransformContext,
+  ExecutionStatus,
+  ExecutionReason,
+  ExecutionError,
+  CallOutcome,
+} from './lifecycle.js';
+
 export type {
   AgentInitiateContext,
   AgentDestroyContext,
@@ -1125,6 +1143,13 @@ export type {
   HookResult,
   ToolContext,
   ToolResult,
+  StepFinishDecisionContext,
+  ToolFinishedDecisionContext,
+  ToolResultTransformContext,
+  ExecutionStatus,
+  ExecutionReason,
+  ExecutionError,
+  CallOutcome,
 } from './lifecycle.js';
 
 // ========== 决策上下文类型 ==========
@@ -1134,17 +1159,17 @@ export type {
  * 所有决策上下文的联合类型
  */
 export type DecisionContext =
-  | import('./lifecycle.js').AgentInitiateContext
-  | import('./lifecycle.js').AgentDestroyContext
-  | import('./lifecycle.js').CallStartContext
-  | import('./lifecycle.js').CallFinishContext
-  | import('./lifecycle.js').StepStartContext
-  | import('./lifecycle.js').StepFinishedContext
-  | import('./lifecycle.js').ToolContext
-  | import('./lifecycle.js').ToolResult
-  | import('./lifecycle.js').StepFinishDecisionContext
-  | import('./lifecycle.js').ToolFinishedDecisionContext
-  | import('./lifecycle.js').ToolResultTransformContext;
+  | AgentInitiateContext
+  | AgentDestroyContext
+  | CallStartContext
+  | CallFinishContext
+  | StepStartContext
+  | StepFinishedContext
+  | ToolContext
+  | ToolResult
+  | StepFinishDecisionContext
+  | ToolFinishedDecisionContext
+  | ToolResultTransformContext;
 
 // ========== UDS 通信类型 ==========
 

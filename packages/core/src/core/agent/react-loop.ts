@@ -12,9 +12,9 @@ import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
 import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta } from '../types.js';
-import type { ToolResult, HookResult, StepFinishDecisionContext } from '../lifecycle.js';
+import type { HookResult, StepFinishDecisionContext } from '../lifecycle.js';
 import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
-import type { ReActContext, ReActResult, DebugPusher } from './types.js';
+import type { ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
 import type { HooksRegistry } from '../hooks-registry.js';
 import type { CallContinuationRequest } from '../continuation.js';
@@ -99,7 +99,7 @@ export class ReActLoopRunner {
     callIndex: number;  // 用户交互序号
     signal?: AbortSignal;
   }): Promise<ReActResult> {
-    const { isFirstCall, callIndex, signal } = options;
+    const { callIndex, signal } = options;
     logger.debug('ReAct loop started', { callIndex, hasSignal: !!signal, signalAborted: signal?.aborted });
 
     // ========== ReAct 循环 ==========
@@ -728,7 +728,7 @@ export class ReActLoopRunner {
         };
       }
       return null;
-    } catch (e) {
+    } catch {
       // 网络错误或 ViewerWorker 不可用
       return null;
     }

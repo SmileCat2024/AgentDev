@@ -3,7 +3,7 @@
  * 定义工具渲染模板、样式和默认映射
  */
 
-import type { ToolRenderConfig, RenderTemplateItem, RenderTemplateFn } from './types.js';
+import type { ToolRenderConfig, RenderTemplateItem } from './types.js';
 
 // ============= 类型定义 =============
 export interface RenderTemplate {
@@ -27,7 +27,7 @@ export const RENDER_TEMPLATES: Record<string, RenderTemplate> = {
 
   'file-write': {
     call: '<div class="bash-command">Write <span class="file-path">{{path}}</span></div>',
-    result: (data) => `<div style="color:var(--success-color)">✓ File written successfully</div>`
+    result: (_data) => `<div style="color:var(--success-color)">✓ File written successfully</div>`
   },
 
   'file-list': {
@@ -146,7 +146,6 @@ export const RENDER_TEMPLATES: Record<string, RenderTemplate> = {
     call: '<div class="bash-command">List trash</div>',
     result: (data) => {
       const total = data.total || 0;
-      const files = data.files || [];
       if (total === 0) {
         return `<div style="color:var(--text-secondary)">Trash is empty</div>`;
       }

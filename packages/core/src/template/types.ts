@@ -2,6 +2,8 @@
  * 提示词模板系统 - 核心类型定义
  */
 
+import type { TemplateComposer } from './composer.js';
+
 /**
  * 模板源
  * - string: 硬编码字符串
@@ -30,7 +32,7 @@ export type TemplateSource =
   | { file: string }
   | { conditional: ConditionalSource }
   | { [dataSourceName: string]: string }  // 数据源 -> 模板
-  | import('./composer.js').TemplateComposer;
+  | TemplateComposer;
 
 /**
  * 条件源配置

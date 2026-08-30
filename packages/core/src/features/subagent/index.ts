@@ -10,23 +10,18 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import type { ToolFinishedHook, StepFinishHook } from '../../core/hook-declarations.js';
+import { dirname } from 'path';
 import type { HookDeclarations } from '../../core/hook-declarations.js';
 import type { Agent } from '../../core/agent.js';
-import type { Context } from '../../core/context.js';
 import type {
   AgentFeature,
   FeatureInitContext,
-  FeatureContext,
   ContextInjector,
   FeatureStateSnapshot,
   PackageInfo,
 } from '../../core/feature.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
-import type { ToolCall } from '../../core/types.js';
-import type { SubAgentStatus } from '../../core/lifecycle.js';
 import type { ToolFinishedDecisionContext, StepFinishDecisionContext } from '../../core/lifecycle.js';
 import { CoreLifecycle, Decision, type DecisionResult } from '../../core/lifecycle.js';
 import { AgentPool } from './pool.js';

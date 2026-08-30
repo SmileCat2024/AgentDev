@@ -116,6 +116,7 @@ describe('LspFeature graceful degradation', () => {
   it('constructor accepts empty config without crashing', () => {
     const feature = new LspFeature();
     expect(feature.name).toBe('lsp');
+    // eslint-disable-next-line no-restricted-syntax -- 测试断言构造函数默认值即当前工作目录
     expect(feature.getWorkdir()).toBe(process.cwd());
   });
 

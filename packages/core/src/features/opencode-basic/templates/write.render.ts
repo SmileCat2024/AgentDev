@@ -47,7 +47,7 @@ export default {
         outputFormat: 'side-by-side',
         colorScheme: 'dark'
       });
-    } catch(e) {
+    } catch {
       return `<pre style="background:var(--hover-bg); padding:8px;">${escapeHtml(diffContent)}</pre>`;
     }
   }

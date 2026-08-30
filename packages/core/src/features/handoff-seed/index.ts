@@ -231,6 +231,7 @@ export class HandoffSeedFeature implements AgentFeature {
   private injectImportantContext(ctx: CallStartContext, baseTurn: number): void {
     const projectRoot = typeof (ctx.agent as any)?.projectRoot === 'string'
       ? (ctx.agent as any).projectRoot
+      // eslint-disable-next-line no-restricted-syntax -- 防御性默认值，共享进程下返回 Claw 根目录；Agent 已注册 projectRoot 时不会走到这里
       : process.cwd();
 
     let injectionTurn = baseTurn + 1;

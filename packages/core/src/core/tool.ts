@@ -3,7 +3,7 @@
  * 简单的工具创建函数
  */
 
-import type { Tool, ToolRenderConfig, ToolExecutionContext, ToolResultValue } from './types.js';
+import type { Tool, ToolRenderConfig, ToolExecutionContext } from './types.js';
 
 /**
  * 渲染配置扩展类型

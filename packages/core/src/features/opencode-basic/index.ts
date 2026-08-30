@@ -15,7 +15,6 @@
  */
 
 import { fileURLToPath } from 'url';
-import { resolve } from 'path';
 import { promises as fs } from 'fs';
 import { Decision } from '../../core/lifecycle.js';
 import type { HookDeclarations } from '../../core/hook-declarations.js';
@@ -98,6 +97,7 @@ export class OpencodeBasicFeature implements AgentFeature {
   private readonly workspaceDir: string;
 
   constructor(config: OpencodeBasicFeatureConfig = {}) {
+    // eslint-disable-next-line no-restricted-syntax -- 防御性默认值，共享进程下返回 Claw 根目录；宿主应显式传 workspaceDir
     this.workspaceDir = config.workspaceDir || process.cwd();
   }
 

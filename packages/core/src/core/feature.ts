@@ -9,6 +9,11 @@ import type { Tool } from './types.js';
 import type { ToolCall } from './types.js';
 import type { InlineRenderTemplate } from './types.js';
 import type { LLMClient } from './types.js';
+import type { AgentConfig } from './types.js';
+import type { Logger } from './logging.js';
+import type { DataSourceRegistry } from '../template/data-source.js';
+import type { CapabilityDefinition } from './capability.js';
+import type { Context } from './context.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
@@ -31,9 +36,9 @@ export interface FeatureInitContext {
   /** Agent ID */
   agentId: string;
   /** Agent 配置 */
-  config: import('./types.js').AgentConfig;
+  config: AgentConfig;
   /** Feature 级结构化日志 */
-  logger: import('./logging.js').Logger;
+  logger: Logger;
   /** Feature 特定配置 */
   featureConfig?: unknown;
   /** 获取其他 Feature */
@@ -41,7 +46,7 @@ export interface FeatureInitContext {
   /** 注册工具 */
   registerTool(tool: Tool): void;
   /** Agent 级数据源注册表（per-Agent 实例，非进程全局） */
-  dataSourceRegistry: import('../template/data-source.js').DataSourceRegistry;
+  dataSourceRegistry: DataSourceRegistry;
 }
 
 /**
@@ -49,7 +54,7 @@ export interface FeatureInitContext {
  */
 export interface FeatureContext {
   agentId: string;
-  config: import('./types.js').AgentConfig;
+  config: AgentConfig;
   getFeature<T extends AgentFeature>(name: string): T | undefined;
 }
 
@@ -258,7 +263,7 @@ export interface AgentFeature {
    *   宿主前端转发的用户触发同样经注册表，entryPoint 为 'slash'。
    * entryPoints 是契约约束（不匹配返回 entry_point_denied），不是安全边界。
    */
-  getCapabilities?(): import('./capability.js').CapabilityDefinition[];
+  getCapabilities?(): CapabilityDefinition[];
 
   /**
    * 消费"随消息到达的能力激活通知"（可选）。
@@ -272,7 +277,7 @@ export interface AgentFeature {
    * 这是 prompt 型命令（skill 等）的唯一消费口——不解析输入文本，
    * 不维护跨消息的 pending 状态。
    */
-  onCapabilityActivations?(refs: string[], ctx: { context: import('./context.js').Context }): Promise<void>;
+  onCapabilityActivations?(refs: string[], ctx: { context: Context }): Promise<void>;
 
   /**
    * 声明上下文注入器

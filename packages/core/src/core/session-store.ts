@@ -4,6 +4,7 @@ import { cwd } from 'process';
 import type { ContextSnapshot, ContextBoundaryV2 } from './context.js';
 import type { FeatureCheckpoint } from './checkpoint.js';
 import type { UsageStatsSnapshot } from './usage.js';
+import type { CallOutcome } from './lifecycle.js';
 
 export interface AgentRuntimeSnapshot {
   initialized: boolean;
@@ -12,7 +13,7 @@ export interface AgentRuntimeSnapshot {
   featureStates: FeatureCheckpoint[];
   usageStats?: UsageStatsSnapshot;
   /** 最近一次已结束 Call 的结构化终态。旧会话缺省为 undefined。 */
-  lastCallOutcome?: import('./lifecycle.js').CallOutcome;
+  lastCallOutcome?: CallOutcome;
 }
 
 /**
@@ -26,7 +27,7 @@ export interface RuntimeStateWithoutContext {
   callIndex: number;
   featureStates: FeatureCheckpoint[];
   usageStats?: UsageStatsSnapshot;
-  lastCallOutcome?: import('./lifecycle.js').CallOutcome;
+  lastCallOutcome?: CallOutcome;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname } from 'path';
 import type {
   AgentFeature,
   FeatureContext,
@@ -240,7 +240,7 @@ export class ExampleFeature implements AgentFeature {
     return Decision.Continue;
   }
 
-  async handleStepFinish(ctx: StepFinishDecisionContext): Promise<typeof Decision.Continue> {
+  async handleStepFinish(_ctx: StepFinishDecisionContext): Promise<typeof Decision.Continue> {
     // 典型用法：
     // - 统计本轮是否命中特定工具
     // - 决定是否继续下一轮

@@ -2,8 +2,6 @@
  * LSP Feature 类型定义
  */
 
-import type { ChildProcessWithoutNullStreams } from 'child_process';
-
 /**
  * LSP Server handle returned by spawn functions
  */

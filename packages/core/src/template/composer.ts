@@ -3,7 +3,7 @@
  * 支持流式 API 和灵活拼接
  */
 
-import type { TemplateSource, PlaceholderContext, TemplateResult } from './types.js';
+import type { TemplateSource, PlaceholderContext, TemplateResult, ConditionalSource } from './types.js';
 import { TemplateLoader } from './loader.js';
 import { PlaceholderResolver } from './resolver.js';
 import type { DataSourceRegistry } from './data-source.js';
@@ -266,7 +266,7 @@ export class TemplateComposer {
 
     // 到这里，source 应该是对象类型的 TemplateSource
     // 但由于 TypeScript 的类型系统限制，我们需要断言
-    const objSource = source as Exclude<TemplateSource, string> & { file?: string; conditional?: import('./types.js').ConditionalSource };
+    const objSource = source as Exclude<TemplateSource, string> & { file?: string; conditional?: ConditionalSource };
 
     // { conditional: ... }
     if (objSource.conditional) {

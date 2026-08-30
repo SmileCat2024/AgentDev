@@ -218,7 +218,9 @@ export function emitTurnCompleted(turn: number, usage?: TurnUsage): void {
  * - CallOutcome（agent.ts 主链路）：展开为结构化 TurnFailure
  * - 简单 message（宿主致命错误等）：仅带 message
  */
-export function emitTurnFailed(turn: number, source: string | import('./lifecycle.js').CallOutcome): void {
+import type { CallOutcome } from './lifecycle.js';
+
+export function emitTurnFailed(turn: number, source: string | CallOutcome): void {
   if (typeof source === 'string') {
     emitSessionEvent({ type: 'turn.failed', turn, error: { message: source } });
     return;

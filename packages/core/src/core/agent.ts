@@ -10,8 +10,8 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, ToolCall, Tool, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver } from './types.js';
-import type { AgentFeature, FeatureInitContext, FeatureContext, ContextInjector } from './feature.js';
+import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver } from './types.js';
+import type { AgentFeature, FeatureInitContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, type ContextSnapshot } from './context.js';
@@ -35,12 +35,11 @@ import {
   type RuntimeStateWithoutContext,
   type AgentSessionSnapshot,
   type SessionStore,
-  type CallRollbackSnapshot,
   type CallRollbackSnapshotV2,
   type NamedCheckpoint,
 } from './session-store.js';
 import type { ContextBoundaryV2 } from './context.js';
-import { UsageStats, type UsageStatsSnapshot } from './usage.js';
+import { UsageStats } from './usage.js';
 import type {
   ToolContext,
   ToolResult,
@@ -56,6 +55,7 @@ import type {
   SubAgentUpdateContext,
   SubAgentDestroyContext,
   SubAgentInterruptContext,
+  CallOutcome,
 } from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
 import { DataSourceRegistry } from '../template/data-source.js';
@@ -68,17 +68,16 @@ import { fileURLToPath } from 'url';
 
 // 导入重构后的模块
 import { HookErrorHandling, executeHook } from './agent/hooks-executor.js';
-import { type LifecycleHooks } from './agent/lifecycle-hooks.js';
 import { TemplateResolver } from './agent/template-resolver.js';
 import { resolveFeatureOrder, orderErrorsToError } from './feature-graph.js';
 import { validatePolicyUniqueness, issuesToError } from './hook-declarations.js';
 import { ToolExecutor } from './agent/tool-executor.js';
 import { ReActLoopRunner } from './agent/react-loop.js';
-import type { DebugPusher } from './agent/types.js';
+import type { DebugPusher, ReActResult } from './agent/types.js';
 
 // 导入钩子注册表
-import { HooksRegistry, type HookExecutionResult, type HookInvocationObserver } from './hooks-registry.js';
-import { CoreLifecycle, Decision } from './lifecycle.js';
+import { HooksRegistry, type HookInvocationObserver } from './hooks-registry.js';
+import { CoreLifecycle } from './lifecycle.js';
 
 // Re-export ContextSnapshot and HookErrorHandling for convenience
 export type { ContextSnapshot };
@@ -170,7 +169,7 @@ class AgentBase {
 
   // 中断控制：外部可通过 interrupt() 中断正在运行的 onCall
   private _abortController: AbortController | null = null;
-  private _lastCallOutcome: import('./lifecycle.js').CallOutcome | null = null;
+  private _lastCallOutcome: CallOutcome | null = null;
 
   // Step 级自动保存配置
   private _stepAutoSave?: { sessionId: string; store: SessionStore };
@@ -323,7 +322,7 @@ class AgentBase {
    * 由输入管线（user-turn 元数据）携带，在 CallStart 反向钩子前派发给
    * 对应 feature 消费（见 dispatchTurnActivations）。
    */
-  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[]): Promise<import('./lifecycle.js').CallOutcome> {
+  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[]): Promise<CallOutcome> {
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
     }
@@ -351,11 +350,11 @@ class AgentBase {
   }
 
   /** 最近一次已结束 Call 的结构化终态；没有执行历史时返回 null。 */
-  getLastCallOutcome(): import('./lifecycle.js').CallOutcome | null {
+  getLastCallOutcome(): CallOutcome | null {
     return this._lastCallOutcome ? { ...this._lastCallOutcome } : null;
   }
 
-  private async executeCall(input: string, images?: ImageInput[], activations?: string[]): Promise<import('./lifecycle.js').CallOutcome> {
+  private async executeCall(input: string, images?: ImageInput[], activations?: string[]): Promise<CallOutcome> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
     if (this._lifecycleState !== 'active') {
@@ -529,7 +528,7 @@ class AgentBase {
 
       // 会话事件流：turn.completed / turn.failed
       try {
-        const { emitSessionEvent, emitTurnCompleted, emitTurnFailed } = await import('./session-events.js');
+        const { emitTurnCompleted, emitTurnFailed } = await import('./session-events.js');
         if (result.completed) {
           const callUsage = this.usageStats.getCallUsage(this._callIndex)?.totalUsage;
           emitTurnCompleted(
@@ -581,7 +580,7 @@ class AgentBase {
         );
       }
 
-      const outcome: import('./lifecycle.js').CallOutcome = {
+      const outcome: CallOutcome = {
         status: 'failed',
         reason: 'error',
         response: errorMsg,
@@ -1744,7 +1743,7 @@ class AgentBase {
    * feature 调用可选方法 onCapabilityActivations；单个 feature 失败
    * 不阻断其余派发，也不阻断本轮 call。
    */
-  async dispatchTurnActivations(refs: string[], context: import('./context.js').Context): Promise<void> {
+  async dispatchTurnActivations(refs: string[], context: Context): Promise<void> {
     if (!Array.isArray(refs) || refs.length === 0) return;
     // 直接调用（测试 / 宿主工具）时 registry 可能尚未收集，确保幂等初始化
     await this.ensureFeatureTools();
@@ -2011,7 +2010,7 @@ class AgentBase {
           `Feature '${featureName}' reload failed at stage '${stage}', and rollback also failed. ` +
             `Original error: ${error instanceof Error ? error.message : String(error)}. ` +
             `Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
-          { cause: error },
+          { cause: rollbackError },
         );
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -2244,7 +2243,7 @@ class AgentBase {
         hooksRegistry: this.hooksRegistry,
         recordUsage: (callIndex: number, step: number, usage: UsageInfo, model?: ModelUsageKey) => this.recordUsage(callIndex, step, usage, model),
         endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
-        dispatchTurnActivations: (refs: string[], context: import('./context.js').Context) => this.dispatchTurnActivations(refs, context),
+        dispatchTurnActivations: (refs: string[], context: Context) => this.dispatchTurnActivations(refs, context),
         stepSaveFn: this._createStepSaveFn(),
         peekContinuationRequest: () => this._continuationRequest,
         // 模型热切换族（ADR-0009）：hook ctx 的 agent 是 facade，转发到本体，
@@ -2279,9 +2278,9 @@ class AgentBase {
   }
 
   private createCallOutcome(
-    result: import('./agent/types.js').ReActResult,
+    result: ReActResult,
     startedAt: number,
-  ): import('./lifecycle.js').CallOutcome {
+  ): CallOutcome {
     const status = result.completed
       ? 'completed'
       : result.finishReason === 'cancelled'

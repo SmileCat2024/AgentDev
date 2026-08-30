@@ -263,9 +263,8 @@ export async function makeSnapshot(
         const lastBackup = latestSnapshot.trackedFileBackups[trackingPath]
         const nextVersion = lastBackup ? lastBackup.version + 1 : 1
 
-        let fileStats: Stats | undefined
         try {
-          fileStats = await stat(absolutePath)
+          await stat(absolutePath)
         } catch (e: any) {
           if (e.code === 'ENOENT') {
             // 文件被删了

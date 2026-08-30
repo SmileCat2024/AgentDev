@@ -4,7 +4,7 @@
  */
 
 import { readdir, readFile } from 'fs/promises';
-import { resolve, isAbsolute, join, normalize, dirname, isAbsolute as pathIsAbsolute } from 'path';
+import { resolve, isAbsolute, join, normalize } from 'path';
 import { existsSync } from 'fs';
 import type { SkillMetadata, SkillsOptions } from './types.js';
 import { cwd as processCwd } from 'process';

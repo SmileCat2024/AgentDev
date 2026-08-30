@@ -7,11 +7,6 @@ export interface LoggerBindings extends LogContextRef {
   tags?: string[];
 }
 
-interface LoggerOptions {
-  namespace?: string;
-  bindings?: LoggerBindings;
-}
-
 export interface Logger {
   trace(message: string, data?: unknown): void;
   debug(message: string, data?: unknown): void;

@@ -83,7 +83,7 @@ export default {
         const lang = ext === 'ts' ? 'typescript' : (ext === 'js' ? 'javascript' : (ext === 'py' ? 'python' : ext));
         try {
           highlightedLine = hljs.highlight(codeLine, { language: lang }).value;
-        } catch (e) {
+        } catch {
           highlightedLine = hljs.highlightAuto(codeLine).value;
         }
       } else {

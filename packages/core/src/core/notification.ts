@@ -14,7 +14,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { Notification, NotificationCategory, LLMPhase } from './types.js';
+import type { Notification, LLMPhase } from './types.js';
 import type { CallOutcome } from './lifecycle.js';
 import { DebugHub } from './debug-hub.js';
 

@@ -4,12 +4,13 @@
  * 封装单个工具的执行逻辑
  */
 
-import type { ToolCall, Message, ToolExecutionContext, ToolTerminationReason } from '../types.js';
+import type { ToolCall, ToolExecutionContext, ToolTerminationReason } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
 import type { Context } from '../context.js';
 import type { AgentFeature, ContextInjector } from '../feature.js';
 import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext, ToolResultTransformContext } from '../lifecycle.js';
 import type { ToolExecResult } from '../context.js';
+import type { CallContinuationRequest } from '../continuation.js';
 import type { HooksRegistry } from '../hooks-registry.js';
 import { CoreLifecycle, normalizeDecision, Decision } from '../lifecycle.js';
 import { isWithImagesResult } from '../tool-result-images.js';
@@ -114,7 +115,7 @@ export class ToolExecutor {
     input: string,
     context: Context,
     step: number,
-    callIndex: number  // 用户交互序号
+    _callIndex: number  // 用户交互序号
   ): Promise<ToolExecResult> {
     return await runWithLogScope({
       step,
@@ -308,7 +309,7 @@ export class ToolExecutor {
         // 注入 continuation request sink（供控制工具使用）
         toolContext = {
           ...(toolContext ?? {}),
-          registerContinuationRequest: (request: import('../continuation.js').CallContinuationRequest) => {
+          registerContinuationRequest: (request: CallContinuationRequest) => {
             this.parentAgent.registerContinuationRequest(request);
           },
         };

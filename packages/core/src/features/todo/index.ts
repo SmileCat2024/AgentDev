@@ -11,7 +11,7 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname } from 'path';
 import { readFile } from 'fs/promises';
 import type {
   AgentFeature,
@@ -22,7 +22,6 @@ import type {
 } from '../../core/feature.js';
 import type { HookDeclarations } from '../../core/hook-declarations.js';
 import { CoreLifecycle } from '../../core/lifecycle.js';
-import type { Context } from '../../core/context.js';
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { StepStartContext, StepFinishDecisionContext, CallStartContext } from '../../core/lifecycle.js';
 import { Decision } from '../../core/lifecycle.js';
@@ -136,7 +135,7 @@ export class TodoFeature implements AgentFeature {
       try {
         this.reminderContent = await readFile(templatePath, 'utf-8');
         console.log('[TodoFeature] Loaded reminder template from: ' + templatePath);
-      } catch (e) {
+      } catch {
         console.log('[TodoFeature] Failed to load template, using default reminder');
         // 保持默认 reminder
       }

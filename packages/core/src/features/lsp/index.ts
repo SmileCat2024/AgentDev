@@ -133,6 +133,7 @@ export class LspFeature implements AgentFeature {
 
   constructor(config: LspFeatureConfig = {}) {
     this.config = {
+      // eslint-disable-next-line no-restricted-syntax -- 防御性默认值，onInitiate 会用 ctx.config.workspaceDir 覆盖
       workdir: config.workdir || process.cwd(),
       binDir: config.binDir || path.join(os.homedir(), '.agentdev', 'lsp-bin'),
       disableDownload: config.disableDownload ?? false,

@@ -81,6 +81,7 @@ export class OutputGuardFeature implements AgentFeature {
     this.config = {
       hardLimit: config.hardLimit ?? DEFAULT_HARD_LIMIT,
       fieldLimit: config.fieldLimit ?? DEFAULT_FIELD_LIMIT,
+      // eslint-disable-next-line no-restricted-syntax -- 防御性默认值，仅用于临时文件落盘目录；宿主应显式传 workdir
       workdir: config.workdir ?? process.cwd(),
       toolOverrides: config.toolOverrides ?? {},
     };

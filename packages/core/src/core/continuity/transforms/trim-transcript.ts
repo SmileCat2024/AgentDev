@@ -10,7 +10,6 @@
  * `TrimTranscriptTransformation`。宿主侧的写盘、文件路径等职责不在此处。
  */
 
-import type { Message } from '../../types.js';
 import type { AgentSessionSnapshot } from '../../session-store.js';
 import type {
   SessionTransformation,

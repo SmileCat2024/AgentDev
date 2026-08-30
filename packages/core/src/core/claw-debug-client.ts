@@ -187,7 +187,7 @@ export class ClawDebugClient {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Unable to reach Claw runtime at ${this.runtimeUrl} while waiting for user input: ${message}`);
+        throw new Error(`Unable to reach Claw runtime at ${this.runtimeUrl} while waiting for user input: ${message}`, { cause: error });
       }
 
       if (response.ok) {
@@ -269,7 +269,7 @@ export class ClawDebugClient {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Unable to reach Claw runtime at ${this.runtimeUrl}: ${message}`);
+      throw new Error(`Unable to reach Claw runtime at ${this.runtimeUrl}: ${message}`, { cause: error });
     }
 
     if (!response.ok) {

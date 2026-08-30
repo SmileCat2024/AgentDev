@@ -4,17 +4,13 @@
  */
 
 import { readFile } from 'fs/promises';
-import { resolve, dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 import { existsSync } from 'fs';
 import type {
   TemplateLoaderOptions,
   CacheStats,
   TemplateError,
 } from './types.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const projectRoot = resolve(dirname(__filename), '..');
 
 /**
  * 模板加载器
@@ -89,7 +85,7 @@ export class TemplateLoader {
   /**
    * 加载模板（同步）
    */
-  loadSync(templatePath: string): string {
+  loadSync(_templatePath: string): string {
     throw new Error('Synchronous load not implemented. Use async load() instead.');
   }
 

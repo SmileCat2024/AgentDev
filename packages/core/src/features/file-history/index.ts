@@ -66,6 +66,7 @@ export class FileHistoryFeature implements AgentFeature {
   private readonly workspaceDir: string
 
   constructor(config: FileHistoryFeatureConfig = {}) {
+    // eslint-disable-next-line no-restricted-syntax -- 防御性默认值，共享进程下返回 Claw 根目录；宿主应显式传 workspaceDir
     this.workspaceDir = config.workspaceDir || process.cwd()
   }
 

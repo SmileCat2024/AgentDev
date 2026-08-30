@@ -3,7 +3,7 @@
  * 定义 Agent 生命周期钩子相关的类型
  */
 
-import type { ToolCall, Tool, LLMResponse, Message } from './types.js';
+import type { ToolCall, Tool, LLMResponse } from './types.js';
 import { type Context, type ToolExecResult } from './context.js';
 import type { Agent } from './agent.js';
 import type { AgentFeature } from './feature.js';

@@ -5,7 +5,6 @@
  */
 
 import type { Context } from '../context.js';
-import type { ToolExecResult } from '../context.js';
 import type { ToolCall } from '../types.js';
 import type { ContextInjector } from '../feature.js';
 import type { Message } from '../types.js';

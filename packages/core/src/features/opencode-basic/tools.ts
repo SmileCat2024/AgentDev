@@ -20,6 +20,7 @@ const DEFAULT_READ_LIMIT = 2000;
 const MAX_LINE_LENGTH = 2000;
 const MAX_BYTES = 50 * 1024;
 const SEARCH_LIMIT = 100;
+// eslint-disable-next-line no-restricted-syntax -- 仅作工具函数默认参数的兜底；OpencodeBasicFeature 总是显式传入 workspaceDir
 const DEFAULT_WORKSPACE_DIR = process.cwd();
 
 const IGNORE_PATTERNS = [
@@ -1667,7 +1668,7 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       };
     } catch (error: any) {
       if (error.message?.includes('Search was aborted') || context?.signal?.aborted) {
-        throw new Error('Search was aborted');
+        throw new Error('Search was aborted', { cause: error });
       }
       throw error;
     }

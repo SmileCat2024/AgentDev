@@ -14,7 +14,6 @@ import type { Tool } from '../../core/types.js';
 import { createTool } from '../../core/tool.js';
 import { withDisplay } from '../../core/tool-result-display.js';
 import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus } from './types.js';
-
 /**
  * Todo 工具工厂类
  * 用于创建 Todo 工具，需要传入 Feature 实例来访问任务数据
@@ -80,8 +79,8 @@ export class TodoToolFactory {
         required: ['subject'],
       },
       render: { call: 'task-create', result: 'task-create' },
-      execute: ({ subject, description = '' }) => {
-        const task = self.createTaskFn(subject, description);
+      execute: ({ subject, description = '' }: { subject?: unknown; description?: unknown }) => {
+        const task = self.createTaskFn(String(subject), String(description));
         // 模型只看极简确认；前端通过 display 看到完整信息
         return Promise.resolve(withDisplay(
           JSON.stringify({ ok: true, taskId: task.id, status: task.status }),
@@ -129,7 +128,7 @@ export class TodoToolFactory {
         },
       },
       render: { call: 'task-list', result: 'task-list' },
-      execute: ({ status = 'all' }) => {
+      execute: ({ status = 'all' }: { status?: TaskStatus | 'all' }) => {
         const tasks = self.listTasksFn(status === 'all' ? undefined : { status });
         const summary = {
           total: tasks.length,
@@ -180,8 +179,9 @@ export class TodoToolFactory {
         required: ['taskId'],
       },
       render: { call: 'task-update', result: 'task-update' },
-      execute: ({ taskId, ...updates }) => {
-        const task = self.updateTaskFn(taskId, updates);
+      execute: (rawArgs: Record<string, unknown>) => {
+        const { taskId, ...rest } = rawArgs as unknown as { taskId: string } & TodoTaskUpdate;
+        const task = self.updateTaskFn(taskId, rest);
         if (!task) {
           return Promise.resolve({ ok: false, error: `任务 ${taskId} 不存在` });
         }

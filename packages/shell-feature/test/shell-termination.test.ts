@@ -21,6 +21,7 @@ import {
   createShellCommandTool,
   createPowerShellTool,
   findGitBashPath,
+  findPowerShellPath,
 } from '../src/index.js';
 
 const workdir = mkdtempSync(join(tmpdir(), 'agentdev-shell-024-'));
@@ -66,6 +67,8 @@ function parseMetadata(output: string): Record<string, unknown> {
 
 const bashPath = findGitBashPath();
 const BASH_SKIP = !bashPath ? 'bash not available' : false;
+// powershell 三态测试依赖本机 pwsh 二进制；未安装时跳过（与 bash 的 skip 策略对称）
+const PS_SKIP = !findPowerShellPath() ? 'powershell not available' : false;
 
 class ShellIntegrationLLM implements LLMClient {
   public readonly observedToolResults: string[] = [];
@@ -140,7 +143,9 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
     const callPromise = agent.onCallDetailed('run and interrupt shell command');
 
     while (!toolStarted) await new Promise(resolve => setTimeout(resolve, 2));
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // LLM 返回后 executor 还需 spawn 子进程；须等 echo 输出到达 pipe 再打断。
+    // 100ms 在高负载机器上会落在 echo 写出之前（interrupt 后 outputBytes=0）。
+    await new Promise(resolve => setTimeout(resolve, 400));
     expect(agent.interrupt()).toBe(true);
 
     const outcome = await callPromise;
@@ -240,7 +245,7 @@ describe('powershell 三态同 bash（ticket 024 验收）', () => {
     expect(ps.timeout).toEqual(bash.timeout);
   });
 
-  it.skipIf(BASH_SKIP)('超时：部分输出 + 元数据块（reason=timeout），与 bash 同构', async () => {
+  it.skipIf(PS_SKIP)('超时：部分输出 + 元数据块（reason=timeout），与 bash 同构', async () => {
     const tool = createPowerShellTool('test ps', { workdir });
     const ctx = makeContext({ terminateAfterMs: 300 });
     const result = await tool.execute(
@@ -256,7 +261,7 @@ describe('powershell 三态同 bash（ticket 024 验收）', () => {
     expect(existsSync(String(meta['logPath']))).toBe(true);
   }, 15_000);
 
-  it.skipIf(BASH_SKIP)('用户打断：kill 后 resolve（reason=user），与 bash 同构', async () => {
+  it.skipIf(PS_SKIP)('用户打断：kill 后 resolve（reason=user），与 bash 同构', async () => {
     const tool = createPowerShellTool('test ps', { workdir });
     const ctx = makeContext({ terminateAfterMs: 200, reason: 'user' });
     const result = await tool.execute(
@@ -270,7 +275,7 @@ describe('powershell 三态同 bash（ticket 024 验收）', () => {
     expect(meta['reason']).toBe('user');
   }, 15_000);
 
-  it.skipIf(BASH_SKIP)('正常完成：无元数据块，与 bash 同构', async () => {
+  it.skipIf(PS_SKIP)('正常完成：无元数据块，与 bash 同构', async () => {
     const tool = createPowerShellTool('test ps', { workdir });
     const ctx = makeContext();
     const result = await tool.execute({ command: `Write-Output ps-normal` }, ctx) as string;

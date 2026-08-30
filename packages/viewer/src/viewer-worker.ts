@@ -10,7 +10,7 @@ import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync, readFile } from 'fs';
 import { createHash } from 'crypto';
 import { join, resolve, sep, extname } from 'path';
-import { type Message, type Tool, type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, type ToolMetadata, getDefaultUDSPath } from '@agentdevjs/core';
+import { type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, getDefaultUDSPath } from '@agentdevjs/core';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -22,8 +22,6 @@ import {
   type DebuggerLogQuery,
 } from './debugger-mcp.js';
 import {
-  RENDER_TEMPLATES,
-  SYSTEM_RENDER_MAP,
   TOOL_DISPLAY_NAMES,
   getToolRenderConfig
 } from '@agentdevjs/core';
@@ -570,7 +568,7 @@ class ViewerWorker {
           }
         }
       }
-    } catch (e) {
+    } catch {
       // 忽略扫描错误
     }
 
@@ -880,7 +878,7 @@ class ViewerWorker {
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ success: true }));
-      } catch (e) {
+      } catch {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'Invalid request' }));
       }
@@ -1302,7 +1300,7 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, createdAt, projectRoot, templateMounts, templateEntries, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
+    const { agentId, name, projectRoot, templateMounts, templateEntries, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
     const session = this.getOrCreateSession(agentId, name);
 
     // 外部输入策略（'none' = 拒绝排队注入，如测试沙盒）

@@ -8,12 +8,12 @@
 import OpenAI from 'openai';
 import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '@agentdevjs/core';
 import { OPENAI_THINKING_EFFORTS } from '@agentdevjs/core';
-import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageInfo, ThinkingBlock, ImageInput } from '@agentdevjs/core';
+import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageInfo, ThinkingBlock } from '@agentdevjs/core';
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
-import { classifyAndWrapError, ClassifiedAPIError } from '@agentdevjs/core';
+import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
 

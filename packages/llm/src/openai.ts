@@ -3,7 +3,7 @@
  * 实现 LLMClient 接口
  */
 
-import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo, ImageInput } from '@agentdevjs/core';
+import type { LLMClient, Message, Tool, LLMResponse, ToolCall, UsageInfo } from '@agentdevjs/core';
 import type { LLMPhase } from '@agentdevjs/core';
 import type { CustomHeaderEntry, ThinkingEffort } from '@agentdevjs/core';
 import { OPENAI_THINKING_EFFORTS } from '@agentdevjs/core';
@@ -11,8 +11,8 @@ import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import OpenAI from 'openai';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
-import { classifyAndWrapError, ClassifiedAPIError } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
 import { wrapReminder } from './reminder.js';
@@ -24,13 +24,6 @@ function ensureHttpClientInitialized() {
     httpClientInitPromise = initHttpClient();
   }
   return httpClientInitPromise;
-}
-
-// DeepSeek / GLM 等模型扩展了OpenAI的响应格式：reasoning_content 与 reasoning
-// 是不同后端承载思考增量的两种扩展字段
-interface ExtendedChatCompletionMessage extends OpenAI.Chat.ChatCompletionMessage {
-  reasoning_content?: string;
-  reasoning?: string;
 }
 
 /**

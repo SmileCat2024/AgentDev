@@ -1,9 +1,9 @@
 import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } from '@agentdevjs/core';
 import { resolveCustomHeaders } from './custom-headers.js';
-import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo, ImageInput } from '@agentdevjs/core';
+import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '@agentdevjs/core';
 import type { LLMPhase } from '@agentdevjs/core';
-import { DEFAULT_MAX_RETRIES, getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
-import { classifyAPIError, classifyAndWrapError, ClassifiedAPIError } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';

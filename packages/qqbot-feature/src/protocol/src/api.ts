@@ -687,18 +687,20 @@ export function isBackgroundTokenRefreshRunning(appId?: string): boolean {
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    if (signal) {
-      if (signal.aborted) {
-        clearTimeout(timer);
-        reject(new Error("Aborted"));
-        return;
-      }
-      const onAbort = () => {
-        clearTimeout(timer);
-        reject(new Error("Aborted"));
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      reject(new Error("Aborted"));
+      return;
     }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("Aborted"));
+    };
+    const timer = setTimeout(() => {
+      // 正常到期时移除 abort 监听：signal 长期存活（后台刷新循环），
+      // 不移除会随每次 sleep 累积一个监听，触发 MaxListenersExceededWarning。
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

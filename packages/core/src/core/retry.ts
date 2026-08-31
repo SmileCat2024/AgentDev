@@ -226,7 +226,12 @@ export function withDeadline(signal: AbortSignal | undefined, timeoutMs?: number
       merged.abort(signal.reason);
       return merged.signal;
     }
-    signal.addEventListener('abort', () => merged.abort(signal.reason), { once: true });
+    const onExternalAbort = () => merged.abort(signal.reason);
+    signal.addEventListener('abort', onExternalAbort, { once: true });
+    // 外部 signal 通常是长期存活的 agent signal：deadline 到点后必须解除上面的
+    // listener，否则每次模型调用都会在外部 signal 上累积一个监听
+    // （MaxListenersExceededWarning / EventTarget 泄漏）。
+    merged.signal.addEventListener('abort', () => signal.removeEventListener('abort', onExternalAbort), { once: true });
   }
   const timer = setTimeout(
     () => merged.abort(new DOMException(`Model call deadline exceeded after ${timeoutMs}ms`, 'TimeoutError')),

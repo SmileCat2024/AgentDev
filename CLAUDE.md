@@ -528,6 +528,36 @@ main().catch(error => {
 - 双路径 feature（同时存在于 `packages/<name>-feature/` 和 `src/features/<name>/`）：两侧源码都要改、两个构建都要跑。当前包括 shell、audit、audio-feedback、memory、qqbot、tts、visual、websearch、plugin-compat。
 - tgz 不是交付终点：复制到 `../AgentDevClaw/resources/features/` 后，还要处理 package-lock integrity（file: 依赖通常直接删包重装 `npm install`），并验证 `node_modules` 中代码与资源已就位。
 
+## 框架包发布（npm）
+
+`@agentdevjs/*` 已发布 npm。发布模型：**版本号即发布批次号**——锁步四包永远同版本同批发布，版本号不承载 API 兼容承诺；兼容性由「消费端 exact pin + 两仓同批升级」承担，而不是 range。每次发布对应一次 Claw 同步升级（`agentdev:published`）。
+
+硬约束：
+
+- llm / viewer / mcp 对 `@agentdevjs/core` 的依赖必须是**精确版本**（等于自身 version，无 caret）。`npm run check:versions` 是 CI 门禁，range 声明会被拒。
+- 生态 feature 包（`packages/*-feature`）不参与锁步，其 peerDependencies 保持 range；只有生态包自身内容变化需要重发时才顺带调整。
+- 判定本批要发的生态包：以上一版发布前最后一个 commit 为 base，`git diff --name-only <base>..HEAD -- packages/` 逐目录核对。注意只有 `src/`（进 dist）的变更才需要重发——仅 `test/` 变更的包 tarball 内容不变，继续用旧版本。
+
+发布序列（顺序不可换）：
+
+```bash
+npm login                          # 发布前提；whoami 401 就是没登录
+# 1. bump：packages/{core,llm,viewer,mcp}/package.json 的 version 改成同一新号
+#    （llm/viewer/mcp 对 core 的依赖同步改成同一精确版本）
+npm run check:versions && npm run check:core-deps && npm test
+npm run build                      # prepublishOnly 只构建自身；llm 等的构建依赖 core dist 先就位
+# 2. 按序发布，core 必须最先（下游依赖 core 精确版本，core 缺席会让 install 直接报 No matching version）
+npm publish -w @agentdevjs/core
+npm publish -w @agentdevjs/llm -w @agentdevjs/viewer -w @agentdevjs/mcp
+# 3. 发齐后才允许切 Claw：npm view 确认四包新版本可见 → Claw 仓库跑 agentdev:published
+```
+
+易错：
+
+- 锁步包发布中断（registry 半新半旧）时，修复方式是补发缺失包到同一版本，而不是回退已发布的。
+- 生态包 tgz 的交付链（构建 → 打包 → 同步 Claw resources/features）见上一节，与本节框架包发布是两条独立链路，不要混做。
+- 伞包 `agentdev` 已退役，不要再发；其 deprecated 标记状态用 `npm view agentdev deprecated` 检查。
+
 ## Where To Look Next
 
 如果你是在写或改 Feature，不要先扩写这里。

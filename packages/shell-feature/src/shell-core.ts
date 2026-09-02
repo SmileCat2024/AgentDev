@@ -90,19 +90,22 @@ function timestampSlug(): string {
  * 截断输出并持久化完整内容到磁盘。
  *
  * 当输出超过 limit 时：
- * 1. 将完整输出写入 workdir/.agentdev/temp/bash-output-<timestamp>-<random>.log
+ * 1. 将完整输出写入 workdir/.agentdev/temp/<filePrefix>-<timestamp>-<random>.log
+ *    （filePrefix 缺省 bash-output；非 bash 调用方传自己的工具名，便于溯源）
  * 2. 返回截断版本（头 60% + 尾 40%），中间插入截断提示和文件路径引用
  *
  * 如果写盘失败，fallback 到纯截断（不丢失截断提示，但完整内容不可恢复）。
  *
  * @param forcePersist true 时无论长度一律落盘（终止态使用：被杀进程的已积累
  *   输出必须可恢复），并返回 logPath 供元数据引用。
+ * @param filePrefix 落盘文件名前缀（缺省 'bash-output'，bash 工具行为不变）
  */
 export async function processOutputWithPersistence(
   output: string,
   workdir: string,
   limit: number = MAX_OUTPUT_LENGTH,
   forcePersist: boolean = false,
+  filePrefix: string = 'bash-output',
 ): Promise<[string, string | null]> {
   if (!forcePersist && output.length <= limit) return [output, null];
 
@@ -110,7 +113,7 @@ export async function processOutputWithPersistence(
   let filePath: string | null = null;
   try {
     const tempDir = path.join(workdir, '.agentdev', 'temp');
-    const fileName = `bash-output-${timestampSlug()}.log`;
+    const fileName = `${filePrefix}-${timestampSlug()}.log`;
     filePath = path.join(tempDir, fileName);
 
     await mkdir(tempDir, { recursive: true });

@@ -1369,6 +1369,21 @@ class ViewerWorker {
       session.overview = overview;
     }
 
+    // call 运行状态对账：agent 进程被关闭时 call.finish 无法送达，session 里
+    // 会残留上一个进程的 callActive / activeToolNames / currentState，导致前端
+    // 状态条永久停留在"正在执行工具 · X"。重新注册即新进程接管（同一 agentId
+    // 只有一个活跃 runtime 进程），注册快照是完整事实来源，这里与下方 inputLease
+    // 对账同一原则：旧进程未终结的 call 状态一律作废。例外：注册携带活跃输入
+    // 租约说明是同进程重连（call 真实存活，等待用户输入中），运行状态保留。
+    const hasResumableInputLease = !!activeInputRequest;
+    if (!hasResumableInputLease
+      && (session.callActive || (session.runtimeState?.activeToolCount ?? 0) > 0 || session.currentState)) {
+      session.callActive = false;
+      session.runtimeState = this.createEmptyRuntimeState();
+      session.currentState = null;
+      console.log(`[Viewer Worker] Agent ${agentId} 重新注册，已作废旧进程遗留的 call 运行状态`);
+    }
+
     // 恢复活跃的输入请求（用于重连后恢复输入框）
     if (activeInputRequest) {
       // 连接重建是状态对账而不是追加：DebugHub 给出的 lease 是这个 Agent

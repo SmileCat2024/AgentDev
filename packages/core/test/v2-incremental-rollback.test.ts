@@ -134,15 +134,15 @@ describe('V2 incremental rollback', () => {
     });
   });
 
-  describe('session serialization v2', () => {
-    it('should output version 2 with boundary checkpoints', async () => {
+  describe('session serialization v2.1', () => {
+    it('should output version 2.1 with boundary checkpoints', async () => {
       const feature = new CounterFeature();
       const agent = new TestAgent(feature);
       await agent.onCall('first');
       await agent.onCall('second');
 
       const snapshot = await agent.createSessionSnapshot('test-session');
-      expect(snapshot.version).toBe(2);
+      expect(snapshot.version).toBe(2.1);
       expect(snapshot.rollbackHistory).toHaveLength(2);
       expect(snapshot.rollbackHistory[0].kind).toBe('context-boundary');
       expect(snapshot.rollbackHistory[1].kind).toBe('context-boundary');
@@ -570,7 +570,7 @@ describe('V2 incremental rollback', () => {
 
       // Read back the raw file to verify version
       const raw = await store.load(sessionId);
-      expect(raw.version).toBe(2);
+      expect(raw.version).toBe(2.1);
       expect(raw.rollbackHistory[0].kind).toBe('context-boundary');
     });
   });

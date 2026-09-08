@@ -784,7 +784,8 @@ class AgentBase {
     const runtime = await this.captureRuntimeSnapshot(this.persistentContext, this._callIndex);
 
     return {
-      version: 2,
+      // 2.1 = v2 schema + 紧凑序列化（无缩进空白）。读取端对 1/2/2.1 均兼容。
+      version: 2.1,
       sessionId,
       savedAt: Date.now(),
       agentType: this.constructor.name,

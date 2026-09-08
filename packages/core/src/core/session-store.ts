@@ -140,7 +140,9 @@ export class FileSessionStore implements SessionStore {
    */
   private async atomicWriteJson(filePath: string, data: unknown): Promise<void> {
     const tmpPath = `${filePath}.tmp`;
-    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    // 紧凑序列化（v2.1 起）：会话文件可达数 MB，缩进空白曾占约 21% 体积；
+    // JSON.parse 对空白不敏感，读取端兼容全部历史格式。
+    await writeFile(tmpPath, JSON.stringify(data), 'utf-8');
     try {
       await rename(tmpPath, filePath);
     } catch (err) {

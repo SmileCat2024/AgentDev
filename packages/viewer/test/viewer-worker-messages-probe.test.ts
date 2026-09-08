@@ -250,6 +250,97 @@ describe('rewrite blind spot fix', () => {
   });
 });
 
+describe('explicit message push delta protocol', () => {
+  it('applies a validated full snapshot followed by append and tail deltas', () => {
+    const { worker, agentId } = createWorker();
+    const first = [makeMsg('user', 'hello'), makeMsg('assistant', 'hi')];
+
+    worker.handlePushMessages({ agentId, messages: first, mode: 'full', generation: 4 });
+    worker.handlePushMessages({
+      agentId,
+      messages: [makeMsg('tool', 'result')],
+      mode: 'append',
+      baseCount: 2,
+      generation: 4,
+    });
+    worker.handlePushMessages({
+      agentId,
+      messages: [makeMsg('tool', 'updated result')],
+      mode: 'tail',
+      baseCount: 3,
+      generation: 4,
+    });
+
+    expect(worker.agentSessions.get(agentId).messages).toEqual([
+      ...first,
+      makeMsg('tool', 'updated result'),
+    ]);
+  });
+
+  it('rejects a delta with the wrong base and waits for a full resync', () => {
+    const { worker, agentId } = createWorker();
+    const first = [makeMsg('user', 'hello')];
+
+    worker.handlePushMessages({ agentId, messages: first, mode: 'full', generation: 2 });
+    worker.handlePushMessages({
+      agentId,
+      messages: [makeMsg('assistant', 'lost')],
+      mode: 'append',
+      baseCount: 99,
+      generation: 2,
+    });
+
+    const session = worker.agentSessions.get(agentId);
+    expect(session.messages).toEqual(first);
+    expect(session._messagesNeedsResync).toBe(true);
+
+    // 即使后续 delta 的 base 恰好正确，也不应在 full 之前继续拼接。
+    worker.handlePushMessages({
+      agentId,
+      messages: [makeMsg('assistant', 'still blocked')],
+      mode: 'append',
+      baseCount: 1,
+      generation: 2,
+    });
+    expect(session.messages).toEqual(first);
+
+    worker.handlePushMessages({
+      agentId,
+      messages: [makeMsg('user', 'hello'), makeMsg('assistant', 'recovered')],
+      mode: 'full',
+      generation: 3,
+    });
+    expect(session.messages).toEqual([
+      makeMsg('user', 'hello'),
+      makeMsg('assistant', 'recovered'),
+    ]);
+    expect(session._messagesNeedsResync).toBe(false);
+    expect(session._messagesGeneration).toBe(3);
+  });
+
+  it('rejects tail deltas without a current message or with a stale generation', () => {
+    const { worker, agentId } = createWorker();
+    worker.handlePushMessages({
+      agentId,
+      messages: [makeMsg('user', 'hello')],
+      mode: 'full',
+      generation: 8,
+    });
+
+    worker.handlePushMessages({
+      agentId,
+      messages: [makeMsg('assistant', 'wrong generation')],
+      mode: 'tail',
+      baseCount: 1,
+      generation: 7,
+    });
+
+    const session = worker.agentSessions.get(agentId);
+    expect(session.messages).toEqual([makeMsg('user', 'hello')]);
+    expect(session._messagesNeedsResync).toBe(true);
+  });
+});
+
 describe('/messages incremental params', () => {
   function setupThreeMessages(): { worker: any; agentId: string; msgs: any[] } {
     const { worker, agentId } = createWorker();

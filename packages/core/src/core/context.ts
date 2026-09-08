@@ -184,6 +184,14 @@ export class Context {
   }
 
   /**
+   * 获取当前 Context lineage generation。
+   * 供调试传输层校验消息增量基线，不改变 Context 的 mutation 语义。
+   */
+  getGeneration(): number {
+    return this.generation;
+  }
+
+  /**
    * 获取最后一条消息
    */
   getLast(): Message | undefined {

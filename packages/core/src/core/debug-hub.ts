@@ -32,6 +32,7 @@ import {
 import { ClawDebugClient } from './claw-debug-client.js';
 import { getClawRuntimeUrl, resolveDebugTransportMode } from './debug-transport.js';
 import { getDebugCapabilities, type DebugCapabilities } from './debug-capabilities.js';
+import { asMessagePush, planMessagePush } from './message-push-state.js';
 
 // 前向声明 Agent 类型（避免循环依赖）
 type Agent = any;
@@ -104,6 +105,20 @@ export class DebugHub {
 
   // 缓存每个 Agent 的外部输入策略（用于重连后重新注册）
   private agentInputPolicy: Map<string, 'standard' | 'none'> = new Map();
+
+  // Agent → Viewer 的消息发送基线。仅用于决定是否安全发送 delta；Viewer
+  // 仍以 baseCount/generation 做最终校验，所有失配都会在下一次推送退回 full。
+  private agentMessagePushState = new Map<string, { messages: Message[]; generation: number }>();
+  // Claw HTTP 每个 Agent 只保留一个在途请求和一个最新待发送快照，
+  // 避免慢 runtime 下按推送次数积累闭包和完整消息数组。
+  private agentMessagePushQueues = new Map<string, {
+    active: boolean;
+    epoch: number;
+    pending?: { messages: Message[]; generation: number; forceFull?: boolean };
+  }>();
+  private agentMessageDeltaCounts = new Map<string, number>();
+  private agentMessagePushEpochs = new Map<string, number>();
+  private static readonly MESSAGE_FULL_RESYNC_INTERVAL = 64;
 
   // ========== 单例 ==========
   private constructor() {
@@ -455,6 +470,10 @@ export class DebugHub {
     if (deleted) {
       this.agentTemplatePayload.delete(agentId);
       this.agentInputPolicy.delete(agentId);
+      this.agentMessagePushState.delete(agentId);
+      this.agentMessagePushQueues.delete(agentId);
+      this.agentMessageDeltaCounts.delete(agentId);
+      this.agentMessagePushEpochs.set(agentId, (this.agentMessagePushEpochs.get(agentId) ?? 0) + 1);
       if (this.transportMode === 'claw') {
         void this.clawClient?.unregisterAgent(agentId).catch(error => {
           console.error(`[DebugHub] Claw unregisterAgent 失败: ${(error as Error).message}`);
@@ -471,19 +490,85 @@ export class DebugHub {
    * @param agentId Agent ID
    * @param messages 消息数组
    */
-  pushMessages(agentId: string, messages: Message[]): void {
+  pushMessages(agentId: string, messages: Message[], push?: { forceFull?: boolean }): void {
+    const generation = this.resolveAgentMessageGeneration(agentId);
+
     if (this.transportMode === 'claw') {
-      void this.clawClient?.pushMessages(agentId, messages).catch(error => {
-        console.error(`[DebugHub] Claw pushMessages 失败: ${(error as Error).message}`);
-      });
+      const epoch = this.agentMessagePushEpochs.get(agentId) ?? 0;
+      const queue = this.agentMessagePushQueues.get(agentId) ?? { active: false, epoch };
+      queue.pending = { messages, generation, forceFull: push?.forceFull };
+      this.agentMessagePushQueues.set(agentId, queue);
+      if (!queue.active) {
+        queue.active = true;
+        void this.drainClawMessageQueue(agentId, queue, epoch);
+      }
       return;
     }
 
-    this.sendToWorker({
-      type: 'push-messages',
-      agentId,
-      messages,
-    });
+    const previous = this.agentMessagePushState.get(agentId);
+    const deltaCount = this.agentMessageDeltaCounts.get(agentId) ?? 0;
+    const forceFull = push?.forceFull === true || deltaCount >= DebugHub.MESSAGE_FULL_RESYNC_INTERVAL;
+    const plan = forceFull
+      ? { mode: 'full' as const, messages, generation }
+      : planMessagePush(
+        previous?.messages,
+        messages,
+        generation,
+        previous?.generation ?? generation,
+      );
+    if (!plan) return;
+
+    const sent = this.sendToWorker(asMessagePush(agentId, plan));
+    if (sent) {
+      this.agentMessagePushState.set(agentId, { messages, generation });
+      this.agentMessageDeltaCounts.set(agentId, plan.mode === 'full' ? 0 : deltaCount + 1);
+    }
+  }
+
+  private async drainClawMessageQueue(
+    agentId: string,
+    queue: { active: boolean; epoch: number; pending?: { messages: Message[]; generation: number; forceFull?: boolean } },
+    epoch: number,
+  ): Promise<void> {
+    try {
+      while (queue.pending) {
+        const item = queue.pending;
+        queue.pending = undefined;
+        if (epoch !== (this.agentMessagePushEpochs.get(agentId) ?? 0)) return;
+        const previous = this.agentMessagePushState.get(agentId);
+        const deltaCount = this.agentMessageDeltaCounts.get(agentId) ?? 0;
+        const forceFull = item.forceFull === true || deltaCount >= DebugHub.MESSAGE_FULL_RESYNC_INTERVAL;
+        const plan = forceFull
+          ? { mode: 'full' as const, messages: item.messages, generation: item.generation }
+          : planMessagePush(
+            previous?.messages,
+            item.messages,
+            item.generation,
+            previous?.generation ?? item.generation,
+          );
+        if (!plan) continue;
+
+        const push = asMessagePush(agentId, plan);
+        await this.clawClient?.pushMessages(agentId, push.messages, {
+          mode: push.mode,
+          baseCount: 'baseCount' in push ? push.baseCount : undefined,
+          generation: push.generation,
+        });
+        if (epoch !== (this.agentMessagePushEpochs.get(agentId) ?? 0)) return;
+        this.agentMessagePushState.set(agentId, { messages: item.messages, generation: item.generation });
+        this.agentMessageDeltaCounts.set(agentId, push.mode === 'full' ? 0 : deltaCount + 1);
+      }
+    } catch (error) {
+      this.agentMessagePushState.delete(agentId);
+      this.agentMessageDeltaCounts.delete(agentId);
+      console.error(`[DebugHub] Claw pushMessages 失败: ${(error as Error).message}`);
+    } finally {
+      queue.active = false;
+      if (queue.pending) {
+        queue.active = true;
+        void this.drainClawMessageQueue(agentId, queue, epoch);
+      }
+    }
   }
 
   /**
@@ -863,6 +948,10 @@ export class DebugHub {
    * 确保 ViewerWorker 能够恢复所有 Agent 的注册信息
    */
   private reregisterAllAgents(): void {
+    // Re-registration is a full-sync boundary. Any delta baseline from the old
+    // Viewer connection is no longer trustworthy.
+    this.agentMessagePushState.clear();
+
     if (this.transportMode === 'claw') {
       for (const [id, data] of this.agents) {
         const hookInspector = (data.agent as any).buildHookInspectorSnapshot?.()
@@ -893,7 +982,10 @@ export class DebugHub {
           if (context && typeof context.getAll === 'function') {
             const messages = context.getAll();
             if (messages.length > 0) {
-              await this.clawClient?.pushMessages(id, messages);
+              await this.clawClient?.pushMessages(id, messages, {
+                mode: 'full',
+                generation: this.resolveAgentMessageGeneration(id),
+              });
             }
           }
         }).catch(error => {
@@ -957,11 +1049,16 @@ export class DebugHub {
       if (context && typeof context.getAll === 'function') {
         const messages = context.getAll();
         if (messages.length > 0) {
-          this.sendToWorker({
-            type: 'push-messages',
-            agentId: id,
+          const generation = this.resolveAgentMessageGeneration(id);
+          const sent = this.sendToWorker(asMessagePush(id, {
+            mode: 'full',
             messages,
-          });
+            generation,
+          }));
+          if (sent) {
+            this.agentMessagePushState.set(id, { messages, generation });
+            this.agentMessageDeltaCounts.set(id, 0);
+          }
           console.log(`[DebugHub] 恢复 Agent ${id} 的 ${messages.length} 条消息`);
         }
       }
@@ -1011,6 +1108,12 @@ export class DebugHub {
         }
       }
     }, delay);
+  }
+
+  private resolveAgentMessageGeneration(agentId: string): number {
+    const context = this.agents.get(agentId)?.agent?.getContext?.();
+    const generation = context?.getGeneration?.();
+    return Number.isInteger(generation) && generation >= 0 ? generation : 0;
   }
 
   /**
@@ -1068,7 +1171,7 @@ export class DebugHub {
   /**
    * 发送消息到 Worker
    */
-  private sendToWorker(msg: DebugHubIPCMessage): void {
+  private sendToWorker(msg: DebugHubIPCMessage): boolean {
     if (!this.udsClient || !this.clientReady) {
       // Do not present this as a delivered message. Stateful registrations and
       // input leases are reconciled by re-registerAllAgents on reconnect;
@@ -1079,8 +1182,9 @@ export class DebugHub {
         this.sendToWorkerWarnedTypes.add(msg.type);
         console.warn(`[DebugHub] ViewerWorker transport is not ready; deferred state will reconcile on reconnect (message=${msg.type})`);
       }
-      return;
+      return false;
     }
     this.sendViaUDS(msg);
+    return true;
   }
 }

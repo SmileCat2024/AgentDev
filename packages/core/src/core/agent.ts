@@ -2210,9 +2210,9 @@ class AgentBase {
 
     // Debug 推送接口
     const debugPusher: DebugPusher = {
-      pushMessages: (agentId: string, messages: Message[]) => {
+      pushMessages: (agentId: string, messages: Message[], push?: { forceFull?: boolean }) => {
         if (this.debugHub) {
-          this.debugHub.pushMessages(agentId, messages);
+          this.debugHub.pushMessages(agentId, messages, push);
         }
       },
     };

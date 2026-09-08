@@ -156,6 +156,8 @@ export type {
   AgentInfo,
   AgentSession,
   DebugHubIPCMessage,
+  MessagePushMode,
+  PushMessagesMsg,
   ImageInput,
   UserTurnInput,
   UserTurnSubmissionResult,

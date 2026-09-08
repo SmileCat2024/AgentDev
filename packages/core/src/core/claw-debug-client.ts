@@ -2,6 +2,7 @@ import type {
   AgentOverviewSnapshot,
   HookInspectorSnapshot,
   Message,
+  MessagePushMode,
   Notification,
   TodoPlanSnapshot,
   Tool,
@@ -119,8 +120,17 @@ export class ClawDebugClient {
     });
   }
 
-  async pushMessages(agentId: string, messages: Message[]): Promise<void> {
-    await this.pushEvent(agentId, 'message', { messages });
+  async pushMessages(
+    agentId: string,
+    messages: Message[],
+    push?: { mode?: MessagePushMode; baseCount?: number; generation?: number },
+  ): Promise<void> {
+    await this.pushEvent(agentId, 'message', {
+      messages,
+      ...(push?.mode ? { mode: push.mode } : {}),
+      ...(push?.baseCount !== undefined ? { baseCount: push.baseCount } : {}),
+      ...(push?.generation !== undefined ? { generation: push.generation } : {}),
+    });
   }
 
   async registerTools(agentId: string, tools: Tool[]): Promise<void> {
@@ -258,29 +268,34 @@ export class ClawDebugClient {
   }
 
   private async requestJson(path: string, init?: RequestInit): Promise<any> {
-    let response: Response;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      response = await fetch(`${this.runtimeUrl}${path}`, {
+      const response = await fetch(`${this.runtimeUrl}${path}`, {
         ...init,
+        signal: controller.signal,
         headers: {
           'content-type': 'application/json',
           ...(init?.headers ?? {}),
         },
       });
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Claw runtime request failed: ${response.status} ${response.statusText} ${body}`);
+      }
+
+      if (response.status === 204) {
+        return null;
+      }
+
+      return await response.json();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('Claw runtime request failed:')) throw error;
       throw new Error(`Unable to reach Claw runtime at ${this.runtimeUrl}: ${message}`, { cause: error });
+    } finally {
+      clearTimeout(timeout);
     }
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Claw runtime request failed: ${response.status} ${response.statusText} ${body}`);
-    }
-
-    if (response.status === 204) {
-      return null;
-    }
-
-    return response.json();
   }
 }

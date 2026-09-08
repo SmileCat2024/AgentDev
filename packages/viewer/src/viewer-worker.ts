@@ -1450,47 +1450,77 @@ class ViewerWorker {
   }
 
   /**
-   * 处理推送消息（带去重优化）
+   * 处理推送消息。
    *
-   * 只有在消息真正变化时才更新会话并触发前端更新。推送时刻新旧数组都在手上，
-   * 顺带完成变更分类（ADR-0012）并增量维护总字节缓存；分类为 rewrite 时
-   * 照常更新 session.messages——修正"中段变化但 count 与末条签名均不变"
-   * 被静默丢弃的盲区。
+   * 旧版推送只携带 messages，按 full 快照兼容处理。显式 append/tail 推送
+   * 必须通过 baseCount + generation 校验；校验失败时保留当前 Viewer 状态，
+   * 并等待后续 full 快照重新建立基线，不能把不完整增量拼进会话。
    */
   public handlePushMessages(msg: any): void {
     const { agentId, messages } = msg;
     const session = this.agentSessions.get(agentId);
-    if (!session) return;
+    if (!session || !Array.isArray(messages)) return;
 
+    const store = session as any;
+    const mode = msg.mode ?? 'full';
     const oldMessages = session.messages;
-    const change = this.classifyMessagesChange(oldMessages, messages);
+    let nextMessages: any[];
+
+    if (mode === 'full') {
+      // full 是自愈边界：即使之前有失配，也用完整快照恢复并清除标记。
+      nextMessages = messages;
+      store._messagesNeedsResync = false;
+      if (Number.isInteger(msg.generation) && msg.generation >= 0) {
+        store._messagesGeneration = msg.generation;
+      } else if (typeof store._messagesGeneration !== 'number') {
+        // 旧协议没有 generation，使用稳定的初始代际。
+        store._messagesGeneration = 0;
+      }
+    } else {
+      const generation = store._messagesGeneration;
+      const validGeneration = Number.isInteger(msg.generation) && msg.generation >= 0
+        && typeof generation === 'number' && msg.generation === generation;
+      const validBaseCount = Number.isInteger(msg.baseCount) && msg.baseCount === oldMessages.length;
+      const validMode = mode === 'append' || mode === 'tail';
+      const validShape = mode === 'append'
+        ? true
+        : mode === 'tail' && oldMessages.length > 0 && messages.length === 1;
+
+      if (!validMode || !validGeneration || !validBaseCount || !validShape || store._messagesNeedsResync === true) {
+        // 没有请求/响应式 resync 通道时，安全策略是等待下一次 full。
+        // 这条状态只影响 Viewer 内存，不伪造 probe 变更。
+        store._messagesNeedsResync = true;
+        return;
+      }
+
+      nextMessages = mode === 'append'
+        ? [...oldMessages, ...messages]
+        : [...oldMessages.slice(0, -1), messages[0]];
+    }
+
+    const change = this.classifyMessagesChange(oldMessages, nextMessages);
 
     if (change) {
-      session.messages = messages;
-      const store = session as any;
+      session.messages = nextMessages;
       // seq 只在真实变更时递增（ADR-0012 v2）：它是前端对账的同步版本号。
-      // no-op 推送不清槽——后到的相同内容推送覆盖先到的未消费变更记录，
-      // 正是"首条 user 消息已进转录却报无变化"延迟显示的根因。
+      // no-op 推送不清槽，避免未消费变更被后续相同推送覆盖。
       store._messagesChangeSeq = (typeof store._messagesChangeSeq === 'number' ? store._messagesChangeSeq : 0) + 1;
-      this.updateTotalBytes(session, oldMessages, messages, change.changeKind);
-      // 更新最后一条消息的签名，用于下次比较
-      session._lastMessageSig = this.getLastMessageSignature(messages);
+      this.updateTotalBytes(session, oldMessages, nextMessages, change.changeKind);
+      session._lastMessageSig = this.getLastMessageSignature(nextMessages);
       this.updateSessionActivity(agentId);
       // 修剪前先记录条数：数量修剪经 shift() 原地缩短数组，而该数组与
-      // 新推送数组同引用，事后比较会失真
-      const preTrimCount = messages.length;
+      // 新推送数组同引用，事后比较会失真。
+      const preTrimCount = nextMessages.length;
       this.enforceMemoryLimits(session);
-      // 修剪（数量/字节超限）会移除前端已持有的历史条目，增量拼接不再
-      // 安全：无论原分类为何，一律按 rewrite（ADR 语义含"修剪"）下发
+      // 修剪会移除前端已持有的历史条目，增量拼接不再安全，统一标成 rewrite。
       const trimmed = session.messages.length < preTrimCount;
-      // fakeFullBytes 取修剪后的总字节：即此刻全量响应体的假想字节数
       store._messagesChange = {
         changeKind: trimmed ? 'rewrite' : change.changeKind,
         sinceIndex: trimmed ? 0 : change.sinceIndex,
         fakeFullBytes: store._totalBytes,
       };
-    } else if (typeof (session as any)._totalBytes !== 'number') {
-      // 从未走过真实变更（如 runtime 恢复推送相同内容）：probe 整体保持缺省
+    } else if (typeof store._totalBytes !== 'number') {
+      // 从未走过真实变更（如旧 runtime 恢复推送相同内容）：probe 整体保持缺省。
     }
   }
 

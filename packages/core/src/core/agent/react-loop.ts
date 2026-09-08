@@ -194,7 +194,7 @@ export class ReActLoopRunner {
                 this.pushToDebug([
                   ...context.getAll(),
                   { role: 'assistant', content: '[Info: LLM returned empty response with end_turn]', turn: callIndex },
-                ]);
+                ], true);
                 break; // 跳出重试循环，进入正常完成流程
               }
 
@@ -208,7 +208,7 @@ export class ReActLoopRunner {
                 this.pushToDebug([
                   ...context.getAll(),
                   { role: 'assistant', content: '[Warning: LLM output was truncated by max_tokens — thinking consumed the entire token budget and no content was produced]', turn: callIndex },
-                ]);
+                ], true);
                 break; // 不重试，直接结束本轮
               }
 
@@ -225,7 +225,7 @@ export class ReActLoopRunner {
                 this.pushToDebug([
                   ...context.getAll(),
                   { role: 'assistant', content: `[Info: LLM returned empty response (attempt ${emptyAttempt + 1}/${MAX_EMPTY_RETRIES}), retrying...]`, turn: callIndex },
-                ]);
+                ], true);
                 // 检查中断信号
                 if (signal?.aborted) {
                   logger.info('Empty response retry skipped due to interrupt', { step });
@@ -245,7 +245,7 @@ export class ReActLoopRunner {
               this.pushToDebug([
                 ...context.getAll(),
                 { role: 'assistant', content: '[Error: LLM returned empty response]', turn: callIndex },
-              ]);
+              ], true);
             } else {
               // 正常响应（有 content 或有 toolCalls），添加到 context
 
@@ -791,9 +791,9 @@ export class ReActLoopRunner {
   /**
    * 推送到 DebugHub
    */
-  private pushToDebug(messages: Message[]): void {
+  private pushToDebug(messages: Message[], forceFull = false): void {
     if (this.agent.debugEnabled && this.agent.agentId && this.agent.debugPusher) {
-      this.agent.debugPusher.pushMessages(this.agent.agentId, messages);
+      this.agent.debugPusher.pushMessages(this.agent.agentId, messages, { forceFull });
     }
   }
 }

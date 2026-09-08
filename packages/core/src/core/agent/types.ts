@@ -85,7 +85,11 @@ export type AgentLike = {
  * 解耦 DebugHub 依赖
  */
 export interface DebugPusher {
-  pushMessages(agentId: string, messages: Message[]): void;
+  pushMessages(
+    agentId: string,
+    messages: Message[],
+    push?: { mode?: 'full' | 'append' | 'tail'; baseCount?: number; generation?: number; forceFull?: boolean },
+  ): void;
 }
 
 /**

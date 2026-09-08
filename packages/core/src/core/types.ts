@@ -860,13 +860,39 @@ export interface UpdateTodoPlanMsg {
 }
 
 /**
- * 推送 Agent 消息
+ * Agent 消息推送的传输模式。
+ *
+ * `full` 是兼容旧协议的完整快照；`append` 和 `tail` 只携带自上次
+ * 快照以来发生变化的尾部。增量模式必须同时携带 baseCount 和 generation，
+ * 由 ViewerWorker 校验基线后才能应用。
  */
-export interface PushMessagesMsg {
-  type: 'push-messages';
-  agentId: string;
-  messages: Message[];
-}
+export type MessagePushMode = 'full' | 'append' | 'tail';
+
+/**
+ * 推送 Agent 消息。
+ *
+ * 旧版发送方省略 mode 时仍表示 full；增量模式则在类型层强制携带
+ * baseCount + generation，避免发送方构造出无法校验的半个 delta。
+ */
+export type PushMessagesMsg =
+  | {
+      type: 'push-messages';
+      agentId: string;
+      messages: Message[];
+      /** 省略 mode 的旧协议推送按 full 处理。 */
+      mode?: 'full';
+      generation?: number;
+    }
+  | {
+      type: 'push-messages';
+      agentId: string;
+      messages: Message[];
+      mode: 'append' | 'tail';
+      /** 应用增量前，Viewer 中应有的消息数量。 */
+      baseCount: number;
+      /** Context lineage generation；发生 rewrite 时必须变化。 */
+      generation: number;
+    };
 
 /**
   * 注册 Agent 工具

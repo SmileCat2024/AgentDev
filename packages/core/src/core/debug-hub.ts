@@ -97,7 +97,6 @@ export class DebugHub {
   // 重连机制
   private reconnectTimer?: NodeJS.Timeout;
   private reconnectAttempts: number = 0;
-  private readonly MAX_RECONNECT_ATTEMPTS = 10;
   private readonly RECONNECT_DELAY = 2000;
 
   // 缓存每个 Agent 的模板装载载荷（mounts + entries，用于重连后重新注册）
@@ -973,6 +972,12 @@ export class DebugHub {
 
   /**
    * 安排重连（指数退避）
+   *
+   * 无重试上限：sendToWorker 在断连窗口内静默丢弃 push（含 push-messages），
+   * viewer 侧状态会停留在最后一次成功推送；一旦放弃重连，该进程内再无
+   * 恢复触发点，push 链路永久哑掉。指数退避在 30s 封顶，连接尝试本身
+   * 极廉价，持续重试是唯一能保证最终一致（重连后 reRegisterAgents 全量
+   * 重推）的策略。
    */
   private scheduleReconnect(): void {
     if (this.stopped) {
@@ -982,12 +987,6 @@ export class DebugHub {
     // 清除现有的定时器
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
-    }
-
-    // 检查是否达到最大重连次数
-    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
-      console.error(`[DebugHub] 达到最大重连次数 (${this.MAX_RECONNECT_ATTEMPTS})，停止重连`);
-      return;
     }
 
     this.reconnectAttempts++;

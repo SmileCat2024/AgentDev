@@ -5,7 +5,7 @@
 
 import { createTool } from '../../core/tool.js';
 import { withDisplay } from '../../core/tool-result-display.js';
-import { open, readFile, writeFile, opendir, stat, mkdir } from 'fs/promises';
+import { access, open, readFile, writeFile, opendir, stat, mkdir } from 'fs/promises';
 import { globIterate } from 'glob';
 import { spawn } from 'child_process';
 import { createTwoFilesPatch, diffLines } from 'diff';
@@ -1508,10 +1508,10 @@ export const globTool = createGlobTool();
 // ============================================================================
 
 /**
- * 获取 ripgrep 路径
+ * 探测 PATH 中的 ripgrep，找到返回 'rg'，否则返回 null
  */
-async function getRipgrepPath(): Promise<string> {
-  return new Promise((resolve, reject) => {
+function probePathRipgrep(): Promise<string | null> {
+  return new Promise((resolve) => {
     const child = spawn('rg', ['--version'], { windowsHide: true });
     let hasOutput = false;
 
@@ -1519,17 +1519,49 @@ async function getRipgrepPath(): Promise<string> {
     child.stderr.on('data', () => { hasOutput = true; });
 
     child.on('close', (code) => {
-      if (hasOutput || code === 0) {
-        resolve('rg');
-      } else {
-        reject(new Error('ripgrep (rg) is not installed. Please install it from https://github.com/BurntSushi/ripgrep'));
-      }
+      resolve(hasOutput || code === 0 ? 'rg' : null);
     });
 
     child.on('error', () => {
-      reject(new Error('ripgrep (rg) is not installed. Please install it from https://github.com/BurntSushi/ripgrep'));
+      resolve(null);
     });
   });
+}
+
+/**
+ * 获取 @vscode/ripgrep 随包分发的二进制路径。
+ * 依赖声明为 optionalDependencies：postinstall 下载失败时 npm 会跳过安装，
+ * 因此动态 import 与二进制存在性都必须容错，缺失时返回 null 而非抛错。
+ */
+async function probeBundledRipgrep(): Promise<string | null> {
+  try {
+    const { rgPath } = await import('@vscode/ripgrep');
+    await access(rgPath);
+    return rgPath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 获取 ripgrep 可执行路径：PATH 中的 rg 优先（用户自装版本可能更新），
+ * 缺失时回退到 @vscode/ripgrep 随包分发的二进制。
+ */
+async function getRipgrepPath(): Promise<string> {
+  const pathRg = await probePathRipgrep();
+  if (pathRg) {
+    return pathRg;
+  }
+
+  const bundledRg = await probeBundledRipgrep();
+  if (bundledRg) {
+    return bundledRg;
+  }
+
+  throw new Error(
+    'ripgrep (rg) is not available. Install it from https://github.com/BurntSushi/ripgrep ' +
+    '(e.g. winget install BurntSushi.ripgrep.MSVC), or reinstall dependencies to restore the bundled copy.'
+  );
 }
 
 /**

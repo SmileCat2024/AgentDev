@@ -30,6 +30,9 @@
     "vscode-jsonrpc": "^8.2.1",
     "vscode-languageserver-types": "^3.18.0"
   },
+  "optionalDependencies": {
+    "@vscode/ripgrep": "^1.18.0"
+  },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.0",

@@ -13,6 +13,22 @@ import { createReadImageTool } from '../src/tools.js';
 import { isWithImagesResult } from '@agentdevjs/core';
 
 describe('read_image managed snapshots', () => {
+  it('should reject SVG files because vision providers reject image/svg+xml', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentdev-read-image-svg-'));
+    try {
+      const svgPath = join(root, 'icon.svg');
+      writeFileSync(svgPath, '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+
+      const tool = createReadImageTool({ storageDir: join(root, 'images') });
+      const result = await tool.execute({ path: svgPath }, {} as any) as any;
+      expect(isWithImagesResult(result)).toBe(false);
+      expect(result).toContain('不支持的图片格式 .svg');
+      expect(result).not.toContain('.svg,');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('should preserve the bytes read at tool-call time after the source changes or moves', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentdev-read-image-'));
     try {

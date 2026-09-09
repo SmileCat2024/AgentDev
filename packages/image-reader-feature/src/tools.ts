@@ -12,7 +12,7 @@ import { join, resolve } from 'path';
 import { createTool, withImages } from '@agentdevjs/core';
 import type { Tool } from '@agentdevjs/core';
 
-/** 扩展名 → MIME 类型映射 */
+/** 扩展名 → MIME 类型映射（不含 SVG：视觉模型服务商不支持 image/svg+xml，上传即报错） */
 const MEDIA_TYPES: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -20,7 +20,6 @@ const MEDIA_TYPES: Record<string, string> = {
   gif: 'image/gif',
   webp: 'image/webp',
   bmp: 'image/bmp',
-  svg: 'image/svg+xml',
 };
 
 /** 支持的扩展名列表（用于错误提示） */
@@ -47,7 +46,7 @@ export function createReadImageTool(options: ReadImageToolOptions = {}): Tool {
     parallelizable: true,
     description:
       '读取本地图片文件并注入到对话上下文中，使你能直接"看到"图片内容。' +
-      '支持 PNG、JPEG、GIF、WebP、BMP、SVG 格式。' +
+      '支持 PNG、JPEG、GIF、WebP、BMP 格式（不支持 SVG）。' +
       '图片大小上限 10 MB。',
     parameters: {
       type: 'object',

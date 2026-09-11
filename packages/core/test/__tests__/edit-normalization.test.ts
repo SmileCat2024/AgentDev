@@ -164,3 +164,89 @@ describe('edit tool character normalization matching', () => {
     );
   });
 });
+
+/**
+ * blockAnchorReplacer 的中间行相似度门槛。
+ * 首尾行锚定只保证定位，中间行平均相似度不足时必须拒绝：
+ * 否则凭锚点整块替换会把与 oldString 无关的内容吞掉（结构性损伤）。
+ */
+describe('edit tool block anchor similarity guard', () => {
+  let tmpDir: string;
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'agentdev-edit-block-anchor-'));
+  });
+
+  afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function editFile(
+    fileName: string,
+    initial: string,
+    oldString: string,
+    newString: string,
+  ): Promise<{ result: any; finalContent: string }> {
+    const filePath = join(tmpDir, fileName);
+    writeFileSync(filePath, initial);
+    await createReadTool(tmpDir).execute({ filePath }, {} as any);
+    const result = await createEditTool(tmpDir).execute(
+      { filePath, oldString, newString },
+      {} as any,
+    ) as any;
+    return { result, finalContent: readFileSync(filePath, 'utf-8') };
+  }
+
+  it('rejects a unique candidate whose intermediate lines drift away entirely', async () => {
+    // 损伤形态（真实会话模式）：首尾行在文件中锚定唯一，但中间行内容与
+    // oldString 完全无关——旧实现无条件整块替换，把不相关的行吞掉
+    const initial = [
+      'function onCall() {',
+      '  a();',
+      '  bb();',
+      '  ccc();',
+      '}',
+    ].join('\n') + '\n';
+    const oldString = [
+      'function onCall() {',
+      '  functionOne(argumentOne, argumentTwo);',
+      '  functionTwo(argumentThree);',
+      '  functionThree(argumentFour, argumentFive, argumentSix);',
+      '}',
+    ].join('\n');
+
+    await expect(
+      editFile('guard-reject.js', initial, oldString, 'REPLACED'),
+    ).rejects.toThrow(/Could not find oldString/);
+
+    // 拒绝后文件必须原样保留，不得有部分写入
+    expect(readFileSync(join(tmpDir, 'guard-reject.js'), 'utf-8')).toBe(initial);
+  });
+
+  it('still rescues a block whose intermediate lines differ only slightly', async () => {
+    // 挽救能力保留：中间行仅一处小笔误，平均相似度远超门槛，应模糊命中
+    const initial = [
+      'async save() {',
+      '  const data = await this.#loadAll();',
+      '  await persist(data);',
+      '}',
+    ].join('\n') + '\n';
+    const oldString = [
+      'async save() {',
+      '  const data = await this.#loadAlll();',
+      '  await persist(data);',
+      '}',
+    ].join('\n');
+    const newString = [
+      'async save() {',
+      '  const data = await this.#loadAll();',
+      '  await persist(data);',
+      '}',
+    ].join('\n');
+
+    const { result, finalContent } = await editFile('guard-rescue.js', initial, oldString, newString);
+
+    expect(result.text).toContain('fuzzy');
+    expect(finalContent).toBe(initial);
+  });
+});

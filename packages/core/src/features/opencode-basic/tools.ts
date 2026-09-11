@@ -751,8 +751,9 @@ const blockAnchorReplacer: Replacer = function* (content, find) {
 
   if (candidates.length === 0) return;
 
-  const SINGLE_CANDIDATE_THRESHOLD = 0.0;
-  const MULTIPLE_CANDIDATES_THRESHOLD = 0.3;
+  // 单/多候选共用同一相似度门槛：中间行平均相似度不足时视为未命中，
+  // 让 edit 显式失败走"重读文件"路径，而不是按首尾锚点整块替换出结构性损伤
+  const SIMILARITY_THRESHOLD = 0.3;
 
   if (candidates.length === 1) {
     const { startLine, endLine } = candidates[0];
@@ -770,13 +771,13 @@ const blockAnchorReplacer: Replacer = function* (content, find) {
         if (maxLen === 0) continue;
         const distance = levenshtein(originalLine, searchLine);
         similarity += (1 - distance / maxLen) / linesToCheck;
-        if (similarity >= SINGLE_CANDIDATE_THRESHOLD) break;
+        if (similarity >= SIMILARITY_THRESHOLD) break;
       }
     } else {
       similarity = 1.0;
     }
 
-    if (similarity >= SINGLE_CANDIDATE_THRESHOLD) {
+    if (similarity >= SIMILARITY_THRESHOLD) {
       let matchStartIndex = 0;
       for (let k = 0; k < startLine; k++) {
         matchStartIndex += originalLines[k].length + 1;
@@ -823,7 +824,7 @@ const blockAnchorReplacer: Replacer = function* (content, find) {
     }
   }
 
-  if (maxSimilarity >= MULTIPLE_CANDIDATES_THRESHOLD && bestMatch) {
+  if (maxSimilarity >= SIMILARITY_THRESHOLD && bestMatch) {
     const { startLine, endLine } = bestMatch;
     let matchStartIndex = 0;
     for (let k = 0; k < startLine; k++) {

@@ -93,10 +93,10 @@ class ViewerWorker {
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // 先启动 UDS 服务器
-      this.startUDSServer();
-
-      // 再启动 HTTP 服务器
+      // 先启动 HTTP 服务器，成功后再 bind UDS。顺序不可反：startUDSServer
+      // 会 unlink 路径上的现有 sock 文件，若 HTTP 端口已占用（如误启动的
+      // 第二个实例），先 bind UDS 会破坏既有实例的 IPC 通道且失败退出时
+      // 无清理，留下无 listener 的死 sock，令所有后续连接方永久失联。
       this.server.on('request', (req, res) => this.handleRequest(req, res));
 
       this.server.on('error', (err: any) => {
@@ -110,28 +110,35 @@ class ViewerWorker {
       // ViewerWorker is an internal debug/control transport for Claw. Keep its
       // HTTP surface on loopback; the product server is the public gateway.
       this.server.listen(this.port, '127.0.0.1', async () => {
-        const url = `http://127.0.0.1:${this.port}`;
-        console.log(`[Viewer Worker] ${url} (loopback only)`);
-        console.log(`[Viewer Worker] MCP endpoint: ${url}/mcp`);
+        try {
+          const url = `http://127.0.0.1:${this.port}`;
+          console.log(`[Viewer Worker] ${url} (loopback only)`);
+          console.log(`[Viewer Worker] MCP endpoint: ${url}/mcp`);
 
-        // 打开浏览器（仅在 openBrowser 为 true 时）
-        if (this.openBrowser) {
-          try {
-            const open = await import('open');
-            await open.default(url).catch(() => {
-              console.warn('[Viewer Worker] 浏览器打开失败，请手动访问: ' + url);
-            });
-          } catch {
-            console.warn('[Viewer Worker] open 模块不可用，请手动访问: ' + url);
+          // HTTP 就绪后才接管 UDS 路径
+          await this.startUDSServer();
+
+          // 打开浏览器（仅在 openBrowser 为 true 时）
+          if (this.openBrowser) {
+            try {
+              const open = await import('open');
+              await open.default(url).catch(() => {
+                console.warn('[Viewer Worker] 浏览器打开失败，请手动访问: ' + url);
+              });
+            } catch {
+              console.warn('[Viewer Worker] open 模块不可用，请手动访问: ' + url);
+            }
           }
-        }
 
-        // 通知主进程服务器已启动
-        if (process.send) {
-          process.send({ type: 'ready' });
-        }
+          // 通知主进程服务器已启动
+          if (process.send) {
+            process.send({ type: 'ready' });
+          }
 
-        resolve();
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
       });
     });
   }
@@ -176,62 +183,66 @@ class ViewerWorker {
   // ========== UDS 服务器 ==========
 
   /**
-   * 启动 UDS 服务器
+   * 启动 UDS 服务器（listen 完成或出错时 settle）
    */
-  private startUDSServer(): void {
-    // 清理旧 socket 文件（非 Windows）
-    if (process.platform !== 'win32' && existsSync(this.udsPath)) {
-      try {
-        unlinkSync(this.udsPath);
-      } catch {}
-    }
+  private startUDSServer(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // 清理旧 socket 文件（非 Windows）
+      if (process.platform !== 'win32' && existsSync(this.udsPath)) {
+        try {
+          unlinkSync(this.udsPath);
+        } catch {}
+      }
 
-    // 客户端连接计数器，用于生成唯一 ID
-    let connectionCounter = 0;
+      // 客户端连接计数器，用于生成唯一 ID
+      let connectionCounter = 0;
 
-    this.udsServer = createNetServer((socket: Socket) => {
-      // 使用计数器生成唯一 ID，而不是依赖 remoteAddress/port（Windows 命名管道可能返回 undefined）
-      const clientId = `client-${++connectionCounter}-${Date.now()}`;
-      this.udsClients.set(clientId, socket);
+      this.udsServer = createNetServer((socket: Socket) => {
+        // 使用计数器生成唯一 ID，而不是依赖 remoteAddress/port（Windows 命名管道可能返回 undefined）
+        const clientId = `client-${++connectionCounter}-${Date.now()}`;
+        this.udsClients.set(clientId, socket);
 
-      console.log(`[Viewer Worker] 新的 UDS 客户端连接: ${clientId}, 当前连接数: ${this.udsClients.size}`);
+        console.log(`[Viewer Worker] 新的 UDS 客户端连接: ${clientId}, 当前连接数: ${this.udsClients.size}`);
 
-      let buffer = '';
-      socket.setEncoding('utf8');
-      socket.on('data', (data: string) => {
-        buffer += data;
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        let buffer = '';
+        socket.setEncoding('utf8');
+        socket.on('data', (data: string) => {
+          buffer += data;
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const msg: DebugHubIPCMessage = JSON.parse(line);
-            this.handleUDSMessage(msg, socket, clientId);
-          } catch (err) {
-            console.error('[Viewer Worker] UDS 消息解析失败:', err);
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg: DebugHubIPCMessage = JSON.parse(line);
+              this.handleUDSMessage(msg, socket, clientId);
+            } catch (err) {
+              console.error('[Viewer Worker] UDS 消息解析失败:', err);
+            }
           }
-        }
+        });
+
+        socket.on('close', () => {
+          this.udsClients.delete(clientId);
+          console.log(`[Viewer Worker] UDS 客户端断开: ${clientId}, 当前连接数: ${this.udsClients.size}`);
+        });
+
+        socket.on('error', (err) => {
+          console.error('[Viewer Worker] UDS 客户端错误:', err);
+          this.udsClients.delete(clientId);
+        });
       });
 
-      socket.on('close', () => {
-        this.udsClients.delete(clientId);
-        console.log(`[Viewer Worker] UDS 客户端断开: ${clientId}, 当前连接数: ${this.udsClients.size}`);
+      // 错误处理：bind 失败必须让 start() 感知（此前仅打日志会被吞掉）
+      this.udsServer.on('error', (err: Error) => {
+        console.error(`[Viewer Worker] UDS 服务器错误: ${err.message}`);
+        reject(err);
       });
 
-      socket.on('error', (err) => {
-        console.error('[Viewer Worker] UDS 客户端错误:', err);
-        this.udsClients.delete(clientId);
+      this.udsServer.listen(this.udsPath, () => {
+        console.log(`[Viewer Worker] UDS 服务器已启动: ${this.udsPath}`);
+        resolve();
       });
-    });
-
-    // 添加错误处理
-    this.udsServer.on('error', (err: Error) => {
-      console.error(`[Viewer Worker] UDS 服务器错误: ${err.message}`);
-    });
-
-    this.udsServer.listen(this.udsPath, () => {
-      console.log(`[Viewer Worker] UDS 服务器已启动: ${this.udsPath}`);
     });
   }
 

@@ -75,6 +75,10 @@ describe('ViewerWorker start order (sock path preservation)', () => {
     workers.push(second);
     await expect(second.start()).rejects.toThrow(/端口|EADDRINUSE/);
 
+    // 失败实例的 stop() 同样不得删除路径上属于他人的 sock 文件
+    // （stop 的清理曾无条件 unlink 路径文件，把这一步变成了破坏点）
+    await second.stop();
+
     // 核心回归断言：既有实例的 sock 既未被删除、listener 也仍存活
     if (process.platform !== 'win32') {
       expect(existsSync(udsPath)).toBe(true);

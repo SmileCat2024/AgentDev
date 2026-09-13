@@ -169,8 +169,11 @@ class ViewerWorker {
       }
       this.udsClients.clear();
 
-      // 清理 Unix socket 文件（非 Windows）
-      if (process.platform !== 'win32' && this.udsPath && existsSync(this.udsPath)) {
+      // 清理 Unix socket 文件（非 Windows）。只有本实例真正 bind 过 UDS
+      // （udsServer 存在）才允许 unlink：start() 可能在接管路径之前就失败
+      // （HTTP 端口冲突），此时路径上的文件属于另一个实例，删掉它等于
+      // 拆掉别人的 IPC 通道。
+      if (process.platform !== 'win32' && this.udsServer && this.udsPath && existsSync(this.udsPath)) {
         try {
           unlinkSync(this.udsPath);
         } catch {}

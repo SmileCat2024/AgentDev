@@ -600,6 +600,8 @@ export interface FeatureInspectorSnapshot {
   hookCount: number;
   toolCount: number;
   enabledToolCount: number;
+  /** feature 自带 skills 目录中的技能数（0 = 无；宿主面板据此推导 skills 能力） */
+  skillCount?: number;
   source?: string;
   description?: string;
   tools: Array<{

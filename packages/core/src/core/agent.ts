@@ -135,6 +135,8 @@ class AgentBase {
   }> = [];
   private featureToolsReady: boolean = false;
   private featureToolsReadyPromise?: Promise<void>;
+  /** feature 自带 skills 的数量归属（feature name → count），collectFeatureSkills 时记录 */
+  private featureSkillCounts = new Map<string, number>();
 
   // Capability 注册表（统一控制面，Feature 声明的命令平面寻址）
   private capabilities = new CapabilityRegistry();
@@ -2159,6 +2161,7 @@ class AgentBase {
       const found = await discover({ dir: skillsDir });
       if (found.length > 0) {
         collected.push(...found);
+        this.featureSkillCounts.set(name, found.length);
       }
     }
 
@@ -2604,6 +2607,7 @@ class AgentBase {
         hookCount: hookCountByFeature.get(feature.name) || 0,
         toolCount: tools.length,
         enabledToolCount,
+        skillCount: this.featureSkillCounts.get(feature.name) || 0,
         source: typeof (feature as any).source === 'string'
           ? (feature as any).source
           : hookGroups.flatMap(group => group.entries)

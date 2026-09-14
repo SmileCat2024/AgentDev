@@ -190,12 +190,21 @@ export class DebugHub {
 
     this.workerPort = port;  // 保留用于信息显示
     this.openBrowser = openBrowser;  // 保存浏览器打开设置
-    
+
     try {
       await this.connectToWorker();
       console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
-    } catch {
-      // 连接失败，尝试自动启动 ViewerWorker
+    } catch (connectErr) {
+      // 托管环境（AGENTDEV_UDS_PATH 显式指定，由宿主 spawn 传入）：ViewerWorker
+      // 生命周期归宿主管，连接失败说明宿主 viewer 未就绪或已失联。此时自动
+      // 拉起只会起一个注定端口冲突的 worker——它在退出前还会 unlink 并抢占
+      // 宿主的 sock 路径，把宿主与全部 runtime 的 IPC 通道一起拖死。直接把
+      // 连接错误上抛，让宿主感知失败。
+      if (process.env.AGENTDEV_UDS_PATH) {
+        throw connectErr;
+      }
+
+      // 连接失败，尝试自动启动 ViewerWorker（仅独立使用框架的场景）
       console.log(`[DebugHub] ViewerWorker 未运行，正在自动启动...`);
       try {
         await this.spawnViewerWorker();

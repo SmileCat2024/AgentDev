@@ -21,7 +21,11 @@ let undiciLoadPromise: Promise<any> | null = null;
 let initialGlobalDispatcher: any = null;
 
 export const HTTP_CONNECT_TIMEOUT_MS = 10_000;
-export const HTTP_HEADERS_TIMEOUT_MS = 60_000;
+// 非流式请求的响应头要等服务端把整个结果生成完才发出，headersTimeout 事实上
+// 就是"非流式总等待预算"，必须与框架模型调用 idle deadline（默认 600s）及
+// OpenAI SDK 内部到响应头超时（默认 600s）对齐。流式请求的响应头在服务端受理
+// 后即刻到达，不受该值影响；流式"chunk 间无数据"由 bodyTimeout（60s）约束。
+export const HTTP_HEADERS_TIMEOUT_MS = 600_000;
 export const HTTP_BODY_TIMEOUT_MS = 60_000;
 
 export function buildHttpDispatcherOptions(noProxy?: string): Record<string, unknown> {

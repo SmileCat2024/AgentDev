@@ -38,9 +38,10 @@ export {
   shouldRetry,
   extractErrorCode,
   sleep,
-  withDeadline,
+  withIdleDeadline,
   resolveModelCallPolicy,
 } from './core/retry.js';
+export type { IdleDeadlineHandle } from './core/retry.js';
 export type { LLMRetryData, ToolProgressData } from './core/notification.js';
 export { subscribeSessionEvents, emitSessionEvent } from './core/session-events.js';
 export type { SessionEvent, SessionItem, SessionEventListener, TurnUsage, TurnFailure } from './core/session-events.js';

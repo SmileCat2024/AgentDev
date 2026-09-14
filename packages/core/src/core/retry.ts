@@ -19,8 +19,9 @@ export const DEFAULT_MAX_RETRIES = 10;
 export const DEFAULT_MODEL_MAX_RETRIES = 10;
 
 /**
- * 模型调用默认整体时限：10 分钟（ModelConfig.timeoutMs 缺省时由 LLM 工厂填充）。
- * 与 OpenAI SDK 默认单请求 timeout 对齐；流式传输全程受此 deadline 约束。
+ * 模型调用默认空闲时限：10 分钟（ModelConfig.timeoutMs 缺省时由 LLM 工厂填充）。
+ * 空闲语义：仅当持续该时长收不到任何远端活动（响应头、流式数据）才判定连接
+ * 断开；流式输出持续到达的调用（如长时间思考）不受总时长限制。
  */
 export const DEFAULT_MODEL_TIMEOUT_MS = 600_000;
 
@@ -209,41 +210,56 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** 空闲时限句柄：signal 供请求与流读取使用，touch 在每次远端活动时调用 */
+export interface IdleDeadlineHandle {
+  signal: AbortSignal | undefined;
+  /** 收到远端活动（响应头、流式数据）时调用，重置空闲计时 */
+  touch: () => void;
+}
+
 /**
- * 合并外部中断信号与整体时限为单一 AbortSignal。
+ * 合并外部中断信号与空闲时限为单一 AbortSignal。
  *
- * - 任一先触发即生效；deadline 到达时以 TimeoutError DOMException 中止，
- *   上游按 AbortError 处理（不重试、直接传播）。
+ * - 空闲语义：计时从创建时刻起算，每次 touch() 重置；持续 timeoutMs 无任何
+ *   touch 才判定连接断开并以 TimeoutError DOMException 中止，上游按
+ *   AbortError 处理（不重试、直接传播）。
  * - timeoutMs 为 undefined / Infinity 时仅透传外部信号（不额外建 controller）。
  */
-export function withDeadline(signal: AbortSignal | undefined, timeoutMs?: number): AbortSignal | undefined {
+export function withIdleDeadline(signal: AbortSignal | undefined, timeoutMs?: number): IdleDeadlineHandle {
   if (!timeoutMs || timeoutMs === Infinity || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return signal;
+    return { signal, touch: () => {} };
   }
   const merged = new AbortController();
+  const onTimeout = () =>
+    merged.abort(new DOMException(`Model call deadline exceeded: no data received for ${timeoutMs}ms`, 'TimeoutError'));
+  let timer = setTimeout(onTimeout, timeoutMs);
+  const touch = () => {
+    if (merged.signal.aborted) return;
+    clearTimeout(timer);
+    timer = setTimeout(onTimeout, timeoutMs);
+  };
   if (signal) {
     if (signal.aborted) {
+      clearTimeout(timer);
       merged.abort(signal.reason);
-      return merged.signal;
+      return { signal: merged.signal, touch };
     }
     const onExternalAbort = () => merged.abort(signal.reason);
     signal.addEventListener('abort', onExternalAbort, { once: true });
     // 外部 signal 通常是长期存活的 agent signal：deadline 到点后必须解除上面的
     // listener，否则每次模型调用都会在外部 signal 上累积一个监听
-    // （MaxListenersExceededWarning / EventTarget 泄漏）。
-    merged.signal.addEventListener('abort', () => signal.removeEventListener('abort', onExternalAbort), { once: true });
+    // （MaxListenersExceededWarning / EventTarget 泄漏）。merged 中止（含空闲
+    // 超时触发）时同步清掉 pending 定时器，避免悬挂的 timer 拖住事件循环。
+    merged.signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onExternalAbort);
+    }, { once: true });
   }
-  const timer = setTimeout(
-    () => merged.abort(new DOMException(`Model call deadline exceeded after ${timeoutMs}ms`, 'TimeoutError')),
-    timeoutMs,
-  );
-  // deadline 触发后定时器自然释放；提前结束时由 GC 回收，无需显式清理
-  void timer;
-  return merged.signal;
+  return { signal: merged.signal, touch };
 }
 
 /**
- * 从 ModelConfig 解析生效的重试上限与整体时限，缺省时填充框架默认值。
+ * 从 ModelConfig 解析生效的重试上限与空闲时限，缺省时填充框架默认值。
  */
 export function resolveModelCallPolicy(config?: { maxRetries?: number; timeoutMs?: number }): {
   maxRetries: number;

@@ -12,7 +12,7 @@ import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageIn
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
-import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline } from '@agentdevjs/core';
 import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
@@ -152,7 +152,9 @@ export class OpenAIResponsesLLM implements LLMClient {
       responsesProfile: this.responsesProfile,
     });
     let preferNonStreaming = false;
-    const signal = withDeadline(options?.signal, this.deadlineMs);
+    // 空闲时限：持续 timeoutMs 收不到数据才中止，不进入重试
+    const deadline = withIdleDeadline(options?.signal, this.deadlineMs);
+    const signal = deadline.signal;
 
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
       let sawAnyStreamEvent = false;
@@ -160,6 +162,8 @@ export class OpenAIResponsesLLM implements LLMClient {
         if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
         }
+        // 新 attempt 开始视为活动：重试退避不占用空闲预算
+        deadline.touch();
 
         if (preferNonStreaming) {
           return await this.createResponsesCompletion(compiled, options);
@@ -185,6 +189,8 @@ export class OpenAIResponsesLLM implements LLMClient {
         const reasoningItems = new Map<string, AccumulatedReasoning>();
 
         for await (const event of stream) {
+          // 每收到一个流事件重置空闲计时：数据在流动就不算断连
+          deadline.touch();
           sawAnyStreamEvent = true;
           if (signal?.aborted) {
             throw new DOMException('Aborted', 'AbortError');

@@ -1,7 +1,7 @@
 {
   "name": "@agentdevjs/audit-feature",
   "version": "0.1.0",
-  "description": "Audit feature for AgentDev - tracks and logs tool usage",
+  "description": "DEPRECATED: no longer maintained. AgentDevClaw has unmounted this feature; do not use it in new assemblies.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

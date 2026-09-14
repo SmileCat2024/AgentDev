@@ -9,7 +9,7 @@ import {
   DEFAULT_MODEL_MAX_RETRIES,
   DEFAULT_MODEL_TIMEOUT_MS,
   resolveModelCallPolicy,
-  withDeadline,
+  withIdleDeadline,
 } from '../../src/core/retry.js';
 
 describe('retry', () => {
@@ -271,36 +271,59 @@ describe('retry', () => {
     });
   });
 
-  // ========== withDeadline ==========
+  // ========== withIdleDeadline ==========
 
-  describe('withDeadline', () => {
+  describe('withIdleDeadline', () => {
     it('should pass through when no timeout configured', () => {
       const controller = new AbortController();
-      expect(withDeadline(controller.signal, undefined)).toBe(controller.signal);
-      expect(withDeadline(controller.signal, Infinity)).toBe(controller.signal);
+      expect(withIdleDeadline(controller.signal, undefined).signal).toBe(controller.signal);
+      expect(withIdleDeadline(controller.signal, Infinity).signal).toBe(controller.signal);
+      expect(typeof withIdleDeadline(controller.signal, undefined).touch).toBe('function');
     });
 
     it('should create a standalone signal when only deadline given', () => {
-      const signal = withDeadline(undefined, 60000)!;
+      const { signal } = withIdleDeadline(undefined, 60000);
       expect(signal).toBeInstanceOf(AbortSignal);
-      expect(signal.aborted).toBe(false);
+      expect(signal!.aborted).toBe(false);
     });
 
-    it('should abort with TimeoutError when deadline is reached', async () => {
-      const signal = withDeadline(undefined, 30)!;
+    it('should abort with TimeoutError when idle deadline is reached', async () => {
+      const { signal } = withIdleDeadline(undefined, 30);
       const event = await new Promise<AbortSignal>((resolve) => {
-        signal.addEventListener('abort', () => resolve(signal), { once: true });
+        signal!.addEventListener('abort', () => resolve(signal!), { once: true });
       });
       expect(event.aborted).toBe(true);
       expect((event.reason as Error).name).toBe('TimeoutError');
     });
 
+    it('should reset idle timer on each touch while data keeps flowing', async () => {
+      const { signal, touch } = withIdleDeadline(undefined, 80);
+      // 25ms / 50ms 各 touch 一次，模拟流式数据持续到达；50ms 的 touch 把
+      // 计时推到 130ms，因此 65ms 处（无 touch 时的超时点之后）不应中止
+      setTimeout(touch, 25);
+      setTimeout(touch, 50);
+      await sleep(65);
+      expect(signal!.aborted).toBe(false);
+      const event = await new Promise<AbortSignal>((resolve) => {
+        signal!.addEventListener('abort', () => resolve(signal!), { once: true });
+      });
+      expect(event.aborted).toBe(true);
+      expect((event.reason as Error).name).toBe('TimeoutError');
+    });
+
+    it('should ignore touch after abort', () => {
+      const controller = new AbortController();
+      const handle = withIdleDeadline(controller.signal, 60000);
+      controller.abort();
+      expect(() => handle.touch()).not.toThrow();
+    });
+
     it('should propagate external abort through merged signal', async () => {
       const controller = new AbortController();
-      const signal = withDeadline(controller.signal, 60000)!;
+      const { signal } = withIdleDeadline(controller.signal, 60000);
       const reason = new Error('user interrupt');
       const event = await new Promise<AbortSignal>((resolve) => {
-        signal.addEventListener('abort', () => resolve(signal), { once: true });
+        signal!.addEventListener('abort', () => resolve(signal!), { once: true });
         controller.abort(reason);
       });
       expect(event.reason).toBe(reason);
@@ -310,9 +333,9 @@ describe('retry', () => {
       const controller = new AbortController();
       const reason = new DOMException('Aborted', 'AbortError');
       controller.abort(reason);
-      const signal = withDeadline(controller.signal, 60000)!;
-      expect(signal.aborted).toBe(true);
-      expect(signal.reason).toBe(reason);
+      const { signal } = withIdleDeadline(controller.signal, 60000);
+      expect(signal!.aborted).toBe(true);
+      expect(signal!.reason).toBe(reason);
     });
   });
 });

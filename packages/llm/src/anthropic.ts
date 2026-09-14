@@ -2,7 +2,7 @@ import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } 
 import { resolveCustomHeaders } from './custom-headers.js';
 import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '@agentdevjs/core';
 import type { LLMPhase } from '@agentdevjs/core';
-import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline, type IdleDeadlineHandle } from '@agentdevjs/core';
 import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
@@ -154,8 +154,9 @@ export class AnthropicLLM implements LLMClient {
   async chat(messages: Message[], tools: Tool[], options?: LLMChatOptions): Promise<LLMResponse> {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
-    // 整体时限：deadline 到达以 AbortError 中止，不进入重试
-    const signal = withDeadline(options?.signal, this.deadlineMs);
+    // 空闲时限：持续 timeoutMs 收不到数据才中止，不进入重试
+    const deadline = withIdleDeadline(options?.signal, this.deadlineMs);
+    const signal = deadline.signal;
     const compiled = compileContextForAnthropic(messages, tools, this.visionEnabled);
     const noStream = options?.noStream === true;
 
@@ -166,6 +167,8 @@ export class AnthropicLLM implements LLMClient {
         if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
         }
+        // 新 attempt 开始视为活动：重试退避不占用空闲预算
+        deadline.touch();
 
         const effectiveMaxTokens = this.maxTokens;
 
@@ -205,6 +208,8 @@ export class AnthropicLLM implements LLMClient {
           }),
           signal,
         });
+        // 响应头已到达
+        deadline.touch();
 
         if (!response.ok) {
           const errorText = await response.text();
@@ -238,7 +243,7 @@ export class AnthropicLLM implements LLMClient {
           throw new Error('Anthropic API returned an empty response body');
         }
 
-        return await readAnthropicStream(response.body, signal);
+        return await readAnthropicStream(response.body, deadline);
       } catch (error) {
         // 中断错误不重试，直接传播
         if (error instanceof DOMException && error.name === 'AbortError') {
@@ -596,8 +601,9 @@ function parseAnthropicJsonResponse(data: Record<string, any>): LLMResponse {
   };
 }
 
-async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<LLMResponse> {
+async function readAnthropicStream(body: ReadableStream<Uint8Array>, deadline: IdleDeadlineHandle): Promise<LLMResponse> {
   const reader = body.getReader();
+  const signal = deadline.signal;
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
@@ -671,6 +677,8 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, signal?: Ab
         throw new DOMException('Aborted', 'AbortError');
       }
       if (done) break;
+      // 每读到一段流数据重置空闲计时：数据在流动就不算断连
+      deadline.touch();
 
       buffer += decoder.decode(value, { stream: true });
 

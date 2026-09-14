@@ -11,7 +11,7 @@ import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import OpenAI from 'openai';
-import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withDeadline } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline } from '@agentdevjs/core';
 import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
@@ -241,8 +241,9 @@ export class OpenAILLM implements LLMClient {
   async chat(messages: Message[], tools: Tool[], options?: { signal?: AbortSignal }): Promise<LLMResponse> {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
-    // 整体时限：deadline 到达以 AbortError 中止，不进入重试
-    const signal = withDeadline(options?.signal, this.deadlineMs);
+    // 空闲时限：持续 timeoutMs 收不到数据才中止，不进入重试
+    const deadline = withIdleDeadline(options?.signal, this.deadlineMs);
+    const signal = deadline.signal;
     // 转换消息格式为 OpenAI 格式
     const chatMessages = compileChatMessages(messages, this.visionEnabled);
 
@@ -275,10 +276,14 @@ export class OpenAILLM implements LLMClient {
         if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
         }
+        // 新 attempt 开始视为活动：重试退避不占用空闲预算
+        deadline.touch();
 
         const stream = await this.client.chat.completions.create(requestBody, {
           signal,
         });
+        // 响应头已到达
+        deadline.touch();
 
         // ========== 流式处理（内部） ==========
 
@@ -303,6 +308,8 @@ export class OpenAILLM implements LLMClient {
 
         // 迭代流式响应
         for await (const chunk of stream) {
+          // 每收到一个 chunk 重置空闲计时：数据在流动就不算断连
+          deadline.touch();
           // 在流式读取中检查中断信号
           if (signal?.aborted) {
             throw new DOMException('Aborted', 'AbortError');

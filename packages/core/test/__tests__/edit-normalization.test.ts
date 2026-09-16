@@ -250,3 +250,212 @@ describe('edit tool block anchor similarity guard', () => {
     expect(finalContent).toBe(initial);
   });
 });
+
+/**
+ * 模糊替换器加固（源自真实会话事故的回归测试）：
+ * - blockAnchorReplacer 早退 bug：累计相似度过门槛即 break，后续行不再检查，
+ *   "第一中间行相同 + 其余全错"的块骗过 0.3 门槛被整块替换。
+ * - 门槛 0.3 → 0.8：中间行整体高度一致才放行。
+ * - 块长守卫：实际块与 oldString 行数差异过大 = 锚点定位到错误块，
+ *   旧行为会把不相干的原文件行整块吞掉（20 行 oldString 吞 7 行块事故）。
+ * - 缩进敏感语言（Python/YAML）禁用跨行模糊替换：宽容匹配 + newString
+ *   原样写入 = 缩进即语法语言的破坏配方。
+ * - fuzzy 命中回传 matchedText；not_found 附最接近候选行。
+ */
+describe('edit tool fuzzy replacer hardening', () => {
+  let tmpDir: string;
+  let fileSeq = 0;
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'agentdev-edit-fuzzy-hard-'));
+  });
+
+  afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function editFile(
+    initial: string,
+    oldString: string,
+    newString: string,
+    fileName = 'hard.js',
+  ): Promise<{ result: any; finalContent: string }> {
+    const filePath = join(tmpDir, `${fileSeq++}-${fileName}`);
+    writeFileSync(filePath, initial);
+    await createReadTool(tmpDir).execute({ filePath }, {} as any);
+    const result = await createEditTool(tmpDir).execute(
+      { filePath, oldString, newString },
+      {} as any,
+    ) as any;
+    return { result, finalContent: readFileSync(filePath, 'utf-8') };
+  }
+
+  it('rejects a block whose first middle line matches but the rest drift away (early-break fix)', async () => {
+    // 5 行块、3 个中间行：第一个中间行完全相同，后两个完全无关。
+    // 旧实现：累计 1.0/3 = 0.33 ≥ 0.3 早退 → 整块替换（事故形态）；
+    // 新实现：完整平均 0.33 < 0.8 → 拒绝
+    const initial = [
+      'function onCall() {',
+      '  keepExactLine();',
+      '  somethingUnrelated();',
+      '  anotherUnrelated();',
+      '}',
+    ].join('\n') + '\n';
+    const oldString = [
+      'function onCall() {',
+      '  keepExactLine();',
+      '  totallyDifferentOne();',
+      '  totallyDifferentTwo();',
+      '}',
+    ].join('\n');
+
+    await expect(editFile(initial, oldString, 'REPLACED')).rejects.toThrow(
+      /Could not find oldString/,
+    );
+    expect(readFileSync(join(tmpDir, `0-hard.js`), 'utf-8')).toBe(initial);
+  });
+
+  it('rejects intermediate similarity between the old and new threshold (0.3..0.8)', async () => {
+    // 两个中间行相似度约 0.71：旧门槛 0.3 放行，新门槛 0.8 拒绝
+    const initial = [
+      'function a() {',
+      '  abcdefghij();',
+      '  klmnopqrst();',
+      '}',
+    ].join('\n') + '\n';
+    const oldString = [
+      'function a() {',
+      '  abcdefXXXX();',
+      '  klmnopXXXX();',
+      '}',
+    ].join('\n');
+
+    await expect(editFile(initial, oldString, 'REPLACED')).rejects.toThrow(
+      /Could not find oldString/,
+    );
+  });
+
+  it('rejects an anchored block far longer than oldString (span guard)', async () => {
+    // 3 行 oldString 锚定到 7 行实际块：中间行相似度满分，但块长差异 4 > 容差 2，
+    // 旧行为整块吞掉 exactMiddle + extra1..4（rerun_v5_isolation.py 字典事故形态）
+    const initial = [
+      'anchorStart',
+      'exactMiddle',
+      'extra1',
+      'extra2',
+      'extra3',
+      'extra4',
+      'anchorEnd',
+    ].join('\n') + '\n';
+    const oldString = ['anchorStart', 'exactMiddle', 'anchorEnd'].join('\n');
+
+    await expect(editFile(initial, oldString, 'REPLACED')).rejects.toThrow(
+      /Could not find oldString/,
+    );
+    expect(readFileSync(join(tmpDir, `2-hard.js`), 'utf-8')).toBe(initial);
+  });
+
+  it('skips over-length candidates in the multi-candidate path (span guard)', async () => {
+    // 两个锚点候选：短块中间行不相似、长块中间行满分但块长超容差。
+    // 守卫必须把长块剔除，不允许它凭相似度胜出
+    const initial = [
+      'head',
+      'WRONG',
+      'tail',
+      'head',
+      'mid',
+      'x1',
+      'x2',
+      'x3',
+      'x4',
+      'tail',
+    ].join('\n') + '\n';
+    const oldString = ['head', 'mid', 'tail'].join('\n');
+
+    await expect(editFile(initial, oldString, 'REPLACED')).rejects.toThrow(
+      /Could not find oldString/,
+    );
+  });
+
+  it('still rescues a well-fitting block after hardening (regression)', async () => {
+    // 加固不误伤：锚点唯一、块长一致、中间行仅零星笔误 → 仍模糊命中
+    const initial = [
+      'async save() {',
+      '  const data = await this.load();',
+      '  await persist(data);',
+      '  return data;',
+      '}',
+    ].join('\n') + '\n';
+    const oldString = [
+      'async save() {',
+      '  const data = await this.loadd();',
+      '  await persist(data);',
+      '  return data;',
+      '}',
+    ].join('\n');
+    const newString = initial.trimEnd();
+
+    const { result } = await editFile(initial, oldString, newString);
+    expect(result.text).toContain('fuzzy');
+  });
+
+  it('disables cross-line fuzzy matching for Python files', async () => {
+    // 同一内容：.js 上 lineTrimmedReplacer 挽救缩进差异；.py 上必须显式失败
+    const initialJs = 'function main() {\n  alpha();\n  beta();\n}\n';
+    const initialPy = 'def main():\n    alpha()\n    beta()\n';
+    const oldJs = 'function main() {\nalpha();\nbeta();\n}';
+    const oldPy = 'def main():\nalpha()\nbeta()';
+    const newJs = 'function main() {\n  alpha();\n  beta();\n}';
+    const newPy = 'def main():\n    alpha()\n    beta()';
+
+    const { result, finalContent } = await editFile(initialJs, oldJs, newJs, 'a.js');
+    expect(result.text).toContain('fuzzy');
+    expect(finalContent).toBe(initialJs);
+
+    await expect(editFile(initialPy, oldPy, newPy, 'b.py')).rejects.toThrow(
+      /Could not find oldString/,
+    );
+    expect(readFileSync(join(tmpDir, '6-b.py'), 'utf-8')).toBe(initialPy);
+  });
+
+  it('keeps character-level normalization for Python files (curly quotes)', async () => {
+    // 禁用的是跨行模糊替换器，findActualString 字符级归一不受影响
+    const { result, finalContent } = await editFile(
+      's = "hello";\n',
+      's = \u201Chello\u201D;',
+      's = "world";',
+      'c.py',
+    );
+    const parsed = JSON.parse(result.text);
+    expect(parsed.message).toBe('Edit applied successfully');
+    expect(finalContent).toBe('s = "world";\n');
+  });
+
+  it('returns matchedText on fuzzy hits so the model can self-verify', async () => {
+    // 模糊命中时模型可见的 result 必须包含文件里实际匹配到的文本
+    // （diff 只在 display 通道，模型不可见）
+    const { result } = await editFile(
+      'function main() {\n  alpha();\n  beta();\n}\n',
+      'function main() {\nalpha();\nbeta();\n}',
+      'function main() {\n  alpha();\n  beta();\n}',
+      'd.js',
+    );
+    const parsed = JSON.parse(result.text);
+    expect(parsed.matchedText).toBe('function main() {\n  alpha();\n  beta();\n}');
+  });
+
+  it('does not leak matchedText on exact matches', async () => {
+    const { result } = await editFile('const x = 1;\n', 'const x = 1;', 'const x = 2;', 'e.js');
+    const parsed = JSON.parse(result.text);
+    expect(parsed.matchedText).toBeUndefined();
+    expect(parsed.message).toBe('Edit applied successfully');
+  });
+
+  it('includes closest candidate line hints in the not-found error', async () => {
+    // 真实事故形态：模型凭记忆把 ra_groups 记成 rag5_groups → 精确失败。
+    // 错误信息必须给出文件里最接近的行，避免模型盲试或降级 sed 手术
+    await expect(
+      editFile('ra_groups = {}\nra_groups["k"] = 1\n', 'rag5_groups = {}', 'REPLACED', 'f.py'),
+    ).rejects.toThrow(/line 1.*ra_groups = \{\}/);
+  });
+});

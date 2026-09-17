@@ -80,4 +80,24 @@ describe('user-turn metadata passthrough to CallStartContext', () => {
     expect(reminder).toBeDefined();
     expect(reminder?.tag).toBe('reminder');
   });
+
+  it('isolates per-key dispatch failures (one throwing feature does not block the rest)', async () => {
+    class ThrowingFeature implements AgentFeature {
+      readonly name = 'throwing-meta';
+      async onTurnMetadata(): Promise<void> {
+        throw new Error('boom');
+      }
+    }
+    const probe = new MetadataProbeFeature();
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 });
+    agent.use(probe as any);
+    agent.use(new ThrowingFeature() as any);
+
+    const context = agent.getContext();
+    // throwing key 在前：后续 key 仍被派发，不抛出
+    await agent.dispatchTurnMetadata({ 'throwing-meta': { x: 1 }, 'metadata-probe': { y: 2 } }, context);
+
+    expect(probe.dispatched).toHaveLength(1);
+    expect(probe.dispatched[0].value).toEqual({ y: 2 });
+  });
 });

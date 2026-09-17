@@ -37,7 +37,7 @@ export interface WorkThreadBridge {
   isEnabled(): boolean;
   deliver(params: {
     thread: { agentId?: string; headSessionId?: string; threadId?: string };
-    command: { commandId?: string; text?: string };
+    command: { commandId?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
   }): Promise<WorkThreadDeliveryOutcome>;
 }
 

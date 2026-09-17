@@ -400,6 +400,60 @@ describe('ViewerWorker user-turn contract', () => {
     expect(none.input).toBeNull();
   });
 
+  it('dequeue is strict FIFO even for legacy callers still sending a skipMetadata body', async () => {
+    // 历史调用方（旧版 react-loop）会 POST {"skipMetadata":true}：语义已废弃，
+    // 端点必须读掉 body 并照常严格 FIFO 返回 metadata 项（不静默滞留）。
+    const { worker, session, agentId } = createWorker();
+    session.callActive = true;
+    worker.submitUserTurn(agentId, {
+      text: 'meta first',
+      source: 'chat-composer',
+      metadata: { 'session-reference': [{ agentId: 'a', sessionId: 's' }] },
+    });
+    session.callActive = false;
+
+    const req = new EventEmitter() as any;
+    req.setEncoding = () => {};
+    const chunks: string[] = [];
+    const done = Promise.resolve().then(() => {
+      (worker as any).handleDequeueInput(req, {
+        writeHead() {},
+        end(payload: string) { chunks.push(String(payload)); },
+      } as any, agentId);
+      req.emit('data', JSON.stringify({ skipMetadata: true }));
+      req.emit('end');
+    });
+    await done;
+    await new Promise((r) => setTimeout(r, 0));
+
+    const result = JSON.parse(chunks[chunks.length - 1]);
+    expect(result.input.text).toBe('meta first');
+    expect(result.input.metadata?.['session-reference']).toHaveLength(1);
+    expect(session.queuedInputs).toHaveLength(0);
+  });
+
+  it('validateTurnMetadata boundary: 16KB passes, one byte over rejects', () => {
+    const { worker, session, agentId } = createWorker();
+    session.callActive = true;
+
+    // 序列化恰好 16384 字节（{"blob":"…"} 封套 11 字节）合法
+    const atLimit = worker.submitUserTurn(agentId, {
+      text: 'boundary',
+      source: 'test',
+      metadata: { blob: 'a'.repeat(16_373) },
+    });
+    expect(atLimit.success).toBe(true);
+
+    // 超出 1 字节拒绝且不入队
+    const overLimit = worker.submitUserTurn(agentId, {
+      text: 'boundary',
+      source: 'test',
+      metadata: { blob: 'a'.repeat(16_374) },
+    });
+    expect(overLimit).toMatchObject({ success: false, code: 'invalid_input' });
+    expect(session.queuedInputs).toHaveLength(1);
+  });
+
   it('forwards lease slot submissions carrying valid payload metadata', async () => {
     const { worker, session, agentId } = createWorker();
     session.inputLease = { requestId: 'slot-1', prompt: '请输入', mode: 'text', timestamp: Date.now() };

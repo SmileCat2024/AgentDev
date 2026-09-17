@@ -495,6 +495,61 @@ describe('WorkThread (anchor layer)', () => {
     await expect(() => thread.appendCommand({ threadId: wt.threadId, text: '   ' })).rejects.toThrow();
   });
 
+  it('appendCommand duplicate keeps the existing metadata (no second command)', async () => {
+    // 幂等命中既有指令时新 payload 不生效：重放携带不同 metadata 也不产生
+    // 第二条指令，旧值胜出（宿主网关层负责差异留痕）。
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'm2' } });
+
+    const first = await thread.appendCommand({
+      threadId: wt.threadId,
+      text: '重放',
+      idempotencyKey: 'dup-1',
+      metadata: { ref: 'original' },
+    });
+    const second = await thread.appendCommand({
+      threadId: wt.threadId,
+      text: '重放',
+      idempotencyKey: 'dup-1',
+      metadata: { ref: 'replayed' },
+    });
+
+    expect(second.duplicate).toBe(true);
+    expect(second.command.commandId).toBe(first.command.commandId);
+    expect(second.command.metadata).toEqual({ ref: 'original' });
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.commands).toHaveLength(1);
+  });
+
+  it('appendCommand rejects oversized or non-serializable metadata at the door', async () => {
+    // 与 viewer user-turn 同源的形状防线（plain object、可序列化、≤16KB）：
+    // 入箱必可投——缺防线时问题指令会在投递跳才失败落 FAILED。
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'm3' } });
+
+    await expect(() => thread.appendCommand({
+      threadId: wt.threadId,
+      text: 'x',
+      metadata: { blob: 'a'.repeat(16_385) },
+    })).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    await expect(() => thread.appendCommand({
+      threadId: wt.threadId,
+      text: 'x',
+      metadata: circular,
+    })).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+
+    // 16KB 边界内放行
+    const ok = await thread.appendCommand({
+      threadId: wt.threadId,
+      text: 'x',
+      metadata: { blob: 'a'.repeat(16_360) },
+    });
+    expect(ok.command.metadata).toBeDefined();
+  });
+
   it('findThreadByHeadSession returns full record for current head only', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'h1' } });

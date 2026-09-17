@@ -280,6 +280,19 @@ export interface AgentFeature {
   onCapabilityActivations?(refs: string[], ctx: { context: Context }): Promise<void>;
 
   /**
+   * 消费"随消息到达的 user-turn 自由元数据"中归属本 feature 的命名空间值（可选）。
+   *
+   * user-turn 的 metadata 是自由键值对象，key 约定为消费方 feature 名（命名
+   * 空间化）。busy 排队的消息在 react-loop 的步边界注入点派发（不经过新
+   * call），Agent 按 key 定位 feature 调用本方法。call 边界的消息不调用本
+   * 方法——metadata 经 CallStartContext.metadata 供 CallStart 钩子自取；
+   * 两个入口互斥，同一条消息不会被重复消费。
+   *
+   * 值的形状由 feature 自行约定与校验；单个 feature 抛错不阻断其余派发。
+   */
+  onTurnMetadata?(value: unknown, ctx: { context: Context; agent?: unknown }): Promise<void>;
+
+  /**
    * 声明上下文注入器
    */
   getContextInjectors?(): Map<string | RegExp, ContextInjector>;

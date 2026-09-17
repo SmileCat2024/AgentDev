@@ -457,6 +457,24 @@ export class WorkThread {
         status: 400,
       });
     }
+    // metadata 形状防线与 viewer user-turn 同源（plain object、可序列化、
+    // ≤16KB）：入箱必可投——缺这道防线时超大/不可序列化 metadata 会在
+    // 投递跳（viewer 校验 / store 序列化）才失败，指令落 FAILED 终态
+    if (opts.metadata !== undefined) {
+      let serialized: string | null = null;
+      try {
+        serialized = JSON.stringify(opts.metadata);
+      } catch {
+        // 循环引用等不可序列化形态保持 null，按非法 metadata 拒绝
+      }
+      if (typeof opts.metadata !== 'object' || opts.metadata === null || Array.isArray(opts.metadata)
+        || serialized === null || serialized.length > 16_384) {
+        throw Object.assign(
+          new Error('Command metadata must be a serializable plain object of at most 16KB'),
+          { code: 'invalid_request', status: 400 },
+        );
+      }
+    }
 
     const command = createCommandRecord({
       threadId,

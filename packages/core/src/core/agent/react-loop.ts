@@ -699,7 +699,7 @@ export class ReActLoopRunner {
    * 从 ViewerWorker 获取并消费一条排队消息
    *
    * @param agentId Agent ID
-   * @returns 排队消息（文本 + 图片），如果没有则返回 null
+   * @returns 排队消息（文本 + 图片 + 能力激活通知 + 自由元数据），如果没有则返回 null
    */
   private async fetchQueuedInput(agentId: string): Promise<{ text: string; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown> } | null> {
     // 从环境变量获取 ViewerWorker 端口

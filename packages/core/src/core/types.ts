@@ -758,6 +758,8 @@ export interface QueuedInput {
   sourceRef?: string;
   /** 随消息流动的能力激活通知（capability refs，如 skill.grill-me） */
   capabilityActivations?: string[];
+  /** 随消息流动的自由元数据（user-turn 的 metadata 原样入队；框架只透传不解释） */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -774,6 +776,12 @@ export interface UserTurnInput {
   sourceRef?: string;
   /** 随消息流动的能力激活通知（capability refs）；经 lease 响应 payload 与排队项原样随行 */
   capabilityActivations?: string[];
+  /**
+   * 随消息流动的自由元数据：消费端（feature 等）自取自有 key。
+   * 框架只透传不解释，key 由使用方命名空间化（约定为消费方 feature 名）；
+   * 经 lease 响应 payload 与排队项原样随行，最终到达 CallStartContext.metadata。
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export type UserTurnSubmissionResult =

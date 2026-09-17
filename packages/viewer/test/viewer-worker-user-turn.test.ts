@@ -299,4 +299,108 @@ describe('ViewerWorker user-turn contract', () => {
     expect(result.delivery).toBe('input');
     expect(writes).toHaveLength(1);
   });
+
+  it('delivers free-form metadata to the runtime with a direct lease response', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'meta-input', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    const metadata = { 'session-reference': [{ agentId: 'programming-helper', sessionId: 'session-1', title: '修复登录超时' }] };
+    const result = worker.submitUserTurn(agentId, { text: 'with metadata', source: 'chat-composer', metadata });
+
+    expect(result.success).toBe(true);
+    expect(result.delivery).toBe('input');
+    const delivered = JSON.parse(writes[0]);
+    expect(delivered.response.payload.metadata).toEqual(metadata);
+  });
+
+  it('preserves metadata when a turn goes through the runtime mailbox', () => {
+    const { worker, session, agentId } = createWorker();
+    session.callActive = true;
+    const metadata = { 'session-reference': [{ agentId: 'programming-helper', sessionId: 'session-2', title: '重构导出逻辑' }] };
+
+    const result = worker.submitUserTurn(agentId, { text: 'queued with metadata', source: 'chat-composer', metadata });
+
+    expect(result).toMatchObject({ success: true, delivery: 'queued' });
+    expect(session.queuedInputs[0].metadata).toEqual(metadata);
+
+    // 邮箱转交给下一个 lease 时 metadata 原样随行
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+    worker.handleRequestInput({ agentId, requestId: 'next-input', prompt: '请输入', mode: 'text' });
+    expect(session.queuedInputs).toHaveLength(0);
+    const delivered = JSON.parse(writes[0]);
+    expect(delivered.response.payload.metadata).toEqual(metadata);
+  });
+
+  it('rejects malformed metadata shapes', () => {
+    const { worker, session, agentId } = createWorker();
+    session.callActive = true;
+
+    const arrayForm = worker.submitUserTurn(agentId, { text: 'bad', source: 'test', metadata: ['not', 'an', 'object'] as unknown as Record<string, unknown> });
+    expect(arrayForm).toMatchObject({ success: false, code: 'invalid_input' });
+
+    const oversized = worker.submitUserTurn(agentId, {
+      text: 'bad',
+      source: 'test',
+      metadata: { blob: 'x'.repeat(20000) },
+    });
+    expect(oversized).toMatchObject({ success: false, code: 'invalid_input' });
+    expect(session.queuedInputs).toHaveLength(0);
+  });
+
+  it('skips metadata-bearing queued inputs for in-call dequeue while keeping them for lease handoff', async () => {
+    const { worker, session, agentId } = createWorker();
+    session.callActive = true;
+    worker.submitUserTurn(agentId, {
+      text: 'plain queued turn',
+      source: 'chat-composer',
+    });
+    worker.submitUserTurn(agentId, {
+      text: 'turn with metadata',
+      source: 'chat-composer',
+      metadata: { 'session-reference': [{ agentId: 'programming-helper', sessionId: 'session-x', title: '引用' }] },
+    });
+    session.callActive = false;
+
+    const dequeue = async (body: string) => {
+      const req = new EventEmitter() as any;
+      req.setEncoding = () => {};
+      const chunks: string[] = [];
+      await Promise.resolve();
+      const done = Promise.resolve().then(() => {
+        (worker as any).handleDequeueInput(req, {
+          writeHead() {},
+          end(payload: string) { chunks.push(String(payload)); },
+        } as any, agentId);
+        req.emit('data', body);
+        req.emit('end');
+      });
+      await done;
+      await new Promise((r) => setTimeout(r, 0));
+      return chunks.length > 0 ? JSON.parse(chunks[chunks.length - 1]) : null;
+    };
+
+    // skipMetadata：跳过带 metadata 的项，只取无 metadata 的
+    const skipped = await dequeue(JSON.stringify({ skipMetadata: true }));
+    expect(skipped.input.text).toBe('plain queued turn');
+    expect(session.queuedInputs).toHaveLength(1);
+    expect(session.queuedInputs[0].text).toBe('turn with metadata');
+
+    // 再取 skipMetadata：仅剩 metadata 项，返回 null 不消费
+    const none = await dequeue(JSON.stringify({ skipMetadata: true }));
+    expect(none.input).toBeNull();
+    expect(session.queuedInputs).toHaveLength(1);
+
+    // 默认（宿主 drain）：拿全部，含 metadata
+    const drained = await dequeue('{}');
+    expect(drained.input.text).toBe('turn with metadata');
+    expect(drained.input.metadata?.['session-reference']).toHaveLength(1);
+    expect(session.queuedInputs).toHaveLength(0);
+  });
 });

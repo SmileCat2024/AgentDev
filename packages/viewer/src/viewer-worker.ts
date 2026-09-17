@@ -926,6 +926,17 @@ class ViewerWorker {
         || input.capabilityActivations.some((a) => typeof a !== 'string' || a.length === 0 || a.length > 128))) {
       return { success: false, code: 'invalid_input', error: 'capabilityActivations must be an array of up to 16 non-empty strings (max 128 chars each)' };
     }
+    if (input.metadata !== undefined) {
+      let serialized: string | null = null;
+      try {
+        serialized = JSON.stringify(input.metadata);
+      } catch {
+        // 序列化失败保持 null（初始化值），按非法 metadata 拒绝
+      }      if (typeof input.metadata !== 'object' || input.metadata === null || Array.isArray(input.metadata)
+        || serialized === null || serialized.length > 16384) {
+        return { success: false, code: 'invalid_input', error: 'metadata must be a plain object of at most 16KB serialized' };
+      }
+    }
 
     const session = this.agentSessions.get(agentId);
     if (!session) {
@@ -980,7 +991,7 @@ class ViewerWorker {
         error: 'This runtime does not accept external user turns',
       };
     }
-    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations);
+    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata);
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
       success: true,
@@ -1062,6 +1073,9 @@ class ViewerWorker {
     if (Array.isArray(input.capabilityActivations) && input.capabilityActivations.length > 0) {
       payload.capabilityActivations = input.capabilityActivations;
     }
+    if (input.metadata && typeof input.metadata === 'object' && Object.keys(input.metadata).length > 0) {
+      payload.metadata = input.metadata;
+    }
     return {
       kind: 'text',
       text: input.text,
@@ -1076,6 +1090,7 @@ class ViewerWorker {
     source?: string,
     sourceRef?: string,
     capabilityActivations?: string[],
+    metadata?: Record<string, unknown>,
   ): QueuedInput {
     if (!session.queuedInputs) {
       (session as any).queuedInputs = [];
@@ -1088,6 +1103,7 @@ class ViewerWorker {
       ...(source ? { source } : {}),
       ...(sourceRef ? { sourceRef } : {}),
       ...(Array.isArray(capabilityActivations) && capabilityActivations.length > 0 ? { capabilityActivations } : {}),
+      ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
     session.queuedInputs.push(queuedInput);
     return queuedInput;
@@ -1110,27 +1126,59 @@ class ViewerWorker {
   }
 
   /**
-   * 消费第一条排队消息
+   * 消费第一条排队消息。
+   *
+   * body `{ skipMetadata: true }` 时只消费不携带 user-turn metadata 的排队项：
+   * 带 metadata 的项原地保留，供后续 input lease 转交（metadata 经
+   * CallStartContext 派发）或宿主侧 drain 逻辑转独立 onCall 消费。react-loop
+   * 的 in-call 注入路径（addUserMessage，不经过 CallStart）使用该模式，避免
+   * 排队消息携带的 metadata 被静默丢弃。
    */
   private handleDequeueInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
-    const session = this.agentSessions.get(agentId);
-    if (!session) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Agent not found' }));
-      return;
-    }
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => { body += chunk; });
+    req.on('end', () => {
+      let skipMetadata = false;
+      try {
+        const parsed = body ? JSON.parse(body) as Record<string, unknown> : {};
+        skipMetadata = parsed?.skipMetadata === true;
+      } catch {
+        // 解析失败按默认（不跳过）处理
+      }
 
-    const queued = session.queuedInputs || [];
-    if (queued.length === 0) {
+      const session = this.agentSessions.get(agentId);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Agent not found' }));
+        return;
+      }
+
+      const queued = session.queuedInputs || [];
+      if (queued.length === 0) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ input: null }));
+        return;
+      }
+
+      let index = 0;
+      if (skipMetadata) {
+        while (index < queued.length && queued[index].metadata && Object.keys(queued[index].metadata as Record<string, unknown>).length > 0) {
+          index += 1;
+        }
+      }
+      if (index >= queued.length) {
+        // 所有排队项都携带 metadata：本次不消费，留给 lease 转交 / 宿主 drain
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ input: null, remaining: queued.length }));
+        return;
+      }
+
+      const input = queued.splice(index, 1)[0]!;
+      console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ input: null }));
-      return;
-    }
-
-    const input = queued.shift()!;
-    console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ input, remaining: queued.length }));
+      res.end(JSON.stringify({ input, remaining: queued.length }));
+    });
   }
 
   /**

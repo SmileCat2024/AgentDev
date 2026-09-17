@@ -309,8 +309,8 @@ class AgentBase {
    *
    * 同一实例的会话状态不可并发访问；后续调用会按提交顺序排队。
    */
-  async onCall(input: string, images?: ImageInput[], activations?: string[]): Promise<string> {
-    const outcome = await this.onCallDetailed(input, images, activations);
+  async onCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>): Promise<string> {
+    const outcome = await this.onCallDetailed(input, images, activations, metadata);
     return outcome.response;
   }
 
@@ -323,8 +323,11 @@ class AgentBase {
    * `activations` 是随本条输入流动的能力激活通知（capability refs），
    * 由输入管线（user-turn 元数据）携带，在 CallStart 反向钩子前派发给
    * 对应 feature 消费（见 dispatchTurnActivations）。
+   *
+   * `metadata` 是随本条输入流动的自由元数据（user-turn 的 metadata 字段），
+   * 框架不解释内容，原样挂到 CallStartContext.metadata 供 feature 自取。
    */
-  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[]): Promise<CallOutcome> {
+  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>): Promise<CallOutcome> {
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
     }
@@ -334,7 +337,7 @@ class AgentBase {
         throw new Error('Agent is disposing or has been disposed');
       }
 
-      const execution = this.executeCall(input, images, activations);
+      const execution = this.executeCall(input, images, activations, metadata);
       const completion = execution.then(() => undefined, () => undefined);
       this._activeCallPromise = completion;
       try {
@@ -356,7 +359,7 @@ class AgentBase {
     return this._lastCallOutcome ? { ...this._lastCallOutcome } : null;
   }
 
-  private async executeCall(input: string, images?: ImageInput[], activations?: string[]): Promise<CallOutcome> {
+  private async executeCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>): Promise<CallOutcome> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
     if (this._lifecycleState !== 'active') {
@@ -404,7 +407,7 @@ class AgentBase {
       // 触发 onCallStart（正向钩子）
       await executeHook(
         this,
-        () => (this as any).onCallStart({ input, context, isFirstCall }),
+        () => (this as any).onCallStart({ input, context, isFirstCall, ...(metadata ? { metadata } : {}) }),
         { hookName: 'onCallStart', input }
       );
 
@@ -448,7 +451,7 @@ class AgentBase {
       }
 
       // 执行反向钩子，Feature 可以在此期间修改 _pendingInput
-      await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall, agent: this });
+      await this.hooksRegistry.executeVoid(CoreLifecycle.CallStart, { input, context, isFirstCall, agent: this, ...(metadata ? { metadata } : {}) });
       this.syncRegisteredToolsToDebug();
       this.pushInspectorSnapshot();
 

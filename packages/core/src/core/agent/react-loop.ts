@@ -700,15 +700,20 @@ export class ReActLoopRunner {
    * @param agentId Agent ID
    * @returns 排队消息（文本 + 图片），如果没有则返回 null
    */
-  private async fetchQueuedInput(agentId: string): Promise<{ text: string; images?: ImageInput[]; capabilityActivations?: string[] } | null> {
+  private async fetchQueuedInput(agentId: string): Promise<{ text: string; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown> } | null> {
     // 从环境变量获取 ViewerWorker 端口
     const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
     const viewerUrl = `http://127.0.0.1:${viewerPort}`;
 
     try {
+      // in-call 注入路径只消费不带 metadata 的排队项：带 metadata 的项留在
+      // 队列，由后续 input lease 转交（metadata 经 CallStartContext 派发）或
+      // 宿主侧 drain 转独立 onCall 消费——此处 addUserMessage 不经过
+      // CallStart，消费 metadata 等于静默丢弃。
       const res = await fetch(`${viewerUrl}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skipMetadata: true }),
       });
 
       if (!res.ok) {
@@ -724,6 +729,9 @@ export class ReActLoopRunner {
             : {}),
           ...(Array.isArray(data.input.capabilityActivations) && data.input.capabilityActivations.length > 0
             ? { capabilityActivations: data.input.capabilityActivations.filter((a: unknown): a is string => typeof a === 'string') }
+            : {}),
+          ...(data.input.metadata && typeof data.input.metadata === 'object' && !Array.isArray(data.input.metadata)
+            ? { metadata: data.input.metadata as Record<string, unknown> }
             : {}),
         };
       }
@@ -747,7 +755,7 @@ export class ReActLoopRunner {
   ): Promise<boolean> {
     if (!this.agent.agentId) return false;
     try {
-      const items: Array<{ text: string; images?: ImageInput[]; capabilityActivations?: string[] }> = [];
+      const items: Array<{ text: string; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown> }> = [];
       while (true) {
         const qi = await this.fetchQueuedInput(this.agent.agentId);
         if (!qi) break;
@@ -760,6 +768,15 @@ export class ReActLoopRunner {
           // 通知在此消息落地点派发给对应 feature
           if (qi.capabilityActivations?.length) {
             await this.agent.dispatchTurnActivations(qi.capabilityActivations, context);
+          }
+          // metadata 的消费入口是 CallStartContext（每 call 一次）；call 内
+          // 注入路径不触发 CallStart，此处的 metadata 无法派发——明示丢弃，
+          // 供宿主诊断（需要消费 metadata 的宿主应在 call 边界把排队输入
+          // 转为独立 onCall，如 Claw CallArbiter 的 drain 逻辑）。
+          if (qi.metadata && Object.keys(qi.metadata).length > 0) {
+            logger.warn(`${logLabel}：排队消息携带 metadata，但 call 内注入路径不消费 metadata，已丢弃`, {
+              keys: Object.keys(qi.metadata),
+            });
           }
           context.addUserMessage(qi.text, callIndex, qi.images);
         }

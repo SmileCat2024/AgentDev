@@ -138,6 +138,12 @@ export interface CallStartContext {
   isFirstCall: boolean;
   /** Agent 实例（用于访问 setUserInput/getUserInput 等 API） */
   agent?: any;
+  /**
+   * 随本条用户输入流动的自由元数据（user-turn 的 metadata 原样透传）。
+   * 框架只透传不解释；key 由使用方命名空间化（约定为消费方 feature 名），
+   * 值的校验与容错由消费方负责。
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /**

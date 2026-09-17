@@ -52,6 +52,27 @@ interface MessagesProbe {
   fakeFullBytes: number;
 }
 
+/**
+ * user-turn 自由元数据的形状约束：plain object、可序列化、≤16KB。
+ * user-turn 端点与 lease 槽位提交（/input 的 response.payload.metadata）共用，
+ * 两条入口保持同一防线。
+ *
+ * @returns null 表示合法；否则返回拒绝理由（HTTP 400 文案）。
+ */
+function validateTurnMetadata(metadata: unknown): string | null {
+  let serialized: string | null = null;
+  try {
+    serialized = JSON.stringify(metadata);
+  } catch {
+    // 序列化失败保持 null，按非法 metadata 拒绝
+  }
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)
+    || serialized === null || serialized.length > 16384) {
+    return 'metadata must be a plain object of at most 16KB serialized';
+  }
+  return null;
+}
+
 // ============= Worker 类 =============
 
 class ViewerWorker {
@@ -877,6 +898,19 @@ class ViewerWorker {
           text: input,
         };
 
+        // lease 槽位提交同样可以携带 user-turn metadata（前端 slot 路径把它放进
+        // response.payload）：与 user-turn 端点共用同一形状防线，避免槽位路径
+        // 绕过尺寸约束把超大元数据直推进 runtime
+        const slotMetadata = (normalizedResponse as { payload?: { metadata?: unknown } })?.payload?.metadata;
+        if (slotMetadata !== undefined) {
+          const rejection = validateTurnMetadata(slotMetadata);
+          if (rejection) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ success: false, code: 'invalid_input', error: rejection }));
+            return;
+          }
+        }
+
         if (!this.forwardInputResponse(agentId, session, requestId, input ?? '', normalizedResponse)) {
           res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({
@@ -927,14 +961,9 @@ class ViewerWorker {
       return { success: false, code: 'invalid_input', error: 'capabilityActivations must be an array of up to 16 non-empty strings (max 128 chars each)' };
     }
     if (input.metadata !== undefined) {
-      let serialized: string | null = null;
-      try {
-        serialized = JSON.stringify(input.metadata);
-      } catch {
-        // 序列化失败保持 null（初始化值），按非法 metadata 拒绝
-      }      if (typeof input.metadata !== 'object' || input.metadata === null || Array.isArray(input.metadata)
-        || serialized === null || serialized.length > 16384) {
-        return { success: false, code: 'invalid_input', error: 'metadata must be a plain object of at most 16KB serialized' };
+      const rejection = validateTurnMetadata(input.metadata);
+      if (rejection) {
+        return { success: false, code: 'invalid_input', error: rejection };
       }
     }
 
@@ -1126,59 +1155,35 @@ class ViewerWorker {
   }
 
   /**
-   * 消费第一条排队消息。
+   * 消费第一条排队消息（严格 FIFO，含携带 user-turn metadata 的项）。
    *
-   * body `{ skipMetadata: true }` 时只消费不携带 user-turn metadata 的排队项：
-   * 带 metadata 的项原地保留，供后续 input lease 转交（metadata 经
-   * CallStartContext 派发）或宿主侧 drain 逻辑转独立 onCall 消费。react-loop
-   * 的 in-call 注入路径（addUserMessage，不经过 CallStart）使用该模式，避免
-   * 排队消息携带的 metadata 被静默丢弃。
+   * call 内注入（react-loop）现在经 dispatchTurnMetadata 在注入点派发
+   * metadata，排队项无需再按 metadata 分流——跳过分流会颠倒用户消息
+   * 顺序（后发的普通消息先被消费），FIFO 是唯一正确语义。
    */
   private handleDequeueInput(req: IncomingMessage, res: ServerResponse, agentId: string): void {
-    let body = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => { body += chunk; });
-    req.on('end', () => {
-      let skipMetadata = false;
-      try {
-        const parsed = body ? JSON.parse(body) as Record<string, unknown> : {};
-        skipMetadata = parsed?.skipMetadata === true;
-      } catch {
-        // 解析失败按默认（不跳过）处理
-      }
+    // 请求可能带 body（历史调用方曾发送 { skipMetadata }）：读掉再响应，
+    // 避免 keep-alive 连接上未读 body 干扰后续请求解析
+    req.resume?.();
 
-      const session = this.agentSessions.get(agentId);
-      if (!session) {
-        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'Agent not found' }));
-        return;
-      }
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
 
-      const queued = session.queuedInputs || [];
-      if (queued.length === 0) {
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ input: null }));
-        return;
-      }
-
-      let index = 0;
-      if (skipMetadata) {
-        while (index < queued.length && queued[index].metadata && Object.keys(queued[index].metadata as Record<string, unknown>).length > 0) {
-          index += 1;
-        }
-      }
-      if (index >= queued.length) {
-        // 所有排队项都携带 metadata：本次不消费，留给 lease 转交 / 宿主 drain
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ input: null, remaining: queued.length }));
-        return;
-      }
-
-      const input = queued.splice(index, 1)[0]!;
-      console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
+    const queued = session.queuedInputs || [];
+    if (queued.length === 0) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ input, remaining: queued.length }));
-    });
+      res.end(JSON.stringify({ input: null }));
+      return;
+    }
+
+    const input = queued.shift()!;
+    console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ input, remaining: queued.length }));
   }
 
   /**

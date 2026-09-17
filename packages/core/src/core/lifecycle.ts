@@ -142,6 +142,10 @@ export interface CallStartContext {
    * 随本条用户输入流动的自由元数据（user-turn 的 metadata 原样透传）。
    * 框架只透传不解释；key 由使用方命名空间化（约定为消费方 feature 名），
    * 值的校验与容错由消费方负责。
+   *
+   * 这是 call 边界的消费入口。busy 时排队的消息由 react-loop 在 call 内
+   * 注入，metadata 经 dispatchTurnMetadata 派发 feature.onTurnMetadata——
+   * 两个入口互斥，消费方不会重复收到同一条消息的 metadata。
    */
   metadata?: Record<string, unknown>;
 }

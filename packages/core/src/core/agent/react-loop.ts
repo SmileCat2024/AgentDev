@@ -49,6 +49,7 @@ export class ReActLoopRunner {
       recordUsage(callIndex: number, step: number, usage: UsageInfo, model?: ModelUsageKey): void;
       endCallUsage(callIndex: number): void;
       dispatchTurnActivations(refs: string[], context: Context): Promise<void>;
+      dispatchTurnMetadata(metadata: Record<string, unknown>, context: Context): Promise<void>;
       stepSaveFn?: () => Promise<void>;
       peekContinuationRequest?: () => CallContinuationRequest | null;
       // 模型热切换族（ADR-0009）：StepStart 等 hook ctx 的 agent 引用是本 facade，
@@ -706,14 +707,9 @@ export class ReActLoopRunner {
     const viewerUrl = `http://127.0.0.1:${viewerPort}`;
 
     try {
-      // in-call 注入路径只消费不带 metadata 的排队项：带 metadata 的项留在
-      // 队列，由后续 input lease 转交（metadata 经 CallStartContext 派发）或
-      // 宿主侧 drain 转独立 onCall 消费——此处 addUserMessage 不经过
-      // CallStart，消费 metadata 等于静默丢弃。
       const res = await fetch(`${viewerUrl}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ skipMetadata: true }),
       });
 
       if (!res.ok) {
@@ -765,18 +761,13 @@ export class ReActLoopRunner {
         logger.info(`${logLabel}：注入排队消息`, { count: items.length });
         for (const qi of items) {
           // 排队消息在 call 内注入（不触发新 onCall），其携带的能力激活
-          // 通知在此消息落地点派发给对应 feature
+          // 通知与自由元数据在此消息落地点派发给对应 feature（与 call
+          // 边界的 CallStartContext 入口互斥：一条消息只走其一）
           if (qi.capabilityActivations?.length) {
             await this.agent.dispatchTurnActivations(qi.capabilityActivations, context);
           }
-          // metadata 的消费入口是 CallStartContext（每 call 一次）；call 内
-          // 注入路径不触发 CallStart，此处的 metadata 无法派发——明示丢弃，
-          // 供宿主诊断（需要消费 metadata 的宿主应在 call 边界把排队输入
-          // 转为独立 onCall，如 Claw CallArbiter 的 drain 逻辑）。
           if (qi.metadata && Object.keys(qi.metadata).length > 0) {
-            logger.warn(`${logLabel}：排队消息携带 metadata，但 call 内注入路径不消费 metadata，已丢弃`, {
-              keys: Object.keys(qi.metadata),
-            });
+            await this.agent.dispatchTurnMetadata(qi.metadata, context);
           }
           context.addUserMessage(qi.text, callIndex, qi.images);
         }

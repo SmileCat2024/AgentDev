@@ -354,27 +354,66 @@ describe('ViewerWorker user-turn contract', () => {
     expect(session.queuedInputs).toHaveLength(0);
   });
 
-  it('skips metadata-bearing queued inputs for in-call dequeue while keeping them for lease handoff', async () => {
+  it('dequeue is strict FIFO: metadata-bearing items are consumed in order with the rest', async () => {
+    // call 内注入路径现在经 dispatchTurnMetadata 派发 metadata，排队项
+    // 不再按 metadata 分流——分流会颠倒用户消息顺序（后发先至）。
     const { worker, session, agentId } = createWorker();
     session.callActive = true;
     worker.submitUserTurn(agentId, {
-      text: 'plain queued turn',
-      source: 'chat-composer',
-    });
-    worker.submitUserTurn(agentId, {
-      text: 'turn with metadata',
+      text: 'turn with metadata (sent first)',
       source: 'chat-composer',
       metadata: { 'session-reference': [{ agentId: 'programming-helper', sessionId: 'session-x', title: '引用' }] },
     });
+    worker.submitUserTurn(agentId, {
+      text: 'plain queued turn (sent second)',
+      source: 'chat-composer',
+    });
     session.callActive = false;
 
-    const dequeue = async (body: string) => {
+    const dequeue = async () => {
       const req = new EventEmitter() as any;
       req.setEncoding = () => {};
       const chunks: string[] = [];
-      await Promise.resolve();
       const done = Promise.resolve().then(() => {
         (worker as any).handleDequeueInput(req, {
+          writeHead() {},
+          end(payload: string) { chunks.push(String(payload)); },
+        } as any, agentId);
+        req.emit('end');
+      });
+      await done;
+      await new Promise((r) => setTimeout(r, 0));
+      return chunks.length > 0 ? JSON.parse(chunks[chunks.length - 1]) : null;
+    };
+
+    // 先到的 metadata 项先被消费，metadata 原样随行
+    const first = await dequeue();
+    expect(first.input.text).toBe('turn with metadata (sent first)');
+    expect(first.input.metadata?.['session-reference']).toHaveLength(1);
+    expect(session.queuedInputs).toHaveLength(1);
+
+    const second = await dequeue();
+    expect(second.input.text).toBe('plain queued turn (sent second)');
+    expect(session.queuedInputs).toHaveLength(0);
+
+    const none = await dequeue();
+    expect(none.input).toBeNull();
+  });
+
+  it('forwards lease slot submissions carrying valid payload metadata', async () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'slot-1', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    const post = async (body: string) => {
+      const req = new EventEmitter() as any;
+      req.setEncoding = () => {};
+      const chunks: string[] = [];
+      const done = Promise.resolve().then(() => {
+        (worker as any).handlePostInput(req, {
           writeHead() {},
           end(payload: string) { chunks.push(String(payload)); },
         } as any, agentId);
@@ -386,21 +425,53 @@ describe('ViewerWorker user-turn contract', () => {
       return chunks.length > 0 ? JSON.parse(chunks[chunks.length - 1]) : null;
     };
 
-    // skipMetadata：跳过带 metadata 的项，只取无 metadata 的
-    const skipped = await dequeue(JSON.stringify({ skipMetadata: true }));
-    expect(skipped.input.text).toBe('plain queued turn');
-    expect(session.queuedInputs).toHaveLength(1);
-    expect(session.queuedInputs[0].text).toBe('turn with metadata');
+    const metadata = { 'session-reference': [{ agentId: 'programming-helper', sessionId: 'session-9', title: '引用' }] };
+    const result = await post(JSON.stringify({
+      requestId: 'slot-1',
+      input: 'hi',
+      response: { kind: 'text', text: 'hi', payload: { metadata } },
+    }));
 
-    // 再取 skipMetadata：仅剩 metadata 项，返回 null 不消费
-    const none = await dequeue(JSON.stringify({ skipMetadata: true }));
-    expect(none.input).toBeNull();
-    expect(session.queuedInputs).toHaveLength(1);
+    expect(result).toEqual({ success: true });
+    expect(session.inputLease).toBeUndefined();
+    const delivered = JSON.parse(writes[0]);
+    expect(delivered.response.payload.metadata).toEqual(metadata);
+  });
 
-    // 默认（宿主 drain）：拿全部，含 metadata
-    const drained = await dequeue('{}');
-    expect(drained.input.text).toBe('turn with metadata');
-    expect(drained.input.metadata?.['session-reference']).toHaveLength(1);
-    expect(session.queuedInputs).toHaveLength(0);
+  it('rejects malformed payload metadata on the lease slot path without consuming the lease', async () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'slot-2', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    const post = async (body: string) => {
+      const req = new EventEmitter() as any;
+      req.setEncoding = () => {};
+      const chunks: string[] = [];
+      const done = Promise.resolve().then(() => {
+        (worker as any).handlePostInput(req, {
+          writeHead() {},
+          end(payload: string) { chunks.push(String(payload)); },
+        } as any, agentId);
+        req.emit('data', body);
+        req.emit('end');
+      });
+      await done;
+      await new Promise((r) => setTimeout(r, 0));
+      return chunks.length > 0 ? JSON.parse(chunks[chunks.length - 1]) : null;
+    };
+
+    const result = await post(JSON.stringify({
+      requestId: 'slot-2',
+      input: 'hi',
+      response: { kind: 'text', text: 'hi', payload: { metadata: { blob: 'x'.repeat(20000) } } },
+    }));
+
+    expect(result).toMatchObject({ success: false, code: 'invalid_input' });
+    // 拒绝后租约保留（未被消费），runtime 未收到任何转发
+    expect(session.inputLease).toMatchObject({ requestId: 'slot-2' });
+    expect(writes).toHaveLength(0);
   });
 });

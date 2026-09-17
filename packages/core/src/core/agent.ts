@@ -1788,6 +1788,41 @@ class AgentBase {
   }
 
   /**
+   * 把"随消息到达的 user-turn 自由元数据"按命名空间 key 派发给对应 feature。
+   *
+   * key 约定为消费方 feature 名；feature 可实现可选方法
+   * onTurnMetadata(value, { context, agent })。单个 feature 失败不阻断
+   * 其余派发，也不阻断本轮 call。
+   *
+   * 消费入口的分工：call 边界的 metadata 经 CallStartContext.metadata 供
+   * CallStart 钩子自取；busy 时排队的消息由 react-loop 在 call 内注入点
+   * 调用本方法派发（addUserMessage 不经过 CallStart）。一条消息只走其一，
+   * 两个入口互斥，消费方不会重复收到。
+   */
+  async dispatchTurnMetadata(metadata: Record<string, unknown>, context: Context): Promise<void> {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return;
+    const logger = createLogger('turn-metadata', { agentId: this.agentId });
+    for (const [key, value] of Object.entries(metadata)) {
+      const feature = this.features.get(key) as AgentFeature | undefined;
+      if (!feature || typeof (feature as any).onTurnMetadata !== 'function') {
+        // key 无归属或 feature 未实现消费方法：显式留痕而非静默吞掉
+        //（远程端发来的 metadata 可能指向本会话未装配的 feature）
+        logger.warn('turn metadata dropped (no owning feature handler)', { key });
+        continue;
+      }
+      try {
+        await (feature as any).onTurnMetadata(value, { context, agent: this });
+        logger.info('turn metadata dispatched', { key });
+      } catch (error) {
+        logger.error('turn metadata dispatch failed', {
+          key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  /**
    * 为单个 Feature 执行工具注册、onInitiate 和 hooks 收集。
    *
    * 被 ensureFeatureTools() 和 mountFeature() 共用。
@@ -2251,6 +2286,7 @@ class AgentBase {
         recordUsage: (callIndex: number, step: number, usage: UsageInfo, model?: ModelUsageKey) => this.recordUsage(callIndex, step, usage, model),
         endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
         dispatchTurnActivations: (refs: string[], context: Context) => this.dispatchTurnActivations(refs, context),
+        dispatchTurnMetadata: (metadata: Record<string, unknown>, context: Context) => this.dispatchTurnMetadata(metadata, context),
         stepSaveFn: this._createStepSaveFn(),
         peekContinuationRequest: () => this._continuationRequest,
         // 模型热切换族（ADR-0009）：hook ctx 的 agent 是 facade，转发到本体，

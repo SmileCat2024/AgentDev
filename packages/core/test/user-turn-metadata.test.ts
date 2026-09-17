@@ -18,12 +18,19 @@ class MetadataProbeFeature implements AgentFeature {
     onCallStartHook: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
   };
   captured: Array<CallStartContext | undefined> = [];
+  dispatched: Array<{ value: unknown; callIndex: number }> = [];
 
   async onCallStartHook(ctx: CallStartContext): Promise<void> {
     this.captured.push(ctx);
     if (ctx.metadata && typeof ctx.metadata === 'object') {
       ctx.context.addSystemMessage('metadata seen', (ctx.agent as any)?._callIndex ?? 0, this.name, 'reminder');
     }
+  }
+
+  // call 内注入点的消费入口（react-loop 经 dispatchTurnMetadata 派发）
+  async onTurnMetadata(value: unknown, { context, agent }: { context: any; agent?: any }): Promise<void> {
+    this.dispatched.push({ value, callIndex: (agent as any)?._callIndex ?? 0 });
+    context.addSystemMessage('metadata dispatched', (agent as any)?._callIndex ?? 0, this.name, 'reminder');
   }
 }
 
@@ -52,5 +59,25 @@ describe('user-turn metadata passthrough to CallStartContext', () => {
 
     expect(probe.captured).toHaveLength(1);
     expect(probe.captured[0]!.metadata).toBeUndefined();
+  });
+
+  it('dispatches namespaced metadata to the owning feature handler (in-call entry)', async () => {
+    // call 内注入点（react-loop 排队消息）的消费入口：按 key = feature 名派发
+    // onTurnMetadata，与 CallStartContext 入口互斥。
+    const probe = new MetadataProbeFeature();
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 });
+    agent.use(probe as any);
+
+    const refs = [{ agentId: 'programming-helper', sessionId: 'session-2', title: '引用' }];
+    // 首次 call 前 persistentContext 尚未建立：getContext() 每次返回新实例，
+    // 必须持有同一个引用再断言（与 react-loop 的注入点传同一 context 同构）
+    const context = agent.getContext();
+    await agent.dispatchTurnMetadata({ 'metadata-probe': refs, 'not-mounted': { x: 1 } }, context);
+
+    expect(probe.dispatched).toHaveLength(1);
+    expect(probe.dispatched[0].value).toEqual(refs);
+    const reminder = context.getAll().find(message => message.content === 'metadata dispatched');
+    expect(reminder).toBeDefined();
+    expect(reminder?.tag).toBe('reminder');
   });
 });

@@ -66,6 +66,8 @@ export interface WorkThreadCommand {
   capabilityActivations?: string[];
   /** 随指令流动的图片引用（附件名/路径/URL），投递时转发给 viewer user-turn */
   images?: string[];
+  /** 随指令流动的 user-turn 自由元数据（框架只透传不解释，key 由消费方命名空间化） */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -79,6 +81,7 @@ export function createCommandRecord(opts: {
   idempotencyKey?: string;
   capabilityActivations?: string[];
   images?: string[];
+  metadata?: Record<string, unknown>;
 }): WorkThreadCommand {
   const now = Date.now();
   return {
@@ -100,6 +103,10 @@ export function createCommandRecord(opts: {
       : {}),
     ...(Array.isArray(opts.images) && opts.images.filter((i) => typeof i === 'string' && i.length > 0).length > 0
       ? { images: opts.images.filter((i) => typeof i === 'string' && i.length > 0) }
+      : {}),
+    ...(opts.metadata && typeof opts.metadata === 'object' && !Array.isArray(opts.metadata)
+      && Object.keys(opts.metadata).length > 0
+      ? { metadata: opts.metadata }
       : {}),
   };
 }

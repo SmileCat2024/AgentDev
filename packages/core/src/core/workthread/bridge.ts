@@ -22,6 +22,7 @@ export interface WorkThreadBridgeSubmitTurnParams {
   sourceRef: string;
   capabilityActivations?: string[];
   images?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface WorkThreadDeliveryOutcome {
@@ -72,7 +73,7 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
 
   async deliver(params: {
     thread: { agentId?: string; headSessionId?: string; threadId?: string };
-    command: { commandId?: string; text?: string; capabilityActivations?: string[]; images?: string[] };
+    command: { commandId?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
   }): Promise<WorkThreadDeliveryOutcome> {
     const { thread, command } = params;
     if (!this.isEnabled()) {
@@ -104,6 +105,9 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
           : {}),
         ...(Array.isArray(command.images) && command.images.length > 0
           ? { images: command.images }
+          : {}),
+        ...(command.metadata && typeof command.metadata === 'object' && Object.keys(command.metadata).length > 0
+          ? { metadata: command.metadata }
           : {}),
       });
     } catch (error) {

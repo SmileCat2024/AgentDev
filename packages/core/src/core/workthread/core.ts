@@ -421,6 +421,7 @@ export class WorkThread {
     idempotencyKey?: string;
     capabilityActivations?: string[];
     images?: string[];
+    metadata?: Record<string, unknown>;
   }): Promise<{ command: WorkThreadCommand; duplicate: boolean; threadRevision: number }> {
     const threadId = validateId(opts.threadId, 'threadId');
     // kind 为官方封闭词表：未传按 user_message；显式传入未知值直接拒绝——
@@ -440,8 +441,11 @@ export class WorkThread {
     const normalizedImages = Array.isArray(opts.images)
       ? opts.images.filter((entry) => typeof entry === 'string' && entry.trim())
       : [];
-    // K8：images 与 text 至少其一非空——图片优先的输入不应被强制携带占位文本
-    if (!normalizedText.trim() && normalizedImages.length === 0) {
+    const hasMetadata = !!(opts.metadata && typeof opts.metadata === 'object'
+      && !Array.isArray(opts.metadata) && Object.keys(opts.metadata).length > 0);
+    // K8：images / text / metadata 至少其一非空——图片优先的输入不应被强制携带
+    // 占位文本，metadata-only（如仅携带会话引用）同样是内容承载
+    if (!normalizedText.trim() && normalizedImages.length === 0 && !hasMetadata) {
       throw Object.assign(new Error('Command text must be non-empty'), {
         code: 'invalid_request',
         status: 400,
@@ -462,6 +466,8 @@ export class WorkThread {
       idempotencyKey: cleanText(opts.idempotencyKey),
       ...(Array.isArray(opts.capabilityActivations) ? { capabilityActivations: opts.capabilityActivations } : {}),
       ...(normalizedImages.length > 0 ? { images: normalizedImages } : {}),
+      ...(opts.metadata && typeof opts.metadata === 'object' && !Array.isArray(opts.metadata)
+        && Object.keys(opts.metadata).length > 0 ? { metadata: opts.metadata } : {}),
     });
 
     let appendOutcome = { command, duplicate: false };

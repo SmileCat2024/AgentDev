@@ -79,6 +79,25 @@ describe('WorkThreadRuntimeBridge', () => {
     expect(seen[0].sourceRef).toBe('cmd-1');
   });
 
+  it('forwards command metadata to submitTurn untouched', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const bridge = new WorkThreadRuntimeBridge({
+      enabled: true,
+      resolveRuntimeViewerId: () => 'viewer-abc',
+      submitTurn: async (params) => {
+        seen.push(params);
+        return { success: true };
+      },
+    });
+    const metadata = { 'session-reference': [{ agentId: 'programming-helper', sessionId: 'session-7', title: '引用' }] };
+    const outcome = await bridge.deliver({
+      thread,
+      command: { commandId: 'cmd-2', text: '带引用的指令', metadata },
+    });
+    expect(outcome.accepted).toBe(true);
+    expect(seen[0].metadata).toEqual(metadata);
+  });
+
   it('non-retryable delivery failure is surfaced with code', async () => {
     const bridge = new WorkThreadRuntimeBridge({
       enabled: true,

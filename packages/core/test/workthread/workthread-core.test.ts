@@ -471,6 +471,30 @@ describe('WorkThread (anchor layer)', () => {
     expect(after!.commands.map((c) => c.kind)).toEqual(['user_message', 'user_message']);
   });
 
+  it('appendCommand persists metadata and accepts metadata-only turns', async () => {
+    // user-turn 自由元数据随指令持久化（如会话引用）；K8 放宽为
+    // text / images / metadata 至少其一非空——metadata-only 是内容承载。
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'm1' } });
+
+    const metadata = { 'session-reference': [{ agentId: 'programming-helper', sessionId: 'session-7', title: '引用' }] };
+    const { command } = await thread.appendCommand({
+      threadId: wt.threadId,
+      text: '带引用的指令',
+      metadata,
+    });
+    expect(command.metadata).toEqual(metadata);
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.commands[0].metadata).toEqual(metadata);
+
+    // metadata-only（空文本占位）：不再拒绝
+    const only = await thread.appendCommand({ threadId: wt.threadId, text: ' ', metadata: { ref: 1 } });
+    expect(only.command.metadata).toEqual({ ref: 1 });
+
+    // 空文本且无任何附件字段：仍然拒绝
+    await expect(() => thread.appendCommand({ threadId: wt.threadId, text: '   ' })).rejects.toThrow();
+  });
+
   it('findThreadByHeadSession returns full record for current head only', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'h1' } });

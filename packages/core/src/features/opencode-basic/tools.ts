@@ -662,6 +662,43 @@ function levenshtein(a: string, b: string): number {
 }
 
 /**
+ * 缩进敏感语言扩展名：跨行模糊替换器（lineTrimmed/blockAnchor 等）匹配时
+ * 归一缩进、写入时 newString 原样落盘，对缩进即语法的语言是结构性破坏的配方
+ * （真实事故：Python 字典字面量被弄坏、循环体错位）。这类文件只允许精确匹配
+ * 与 findActualString 字符级归一，匹配失败走"重读文件"路径。
+ */
+const INDENTATION_SENSITIVE_EXTENSIONS = new Set(['py', 'pyw', 'pyi', 'yaml', 'yml']);
+
+/**
+ * not_found 时的最接近候选行提示：取 oldString 第一个非空行做探针，
+ * 与文件各行做相似度比对，返回前 3 条（行号 + 相似度 + 行文本）。
+ * 给模型可见的定位线索，降低凭记忆盲试与 sed 手术降级的概率。
+ */
+function findClosestLineHints(content: string, find: string): string[] {
+  const probeSource = find.split('\n').find((line) => line.trim().length > 0);
+  if (!probeSource) return [];
+  const probe = probeSource.trim().slice(0, 160);
+  if (probe.length < 4) return [];
+
+  const hints: Array<{ line: number; sim: number; text: string }> = [];
+  const lines = content.split('\n').slice(0, 2000);
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.length > 200) continue;
+    const maxLen = Math.max(trimmed.length, probe.length);
+    // 长度差预筛：最优情况也到不了 0.4 的行直接跳过，控制错误路径开销
+    if (1 - Math.abs(trimmed.length - probe.length) / maxLen < 0.4) continue;
+    const sim = 1 - levenshtein(trimmed, probe) / maxLen;
+    if (sim >= 0.4) hints.push({ line: i + 1, sim, text: trimmed.slice(0, 120) });
+  }
+
+  hints.sort((a, b) => b.sim - a.sim);
+  return hints
+    .slice(0, 3)
+    .map((h) => `line ${h.line} (similarity ${h.sim.toFixed(2)}): ${h.text}`);
+}
+
+/**
  * Replacer 类型
  */
 type Replacer = (content: string, find: string) => Generator<string, void, unknown>;
@@ -752,18 +789,28 @@ const blockAnchorReplacer: Replacer = function* (content, find) {
   if (candidates.length === 0) return;
 
   // 单/多候选共用同一相似度门槛：中间行平均相似度不足时视为未命中，
-  // 让 edit 显式失败走"重读文件"路径，而不是按首尾锚点整块替换出结构性损伤
-  const SIMILARITY_THRESHOLD = 0.3;
+  // 让 edit 显式失败走"重读文件"路径，而不是按首尾锚点整块替换出结构性损伤。
+  // 0.8：只有中间行整体高度一致（等价于模型只差缩进/空白/零星笔误）才放行。
+  const SIMILARITY_THRESHOLD = 0.8;
+  // 块行数守卫：实际块与 oldString 行数差异过大说明锚点定位到了错误的块，
+  // 放行会把行数不相干的原文件内容整块吞掉（真实事故：20 行 oldString 吞掉 7 行块）
+  const blockLengthTolerance = (searchBlockSize: number): number =>
+    Math.max(2, Math.ceil(searchBlockSize * 0.2));
 
   if (candidates.length === 1) {
     const { startLine, endLine } = candidates[0];
     const searchBlockSize = searchLines.length;
     const actualBlockSize = endLine - startLine + 1;
 
+    if (Math.abs(actualBlockSize - searchBlockSize) > blockLengthTolerance(searchBlockSize)) {
+      return;
+    }
+
     let similarity = 0;
     const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
 
     if (linesToCheck > 0) {
+      // 完整平均，不做早退：早退会让"第一行相似 + 其余全错"的块骗过门槛
       for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
         const originalLine = originalLines[startLine + j].trim();
         const searchLine = searchLines[j].trim();
@@ -771,7 +818,6 @@ const blockAnchorReplacer: Replacer = function* (content, find) {
         if (maxLen === 0) continue;
         const distance = levenshtein(originalLine, searchLine);
         similarity += (1 - distance / maxLen) / linesToCheck;
-        if (similarity >= SIMILARITY_THRESHOLD) break;
       }
     } else {
       similarity = 1.0;
@@ -800,6 +846,10 @@ const blockAnchorReplacer: Replacer = function* (content, find) {
     const { startLine, endLine } = candidate;
     const searchBlockSize = searchLines.length;
     const actualBlockSize = endLine - startLine + 1;
+
+    if (Math.abs(actualBlockSize - searchBlockSize) > blockLengthTolerance(searchBlockSize)) {
+      continue;
+    }
 
     let similarity = 0;
     const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
@@ -1047,16 +1097,25 @@ interface ReplaceResult {
 }
 
 /**
- * 执行替换
+ * 执行替换。
+ * allowFuzzyReplacers = false 时只走精确匹配（simpleReplacer），
+ * 用于缩进敏感语言（见 INDENTATION_SENSITIVE_EXTENSIONS）。
  */
-function replace(content: string, oldString: string, newString: string, replaceAll = false): ReplaceResult {
+function replace(
+  content: string,
+  oldString: string,
+  newString: string,
+  replaceAll = false,
+  allowFuzzyReplacers = true,
+): ReplaceResult {
   if (oldString === newString) {
     throw new Error('No changes to apply: oldString and newString are identical.');
   }
 
+  const activeReplacers = allowFuzzyReplacers ? REPLACERS : REPLACERS.slice(0, 1);
   let notFound = true;
 
-  for (const { name, fn: replacer } of REPLACERS) {
+  for (const { name, fn: replacer } of activeReplacers) {
     for (const search of replacer(content, oldString)) {
       const index = content.indexOf(search);
       if (index === -1) continue;
@@ -1083,8 +1142,10 @@ function replace(content: string, oldString: string, newString: string, replaceA
   }
 
   if (notFound) {
+    const hints = findClosestLineHints(content, oldString);
     throw new Error(
-      'Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.'
+      'Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.' +
+        (hints.length ? ` Closest candidate lines in the file: ${hints.join(' | ')}` : ''),
     );
   }
 
@@ -1165,11 +1226,15 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     const actualOldString = findActualString(contentOld, oldString);
     const effectiveOldString = actualOldString ?? oldString;
 
-    const replaceResult = replace(contentOld, effectiveOldString, newString, replaceAll);
+    // 缩进敏感语言（Python/YAML 等）禁用跨行模糊替换器：只走精确与字符级归一匹配
+    const fileExt = path.extname(resolvedFilePath).slice(1).toLowerCase();
+    const allowFuzzyReplacers = !INDENTATION_SENSITIVE_EXTENSIONS.has(fileExt);
+    const replaceResult = replace(contentOld, effectiveOldString, newString, replaceAll, allowFuzzyReplacers);
     const contentNew = replaceResult.content;
 
     // 当使用了非精确匹配（模糊匹配器）时，生成警告信息
     let warning: string | undefined;
+    let matchedPreview: string | undefined;
     if (replaceResult.matchedReplacer !== 'simpleReplacer') {
       const actualLines = replaceResult.actualMatchedString.split('\n');
       const providedLines = effectiveOldString.split('\n');
@@ -1192,7 +1257,13 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         `Edit applied via fuzzy matching (${replaceResult.matchedReplacer}). ` +
         `The oldString did not exactly match the file content — ${diffType} differs. ` +
         `The newString was written as-is, which may produce incorrect indentation or formatting. ` +
+        `The text actually matched in the file is returned as matchedText — check it against your intent. ` +
         `Please re-read the file to verify the result is correct.`;
+      // 模糊命中必须把实际落点回传给模型：diff 只在 display 通道（模型不可见），
+      // 模型收不到实际匹配文本就无法自查"替换是否落在预期位置"
+      matchedPreview = replaceResult.actualMatchedString.length > 1200
+        ? replaceResult.actualMatchedString.slice(0, 1200) + '\n...[truncated]'
+        : replaceResult.actualMatchedString;
     }
 
     // 生成 diff
@@ -1223,7 +1294,7 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         additions,
         deletions,
         message: warning ?? 'Edit applied successfully',
-        ...(warning && { warning }),
+        ...(warning && { warning, matchedText: matchedPreview }),
       }),
       { filePath: resolvedFilePath, diff, additions, deletions }
     );

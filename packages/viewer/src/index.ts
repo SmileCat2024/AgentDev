@@ -7,6 +7,11 @@
  */
 
 export { ViewerWorker } from './viewer-worker.js';
+export type {
+  ViewerSessionEvent,
+  ViewerSessionEventListener,
+  MessagesProbe,
+} from './viewer-worker.js';
 export {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,

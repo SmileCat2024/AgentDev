@@ -39,7 +39,7 @@ type MessageChangeKind = 'append' | 'tail' | 'rewrite';
  * 消息探测数据：挂在 /overview 响应 HTTP 组装层（不进 AgentOverviewSnapshot
  * 类型、不进 session.overview 存储），供前端把全量转录轮询降为按需取增量。
  */
-interface MessagesProbe {
+export interface MessagesProbe {
   /**
    * 同步版本号（ADR-0012 v2）：仅在真实变更时单调递增。前端与已应用的
    * seq 对账决定是否取数——changeKind 只是"最近一次真实变更"的取数策略
@@ -51,6 +51,30 @@ interface MessagesProbe {
   sinceIndex: number | null;
   fakeFullBytes: number;
 }
+
+/**
+ * 进程内会话事件：内存写入点的对外投影，供宿主（如 Claw server）订阅后
+ * 转发为 SSE 等推送通道。
+ *
+ * 轻载荷设计：事件只携带变更信号（kind + agentId + 少量状态性字段），
+ * 快照 payload 由订阅方经 getXxxSnapshot() 按需组装——无订阅者时 emit
+ * 近零开销，订阅方的事件合并窗口也不为被合并掉的中间事件白白组装快照。
+ * messages 是唯一例外：probe 本身就是信号（几个数字字段），直接内联。
+ *
+ * 事件源完整性约束：每个改变前端可见状态的内存写入点都必须 emit
+ * （包括非 IPC 路径：lease 提交、排队转交、注册对账），漏挂即前端状态
+ * 滞留。清单见 Claw 侧 docs/sse-migration-bcd-preparation.md §2.3。
+ */
+export type ViewerSessionEvent =
+  | { kind: 'notification'; agentId: string }
+  | { kind: 'overview'; agentId: string }
+  | { kind: 'todo'; agentId: string }
+  | { kind: 'messages'; agentId: string; probe: MessagesProbe }
+  | { kind: 'input-requests'; agentId: string }
+  | { kind: 'queued-inputs'; agentId: string }
+  | { kind: 'connection'; agentId: string; connected: boolean; reconnected: boolean };
+
+export type ViewerSessionEventListener = (event: ViewerSessionEvent) => void;
 
 /**
  * user-turn 自由元数据的形状约束：plain object、可序列化、≤16KB。
@@ -249,11 +273,17 @@ class ViewerWorker {
         socket.on('close', () => {
           this.udsClients.delete(clientId);
           console.log(`[Viewer Worker] UDS 客户端断开: ${clientId}, 当前连接数: ${this.udsClients.size}`);
+          // 一个 UDS 连接可承载多个 agent session：反查受影响 agent 并广播
+          // 断连事件（close 回调只携带 clientId）。此时 session.clientId 仍
+          // 指向该连接，isSessionConnected 因 udsClients 已删而自然为 false。
+          this.emitDisconnectedByClientId(clientId);
         });
 
         socket.on('error', (err) => {
           console.error('[Viewer Worker] UDS 客户端错误:', err);
           this.udsClients.delete(clientId);
+          // error 后不保证还有 close：同样广播断连（connected:false 幂等）
+          this.emitDisconnectedByClientId(clientId);
         });
       });
 
@@ -700,9 +730,7 @@ class ViewerWorker {
     // 消息探测只挂 HTTP 组装层（ADR-0012）：前端 normalizeOverviewSnapshot
     // 剥离未知字段，快照类型与 session.overview 存储不受污染。探测不可用
     // （未走过推送路径）时字段整体缺省。
-    const overview = this.getMergedOverview(session);
-    const probe = this.getMessagesProbe(session);
-    res.end(JSON.stringify(probe ? { ...overview, _messagesProbe: probe } : overview));
+    res.end(JSON.stringify(this.getOverviewSnapshot(agentId)));
   }
 
   private handleGetAgentTodoPlan(req: IncomingMessage, res: ServerResponse, agentId: string): void {
@@ -714,7 +742,7 @@ class ViewerWorker {
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(session.todoPlan ?? this.createEmptyTodoPlan()));
+    res.end(JSON.stringify(this.getTodoSnapshot(agentId)));
   }
 
   /**
@@ -728,15 +756,13 @@ class ViewerWorker {
       return;
     }
 
+    const snapshot = this.getNotificationSnapshot(agentId)!;
     const hasNewEvents = session.events.length > session.lastEventCount;
     session.lastEventCount = session.events.length;
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
-      state: session.currentState,
-      event: session.events.length > 0 ? session.events[session.events.length - 1] : null,
-      runtime: this.cloneRuntimeState(this.getSessionRuntimeState(session)),
-      callActive: session.callActive === true,
+      ...snapshot,
       hasNewEvents,
     }));
   }
@@ -823,7 +849,7 @@ class ViewerWorker {
       return;
     }
 
-    const connected = this.isSessionConnected(session);
+    const connected = this.isAgentConnected(agentId)!;
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ connected }));
@@ -848,6 +874,7 @@ class ViewerWorker {
 
     this.agentSessions.delete(agentId);
     console.log(`[Viewer Worker] 已删除断开的 Agent 会话: ${agentId}`);
+    this.emitSessionEvent({ kind: 'connection', agentId, connected: false, reconnected: false });
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
@@ -867,8 +894,7 @@ class ViewerWorker {
       return;
     }
 
-    const lease = session.inputLease;
-    const requests = lease ? [{ ...lease }] : [];
+    const requests = this.getInputRequestsSnapshot(agentId)!;
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(requests));
@@ -923,6 +949,7 @@ class ViewerWorker {
 
         // IPC 接管成功后再移除请求，避免“HTTP 成功但消息未发送”的假成功。
         delete session.inputLease;
+        this.emitSessionEvent({ kind: 'input-requests', agentId });
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ success: true }));
@@ -1000,6 +1027,7 @@ class ViewerWorker {
         };
       }
       delete session.inputLease;
+      this.emitSessionEvent({ kind: 'input-requests', agentId });
       return {
         success: true,
         delivery: 'input',
@@ -1021,6 +1049,7 @@ class ViewerWorker {
       };
     }
     const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata);
+    this.emitSessionEvent({ kind: 'queued-inputs', agentId });
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
       success: true,
@@ -1149,7 +1178,7 @@ class ViewerWorker {
       return;
     }
 
-    const queued = session.queuedInputs || [];
+    const queued = this.getQueuedInputsSnapshot(agentId)!;
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(queued));
   }
@@ -1182,6 +1211,7 @@ class ViewerWorker {
 
     const input = queued.shift()!;
     console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
+    this.emitSessionEvent({ kind: 'queued-inputs', agentId });
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ input, remaining: queued.length }));
   }
@@ -1321,6 +1351,130 @@ class ViewerWorker {
     return !!session.clientId && this.udsClients.has(session.clientId);
   }
 
+  // ========== 会话事件总线（宿主推送通道的信号源） ==========
+
+  private sessionEventListeners: Set<ViewerSessionEventListener> = new Set();
+
+  /**
+   * 订阅会话事件。返回退订函数。订阅方异常不阻断 worker 主流程。
+   */
+  public onSessionEvent(listener: ViewerSessionEventListener): () => void {
+    this.sessionEventListeners.add(listener);
+    return () => {
+      this.sessionEventListeners.delete(listener);
+    };
+  }
+
+  /**
+   * 启动探测：旧框架/无订阅 API 时宿主据此整体关闭推送特性。
+   */
+  public hasSessionEventListeners(): boolean {
+    return this.sessionEventListeners.size > 0;
+  }
+
+  private emitSessionEvent(event: ViewerSessionEvent): void {
+    if (this.sessionEventListeners.size === 0) return;
+    for (const listener of this.sessionEventListeners) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error('[Viewer Worker] 会话事件监听器异常:', err);
+      }
+    }
+  }
+
+  /**
+   * UDS 连接断开时反查受影响 agent 并发 connection 事件。一个连接可承载
+   * 多个 session（register 时各自记录 clientId），必须遍历求全集。
+   */
+  private emitDisconnectedByClientId(clientId: string): void {
+    for (const [agentId, session] of this.agentSessions) {
+      if (session.clientId === clientId) {
+        this.emitSessionEvent({ kind: 'connection', agentId, connected: false, reconnected: false });
+      }
+    }
+  }
+
+  // ========== 会话快照（事件订阅方与 GET 端点共用的组装单点） ==========
+  // 事件路径与轮询路径永远同构：GET handler 与订阅方都从这里取数。
+
+  /**
+   * 与 GET /notification 响应体同构（不含 hasNewEvents——那是 GET 的读即
+   * 对齐语义，事件模式下无意义）。agent 不存在时返回 null，订阅方跳过。
+   */
+  public getNotificationSnapshot(agentId: string): {
+    state: AgentSession['currentState'];
+    event: AgentSession['events'][number] | null;
+    runtime: AgentRuntimeStateSnapshot;
+    callActive: boolean;
+  } | null {
+    const session = this.agentSessions.get(agentId);
+    if (!session) return null;
+    return {
+      state: session.currentState,
+      event: session.events.length > 0 ? session.events[session.events.length - 1] : null,
+      runtime: this.cloneRuntimeState(this.getSessionRuntimeState(session)),
+      callActive: session.callActive === true,
+    };
+  }
+
+  /**
+   * 与 GET /overview 响应体同构（含 _messagesProbe，探测不可用时字段缺省）。
+   */
+  public getOverviewSnapshot(agentId: string): (AgentOverviewSnapshot & { _messagesProbe?: MessagesProbe }) | null {
+    const session = this.agentSessions.get(agentId);
+    if (!session) return null;
+    const overview = this.getMergedOverview(session);
+    const probe = this.getMessagesProbe(session);
+    return probe ? { ...overview, _messagesProbe: probe } : overview;
+  }
+
+  /** 与 GET /todo 响应体同构。 */
+  public getTodoSnapshot(agentId: string): TodoPlanSnapshot | null {
+    const session = this.agentSessions.get(agentId);
+    if (!session) return null;
+    return session.todoPlan ?? this.createEmptyTodoPlan();
+  }
+
+  /** 与 GET /input-requests 响应体同构（覆盖式唯一 lease）。 */
+  public getInputRequestsSnapshot(agentId: string): InputLease[] | null {
+    const session = this.agentSessions.get(agentId);
+    if (!session) return null;
+    const lease = session.inputLease;
+    return lease ? [{ ...lease }] : [];
+  }
+
+  /** 与 GET /queued-inputs 响应体同构（浅拷贝，数组结构快照）。 */
+  public getQueuedInputsSnapshot(agentId: string): QueuedInput[] | null {
+    const session = this.agentSessions.get(agentId);
+    if (!session) return null;
+    return [...(session.queuedInputs || [])];
+  }
+
+  /** agent 不存在时返回 null（区别于存在但未连接的 false）。 */
+  public isAgentConnected(agentId: string): boolean | null {
+    const session = this.agentSessions.get(agentId);
+    if (!session) return null;
+    return this.isSessionConnected(session);
+  }
+
+  /**
+   * 已注册 agent 的轻量清单（id/name/connected），供宿主推送通道做
+   * hello 首连快照（bell 扫描等全量视图）。worker 是注册事实的单一真相，
+   * 宿主不另建影子注册表。
+   */
+  public listAgentStates(): Array<{ id: string; name: string; connected: boolean }> {
+    const result: Array<{ id: string; name: string; connected: boolean }> = [];
+    for (const session of this.agentSessions.values()) {
+      result.push({
+        id: session.id,
+        name: session.name,
+        connected: this.isSessionConnected(session),
+      });
+    }
+    return result;
+  }
+
   /**
    * 应用内存限制
    *
@@ -1368,6 +1522,9 @@ class ViewerWorker {
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
     const { agentId, name, projectRoot, templateMounts, templateEntries, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
+    // 重连判定：session 已存在即 UDS 断开后的重新注册（DebugHub 重连
+    // reRegisterAgents 全量重推），订阅方据此对该 agent 触发一次对账。
+    const isReconnect = this.agentSessions.has(agentId);
     const session = this.getOrCreateSession(agentId, name);
 
     // 外部输入策略（'none' = 拒绝排队注入，如测试沙盒）
@@ -1473,6 +1630,7 @@ class ViewerWorker {
     }
 
     console.log(`[Viewer Worker] Agent 已注册: ${agentId} (${name})${clientId ? ` [client: ${clientId}]` : ''}`);
+    this.emitSessionEvent({ kind: 'connection', agentId, connected: true, reconnected: isReconnect });
   }
 
   public handleUpdateAgentInspector(msg: any): void {
@@ -1492,6 +1650,7 @@ class ViewerWorker {
       runtime: this.cloneRuntimeState(session.runtimeState || overview.runtime || this.createEmptyRuntimeState()),
     };
     this.updateSessionActivity(agentId);
+    this.emitSessionEvent({ kind: 'overview', agentId });
   }
 
   public handleUpdateTodoPlan(msg: { agentId: string; plan: TodoPlanSnapshot }): void {
@@ -1500,6 +1659,7 @@ class ViewerWorker {
     if (!session) return;
     session.todoPlan = this.normalizeTodoPlan(plan);
     this.updateSessionActivity(agentId);
+    this.emitSessionEvent({ kind: 'todo', agentId });
   }
 
   /**
@@ -1586,6 +1746,12 @@ class ViewerWorker {
         sinceIndex: trimmed ? 0 : change.sinceIndex,
         fakeFullBytes: store._totalBytes,
       };
+      // 真实变更才发事件（no-op 推送与 resync 等待分支内存未变，不发信号）。
+      // probe 是信号本体：seq 已递增，订阅方据此决定增量取数。
+      const probe = this.getMessagesProbe(session);
+      if (probe) {
+        this.emitSessionEvent({ kind: 'messages', agentId, probe });
+      }
     } else if (typeof store._totalBytes !== 'number') {
       // 从未走过真实变更（如旧 runtime 恢复推送相同内容）：probe 整体保持缺省。
     }
@@ -1891,6 +2057,7 @@ class ViewerWorker {
     this.agentSessions.delete(agentId);
     this.clearFeatureTemplates(agentId);
     console.log(`[Viewer Worker] Agent 已注销: ${agentId}`);
+    this.emitSessionEvent({ kind: 'connection', agentId, connected: false, reconnected: false });
   }
 
   /**
@@ -2063,6 +2230,8 @@ class ViewerWorker {
       session.events.push(notification);
       session.lastEventCount++;
     }
+
+    this.emitSessionEvent({ kind: 'notification', agentId });
   }
 
   private normalizeLogEntry(raw: any, session: AgentSession): DebugLogEntry {
@@ -2276,6 +2445,9 @@ class ViewerWorker {
       if (this.forwardInputResponse(agentId, session, requestId, queuedInput.text, response)) {
         session.queuedInputs.shift();
         console.log(`[Viewer Worker] 排队用户回合已转交给新输入请求: ${requestId}, remaining=${session.queuedInputs.length}`);
+        // 转交路径不经过 dequeue 端点：队列变化必须在此 emit，否则前端
+        // 排队气泡滞留（SSE 事件源完整性约束，非 IPC 写入路径）。
+        this.emitSessionEvent({ kind: 'queued-inputs', agentId });
         return;
       }
     }
@@ -2295,6 +2467,7 @@ class ViewerWorker {
     session.inputLease = lease;
 
     console.log(`[Viewer Worker] Input lease 已存储: ${requestId}`);
+    this.emitSessionEvent({ kind: 'input-requests', agentId });
   }
 
   /**
@@ -2308,6 +2481,7 @@ class ViewerWorker {
     }
     delete session.inputLease;
     console.log(`[Viewer Worker] 输入租约已取消: agentId=${msg.agentId}, requestId=${msg.requestId}`);
+    this.emitSessionEvent({ kind: 'input-requests', agentId: msg.agentId });
   }
 
   /**

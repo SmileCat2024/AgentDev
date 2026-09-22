@@ -1794,7 +1794,6 @@ class ViewerWorker {
         cancelled: 0,
       },
       interruptTargetId: null,
-      forceContinue: null,
     };
   }
 
@@ -1829,11 +1828,6 @@ class ViewerWorker {
         cancelled: typeof summary.cancelled === 'number' ? summary.cancelled : tasks.filter(t => t.status === 'deleted').length,
       },
       interruptTargetId: typeof plan.interruptTargetId === 'string' ? plan.interruptTargetId : null,
-      forceContinue: plan.forceContinue && typeof plan.forceContinue === 'object' ? {
-        enabled: plan.forceContinue.enabled === true,
-        consecutive: typeof plan.forceContinue.consecutive === 'number' ? plan.forceContinue.consecutive : 0,
-        max: typeof plan.forceContinue.max === 'number' ? plan.forceContinue.max : 3,
-      } : null,
     };
   }
 

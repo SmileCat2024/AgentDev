@@ -253,7 +253,7 @@ export function createShellCommandTool(
             intervalMs: effectiveBudgetMs,
             quietAfterMs: effectiveBudgetMs,
             inherited: true,
-            preOutput: [pre.stdout, cleanBashStderr(pre.stderr)].filter(Boolean).join('n'),
+            preOutput: [pre.stdout, cleanBashStderr(pre.stderr)].filter(Boolean).join('\n'),
           });
         },
       );
@@ -266,13 +266,13 @@ export function createShellCommandTool(
           `命令: ${command}`,
           `当前按 ${sec}s 紧凑节奏汇报，一完成立刻收到完整结果；预计长跑可用 bg_control 放宽节奏（如 intervalSec=300）。`,
           '不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。主动查看用 bg_status。',
-        ].join('n');
+        ].join('\n');
       }
 
       const { outcome } = run;
       if (outcome.kind === 'terminated') {
         // 用户主动打断：部分输出 + <shell_metadata> 块（对齐 ADR-0005 finishTerminated 语义）。
-        const combined = [outcome.stdout, cleanBashStderr(outcome.stderr)].filter(Boolean).join('n');
+        const combined = [outcome.stdout, cleanBashStderr(outcome.stderr)].filter(Boolean).join('\n');
         const [text, logPath] = await processOutputWithPersistence(combined || '', workdir, MAX_OUTPUT_LENGTH, true);
         const meta = formatShellMetadata({
           terminated: true,
@@ -283,7 +283,7 @@ export function createShellCommandTool(
           truncated: text.length < combined.length,
           logPath: logPath ?? null,
         });
-        return text ? `${text}n${meta}` : meta;
+        return text ? `${text}\n${meta}` : meta;
       }
       if (outcome.kind !== 'completed') {
         // runForegroundWithBudget 的 abort 分支总是伴随 adoptedTask；防御兜底。

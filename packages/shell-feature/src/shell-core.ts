@@ -87,6 +87,14 @@ function timestampSlug(): string {
 }
 
 /**
+ * 计算 .agentdev/temp 下的输出日志路径（纯路径计算，不建目录、不写文件）。
+ * 供流式落盘方（后台任务日志）复用与 processOutputWithPersistence 一致的命名约定。
+ */
+export function buildOutputLogPath(workdir: string, filePrefix: string = 'bash-output'): string {
+  return path.join(workdir, '.agentdev', 'temp', `${filePrefix}-${timestampSlug()}.log`);
+}
+
+/**
  * 截断输出并持久化完整内容到磁盘。
  *
  * 当输出超过 limit 时：
@@ -112,11 +120,9 @@ export async function processOutputWithPersistence(
   // 尝试将完整输出持久化到磁盘
   let filePath: string | null = null;
   try {
-    const tempDir = path.join(workdir, '.agentdev', 'temp');
-    const fileName = `${filePrefix}-${timestampSlug()}.log`;
-    filePath = path.join(tempDir, fileName);
+    filePath = buildOutputLogPath(workdir, filePrefix);
 
-    await mkdir(tempDir, { recursive: true });
+    await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, output, 'utf-8');
   } catch (err) {
     console.error(`[shell] Failed to persist output: ${err}`);

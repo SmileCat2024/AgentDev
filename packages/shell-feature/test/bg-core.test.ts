@@ -14,19 +14,21 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   BgRegistry,
   BG_MIN_INTERVAL_MS,
   BG_MIN_QUIET_MS,
+  BG_NOTIFY_TAIL_CHARS,
   BG_RING_BUFFER_MAX_BYTES,
+  BG_STATUS_MAX_CHARS,
   buildBashInvocation,
   runForegroundWithBudget,
   type BgRegisterOptions,
 } from '../src/bg-core.js';
-import { createBashBgTool, createBgControlTool, createShellCommandTool } from '../src/index.js';
+import { createBashBgTool, createBgControlTool, createBgStatusTool, createShellCommandTool } from '../src/index.js';
 import { findGitBashPath } from '../src/tools.js';
 
 const workdir = mkdtempSync(join(tmpdir(), 'agentdev-shell-bg-'));
@@ -408,6 +410,126 @@ describe('配额与保留', () => {
     for (const c of children) c.emit('close', 0);
     await flushAggregation();
     expect(h.registry.list().length).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 完整输出落盘
+// ---------------------------------------------------------------------------
+
+describe('完整输出落盘', () => {
+  /** 轮询读取日志文件直到谓词满足（WriteStream 异步 flush；仅 real timers 下用）。 */
+  async function readLogWhen(filePath: string, predicate: (s: string) => boolean, timeoutMs = 3_000): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let text = '';
+      try { text = readFileSync(filePath, 'utf-8'); } catch { /* 尚未创建/未 flush */ }
+      if (predicate(text)) return text;
+      if (Date.now() > deadline) throw new Error(`log not settled: ${filePath}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  it('登记即建日志：preOutput 与流式输出都进文件，快照暴露路径', async () => {
+    vi.useRealTimers();
+    const h = makeHarness();
+    const { child, id } = h.spawn({ preOutput: 'pre-output\n' });
+    const s0 = h.registry.snapshot(h.registry.get(id)!);
+    expect(s0.logFailed).toBe(false);
+    expect(s0.logPath).toMatch(/bg-output-/);
+    child.stdout.emit('data', 'stream-a\n');
+    child.stderr.emit('data', 'stream-b\n');
+    child.emit('close', 0);
+    const text = await readLogWhen(s0.logPath!, (t) => t.includes('stream-b'));
+    expect(text).toContain('pre-output');
+    expect(text).toContain('stream-a');
+    expect(text).toContain('stream-b');
+  }, 5_000);
+
+  it('ring buffer 丢弃头部后，完整日志仍保留全部输出', async () => {
+    vi.useRealTimers();
+    const h = makeHarness();
+    const { child, id } = h.spawn({});
+    const first = 'FIRST-MARKER\n';
+    const chunk = 'x'.repeat(64 * 1024);
+    child.stdout.emit('data', first);
+    for (let i = 0; i < 5; i++) child.stdout.emit('data', chunk);
+    const s = h.registry.snapshot(h.registry.get(id)!);
+    expect(s.droppedOutputBytes).toBeGreaterThan(0);
+    // bg_status 视角：clamped + 超预算 → 截断提示与日志指引都在
+    const tool = createBgStatusTool(h.registry);
+    const r1 = await tool.execute!({ taskId: id } as never, {} as never) as string;
+    expect(r1).toContain('省略中段');
+    expect(r1).toContain('超出内存缓冲');
+    expect(r1).toContain(s.logPath!);
+    child.emit('close', 0);
+    const total = first.length + 5 * chunk.length;
+    const text = await readLogWhen(s.logPath!, (t) => t.length >= total);
+    expect(text.startsWith(first)).toBe(true);
+    expect(text.length).toBe(total);
+  }, 5_000);
+
+  it('日志创建失败：任务降级运行，完成通知标注不可用', async () => {
+    // workdir 指向普通文件 → .agentdev/temp 无法创建（ENOTDIR）
+    const badDir = join(workdir, 'not-a-dir');
+    writeFileSync(badDir, 'x');
+    const h = makeHarness();
+    const { child, id } = h.spawn({ workdir: badDir });
+    const s = h.registry.snapshot(h.registry.get(id)!);
+    expect(s.logFailed).toBe(true);
+    expect(s.logPath).toBeNull();
+    child.stdout.emit('data', 'still-running\n');
+    child.emit('close', 1);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('已失败');
+    expect(h.deliveries[0].text).toContain('不可用');
+    expect(h.deliveries[0].text).toContain('still-running');
+  });
+
+  it('bg_status 增量超预算：头尾截断 + 日志路径；readOffset 全量推进不重复', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({});
+    child.stdout.emit('data', 'HEAD' + 'y'.repeat(BG_STATUS_MAX_CHARS + 2_000) + 'TAIL');
+    const tool = createBgStatusTool(h.registry);
+    const r1 = await tool.execute!({ taskId: id } as never, {} as never) as string;
+    expect(r1).toContain('HEAD');
+    expect(r1).toContain('TAIL');
+    expect(r1).toContain('省略中段');
+    expect(r1).toContain(h.registry.get(id)!.logPath!);
+    const r2 = await tool.execute!({ taskId: id } as never, {} as never) as string;
+    expect(r2).toContain('无新增输出');
+    expect(r2).not.toContain('省略中段');
+  });
+
+  it('完成通知始终带完整日志路径', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({});
+    child.emit('close', 0);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain(`完整输出日志: ${h.registry.get(id)!.logPath}`);
+  });
+
+  it('周期汇报增量被截断时附带日志路径，未截断时不带', async () => {
+    const h = makeHarness();
+    const { child } = h.spawn({ intervalMs: 60_000, quietAfterMs: 300_000 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    child.stdout.emit('data', 'z'.repeat(BG_NOTIFY_TAIL_CHARS + 100));
+    await vi.advanceTimersByTimeAsync(40_000); // t=60k：interval 到期
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('周期汇报');
+    expect(h.deliveries[0].text).toContain('…');
+    expect(h.deliveries[0].text).toContain('完整输出日志');
+
+    // 小增量（未截断）：不附路径行，避免常态噪声
+    child.stdout.emit('data', 'small\n');
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(2);
+    expect(h.deliveries[1].text).toContain('small');
+    expect(h.deliveries[1].text).not.toContain('完整输出日志');
   });
 });
 

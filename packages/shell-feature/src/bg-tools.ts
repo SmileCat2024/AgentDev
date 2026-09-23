@@ -15,6 +15,7 @@ import { createTool } from '@agentdevjs/core';
 import type { BgRegistry, BgSpawnOptions } from './bg-core.js';
 import {
   BG_CAPTURE_WINDOW_MS,
+  BG_STATUS_MAX_CHARS,
   BG_WAIT_MAX_MS,
   cleanBashStderr,
   fmtDur,
@@ -49,7 +50,7 @@ export const BASH_BG_INLINE_DESCRIPTION = `在后台启动一条 bash 命令，�
 
 const BG_LIST_INLINE_DESCRIPTION = '列出全部后台任务的全景：任务号、命令、状态、运行时长、安静时长、当前汇报节奏、下次汇报倒计时。收到任何后台任务消息后，可用它掌握全局。';
 
-const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出。如果有因投递失败滞留的通知，会在这里补发。';
+const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出（超长增量只显示首尾，完整内容按提示的日志路径用 read 工具读取）。如果有因投递失败滞留的通知，会在这里补发。';
 
 const BG_WAIT_INLINE_DESCRIPTION = '现场等待一个后台任务，至多 maxWaitSec（上限 30）秒：完成立刻拿到结果；到时间还没完，返回"仍在运行 + 新增输出"，这不是失败。它只适合"我觉得它马上就好"的短等待——更长的等待靠汇报消息，不要反复调用本工具轮询。';
 
@@ -198,14 +199,28 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
         s.status !== 'running' ? `退出码 ${s.exitCode === null ? 'null' : s.exitCode}` : `安静 ${Math.round(s.quietMs / 1000)}s · 下次汇报 ~${Math.round((s.nextReportInMs ?? 0) / 1000)}s`,
         `命令: ${s.command}`,
       ].join('\n');
+      // 增量预算：超出时按头 60% + 尾 40% 截断（与前台截断同比例）。readOffset
+      // 已在 statusView 中推进全量——被略过的中段不会再次出现，只可从日志恢复。
+      let body = view.newOutput;
+      const overBudget = body.length > BG_STATUS_MAX_CHARS;
+      if (overBudget) {
+        const headSize = Math.floor(BG_STATUS_MAX_CHARS * 0.6);
+        const omitted = body.length - BG_STATUS_MAX_CHARS;
+        body = body.slice(0, headSize)
+          + `\n…[增量过长：已省略中段 ${omitted} 字符]\n`
+          + body.slice(-(BG_STATUS_MAX_CHARS - headSize));
+      }
       const catchUp = view.unsentCatchUp.length > 0
         ? `\n\n[滞留通知补发]\n${view.unsentCatchUp.join('\n---\n')}`
         : '';
-      const clampedNote = view.clamped ? '\n（注：部分早期输出因缓冲上限被丢弃）' : '';
-      const body = view.newOutput
-        ? `\n\n新增输出:\n${view.newOutput}`
+      const clampedNote = view.clamped
+        ? '\n（注：部分早期输出超出内存缓冲，完整内容在日志文件中）'
+        : '';
+      const logNote = overBudget || view.clamped ? `\n${registry.logHint(task)}` : '';
+      const bodyText = body
+        ? `\n\n新增输出:\n${body}`
         : '\n\n（自上次查看以来无新增输出）';
-      return head + body + clampedNote + catchUp;
+      return head + bodyText + clampedNote + logNote + catchUp;
     },
   });
 }

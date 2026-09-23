@@ -9,6 +9,9 @@
  *   任一触发即汇报并互重置计时；exit 为最高优先级事件，与 pending 定时器
  *   同时到达时 exit 赢（丢弃节拍汇报，不发鬼魂消息）。
  * - readyPattern：输出首次匹配即发一次性"已就绪"，此后任务按节奏继续汇报。
+ * - 完整输出流式落盘：登记时在 workdir/.agentdev/temp/ 创建追加写日志
+ *   （bg-output-*，命名与前台截断落盘同约定），ring buffer 退化为预览；
+ *   落盘失败只降级标注（logFailed），绝不阻塞管道或终止任务。
  * - 通知经 ViewerWorker user-turn 邮箱投递（与 react-loop 相同的端口约定，
  *   框架内已先例使用内置 fetch）；投递失败保留在任务上，bg_status 补发。
  * - 任务生命周期 = 宿主进程生命周期（process exit 时尽力终止全部任务）。
@@ -17,11 +20,14 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
+import { createWriteStream, mkdirSync, type WriteStream } from 'fs';
+import * as path from 'path';
 import {
   quoteShellCommand,
   rewriteWindowsNullRedirect,
 } from './shellQuoting.js';
 import {
+  buildOutputLogPath,
   drainToEof,
   makeKillChild,
   processOutputWithPersistence,
@@ -44,6 +50,8 @@ export const BG_KEEP_DONE = 5;
 export const BG_AGGREGATION_WINDOW_MS = 250;
 /** 通知文本中携带的尾部输出长度（字符）。 */
 export const BG_NOTIFY_TAIL_CHARS = 2_000;
+/** bg_status 单次返回的增量输出字符预算：超出按头 60% + 尾 40% 截断，中段只可从完整日志恢复。 */
+export const BG_STATUS_MAX_CHARS = 10_000;
 /** bg_wait 单次等待上限。 */
 export const BG_WAIT_MAX_MS = 30_000;
 /** 前台命令固定预算（毫秒）；宿主可经 manifest 配置覆盖。 */
@@ -56,6 +64,20 @@ const DELIVER_TIMEOUT_MS = 5_000;
 // ---------------------------------------------------------------------------
 
 export type BgTaskStatus = 'running' | 'done' | 'killed';
+
+/**
+ * 宿主集成观察者：任务登记 / 输出（节流）/ 汇报 / 就绪 / 终态 / 调速时同步通知。
+ * 仅用于宿主侧状态镜像（如面板实时通道），与通知投递管线（user-turn）无关；
+ * 回调抛错只吞不影响引擎。事件在状态已更新后同步发出。
+ */
+export type BgObserverEvent = {
+  kind: 'registered' | 'output' | 'report' | 'ready' | 'finalized' | 'tuned';
+  task: BgTask;
+};
+export type BgObserver = (event: BgObserverEvent) => void;
+
+/** 输出观察节流下限（毫秒）：output 事件每任务至多每 1s 一发。 */
+const BG_OBSERVER_OUTPUT_MIN_GAP_MS = 1_000;
 
 export interface BgTaskPace {
   /** 活跃节奏（毫秒）：正常运行时最坏每隔此值汇报一次（纯墙钟，不被输出重置）。 */
@@ -86,9 +108,13 @@ export interface BgTaskSnapshot {
   inheritedPace: boolean;
   outputTailChars: number;
   droppedOutputBytes: number;
+  /** 完整输出日志路径（登记时创建；null = 落盘失败）。 */
+  logPath: string | null;
+  /** 完整日志不可用（创建或写入失败）——任务照常运行，仅失去完整输出恢复能力。 */
+  logFailed: boolean;
 }
 
-interface BgTask {
+export interface BgTask {
   id: string;
   command: string;
   workdir: string;
@@ -127,6 +153,12 @@ interface BgTask {
   unsent: string[];
   finalizeWaiters: Array<() => void>;
   pendingOutput: string;
+  /** 完整输出日志（追加流）；ring buffer 只是预览，内存外的真相在这里。 */
+  logPath: string | null;
+  logStream: WriteStream | null;
+  logFailed: boolean;
+  /** 上次 output 观察事件时刻（节流锚点）。 */
+  lastOutputObservedAt: number;
 }
 
 export interface BgRegisterOptions extends BgTaskPace {
@@ -204,6 +236,23 @@ export interface BgRegistryOptions {
   deliverImpl?: (text: string, sourceRef: string) => Promise<void>;
   /** 测试注入时钟。 */
   now?: () => number;
+  /** 宿主集成观察者（状态镜像用；见 BgObserver）。 */
+  observer?: BgObserver;
+}
+
+/**
+ * 打开任务完整日志的追加流（register 时调用）。失败返回 null——降级为
+ * "无完整日志"，任务照常运行：落盘是增强能力，绝不反过来约束进程执行。
+ */
+function openTaskLog(workdir: string): { filePath: string; stream: WriteStream } | null {
+  try {
+    const filePath = buildOutputLogPath(workdir, 'bg-output');
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    return { filePath, stream: createWriteStream(filePath, { flags: 'a' }) };
+  } catch (err) {
+    console.warn(`[shell-bg] 完整日志创建失败: ${String(err)}`);
+    return null;
+  }
 }
 
 export class BgRegistry {
@@ -213,6 +262,7 @@ export class BgRegistry {
   private readonly _viewerUrl: string;
   private readonly _deliverImpl: (text: string, sourceRef: string) => Promise<void>;
   private readonly _now: () => number;
+  private readonly _observer: BgObserver | null;
   private readonly _exitGuard: (() => void) | null;
   private _pendingNotify: Array<{ taskId: string; text: string }> = [];
   private _flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -223,6 +273,7 @@ export class BgRegistry {
     this._viewerUrl = opts.viewerUrl ?? `http://127.0.0.1:${port}`;
     this._deliverImpl = opts.deliverImpl ?? ((text, sourceRef) => this._httpDeliver(text, sourceRef));
     this._now = opts.now ?? Date.now;
+    this._observer = typeof opts.observer === 'function' ? opts.observer : null;
     this._exitGuard = opts.enableExitGuard === false
       ? null
       : () => this.killAll();
@@ -232,6 +283,13 @@ export class BgRegistry {
   }
 
   // -- 查询 ---------------------------------------------------------------
+
+  private _emit(kind: BgObserverEvent['kind'], task: BgTask): void {
+    if (!this._observer) return;
+    try {
+      this._observer({ kind, task });
+    } catch { /* 宿主镜像失败不影响引擎 */ }
+  }
 
   get(taskId: string): BgTask | undefined {
     return this._tasks.get(taskId);
@@ -269,6 +327,8 @@ export class BgRegistry {
       inheritedPace: task.inheritedPace,
       outputTailChars: this.tail(task, 1_000).length,
       droppedOutputBytes: task.droppedBytes,
+      logPath: task.logPath,
+      logFailed: task.logFailed,
     };
   }
 
@@ -285,6 +345,14 @@ export class BgRegistry {
   tail(task: BgTask, maxChars: number): string {
     const text = task.chunks.join('');
     return text.length > maxChars ? text.slice(-maxChars) : text;
+  }
+
+  /** 通知/状态文本中的完整日志指引行：有路径给路径，落盘失败给不可用提示。 */
+  logHint(task: BgTask): string {
+    if (task.logFailed || !task.logPath) {
+      return '完整输出日志: 不可用（落盘失败，仅缓冲内尾部输出可参考）';
+    }
+    return `完整输出日志: ${task.logPath}（需要更多上下文时用 read 工具读取）`;
   }
 
   /** bg_status 视角的完整读取：状态 + 增量 + 滞留通知补发。 */
@@ -357,7 +425,25 @@ export class BgRegistry {
       unsent: [],
       finalizeWaiters: [],
       pendingOutput: '',
+      logPath: null,
+      logStream: null,
+      logFailed: false,
+      lastOutputObservedAt: 0,
     };
+    const log = openTaskLog(opts.workdir);
+    if (log) {
+      task.logPath = log.filePath;
+      task.logStream = log.stream;
+      // 写入失败（磁盘满 / 目录被删等异步错误）：降级停写并标记，任务不受影响。
+      log.stream.on('error', (err) => {
+        task.logFailed = true;
+        console.warn(`[shell-bg] 完整日志写入失败（${task.id}）: ${String(err)}`);
+        try { task.logStream?.destroy(); } catch { /* 已关闭 */ }
+        task.logStream = null;
+      });
+    } else {
+      task.logFailed = true;
+    }
     this._tasks.set(id, task);
     if (opts.preOutput) {
       this._appendOutput(task, opts.preOutput);
@@ -365,6 +451,7 @@ export class BgRegistry {
     }
     this._attachCollectors(child, task);
     this._armTimers(task);
+    this._emit('registered', task);
     return task;
   }
 
@@ -396,10 +483,18 @@ export class BgRegistry {
     const bytes = Buffer.byteLength(text, 'utf-8');
     task.chunks.push(text);
     task.totalBytes += bytes;
+    // 完整输出落盘（追加流）：失败已降级停写，这里静默跳过即可。
+    if (task.logStream && !task.logFailed) task.logStream.write(text);
     // 环形丢弃：超出上限时丢头部 chunk（保留尾部）。
     while (task.totalBytes - task.droppedBytes - Buffer.byteLength(task.chunks[0] ?? '', 'utf-8') >= BG_RING_BUFFER_MAX_BYTES && task.chunks.length > 1) {
       task.droppedBytes += Buffer.byteLength(task.chunks[0], 'utf-8');
       task.chunks.shift();
+    }
+    // 输出观察（节流）：宿主镜像面拿到 ~1s 粒度的输出到达事实；终态由
+    // 'finalized' 无节流兜底，最后一段输出不会因节流丢失。
+    if (this._observer && this._now() - task.lastOutputObservedAt >= BG_OBSERVER_OUTPUT_MIN_GAP_MS) {
+      task.lastOutputObservedAt = this._now();
+      this._emit('output', task);
     }
   }
 
@@ -435,12 +530,16 @@ export class BgRegistry {
     task.notifyOffset = read.nextOffset;
     const delta = read.text;
     const tail = delta.length > BG_NOTIFY_TAIL_CHARS ? `…${delta.slice(-BG_NOTIFY_TAIL_CHARS)}` : delta;
+    // 有代理看不见的内容（增量截断或缓冲丢弃）时才附日志指引，避免常态噪声。
+    const hint = delta.length > BG_NOTIFY_TAIL_CHARS || read.clamped ? this.logHint(task) : '';
     this._notify(task, [
       `[后台任务 ${task.id} 运行中] ${reason === 'quiet' ? `已 ${quietSec} 秒无新输出` : '周期汇报'} · 已运行 ${fmtDur(this._now() - task.startedAt)}`,
       tail ? `新增输出:\n${tail}` : '（无新增输出）',
+      ...(hint ? [hint] : []),
       '无需操作；需要干预时用 bg_status / bg_control。',
     ].join('\n'));
     this._armTimers(task); // 任一触发即互重置
+    this._emit('report', task);
   }
 
   /** 输出到达只重置静默计时（活跃节奏是纯墙钟）。锚点取 max(输出, 上次汇报)。 */
@@ -468,6 +567,7 @@ export class BgRegistry {
         `命令: ${task.command}`,
       ].join('\n'));
       this._armTimers(task); // 就绪事件重置双节奏
+      this._emit('ready', task);
     }
   }
 
@@ -485,9 +585,13 @@ export class BgRegistry {
     task.endedAt = this._now();
     task.child = null;
     this._clearTimers(task);
+    if (task.logStream) {
+      try { task.logStream.end(); } catch { /* 尽力而为（进程退出兜底路径） */ }
+      task.logStream = null;
+    }
     // killed 只来自主动 kill 指令（exit 事件一律走 done）：发起方已从
     // 工具结果收到终止回执，再通报是纯冗余。done / 失败是任务自身的
-    // 结果，通知保留（退出码 + 尾部输出有信息量）。
+    // 结果，通知保留（退出码 + 尾部输出 + 完整日志入口有信息量）。
     if (status !== 'killed') {
       const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
       const label = exitCode === 0 ? '已完成' : '已失败';
@@ -495,10 +599,12 @@ export class BgRegistry {
         `[后台任务 ${task.id} ${label}]`,
         `命令: ${task.command}`,
         `退出码: ${exitCode === null ? 'null' : exitCode} · 运行时长 ${fmtDur(task.endedAt - task.startedAt)}`,
+        this.logHint(task),
         ...(tail ? [`尾部输出:\n${tail}`] : []),
       ].join('\n'));
     }
     this._trimDone();
+    this._emit('finalized', task);
     for (const wake of task.finalizeWaiters.splice(0)) wake();
   }
 
@@ -562,6 +668,7 @@ export class BgRegistry {
       quietAfterMs: Math.max(BG_MIN_QUIET_MS, mustFinite(pace.quietAfterMs ?? task.pace.quietAfterMs, 'quietAfterMs')),
     };
     this._armTimers(task);
+    this._emit('tuned', task);
     return { ...task.pace };
   }
 

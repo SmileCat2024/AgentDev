@@ -23,6 +23,7 @@ import { createShellCommandTool, findGitBashPath } from './tools.js';
 import { createPowerShellTool, findPowerShellPath } from './powershell.js';
 import { createSafeTrashDeleteTool, createSafeTrashListTool, createSafeTrashRestoreTool } from './tools-trash.js';
 import { BgRegistry, FOREGROUND_BUDGET_DEFAULT_MS } from './bg-core.js';
+import type { BgObserver, BgTask } from './bg-core.js';
 import {
   BASH_BG_INLINE_DESCRIPTION,
   createBashBgTool,
@@ -38,6 +39,8 @@ export interface ShellFeatureConfig {
   workspaceDir?: string;
   workdir?: string;
   resourceRoot?: string;
+  /** 宿主集成观察者：任务登记/输出（节流）/汇报/就绪/终态/调速时回调。 */
+  bgObserver?: BgObserver;
 }
 
 interface ResolvedShellConfig {
@@ -74,6 +77,7 @@ export class ShellFeature implements AgentFeature {
   private readonly workspaceDir: string;
   private readonly workdir: string;
   private readonly resourceRoot: string;
+  private readonly bgObserver?: BgObserver;
   /** 后台任务登记表（首次 getAsyncTools 时按 agentId 惰性创建）。 */
   private _registry: BgRegistry | null = null;
 
@@ -81,6 +85,12 @@ export class ShellFeature implements AgentFeature {
     this.workspaceDir = config.workspaceDir || process.cwd();
     this.workdir = config.workdir || this.workspaceDir;
     this.resourceRoot = config.resourceRoot || process.cwd();
+    this.bgObserver = typeof config.bgObserver === 'function' ? config.bgObserver : undefined;
+  }
+
+  /** 后台任务登记表（惰性创建前为 null）。宿主集成面：状态镜像 / 面板请求转发。 */
+  getBgRegistry(): BgRegistry | null {
+    return this._registry;
   }
 
   /**
@@ -162,7 +172,7 @@ export class ShellFeature implements AgentFeature {
    */
   private ensureRegistry(agentId: string): BgRegistry {
     if (!this._registry) {
-      this._registry = new BgRegistry({ agentId });
+      this._registry = new BgRegistry({ agentId, ...(this.bgObserver ? { observer: this.bgObserver } : {}) });
     }
     return this._registry;
   }
@@ -295,6 +305,9 @@ export type {
   BgRegisterOptions,
   BgSpawnOptions,
   BgTaskStatus,
+  BgTask,
+  BgObserver,
+  BgObserverEvent,
   ForegroundOutcome,
 } from './bg-core.js';
 export {

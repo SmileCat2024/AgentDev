@@ -77,10 +77,41 @@ export interface QQBotFeatureConfig {
   resourceRoot?: string;
 }
 
+/** CallStart 从 turn metadata 派生的请求视图：仅覆盖 turn 期间实际消费的字段 */
+interface QQBotTurnRequest {
+  eventType: QQBotInboundRequest['eventType'];
+  chatType: QQBotInboundRequest['chatType'];
+  senderId: string;
+  senderName?: string;
+  groupOpenid?: string;
+  messageId: string;
+  attachments?: Array<{ localPath?: string; originalUrl?: string; contentType?: string }>;
+}
+
+/** qqbot turn metadata 载荷（随 onCall 流动，不含凭据与平台原始对象） */
+interface QQBotTurnPayload {
+  /** 发送者 openid */
+  senderId: string;
+  /** 发送者昵称 */
+  senderName?: string;
+  /** 会话类型 */
+  chatType: QQBotInboundRequest['chatType'];
+  /** 事件来源 */
+  eventType: QQBotInboundRequest['eventType'];
+  /** 群聊 openid */
+  groupOpenid?: string;
+  /** 消息 ID（被动回复引用） */
+  messageId: string;
+  /** 本轮 appId（非机密），CallStart 按 appId 重新解析 account */
+  appId: string;
+  /** 附件路径列表（localPath || originalUrl || contentType） */
+  attachments?: string[];
+}
+
 /** 当前 turn 的上下文，用于 upload_attachment 工具上传和 flush */
 interface TurnContext {
   account: ResolvedQQBotAccount;
-  request: QQBotInboundRequest;
+  request: QQBotTurnRequest;
 }
 
 /** 待发送的已上传媒体 */
@@ -140,7 +171,7 @@ function loadConfigFromFile(configPath: string): QQBotConfigFile | null {
  * 构建 QQ 渠道环境 system prompt
  * 作为独立的 system 消息块注入，不与用户输入混合
  */
-function buildQQChannelSystemMessage(request: QQBotInboundRequest): string {
+function buildQQChannelSystemMessage(request: QQBotTurnRequest): string {
   const chatType = request.chatType === 'group' ? '群聊' : '私聊';
   const receivedAttachments = request.attachments?.length
     ? `\n- 附件: ${request.attachments.map(a => `${a.localPath || a.originalUrl || a.contentType}`).join(', ')}`
@@ -247,8 +278,6 @@ export class QQBotFeature implements AgentFeature {
       async handleMessage(ctx: QQBotAgentHandleMessageContext): Promise<void> {
         const { request, deliver } = ctx;
 
-        // 设置当前 turn 上下文（供 upload_attachment 和 CallStart 使用）
-        self._currentTurnCtx = { account: ctx.account, request };
         self._pendingMedia = [];
 
         console.log(`[QQBotFeature] 收到消息: ${request.text.slice(0, 80)}`);
@@ -260,8 +289,24 @@ export class QQBotFeature implements AgentFeature {
             return;
           }
 
-          // 直接传用户原始文本，system prompt 由 CallStart 钩子注入
-          const response = await self.agentRef.onCall(request.text);
+          // turn 上下文经 onCall metadata 流动，CallStart 钩子按载荷派生（信封自描述，避免排队期间错位注入）
+          const turnMetadata = {
+            qqbot: {
+              appId: ctx.account.appId,
+              senderId: request.senderId,
+              senderName: request.senderName,
+              chatType: request.chatType,
+              eventType: request.eventType,
+              groupOpenid: request.groupOpenid,
+              messageId: request.messageId,
+              attachments: request.attachments
+                ?.map(a => a.localPath || a.originalUrl || a.contentType)
+                .filter((s): s is string => !!s),
+            },
+          };
+
+          // 直接传用户原始文本，system prompt 由 CallStart 钩子按 turnMetadata 注入
+          const response = await self.agentRef.onCall(request.text, undefined, undefined, turnMetadata);
           const responseText = typeof response === 'string' ? response : '';
 
           // deliver 文本给 gateway（gateway 内部可能还会解析 <qqimg> 等标签作为兼容）
@@ -449,16 +494,56 @@ export class QQBotFeature implements AgentFeature {
     };
   }
 
+  /** 按 appId 从 feature 自身配置重新解析 account；解析失败或 appId 不匹配返回 null */
+  private resolveAccountByAppId(appId: string): ResolvedQQBotAccount | null {
+    try {
+      const account = this.createAccount();
+      if (account.appId === appId) {
+        return account;
+      }
+    } catch (err) {
+      console.error('[QQBotFeature] 解析 account 失败:', err instanceof Error ? err.message : err);
+    }
+    return null;
+  }
+
   // ========== AgentFeature 接口 ==========
 
   /**
    * CallStart 钩子：在每轮 onCall 开始时注入 QQ 渠道环境 system 消息
    *
-   * 仅在 _currentTurnCtx 存在时（即消息来自 QQ Gateway）生效。
+   * 数据源为 ctx.metadata 的 qqbot 载荷（onCall 第 4 参透传）：消息来自 QQ Gateway
+   * 时载荷存在，据此派生 _currentTurnCtx 并注入渠道 system 消息；不存在则本轮
+   * call 来自其他入口，清空残留上下文后直接跳过。
    * 通过 context.add() 注入独立的 system 消息块，不篡改用户输入。
    */
-  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any }): Promise<void> {
-    if (!this._currentTurnCtx) return;
+  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any; metadata?: Record<string, unknown> }): Promise<void> {
+    const payload = ctx.metadata?.[this.name] as QQBotTurnPayload | undefined;
+    if (!payload) {
+      this._currentTurnCtx = null;
+      return;
+    }
+
+    // 载荷不含凭据：按 appId 从 feature 自身配置重新解析 account
+    const account = this.resolveAccountByAppId(payload.appId);
+    if (!account) {
+      console.error(`[QQBotFeature] 按 appId=${payload.appId} 解析 account 失败，跳过本轮注入`);
+      this._currentTurnCtx = null;
+      return;
+    }
+
+    this._currentTurnCtx = {
+      account,
+      request: {
+        eventType: payload.eventType,
+        chatType: payload.chatType,
+        senderId: payload.senderId,
+        senderName: payload.senderName,
+        groupOpenid: payload.groupOpenid,
+        messageId: payload.messageId,
+        attachments: payload.attachments?.map(localPath => ({ localPath })),
+      },
+    };
 
     const systemContent = buildQQChannelSystemMessage(this._currentTurnCtx.request);
     ctx.context.add({ role: 'system', content: systemContent });

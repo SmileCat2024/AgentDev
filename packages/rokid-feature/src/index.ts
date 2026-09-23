@@ -93,6 +93,14 @@ interface TurnContext {
   accountId: string;
 }
 
+/** rokid-bot turn metadata 载荷（随 onCall 流动，不含凭据与平台原始对象） */
+interface RokidTurnPayload {
+  /** 设备/账号标识（sessionKey 归一化，缺省回退 linkCode），回帧时作为 agent_id */
+  senderId: string;
+  /** 本回合的入站 requestId，回帧时作为 message_id */
+  requestId: string;
+}
+
 // ─── 配置文件读取 ───────────────────────────────────
 
 function resolveConfigPath(configPath?: string): string {
@@ -431,11 +439,18 @@ export class RokidBot implements AgentFeature {
     await this.processingLock.catch(() => {});
 
     this.processingLock = (async () => {
-      this._currentTurnCtx = { requestId: request.requestId, accountId };
       this._turnFinished = false;
 
       try {
-        const response = await this.agentRef.onCall(text);
+        // turn 上下文经 onCall metadata 流动，CallStart 钩子按载荷派生（信封自描述，避免排队期间错位注入）
+        const turnMetadata = {
+          'rokid-bot': {
+            senderId: accountId,
+            requestId: request.requestId,
+          },
+        };
+
+        const response = await this.agentRef.onCall(text, undefined, undefined, turnMetadata);
         const responseText = typeof response === 'string' ? response : '';
 
         // 工具 execute 可能已经发送过 tool_call done 帧，此时 _turnFinished=true，跳过文本帧
@@ -513,9 +528,23 @@ export class RokidBot implements AgentFeature {
 
   /**
    * CallStart 钩子：在每轮 onCall 开始时注入 Rokid 眼镜渠道环境 system 消息
+   *
+   * 数据源为 ctx.metadata 的 rokid-bot 载荷（onCall 第 4 参透传）：消息来自 Rokid
+   * Bridge 时载荷存在，据此派生 _currentTurnCtx 并注入渠道 system 消息；不存在则
+   * 本轮 call 来自其他入口，清空残留上下文后直接跳过。
    */
-  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any }): Promise<void> {
-    if (!this._currentTurnCtx) return;
+  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any; metadata?: Record<string, unknown> }): Promise<void> {
+    const payload = ctx.metadata?.[this.name] as RokidTurnPayload | undefined;
+    if (!payload) {
+      this._currentTurnCtx = null;
+      return;
+    }
+
+    this._currentTurnCtx = {
+      requestId: payload.requestId,
+      accountId: payload.senderId,
+    };
+
     const systemContent = this.config.systemPrompt ?? buildRokidChannelSystemMessage(this._currentTurnCtx);
     ctx.context.add({ role: 'system', content: systemContent });
   }

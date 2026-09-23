@@ -54,6 +54,20 @@ interface TurnContext {
   isGroup: boolean;
 }
 
+/** feishu-bot turn metadata 载荷（随 onCall 流动，不含凭据与平台原始对象） */
+interface FeishuTurnPayload {
+  /** 发送目标 ID（单聊为发送者 open_id，群聊为 chat_id） */
+  senderId: string;
+  /** 会话 ID */
+  chatId: string;
+  /** 消息 ID */
+  messageId: string;
+  /** 发送目标类型 */
+  receiveIdType: 'chat_id' | 'open_id';
+  /** 是否群聊 */
+  isGroup: boolean;
+}
+
 /** 待发送的已上传媒体 */
 interface PendingMediaItem {
   msgType: string;
@@ -413,20 +427,23 @@ export class FeishuBot implements AgentFeature {
       try {
         console.log(`[FeishuBot] 开始处理消息: ${text.slice(0, 30)}`);
 
-        // 设置当前 turn 上下文
+        // turn 上下文经 onCall metadata 流动，CallStart 钩子按载荷派生（信封自描述，避免排队期间错位注入）
         const receiveIdType: 'chat_id' | 'open_id' = isGroup ? 'chat_id' : 'open_id';
         const receiveId = isGroup ? chatId : senderOpenId;
 
-        this._currentTurnCtx = {
-          chatId,
-          messageId,
-          receiveId,
-          receiveIdType,
-          isGroup,
+        const turnMetadata = {
+          'feishu-bot': {
+            senderId: receiveId,
+            chatId,
+            messageId,
+            receiveIdType,
+            isGroup,
+          },
         };
+
         this._pendingMedia = [];
 
-        const response = await this.agentRef.onCall(text);
+        const response = await this.agentRef.onCall(text, undefined, undefined, turnMetadata);
         const responseText = typeof response === 'string' ? response : '';
 
         console.log(`[FeishuBot] 响应: ${responseText.slice(0, 100)}...`);
@@ -499,9 +516,26 @@ export class FeishuBot implements AgentFeature {
 
   /**
    * CallStart 钩子：在每轮 onCall 开始时注入飞书渠道环境 system 消息
+   *
+   * 数据源为 ctx.metadata 的 feishu-bot 载荷（onCall 第 4 参透传）：消息来自飞书
+   * Gateway 时载荷存在，据此派生 _currentTurnCtx 并注入渠道 system 消息；不存在
+   * 则本轮 call 来自其他入口，清空残留上下文后直接跳过。
    */
-  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any }): Promise<void> {
-    if (!this._currentTurnCtx) return;
+  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any; metadata?: Record<string, unknown> }): Promise<void> {
+    const payload = ctx.metadata?.[this.name] as FeishuTurnPayload | undefined;
+    if (!payload) {
+      this._currentTurnCtx = null;
+      return;
+    }
+
+    this._currentTurnCtx = {
+      chatId: payload.chatId,
+      messageId: payload.messageId,
+      receiveId: payload.senderId,
+      receiveIdType: payload.receiveIdType,
+      isGroup: payload.isGroup,
+    };
+
     const systemContent = buildFeishuChannelSystemMessage(this._currentTurnCtx);
     ctx.context.add({ role: 'system', content: systemContent });
   }

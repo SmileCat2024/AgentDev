@@ -52,6 +52,16 @@ interface TurnContext {
   fromUserId: string;
 }
 
+/** wecom-bot turn metadata 载荷（随 onCall 流动，不含凭据与平台原始对象） */
+interface WecomTurnPayload {
+  /** 发送目标 chatId（群聊为群 ID，单聊为用户 ID） */
+  senderId: string;
+  /** 是否群聊 */
+  isGroup: boolean;
+  /** 发送者用户 ID */
+  fromUserId: string;
+}
+
 /** 待发送的已上传媒体 */
 interface PendingMediaItem {
   mediaId: string;
@@ -386,15 +396,18 @@ export class WecomBot implements AgentFeature {
       try {
         console.log(`[WecomBot] 开始处理消息: ${text.slice(0, 30)}`);
 
-        // 设置当前 turn 上下文
-        this._currentTurnCtx = {
-          chatId,
-          isGroup,
-          fromUserId,
+        // turn 上下文经 onCall metadata 流动，CallStart 钩子按载荷派生（信封自描述，避免排队期间错位注入）
+        const turnMetadata = {
+          'wecom-bot': {
+            senderId: chatId,
+            isGroup,
+            fromUserId,
+          },
         };
+
         this._pendingMedia = [];
 
-        const response = await this.agentRef.onCall(text);
+        const response = await this.agentRef.onCall(text, undefined, undefined, turnMetadata);
         const responseText = typeof response === 'string' ? response : '';
 
         console.log(`[WecomBot] 响应: ${responseText.slice(0, 100)}...`);
@@ -450,9 +463,24 @@ export class WecomBot implements AgentFeature {
 
   /**
    * CallStart 钩子：在每轮 onCall 开始时注入企业微信渠道环境 system 消息
+   *
+   * 数据源为 ctx.metadata 的 wecom-bot 载荷（onCall 第 4 参透传）：消息来自企业
+   * 微信 Gateway 时载荷存在，据此派生 _currentTurnCtx 并注入渠道 system 消息；
+   * 不存在则本轮 call 来自其他入口，清空残留上下文后直接跳过。
    */
-  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any }): Promise<void> {
-    if (!this._currentTurnCtx) return;
+  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any; metadata?: Record<string, unknown> }): Promise<void> {
+    const payload = ctx.metadata?.[this.name] as WecomTurnPayload | undefined;
+    if (!payload) {
+      this._currentTurnCtx = null;
+      return;
+    }
+
+    this._currentTurnCtx = {
+      chatId: payload.senderId,
+      isGroup: payload.isGroup,
+      fromUserId: payload.fromUserId,
+    };
+
     const systemContent = buildWecomChannelSystemMessage(this._currentTurnCtx);
     ctx.context.add({ role: 'system', content: systemContent });
   }

@@ -50,6 +50,14 @@ interface TurnContext {
   contextToken: string;
 }
 
+/** weixin-bot turn metadata 载荷（随 onCall 流动，不含凭据与平台原始对象） */
+interface WeixinTurnPayload {
+  /** 发送者 user_id */
+  senderId: string;
+  /** 被动回复引用的 context_token（必须原样带回） */
+  contextToken: string;
+}
+
 /** 待发送的已上传媒体 */
 interface PendingMediaItem {
   uploaded: UploadedFileInfo;
@@ -385,6 +393,19 @@ export class WeixinBot implements AgentFeature {
   }
 
   /**
+   * 构造随 onCall 流动的 turn metadata（顶层 key 为 feature 名）。
+   * feature 内部 handleMessage 与宿主侧 override 共用，作为单一事实源。
+   */
+  buildTurnMetadata(msg: WeixinMessage): { 'weixin-bot': WeixinTurnPayload } {
+    return {
+      'weixin-bot': {
+        senderId: msg.from_user_id,
+        contextToken: msg.context_token,
+      },
+    };
+  }
+
+  /**
    * 处理单条消息
    */
   private async handleMessage(msg: WeixinMessage): Promise<void> {
@@ -416,11 +437,6 @@ export class WeixinBot implements AgentFeature {
       try {
         console.log(`[WeixinBot] 开始处理消息: ${text.slice(0, 30)}`);
 
-        // 设置当前 turn 上下文（供 upload_attachment 和 CallStart 使用）
-        this._currentTurnCtx = {
-          fromUserId: msg.from_user_id,
-          contextToken: msg.context_token,
-        };
         this._pendingMedia = [];
 
         // 获取 typing_ticket（每个用户首次调用一次，可缓存）
@@ -443,7 +459,8 @@ export class WeixinBot implements AgentFeature {
           await this.apiClient.sendTyping(msg.from_user_id, typingTicket, 1);
         }
 
-        const response = await this.agentRef.onCall(text);
+        // turn 上下文经 onCall metadata 流动，CallStart 钩子按载荷派生（信封自描述，避免排队期间错位注入）
+        const response = await this.agentRef.onCall(text, undefined, undefined, this.buildTurnMetadata(msg));
         const responseText = typeof response === 'string' ? response : '';
 
         console.log(`[WeixinBot] 响应: ${responseText.slice(0, 100)}...`);
@@ -494,11 +511,22 @@ export class WeixinBot implements AgentFeature {
   /**
    * CallStart 钩子：在每轮 onCall 开始时注入微信渠道环境 system 消息
    *
-   * 仅在 _currentTurnCtx 存在时（即消息来自微信 Gateway）生效。
+   * 数据源为 ctx.metadata 的 weixin-bot 载荷（onCall 第 4 参透传）：消息来自微信
+   * Gateway 时载荷存在，据此派生 _currentTurnCtx 并注入渠道 system 消息；不存在
+   * 则本轮 call 来自其他入口，清空残留上下文后直接跳过。
    * 通过 context.add() 注入独立的 system 消息块，不篡改用户输入。
    */
-  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any }): Promise<void> {
-    if (!this._currentTurnCtx) return;
+  async handleCallStart(ctx: { input: string; context: any; isFirstCall: boolean; agent?: any; metadata?: Record<string, unknown> }): Promise<void> {
+    const payload = ctx.metadata?.[this.name] as WeixinTurnPayload | undefined;
+    if (!payload) {
+      this._currentTurnCtx = null;
+      return;
+    }
+
+    this._currentTurnCtx = {
+      fromUserId: payload.senderId,
+      contextToken: payload.contextToken,
+    };
 
     const systemContent = buildWeixinChannelSystemMessage(this._currentTurnCtx.fromUserId);
     ctx.context.add({ role: 'system', content: systemContent });

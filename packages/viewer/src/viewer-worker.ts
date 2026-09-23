@@ -10,7 +10,7 @@ import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync, readFile } from 'fs';
 import { createHash } from 'crypto';
 import { join, resolve, sep, extname } from 'path';
-import { type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, getDefaultUDSPath } from '@agentdevjs/core';
+import { type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type TurnKind, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, getDefaultUDSPath } from '@agentdevjs/core';
 import {
   DebuggerMCPServer,
   DEBUGGER_MCP_PROMPT_DEFINITIONS,
@@ -970,6 +970,9 @@ class ViewerWorker {
     if (!input || typeof input.text !== 'string' || input.text.length === 0) {
       return { success: false, code: 'invalid_input', error: 'text must be a non-empty string' };
     }
+    if (input.kind !== undefined && input.kind !== 'user' && input.kind !== 'reminder') {
+      return { success: false, code: 'invalid_input', error: "kind must be 'user' or 'reminder' when provided" };
+    }
     if (input.images !== undefined && !Array.isArray(input.images)) {
       return { success: false, code: 'invalid_input', error: 'images must be an array when provided' };
     }
@@ -1006,8 +1009,13 @@ class ViewerWorker {
       };
     }
 
+    // reminder（机器通报）不冒充用户：跳过输入租约应答与 choices 冲突
+    // 检查（409 拦的是真人输入），直接进入会话邮箱排队，由空闲邮箱
+    // 消费循环或 call 内注入以 system 消息形态落地。
+    const isReminder = input.kind === 'reminder';
+
     const lease = session.inputLease;
-    if (lease?.mode === 'choices') {
+    if (!isReminder && lease?.mode === 'choices') {
       return {
         success: false,
         code: 'input_mode_conflict',
@@ -1016,7 +1024,7 @@ class ViewerWorker {
       };
     }
 
-    if (lease) {
+    if (!isReminder && lease) {
       const requestId = lease.requestId;
       const response = this.createTextInputResponse(input);
       if (!this.forwardInputResponse(agentId, session, requestId, input.text, response)) {
@@ -1048,7 +1056,7 @@ class ViewerWorker {
         error: 'This runtime does not accept external user turns',
       };
     }
-    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata);
+    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata, input.kind);
     this.emitSessionEvent({ kind: 'queued-inputs', agentId });
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
@@ -1149,6 +1157,7 @@ class ViewerWorker {
     sourceRef?: string,
     capabilityActivations?: string[],
     metadata?: Record<string, unknown>,
+    kind?: TurnKind,
   ): QueuedInput {
     if (!session.queuedInputs) {
       (session as any).queuedInputs = [];
@@ -1157,6 +1166,7 @@ class ViewerWorker {
       id: `q-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       text,
       timestamp: Date.now(),
+      ...(kind === 'reminder' ? { kind } : {}),
       ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
       ...(source ? { source } : {}),
       ...(sourceRef ? { sourceRef } : {}),
@@ -2433,7 +2443,11 @@ class ViewerWorker {
 
     // 活跃 call 最后一次 drain 与 call.finish 之间仍可能有新输入入队。
     // 下一次兼容的文本请求出现时在框架层接力，封闭这个生命周期竞态。
-    if (!session.inputLease && msg.mode !== 'choices' && session.queuedInputs.length > 0) {
+    // 队首是 reminder（机器通报）时不转交：它不冒充用户应答租约，
+    // 留在邮箱由空闲邮箱消费循环按 FIFO 顺序处理（跳过它转交后面的
+    // 项会颠倒用户消息顺序）。
+    if (!session.inputLease && msg.mode !== 'choices' && session.queuedInputs.length > 0
+      && session.queuedInputs[0].kind !== 'reminder') {
       const queuedInput = session.queuedInputs[0];
       const response = this.createTextInputResponse(queuedInput);
       if (this.forwardInputResponse(agentId, session, requestId, queuedInput.text, response)) {

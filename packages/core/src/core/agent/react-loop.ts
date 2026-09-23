@@ -11,7 +11,7 @@
 import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
-import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta } from '../types.js';
+import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta, TurnKind } from '../types.js';
 import type { HookResult, StepFinishDecisionContext } from '../lifecycle.js';
 import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
 import type { ReActResult, DebugPusher } from './types.js';
@@ -699,9 +699,9 @@ export class ReActLoopRunner {
    * 从 ViewerWorker 获取并消费一条排队消息
    *
    * @param agentId Agent ID
-   * @returns 排队消息（文本 + 图片 + 能力激活通知 + 自由元数据），如果没有则返回 null
+   * @returns 排队消息（文本 + 图片 + 能力激活通知 + 自由元数据 + 输入身份），如果没有则返回 null
    */
-  private async fetchQueuedInput(agentId: string): Promise<{ text: string; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown> } | null> {
+  private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string } | null> {
     // 从环境变量获取 ViewerWorker 端口
     const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
     const viewerUrl = `http://127.0.0.1:${viewerPort}`;
@@ -720,6 +720,7 @@ export class ReActLoopRunner {
       if (data.input && data.input.text) {
         return {
           text: data.input.text,
+          ...(data.input.kind === 'reminder' ? { kind: 'reminder' as const } : {}),
           ...(Array.isArray(data.input.images) && data.input.images.length > 0
             ? { images: data.input.images }
             : {}),
@@ -729,6 +730,7 @@ export class ReActLoopRunner {
           ...(data.input.metadata && typeof data.input.metadata === 'object' && !Array.isArray(data.input.metadata)
             ? { metadata: data.input.metadata as Record<string, unknown> }
             : {}),
+          ...(typeof data.input.source === 'string' && data.input.source ? { source: data.input.source } : {}),
         };
       }
       return null;
@@ -751,7 +753,7 @@ export class ReActLoopRunner {
   ): Promise<boolean> {
     if (!this.agent.agentId) return false;
     try {
-      const items: Array<{ text: string; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown> }> = [];
+      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string }> = [];
       while (true) {
         const qi = await this.fetchQueuedInput(this.agent.agentId);
         if (!qi) break;
@@ -769,7 +771,13 @@ export class ReActLoopRunner {
           if (qi.metadata && Object.keys(qi.metadata).length > 0) {
             await this.agent.dispatchTurnMetadata(qi.metadata, context);
           }
-          context.addUserMessage(qi.text, callIndex, qi.images);
+          // reminder（机器通报）注入为带 source 的 system 消息，
+          // 与 tool result 合流到下一个 wire 级 user turn
+          if (qi.kind === 'reminder') {
+            context.addSystemMessage(qi.text, callIndex, qi.source);
+          } else {
+            context.addUserMessage(qi.text, callIndex, qi.images);
+          }
         }
         this.pushToDebug(context.getAll());
         return true;

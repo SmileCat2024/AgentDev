@@ -485,14 +485,19 @@ export class BgRegistry {
     task.endedAt = this._now();
     task.child = null;
     this._clearTimers(task);
-    const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
-    const label = status === 'killed' ? '已终止' : exitCode === 0 ? '已完成' : '已失败';
-    this._notify(task, [
-      `[后台任务 ${task.id} ${label}]`,
-      `命令: ${task.command}`,
-      `退出码: ${exitCode === null ? 'null' : exitCode} · 运行时长 ${fmtDur(task.endedAt - task.startedAt)}`,
-      ...(tail ? [`尾部输出:\n${tail}`] : []),
-    ].join('\n'));
+    // killed 只来自主动 kill 指令（exit 事件一律走 done）：发起方已从
+    // 工具结果收到终止回执，再通报是纯冗余。done / 失败是任务自身的
+    // 结果，通知保留（退出码 + 尾部输出有信息量）。
+    if (status !== 'killed') {
+      const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
+      const label = exitCode === 0 ? '已完成' : '已失败';
+      this._notify(task, [
+        `[后台任务 ${task.id} ${label}]`,
+        `命令: ${task.command}`,
+        `退出码: ${exitCode === null ? 'null' : exitCode} · 运行时长 ${fmtDur(task.endedAt - task.startedAt)}`,
+        ...(tail ? [`尾部输出:\n${tail}`] : []),
+      ].join('\n'));
+    }
     this._trimDone();
     for (const wake of task.finalizeWaiters.splice(0)) wake();
   }
@@ -639,6 +644,7 @@ export class BgRegistry {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text,
+          kind: 'reminder',
           source: 'shell',
           sourceRef,
           metadata: { shell: { taskId: sourceRef } },

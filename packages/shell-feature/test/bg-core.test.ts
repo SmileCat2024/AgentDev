@@ -26,7 +26,7 @@ import {
   runForegroundWithBudget,
   type BgRegisterOptions,
 } from '../src/bg-core.js';
-import { createBashBgTool, createShellCommandTool } from '../src/index.js';
+import { createBashBgTool, createBgControlTool, createShellCommandTool } from '../src/index.js';
 import { findGitBashPath } from '../src/tools.js';
 
 const workdir = mkdtempSync(join(tmpdir(), 'agentdev-shell-bg-'));
@@ -214,14 +214,15 @@ describe('事件优先级：exit 赢', () => {
     expect(h.deliveries[0].text).toContain('退出码: 0');
   });
 
-  it('kill 预置 killed 终态，后续 close 不再产生通知', async () => {
+  it('kill 预置 killed 终态且不通报（工具结果即回执），后续 close 不再产生通知', async () => {
     const h = makeHarness();
     const { child, id } = h.spawn({});
     expect(h.registry.kill(id)).toBe(true);
     child.emit('close', 1);
     await flushAggregation();
-    expect(h.deliveries.length).toBe(1);
-    expect(h.deliveries[0].text).toContain(`${id} 已终止`);
+    // killed 只来自主动 kill 指令：发起方已从工具结果收到回执，
+    // 再投递"[已终止]"是纯冗余；close 事件被 killed 终态挡住也不重复通报
+    expect(h.deliveries.length).toBe(0);
   });
 });
 
@@ -333,19 +334,18 @@ describe('通知管线', () => {
     expect(pace!.intervalMs).toBe(300_000); // 未指定项保持
   });
 
-  it('dispose：清理全部任务，pending 通知摊还 unsent', () => {
+  it('dispose：清理全部任务且不产生终止通报', () => {
     const h = makeHarness();
     h.spawn({});
     h.spawn({});
-    // killAll 为每个任务产生终止通知（进聚合窗口）；dispose 清 flush timer
-    // 并把 pending 摊还各任务 unsent——不静默消失。
+    // killAll 是进程退出兜底：kill 回执语义（不通报），pending 通知为空、
+    // unsent 亦为空——没有静默丢失，因为根本不该有通知
     h.registry.dispose();
     const list = h.registry.list();
     expect(list.every((t) => t.status !== 'running')).toBe(true);
     for (const s of list) {
       const task = h.registry.get(s.id)!;
-      expect(task.unsent.length).toBe(1);
-      expect(task.unsent[0]).toContain('已终止');
+      expect(task.unsent.length).toBe(0);
     }
   });
 
@@ -408,6 +408,21 @@ describe('配额与保留', () => {
     for (const c of children) c.emit('close', 0);
     await flushAggregation();
     expect(h.registry.list().length).toBe(5);
+  });
+});
+
+describe('bg_control 已终止任务', () => {
+  it('kill 目标已结束时返回终态和尾部输出', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn();
+    child.stdout.emit('data', 'final output\\n');
+    child.emit('close', 7);
+    const tool = createBgControlTool(h.registry);
+
+    const result = await tool.execute!({ taskId: id, kill: true } as never, {} as never) as string;
+    expect(result).toContain('[done]');
+    expect(result).toContain('退出码 7');
+    expect(result).toContain('final output');
   });
 });
 
@@ -500,7 +515,7 @@ describe('前台语义（真实子进程）', () => {
 });
 
 describe('工具集成（真实子进程）', () => {
-  it('bash_bg 捕获窗内完成 → 直返结果', async () => {
+  it('bash_bg 捕获窗内完成 → 直返结果与退出码', async () => {
     vi.useRealTimers();
     const h = makeHarness();
     const tool = createBashBgTool('test bg', {
@@ -509,9 +524,41 @@ describe('工具集成（真实子进程）', () => {
       resourceRoot: process.cwd(),
       registry: h.registry,
     });
-    const out = await tool.execute!({ command: 'echo fast-done', intervalSec: 60, quietAfterSec: 30 } as never, {} as never);
+    const out = await tool.execute!({ command: 'echo fast-done' } as never, {} as never) as string;
     expect(out).toContain('fast-done');
-    expect(out).toContain('捕获窗');
+    expect(out).toContain('退出码 0');
+    expect(h.registry.list().length).toBe(0);
+  }, 10_000);
+
+  it('bash_bg 默认使用 90/60 秒节奏且无需传入节奏参数', async () => {
+    vi.useRealTimers();
+    const h = makeHarness();
+    const tool = createBashBgTool('test bg', {
+      workdir,
+      bashPath: findGitBashPath()!,
+      resourceRoot: process.cwd(),
+      registry: h.registry,
+    });
+    const out = await tool.execute!({ command: 'sleep 5' } as never, {} as never) as string;
+    const task = h.registry.get('bg-1')!;
+    expect(out).toContain('90s');
+    expect(out).toContain('60s');
+    expect(task.pace).toEqual({ intervalMs: 90_000, quietAfterMs: 60_000 });
+    h.registry.kill(task.id);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }, 10_000);
+
+  it('bash_bg 捕获窗内失败时错误显式包含退出码', async () => {
+    vi.useRealTimers();
+    const h = makeHarness();
+    const tool = createBashBgTool('test bg', {
+      workdir,
+      bashPath: findGitBashPath()!,
+      resourceRoot: process.cwd(),
+      registry: h.registry,
+    });
+    await expect(tool.execute!({ command: 'exit 7' } as never, {} as never))
+      .rejects.toThrow('退出码 7');
     expect(h.registry.list().length).toBe(0);
   }, 10_000);
 

@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver } from './types.js';
+import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver, CallTurnOptions } from './types.js';
 import type { AgentFeature, FeatureInitContext, ContextInjector } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -309,8 +309,8 @@ class AgentBase {
    *
    * 同一实例的会话状态不可并发访问；后续调用会按提交顺序排队。
    */
-  async onCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>): Promise<string> {
-    const outcome = await this.onCallDetailed(input, images, activations, metadata);
+  async onCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions): Promise<string> {
+    const outcome = await this.onCallDetailed(input, images, activations, metadata, options);
     return outcome.response;
   }
 
@@ -326,8 +326,11 @@ class AgentBase {
    *
    * `metadata` 是随本条输入流动的自由元数据（user-turn 的 metadata 字段），
    * 框架不解释内容，原样挂到 CallStartContext.metadata 供 feature 自取。
+   *
+   * `options` 携带本条输入的身份（kind/source）：'reminder' 表示机器
+   * 通报唤醒的 call，触发消息落为带 source 的 system 消息而非 user 消息。
    */
-  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>): Promise<CallOutcome> {
+  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions): Promise<CallOutcome> {
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
     }
@@ -337,7 +340,7 @@ class AgentBase {
         throw new Error('Agent is disposing or has been disposed');
       }
 
-      const execution = this.executeCall(input, images, activations, metadata);
+      const execution = this.executeCall(input, images, activations, metadata, options);
       const completion = execution.then(() => undefined, () => undefined);
       this._activeCallPromise = completion;
       try {
@@ -359,7 +362,7 @@ class AgentBase {
     return this._lastCallOutcome ? { ...this._lastCallOutcome } : null;
   }
 
-  private async executeCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>): Promise<CallOutcome> {
+  private async executeCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions): Promise<CallOutcome> {
     // 确保 Feature 工具已注册
     await this.ensureFeatureTools();
     if (this._lifecycleState !== 'active') {
@@ -472,9 +475,15 @@ class AgentBase {
         emitSessionEvent({ type: 'turn.started', turn: this._callIndex });
       } catch { /* session-events 模块不可用 */ }
 
-      // 添加用户输入（使用可能被 Feature 修改过的缓存）
+      // 添加用户输入（使用可能被 Feature 修改过的缓存）。
+      // reminder 身份的触发消息落为带 source 的 system 消息（LLM 编译层
+      // 包为 <reminder>、UI 紧凑渲染），不再伪装成用户发言。
       finalInput = this._pendingInput ?? input;
-      context.addUserMessage(finalInput, this._callIndex, images);
+      if (options?.kind === 'reminder') {
+        context.addSystemMessage(finalInput, this._callIndex, options.source);
+      } else {
+        context.addUserMessage(finalInput, this._callIndex, images);
+      }
       this.pushToDebug(context.getAll());
 
       // 提前提交 rollback checkpoint：确保在 ReAct 循环中的 step auto-save

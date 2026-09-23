@@ -162,6 +162,8 @@ export type {
   ImageInput,
   UserTurnInput,
   UserTurnSubmissionResult,
+  TurnKind,
+  CallTurnOptions,
   EnrichedMessage,
   MessageTag,
   ParsedContent,

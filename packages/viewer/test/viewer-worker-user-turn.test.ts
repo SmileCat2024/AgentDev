@@ -528,4 +528,133 @@ describe('ViewerWorker user-turn contract', () => {
     expect(session.inputLease).toMatchObject({ requestId: 'slot-2' });
     expect(writes).toHaveLength(0);
   });
+
+  // ── reminder（机器通报）：不响应租约，直接进邮箱 ──
+
+  it('queues a reminder even while a text lease is pending instead of answering it', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'input-waiting', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    const result = worker.submitUserTurn(agentId, {
+      text: '[后台任务 bg-1 已完成]',
+      kind: 'reminder',
+      source: 'shell',
+      sourceRef: 'bg-1',
+    });
+
+    expect(result).toMatchObject({ success: true, delivery: 'queued' });
+    // 租约原样保留，runtime 未收到冒充的用户应答
+    expect(session.inputLease).toMatchObject({ requestId: 'input-waiting' });
+    expect(writes).toHaveLength(0);
+    expect(session.queuedInputs).toHaveLength(1);
+    expect(session.queuedInputs[0]).toMatchObject({
+      text: '[后台任务 bg-1 已完成]',
+      kind: 'reminder',
+      source: 'shell',
+      sourceRef: 'bg-1',
+    });
+  });
+
+  it('queues a reminder even while a choices lease is pending (no 409)', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'choice-waiting', prompt: '请选择', mode: 'choices', timestamp: Date.now() };
+
+    const result = worker.submitUserTurn(agentId, {
+      text: '[后台任务 bg-1 已就绪]',
+      kind: 'reminder',
+      source: 'shell',
+    });
+
+    // choices 冲突检查拦的是真人输入；机器通报不该被挡
+    expect(result).toMatchObject({ success: true, delivery: 'queued' });
+    expect(session.inputLease).toMatchObject({ requestId: 'choice-waiting' });
+    expect(session.queuedInputs).toHaveLength(1);
+  });
+
+  it('rejects unknown kind values', () => {
+    const { worker, session, agentId } = createWorker();
+
+    const result = worker.submitUserTurn(agentId, {
+      text: 'bad kind',
+      kind: 'assistant' as any,
+    });
+
+    expect(result).toMatchObject({ success: false, code: 'invalid_input' });
+    expect(session.queuedInputs).toHaveLength(0);
+  });
+
+  it('does not hand a queued reminder to a newly opened lease', () => {
+    const { worker, session, agentId } = createWorker();
+    worker.submitUserTurn(agentId, {
+      text: '[后台任务 bg-1 运行中]',
+      kind: 'reminder',
+      source: 'shell',
+    });
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    // input loop 重开 lease：reminder 留在邮箱（mailbox loop 消费），不转交
+    worker.handleRequestInput({ agentId, requestId: 'next-input', prompt: '请输入', mode: 'text' });
+
+    expect(session.queuedInputs).toHaveLength(1);
+    expect(session.queuedInputs[0].kind).toBe('reminder');
+    expect(session.inputLease).toMatchObject({ requestId: 'next-input' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('resumes lease handoff for queued user turns after a reminder reaches the front', () => {
+    const { worker, session, agentId } = createWorker();
+    // reminder 在队首，普通 user 输入在后：lease 打开时不转交任何项（FIFO 保序）
+    worker.submitUserTurn(agentId, {
+      text: '[后台任务 bg-1 已完成]',
+      kind: 'reminder',
+      source: 'shell',
+    });
+    worker.submitUserTurn(agentId, { text: 'follow-up', source: 'chat-composer' });
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    worker.handleRequestInput({ agentId, requestId: 'after-reminder', prompt: '请输入', mode: 'text' });
+
+    expect(session.queuedInputs).toHaveLength(2);
+    expect(session.inputLease).toMatchObject({ requestId: 'after-reminder' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('dequeue returns the reminder kind and source for in-call injection', async () => {
+    const { worker, session, agentId } = createWorker();
+    session.callActive = true;
+    worker.submitUserTurn(agentId, {
+      text: '[后台任务 bg-2 已完成]',
+      kind: 'reminder',
+      source: 'shell',
+      sourceRef: 'bg-2',
+    });
+
+    const req = new EventEmitter() as any;
+    req.setEncoding = () => {};
+    const chunks: string[] = [];
+    const done = Promise.resolve().then(() => {
+      (worker as any).handleDequeueInput(req, {
+        writeHead() {},
+        end(payload: string) { chunks.push(String(payload)); },
+      } as any, agentId);
+      req.emit('end');
+    });
+    await done;
+    await new Promise((r) => setTimeout(r, 0));
+
+    const result = JSON.parse(chunks[chunks.length - 1]);
+    expect(result.input.kind).toBe('reminder');
+    expect(result.input.source).toBe('shell');
+    expect(session.queuedInputs).toHaveLength(0);
+  });
 });

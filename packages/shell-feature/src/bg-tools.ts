@@ -31,17 +31,17 @@ export interface BgToolOptions extends BgSpawnOptions {
 // 内联兜底描述（prompts 文件缺失时的完整教学文案）
 // ---------------------------------------------------------------------------
 
-export const BASH_BG_INLINE_DESCRIPTION = `在后台启动一条 bash 命令：命令会持续运行，不会阻塞你，汇报节奏由你声明。
+export const BASH_BG_INLINE_DESCRIPTION = `在后台启动一条 bash 命令，适合构建、测试、开发服务器等长时间运行或无需立即等待结果的任务。短任务或需要立即拿到结果的命令请用前台 bash。
 
 参数说明：
-- command：要执行的命令
-- intervalSec（必填）：任务正常运行时，最坏每隔这么多秒你会收到一条进度消息。最小 60，填小按 60 算
-- quietAfterSec（必填）：进程多少秒没有任何输出后，改按这个间隔报告"没动静"。最小 30，填小按 30 算
-- readyPattern（可选）：输出中出现这段文字时，你会先收到一条"已就绪"消息（只发一次），适合 dev server 类任务
+- command：要执行的 bash 命令
+- intervalSec（可选，默认 90）：任务正常运行时，最坏每隔这么多秒收到一条进度消息。最小 60，填小按 60 算
+- quietAfterSec（可选，默认 60）：进程多少秒没有任何输出后，改按这个间隔报告"没动静"。最小 30，填小按 30 算
+- readyPattern（可选）：输出中出现这段文字时，立即收到一次“已就绪”通知，适合 dev server
 
-行为：启动后观察 2 秒——如果命令 2 秒内就结束了（成功或失败），结果直接带回，和前台一样；还在跑则返回任务号（如 bg-1），之后按你声明的节奏收到汇报消息，任务一结束立刻收到完整结果。
+启动后观察 2 秒：窗口内结束的命令直接返回结果（失败时包含退出码）；仍在运行则返回任务号，后续进度与最终结果会自动送达。
 
-推荐值：
+较长任务可按需放宽节奏，例如：
 - 构建 / 测试：intervalSec=300, quietAfterSec=30（有输出说明正常；突然安静大概率是卡了）
 - dev server：intervalSec=600, quietAfterSec=600（安静是健康状态，别打扰），配 readyPattern 如 "listening on"
 
@@ -53,7 +53,7 @@ const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，
 
 const BG_WAIT_INLINE_DESCRIPTION = '现场等待一个后台任务，至多 maxWaitSec（上限 30）秒：完成立刻拿到结果；到时间还没完，返回"仍在运行 + 新增输出"，这不是失败。它只适合"我觉得它马上就好"的短等待——更长的等待靠汇报消息，不要反复调用本工具轮询。';
 
-const BG_CONTROL_INLINE_DESCRIPTION = '控制一个后台任务：kill 停掉（进程树终止）；stdin 向任务写入输入（如回答安装程序的 y/n 确认）；intervalSec / quietAfterSec 修改汇报节奏，立刻生效（最小 60 / 30）。';
+const BG_CONTROL_INLINE_DESCRIPTION = '控制一个后台任务：kill 停掉（进程树终止；任务已结束时返回当前终态和尾部输出）；stdin 向任务写入输入（如回答安装程序的 y/n 确认）；intervalSec / quietAfterSec 修改汇报节奏，立刻生效（最小 60 / 30）。';
 
 // ---------------------------------------------------------------------------
 // bash_bg
@@ -68,21 +68,19 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
       type: 'object',
       properties: {
         command: { type: 'string', description: '要执行的 bash 命令' },
-        intervalSec: { type: 'number', description: '活跃节奏（秒）：正常运行时最坏隔多少秒汇报一次。最小 60' },
-        quietAfterSec: { type: 'number', description: '静默节奏（秒）：无输出持续多久后按此节奏报告。最小 30' },
+        intervalSec: { type: 'number', description: '可选，默认 90 秒。活跃任务的最大汇报间隔，最小 60' },
+        quietAfterSec: { type: 'number', description: '可选，默认 60 秒。无输出持续多久后按此节奏报告，最小 30' },
         readyPattern: { type: 'string', description: '可选：输出匹配该文字时发一次性"已就绪"消息（dev server 类用）' },
       },
-      required: ['command', 'intervalSec', 'quietAfterSec'],
+      required: ['command'],
     },
     render: { call: 'bash', result: 'bash' },
     // 2s 捕获窗 + spawn/格式化开销的余量；超时兜底（正常路径远快于此）
     timeout: { defaultMs: 15_000, maxMs: 15_000 },
     execute: async (args) => {
-      const { command, intervalSec, quietAfterSec, readyPattern } = args as {
-        command: string; intervalSec: number; quietAfterSec: number; readyPattern?: string;
+      const { command, intervalSec = 90, quietAfterSec = 60, readyPattern } = args as {
+        command: string; intervalSec?: number; quietAfterSec?: number; readyPattern?: string;
       };
-      // NaN/字符串数字等会绕过 schema：前置校验给出面向模型的报错（而非引擎
-      // 内部的 mustFinite 异常）。
       if (!Number.isFinite(intervalSec) || !Number.isFinite(quietAfterSec)) {
         throw new Error(`intervalSec 与 quietAfterSec 必须是数字（收到 intervalSec=${String(intervalSec)}, quietAfterSec=${String(quietAfterSec)}）`);
       }
@@ -118,9 +116,9 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
           opts.workdir,
         );
         if (!formatted.ok) {
-          throw new Error(formatted.text || `Command failed with exit code ${captured.code}`);
+          throw new Error(`命令在捕获窗内失败，退出码 ${captured.code}${formatted.text ? `\n${formatted.text}` : ''}`);
         }
-        return `命令在捕获窗内已完成（你可能不需要后台模式）：\n${formatted.text}`;
+        return `命令在捕获窗内已完成，退出码 ${captured.code}（你可能不需要后台模式）：\n${formatted.text}`;
       }
 
       let task;
@@ -284,7 +282,16 @@ export function createBgControlTool(registry: BgRegistry): Tool {
         }
       }
       if (kill === true) {
-        actions.push(registry.kill(taskId, { graceful: true }) ? '已发送终止信号（未及时退出会自动强杀）' : '终止失败：任务不在运行');
+        if (registry.kill(taskId, { graceful: true })) {
+          actions.push('已发送终止信号（未及时退出会自动强杀）');
+        } else {
+          const snapshot = registry.snapshot(task);
+          const tail = registry.tail(task, 1_000);
+          actions.push([
+            `任务不在运行，当前状态 [${snapshot.status}]，退出码 ${snapshot.exitCode === null ? 'null' : snapshot.exitCode}，运行 ${fmtDur(snapshot.durationMs)}。`,
+            ...(tail ? [`尾部输出:\n${tail}`] : []),
+          ].join('\n'));
+        }
       }
       if (actions.length === 0) {
         return '未指定操作。可用：kill / stdin / intervalSec / quietAfterSec。';

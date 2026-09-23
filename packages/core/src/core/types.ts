@@ -738,12 +738,20 @@ export interface InputLease {
 }
 
 /**
+ * 输入身份：真人发言（缺省）或机器通报（如后台任务通知）。
+ * reminder 落地为带 source 的 system 消息（LLM 编译层包为 <reminder>，
+ * UI 紧凑渲染），且永不响应输入租约。
+ */
+export type TurnKind = 'user' | 'reminder';
+
+/**
  * 排队的用户输入
  */
 export interface QueuedInput {
   id: string;
   text: string;
   timestamp: number;
+  kind?: TurnKind;
   /** 图片附件（多模态输入） */
   images?: ImageInput[];
   /** 稳定的输入来源标识，供宿主诊断和后续路由扩展使用 */
@@ -765,6 +773,7 @@ export interface QueuedInput {
  */
 export interface UserTurnInput {
   text: string;
+  kind?: TurnKind;
   images?: ImageInput[];
   source?: string;
   sourceRef?: string;
@@ -802,6 +811,21 @@ export type UserTurnSubmissionResult =
       error: string;
       pendingMode?: UserInputRequestMode;
     };
+
+/**
+ * Agent.onCall 的输入身份选项。
+ *
+ * 唤醒能力与消息角色正交：同一套 call 机器（钩子、checkpoint、事件、
+ * 仲裁）对两种身份同样生效，只有触发消息的落地形态不同：
+ * - 'user'（缺省）：input 落为 user 消息。
+ * - 'reminder'：机器通报唤醒的 call，input 落为带 source 的 system
+ *   消息（LLM 编译层包为 <reminder>，UI 紧凑渲染，trim 按需丢弃）。
+ */
+export interface CallTurnOptions {
+  kind?: TurnKind;
+  /** reminder 落地为 system 消息时的 Message.source（如 'shell'） */
+  source?: string;
+}
 
 /**
  * DebugHub IPC 消息类型（主进程 → Worker）

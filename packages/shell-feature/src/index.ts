@@ -183,7 +183,7 @@ export class ShellFeature implements AgentFeature {
             const descriptionPath = resolve(this.resourceRoot, '.agentdev/prompts/tool-bash.md');
             this.bashDescription = await readFile(descriptionPath, 'utf-8');
           } catch {
-            this.bashDescription = '执行 Shell 命令';
+            this.bashDescription = '执行短时、需要立即查看结果的前台 Bash 命令。预期长时间运行的任务请使用 bash_bg。';
           }
         }
         const registry = this.ensureRegistry(ctx.agentId);

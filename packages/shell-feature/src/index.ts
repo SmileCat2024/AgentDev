@@ -22,6 +22,15 @@ import { getPackageInfoFromSource } from '@agentdevjs/core';
 import { createShellCommandTool, findGitBashPath } from './tools.js';
 import { createPowerShellTool, findPowerShellPath } from './powershell.js';
 import { createSafeTrashDeleteTool, createSafeTrashListTool, createSafeTrashRestoreTool } from './tools-trash.js';
+import { BgRegistry, FOREGROUND_BUDGET_DEFAULT_MS } from './bg-core.js';
+import {
+  BASH_BG_INLINE_DESCRIPTION,
+  createBashBgTool,
+  createBgControlTool,
+  createBgListTool,
+  createBgStatusTool,
+  createBgWaitTool,
+} from './bg-tools.js';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -36,15 +45,12 @@ interface ResolvedShellConfig {
   bashPath?: string;
   powershellEnabled: boolean;
   powershellPath?: string;
-  /** 默认命令超时（毫秒），executor 计时起点；默认 120000 */
+  /** 前台命令固定预算（毫秒）：超预算不打断，转后台继续运行；默认 20000 */
   defaultTimeoutMs: number;
-  /** 超时硬上限（毫秒），任何来源的超时值 clamp 到此值；默认 600000 */
-  maxTimeoutMs: number;
 }
 
-/** 默认超时契约值（与工具 timeout 声明保持一致，ticket 024 步骤 5）。 */
-const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
-const MAX_TIMEOUT_MS = 600_000;     // 10 minutes
+/** 前台固定预算契约值（与 bg-core 保持一致）。 */
+const DEFAULT_TIMEOUT_MS = FOREGROUND_BUDGET_DEFAULT_MS; // 20 seconds
 
 function resolvePositiveNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -62,11 +68,14 @@ export class ShellFeature implements AgentFeature {
   readonly description = '提供 Bash/PowerShell 命令执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 
   private bashDescription?: string;
+  private bashBgDescription?: string;
   private powershellDescription?: string;
   private _packageInfo: PackageInfo | null = null;
   private readonly workspaceDir: string;
   private readonly workdir: string;
   private readonly resourceRoot: string;
+  /** 后台任务登记表（首次 getAsyncTools 时按 agentId 惰性创建）。 */
+  private _registry: BgRegistry | null = null;
 
   constructor(config: ShellFeatureConfig = {}) {
     this.workspaceDir = config.workspaceDir || process.cwd();
@@ -116,19 +125,11 @@ export class ShellFeature implements AgentFeature {
           },
           defaultTimeoutMs: {
             type: 'number',
-            title: '默认命令超时（毫秒）',
-            description: '命令执行的默认超时时间。模型可通过 timeout 参数覆盖（不超过最大超时）。',
+            title: '前台命令等待时长（毫秒）',
+            description: '前台 bash 的固定预算：预算内完成直接返回；超过则不打断进程，自动转后台任务继续运行。对模型不可见、不可调。',
             default: DEFAULT_TIMEOUT_MS,
-            min: 1,
-            max: MAX_TIMEOUT_MS,
-            step: 1000,
-          },
-          maxTimeoutMs: {
-            type: 'number',
-            title: '最大命令超时（毫秒）',
-            description: '命令超时的硬上限，任何来源的超时值都会被限制到此值以内。',
-            default: MAX_TIMEOUT_MS,
-            min: 1,
+            min: 1000,
+            max: 600000,
             step: 1000,
           },
         },
@@ -142,26 +143,28 @@ export class ShellFeature implements AgentFeature {
         bashEnabled: true,
         powershellEnabled: true,
         defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
-        maxTimeoutMs: MAX_TIMEOUT_MS,
       };
     }
     const c = featureConfig as Record<string, unknown>;
-    const maxTimeoutMs = Math.max(
-      resolvePositiveNumber(c.maxTimeoutMs, MAX_TIMEOUT_MS),
-      1,
-    );
     return {
       bashEnabled: c.bashEnabled !== false,
       bashPath: typeof c.bashPath === 'string' && c.bashPath.trim() ? c.bashPath.trim() : undefined,
       powershellEnabled: c.powershellEnabled !== false,
       powershellPath: typeof c.powershellPath === 'string' && c.powershellPath.trim() ? c.powershellPath.trim() : undefined,
-      // default 不允许超过 max（配置面板顺序无关时的自洽保护）
-      defaultTimeoutMs: Math.min(
-        resolvePositiveNumber(c.defaultTimeoutMs, DEFAULT_TIMEOUT_MS),
-        maxTimeoutMs,
-      ),
-      maxTimeoutMs,
+      defaultTimeoutMs: resolvePositiveNumber(c.defaultTimeoutMs, DEFAULT_TIMEOUT_MS),
     };
+  }
+
+  /**
+   * 后台登记表惰性初始化（getAsyncTools 才有 agentId）。
+   * 绑定首个 agentId：通知投递邮箱归属第一个装配本 feature 的 agent——当前
+   * 装配模型是一 feature 实例一 agent；跨 agent 复用需上移托管层。
+   */
+  private ensureRegistry(agentId: string): BgRegistry {
+    if (!this._registry) {
+      this._registry = new BgRegistry({ agentId });
+    }
+    return this._registry;
   }
 
   /**
@@ -171,7 +174,7 @@ export class ShellFeature implements AgentFeature {
     const config = this.resolveShellConfig(ctx.featureConfig);
     const tools: Tool[] = [];
 
-    // ── Bash 工具 ──
+    // ── Bash 工具（前台）+ 后台任务工具族 ──
     if (config.bashEnabled) {
       const bashPath = findGitBashPath(config.bashPath);
       if (bashPath) {
@@ -183,20 +186,42 @@ export class ShellFeature implements AgentFeature {
             this.bashDescription = '执行 Shell 命令';
           }
         }
+        const registry = this.ensureRegistry(ctx.agentId);
         tools.push(createShellCommandTool(this.bashDescription, {
           workspaceDir: this.workspaceDir,
           workdir: this.workdir,
           resourceRoot: this.resourceRoot,
           bashPath,
           timeoutMs: config.defaultTimeoutMs,
-          maxTimeoutMs: config.maxTimeoutMs,
+          registry,
         }));
+        // 后台工具族：描述文件优先，缺失时回退内联完整教学文案（防轮询协议
+        // 声明不能依赖 resourceRoot 恰好可解析）。
+        if (!this.bashBgDescription) {
+          try {
+            const descriptionPath = resolve(this.resourceRoot, '.agentdev/prompts/tool-bash-bg.md');
+            this.bashBgDescription = await readFile(descriptionPath, 'utf-8');
+          } catch {
+            this.bashBgDescription = BASH_BG_INLINE_DESCRIPTION;
+          }
+        }
+        const spawnOpts = {
+          workdir: this.workdir,
+          bashPath,
+          resourceRoot: this.resourceRoot,
+          registry,
+        };
+        tools.push(createBashBgTool(this.bashBgDescription, spawnOpts));
+        tools.push(createBgListTool(registry));
+        tools.push(createBgStatusTool(registry));
+        tools.push(createBgWaitTool(registry));
+        tools.push(createBgControlTool(registry));
       } else {
         console.warn('[shell] Bash is enabled but was not found on this system. Skipping Bash tool.');
       }
     }
 
-    // ── PowerShell 工具 ──
+    // ── PowerShell 工具（前台语义保持现状：可调 timeout、超时打断） ──
     if (config.powershellEnabled) {
       const psPath = findPowerShellPath(config.powershellPath);
       if (psPath) {
@@ -213,8 +238,6 @@ export class ShellFeature implements AgentFeature {
           workdir: this.workdir,
           resourceRoot: this.resourceRoot,
           psPath,
-          timeoutMs: config.defaultTimeoutMs,
-          maxTimeoutMs: config.maxTimeoutMs,
         }));
       } else {
         console.warn('[shell] PowerShell is enabled but was not found on this system. Skipping PowerShell tool.');
@@ -250,6 +273,38 @@ export class ShellFeature implements AgentFeature {
 // 导出工具创建函数（供高级用户使用）
 export { createShellCommandTool, runShellCommand, findGitBashPath } from './tools.js';
 export type { ShellCommandToolOptions, ShellExecutionResult } from './tools.js';
+
+// 导出后台任务核心与工具族（供高级用户与测试使用）
+export {
+  BgRegistry,
+  FOREGROUND_BUDGET_DEFAULT_MS,
+  BG_MIN_INTERVAL_MS,
+  BG_MIN_QUIET_MS,
+  BG_CAPTURE_WINDOW_MS,
+  BG_WAIT_MAX_MS,
+  buildBashInvocation,
+  cleanBashStderr,
+  fmtDur,
+  formatForegroundOutput,
+  runForegroundWithBudget,
+  spawnBackgroundProcess,
+} from './bg-core.js';
+export type {
+  BgTaskPace,
+  BgTaskSnapshot,
+  BgRegisterOptions,
+  BgSpawnOptions,
+  BgTaskStatus,
+  ForegroundOutcome,
+} from './bg-core.js';
+export {
+  BASH_BG_INLINE_DESCRIPTION,
+  createBashBgTool,
+  createBgControlTool,
+  createBgListTool,
+  createBgStatusTool,
+  createBgWaitTool,
+} from './bg-tools.js';
 export { createPowerShellTool, runPowerShellCommand, findPowerShellPath } from './powershell.js';
 
 // 导出共享运行核心（供高级用户使用；截断落盘函数自 tools.ts 迁入，行为不变）

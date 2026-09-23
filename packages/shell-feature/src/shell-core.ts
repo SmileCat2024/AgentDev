@@ -72,7 +72,7 @@ function tailLines(text: string, lines: number): string {
 // 输出截断 + 落盘持久化（自 tools.ts 迁入共享；bash-output-* 落盘机制不变）
 // ---------------------------------------------------------------------------
 
-const MAX_OUTPUT_LENGTH = 30_000;
+export const MAX_OUTPUT_LENGTH = 30_000;
 
 function timestampSlug(): string {
   const now = new Date();
@@ -148,7 +148,7 @@ export async function processOutputWithPersistence(
 // kill 工具（Windows taskkill 进程树 / POSIX 进程组）
 // ---------------------------------------------------------------------------
 
-function makeKillChild(child: import('child_process').ChildProcess): () => void {
+export function makeKillChild(child: import('child_process').ChildProcess): () => void {
   return () => {
     try {
       if (process.platform === 'win32') {
@@ -173,7 +173,7 @@ function makeKillChild(child: import('child_process').ChildProcess): () => void 
 }
 
 /** kill 后等待管道 EOF：正常在 close 触发，孙进程继承 pipe 句柄时以超时兜底。 */
-function drainToEof(child: import('child_process').ChildProcess, timeoutMs: number): Promise<void> {
+export function drainToEof(child: import('child_process').ChildProcess, timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     let done = false;
     const finish = () => {

@@ -1,12 +1,14 @@
 /**
- * shell 工具终止收集与 <shell_metadata> 测试（ticket 024 / ADR-0005）
+ * shell 工具终止收集与 <shell_metadata> 测试（ticket 024 / ADR-0005；bg 化后契约更新）
  *
  * 覆盖：
- * - bash/powershell 共享三态语义：
- *   1) 超时终止 → kill + drain 后 resolve，结果含部分输出与元数据块（reason: timeout）
- *   2) 用户打断（signal aborted）→ 同上（reason: user），本轮由 react-loop 收尾
+ * - bash/powershell 三态语义（bg 化后 bash 超时分支变化）：
+ *   1) bash 超时 → 未配置 registry 时降级 kill + drain，结果含部分输出与
+ *      元数据块（reason: timeout）；配置 registry 时转后台（bg-core.test 覆盖）
+ *   2) 用户打断（signal aborted）→ kill + drain（reason: user），本轮由 react-loop 收尾
  *   3) 正常完成 → 干净输出，无元数据块
- * - args.timeout 由 executor clamp；工具不再内部计时（timeout 契约声明消费 ticket 023）
+ * - bash 的 timeout 契约为固定预算（defaultMs=maxMs=20000，无 fromArg，
+ *   对模型不可见不可调）；powershell 保持可调 fromArg（第一版不 bg 化）
  * - 元数据字段：terminated / reason / durationMs / exitCode(null when killed) /
  *   outputBytes / truncated / logPath（终止态无条件落盘）
  */
@@ -101,7 +103,6 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
       workdir,
       bashPath,
       timeoutMs: 300,
-      maxTimeoutMs: 300,
     });
     const agent = new Agent({ llm, maxTurns: 3, name: 'ShellIntegrationAgent', tools: [bash] });
 
@@ -137,7 +138,6 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
       workdir,
       bashPath,
       timeoutMs: 60_000,
-      maxTimeoutMs: 60_000,
     });
     const agent = new Agent({ llm, maxTurns: 3, name: 'ShellUserInterruptAgent', tools: [bash] });
     const callPromise = agent.onCallDetailed('run and interrupt shell command');
@@ -155,6 +155,36 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
     expect(toolMessage?.content).toContain('<shell_metadata>');
     expect(toolMessage?.content).toContain('reason: user');
     expect(toolMessage?.content).not.toBe('{"success":false,"result":{"error":"Interrupted by user"}}');
+  }, 15_000);
+
+  it('经 Agent executor：超时 + registry → 转后台文案，进程存活（新契约主路径）', async () => {
+    const { BgRegistry } = await import('../src/bg-core.js');
+    const deliveries: string[] = [];
+    const registry = new BgRegistry({
+      agentId: 'ShellBgAdoptAgent',
+      enableExitGuard: false,
+      deliverImpl: async (text) => { deliveries.push(text); },
+    });
+    const llm = new ShellIntegrationLLM();
+    const bash = createShellCommandTool('test bash', {
+      workdir,
+      bashPath,
+      timeoutMs: 300,
+      registry,
+    });
+    const agent = new Agent({ llm, maxTurns: 3, name: 'ShellBgAdoptAgent', tools: [bash] });
+
+    const outcome = await agent.onCallDetailed('run integration shell command');
+
+    expect(outcome.status).toBe('completed');
+    expect(llm.observedToolResults).toHaveLength(1);
+    expect(llm.observedToolResults[0]).toContain('已转为后台任务');
+    expect(llm.observedToolResults[0]).toContain('不要轮询');
+    const running = registry.list().filter((t) => t.status === 'running');
+    expect(running).toHaveLength(1);
+    expect(running[0]!.inheritedPace).toBe(true);
+    registry.kill(running[0]!.id); // 清理：不等通知管线
+    await new Promise((r) => setTimeout(r, 200));
   }, 15_000);
 
   it('超时：返回已积累的部分输出 + 元数据块（terminated/reason=timeout/exitCode=null/logPath）', async () => {
@@ -207,13 +237,12 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
     expect(result).not.toContain('<shell_metadata>');
   }, 15_000);
 
-  it('args.timeout 不再被工具内部消费（计时职责归 executor，契约声明 fromArg）', () => {
+  it('bash timeout 契约：固定预算对模型不可见不可调（无 fromArg）', () => {
     const tool = createShellCommandTool('test bash', { workdir });
     expect(tool.name).toBe('bash');
     expect(tool.timeout).toEqual({
-      defaultMs: 120_000,
-      maxMs: 600_000,
-      fromArg: 'timeout',
+      defaultMs: 20_000,
+      maxMs: 20_000,
     });
   });
 
@@ -236,13 +265,21 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
 // powershell 与 bash 逐项对齐
 // ===========================================================================
 
-describe('powershell 三态同 bash（ticket 024 验收）', () => {
-  it('工具契约声明一致（name / timeout fromArg / render）', () => {
+describe('powershell 终止语义（第一版不 bg 化，保持 ticket 024 原契约）', () => {
+  it('工具契约：ps 保持可调 timeout（fromArg）；bash 为固定预算——刻意不对称', () => {
     const ps = createPowerShellTool('test ps', { workdir });
     expect(ps.name).toBe('powershell');
     expect(ps.render).toBeDefined();
+    expect(ps.timeout).toEqual({
+      defaultMs: 120_000,
+      maxMs: 600_000,
+      fromArg: 'timeout',
+    });
     const bash = createShellCommandTool('test bash', { workdir });
-    expect(ps.timeout).toEqual(bash.timeout);
+    expect(bash.timeout).toEqual({
+      defaultMs: 20_000,
+      maxMs: 20_000,
+    });
   });
 
   it.skipIf(PS_SKIP)('超时：部分输出 + 元数据块（reason=timeout），与 bash 同构', async () => {
@@ -307,8 +344,8 @@ describe('args.timeout clamp（ticket 023 executor 职责，工具侧仅声明�
 // manifest 配置项
 // ===========================================================================
 
-describe('manifest 配置（ticket 024 步骤 5）', () => {
-  it('getFeatureManifest 声明 defaultTimeoutMs / maxTimeoutMs 且默认值正确', async () => {
+describe('manifest 配置（前台预算契约，bg 化后更新）', () => {
+  it('getFeatureManifest 声明 defaultTimeoutMs（前台固定预算，默认 20s）且 maxTimeoutMs 已移除', async () => {
     const { ShellFeature } = await import('../src/index.js');
     const feature = new ShellFeature({ workdir });
     const manifest = feature.getFeatureManifest();
@@ -316,14 +353,10 @@ describe('manifest 配置（ticket 024 步骤 5）', () => {
     const props = manifest!.settings!.properties;
     expect(props['defaultTimeoutMs']).toMatchObject({
       type: 'number',
-      default: 120_000,
-      min: 1,
+      default: 20_000,
+      min: 1_000,
       max: 600_000,
     });
-    expect(props['maxTimeoutMs']).toMatchObject({
-      type: 'number',
-      default: 600_000,
-      min: 1,
-    });
+    expect(props['maxTimeoutMs']).toBeUndefined();
   });
 });

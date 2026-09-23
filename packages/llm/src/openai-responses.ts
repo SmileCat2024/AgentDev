@@ -16,6 +16,7 @@ import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, wi
 import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
+import { normalizeApiBaseUrl } from './api-url.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
@@ -106,7 +107,7 @@ export class OpenAIResponsesLLM implements LLMClient {
     this.deadlineMs = resolved.timeoutMs;
     this.client = new OpenAI({
       apiKey,
-      baseURL: baseUrl,
+      baseURL: normalizeApiBaseUrl(baseUrl),
       ...(customHeaders && customHeaders.length > 0
         ? {
             fetch: (input: any, init: any) => {

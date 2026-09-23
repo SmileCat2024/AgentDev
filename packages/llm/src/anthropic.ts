@@ -9,6 +9,7 @@ import { resolveImageBase64 } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import { emitRetryObservability } from './retry-observability.js';
 import { wrapReminder } from './reminder.js';
+import { resolveAnthropicMessagesUrl } from './api-url.js';
 
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
@@ -275,14 +276,6 @@ export class AnthropicLLM implements LLMClient {
     // 理论上不会到这里，但 TypeScript 需要返回值
     throw new Error('Anthropic API call failed after all retries');
   }
-}
-
-function resolveAnthropicMessagesUrl(baseUrl: string): string {
-  const normalized = baseUrl.replace(/\/+$/, '');
-  if (/\/v\d+$/i.test(normalized)) {
-    return `${normalized}/messages`;
-  }
-  return `${normalized}/v1/messages`;
 }
 
 function isCompatErrorPayload(payload: AnthropicCompatErrorPayload): boolean {

@@ -22,6 +22,7 @@ import {
   BG_MIN_INTERVAL_MS,
   BG_MIN_QUIET_MS,
   BG_RING_BUFFER_MAX_BYTES,
+  buildBashInvocation,
   runForegroundWithBudget,
   type BgRegisterOptions,
 } from '../src/bg-core.js';
@@ -131,6 +132,27 @@ describe('双节奏引擎', () => {
     await vi.advanceTimersByTimeAsync(1); // t=120_000
     await flushAggregation();
     expect(h.deliveries.length).toBe(2);
+  });
+
+  it('通知增量不重复：第二条节拍只报第一条之后的新输出', async () => {
+    const h = makeHarness();
+    const { child } = h.spawn({ intervalMs: 60_000, quietAfterMs: 120_000 });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    child.stdout.emit('data', 'first\n');
+    await vi.advanceTimersByTimeAsync(40_000); // t=60_000：第一条节拍
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('first');
+
+    await vi.advanceTimersByTimeAsync(20_000); // t=80_000：新输出
+    child.stdout.emit('data', 'second\n');
+    await vi.advanceTimersByTimeAsync(40_000); // t=120_000：第二条节拍
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(2);
+    // 旧 bug：notifyOffset 不推进，第二条把 first 重复报一遍
+    expect(h.deliveries[1].text).toContain('second');
+    expect(h.deliveries[1].text).not.toContain('first');
   });
 
   it('输出只重置静默计时，不动 interval 墙钟', async () => {
@@ -526,6 +548,21 @@ describe('工具集成（真实子进程）', () => {
 
 afterEach(() => {
   // 真实子进程用例后兜底清理（防止孤儿进程影响后续用例）。
+});
+
+describe('命令构造', () => {
+  it('后台命令永不加 stdin 防挂起重定向（bg_control 需要可写的 stdin）', () => {
+    // 旧行为：shouldAddStdinRedirect 对无重定向命令恒 true，等待输入的
+    // 命令（cat / read / node stdin）全部立即 EOF 退出，stdin 写入失效。
+    const inv = buildBashInvocation('cat', {
+      resourceRoot: 'D:/test',
+      bashPath: 'bash',
+    });
+    const cmdline = inv.args.join(' ');
+    // bashrc 加载的 2>/dev/null（stderr 抑制）合法存在；只禁 stdin 重定向形态。
+    expect(cmdline).not.toMatch(/<\s*\/dev\/null/);
+    expect(cmdline).toContain('cat');
+  });
 });
 
 process.on('exit', () => {

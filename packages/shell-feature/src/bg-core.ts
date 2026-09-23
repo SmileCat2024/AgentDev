@@ -19,7 +19,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import {
   quoteShellCommand,
-  shouldAddStdinRedirect,
   rewriteWindowsNullRedirect,
 } from './shellQuoting.js';
 import {
@@ -112,6 +111,12 @@ interface BgTask {
   lastReportAt: number;
   /** bg_status 增量读取游标（绝对字节）。 */
   readOffset: number;
+  /**
+   * 通知增量游标（绝对字节）：节拍/静默/就绪注入自上次通知以来的新输出。
+   * 与 readOffset 独立——通知推进自己的游标，不碰 bg_status 的读取语义；
+   * 反之 bg_status 的主动查看也不影响后续通知的增量起算。
+   */
+  notifyOffset: number;
   pace: BgTaskPace;
   inheritedPace: boolean;
   readyPattern: string | null;
@@ -151,8 +156,9 @@ export function buildBashInvocation(
   const resourceRoot = opts.resourceRoot.replace(/\\/g, '/');
   const bashrcPath = resourceRoot + '/.agentdev/bashrc';
   const normalizedCommand = rewriteWindowsNullRedirect(command);
-  const addStdinRedirect = shouldAddStdinRedirect(normalizedCommand);
-  const quotedCommand = quoteShellCommand(normalizedCommand, addStdinRedirect);
+  // 后台永不加 `< /dev/null` 防挂起重定向：stdin 留 pipe 供 bg_control 写入，
+  // 等待输入的命令挂起是产品语义（防挂起是前台概念，那里没有写入口）。
+  const quotedCommand = quoteShellCommand(normalizedCommand, false);
   const quotedBashrc = `'${bashrcPath.replace(/'/g, `'\\''`)}'`;
   const commandString = `source ${quotedBashrc} 2>/dev/null || true; eval ${quotedCommand}`;
   const isWin = process.platform === 'win32';
@@ -336,6 +342,7 @@ export class BgRegistry {
       lastOutputAt: now,
       lastReportAt: now,
       readOffset: 0,
+      notifyOffset: 0,
       pace: {
         // inherited（前台转后台）允许低于下限：20s 紧凑节奏是转后台时刻的
         // 真实紧迫度，且模型无法经此路径自定节奏（前台已无 timeout 字段）。
@@ -421,9 +428,12 @@ export class BgRegistry {
     if (task.status !== 'running') return; // exit 赢
     task.lastReportAt = this._now();
     const quietSec = Math.round((this._now() - task.lastOutputAt) / 1000);
-    // 通知只带尾部摘要，不推进 readOffset——增量游标属于 bg_status（模型上次
-    // 主动查看语义）。推进它会让超出摘要长度的中段输出对所有工具不可见。
-    const delta = this.readSince(task, task.readOffset).text;
+    // 通知增量 = 自上次通知以来的新输出（notifyOffset 独立游标，构造即推进——
+    // 投递失败进 unsent 由 bg_status 补发，不因补发丢量或重复）。不推 readOffset：
+    // bg_status 的主动查看语义不受通知影响。
+    const read = this.readSince(task, task.notifyOffset);
+    task.notifyOffset = read.nextOffset;
+    const delta = read.text;
     const tail = delta.length > BG_NOTIFY_TAIL_CHARS ? `…${delta.slice(-BG_NOTIFY_TAIL_CHARS)}` : delta;
     this._notify(task, [
       `[后台任务 ${task.id} 运行中] ${reason === 'quiet' ? `已 ${quietSec} 秒无新输出` : '周期汇报'} · 已运行 ${fmtDur(this._now() - task.startedAt)}`,
@@ -451,6 +461,8 @@ export class BgRegistry {
     if (this.tail(task, 10_000).includes(task.readyPattern)) {
       task.readyFired = true;
       task.lastReportAt = this._now();
+      // 就绪事件消耗掉此前的输出增量：下条节拍只报就绪之后的新输出。
+      task.notifyOffset = task.totalBytes;
       this._notify(task, [
         `[后台任务 ${task.id} 已就绪] 输出匹配就绪标志，任务继续在后台运行。`,
         `命令: ${task.command}`,

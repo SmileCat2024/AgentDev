@@ -8,6 +8,8 @@
  * - 双节奏（interval=活跃节奏，纯墙钟；quietAfter=静默节奏，输出重置计时）：
  *   任一触发即汇报并互重置计时；exit 为最高优先级事件，与 pending 定时器
  *   同时到达时 exit 赢（丢弃节拍汇报，不发鬼魂消息）。
+ * - reportNow（宿主面板手动触发器）：立即走与节拍/静默完全相同的汇报出口
+ *   （通知增量 + 双节奏互重置），只是把触发源从定时器换成用户点击。
  * - readyPattern：输出首次匹配即发一次性"已就绪"，此后任务按节奏继续汇报。
  * - 完整输出流式落盘：登记时在 workdir/.agentdev/temp/ 创建追加写日志
  *   （bg-output-*，命名与前台截断落盘同约定），ring buffer 退化为预览；
@@ -52,8 +54,12 @@ export const BG_AGGREGATION_WINDOW_MS = 250;
 export const BG_NOTIFY_TAIL_CHARS = 2_000;
 /** bg_status 单次返回的增量输出字符预算：超出按头 60% + 尾 40% 截断，中段只可从完整日志恢复。 */
 export const BG_STATUS_MAX_CHARS = 10_000;
-/** bg_wait 单次等待上限。 */
-export const BG_WAIT_MAX_MS = 30_000;
+/**
+ * bg_wait 单次等待上限（120s）：给愿意现场守一会儿的模型一个有界出口。
+ * 工具文案负责把大多数等待引导回"结束回合、等消息送达"——上限只兜住
+ * 眼看就要结束的收尾等待，不是给长任务准备的轮询预算。
+ */
+export const BG_WAIT_MAX_MS = 120_000;
 /** 前台命令固定预算（毫秒）；宿主可经 manifest 配置覆盖。 */
 export const FOREGROUND_BUDGET_DEFAULT_MS = 20_000;
 /** 投递 HTTP 超时。 */
@@ -518,8 +524,8 @@ export class BgRegistry {
     this._resetQuietTimer(task);
   }
 
-  /** 节拍/静默汇报共用出口：exit 赢检查 + 互重置。 */
-  private _firePace(task: BgTask, reason: 'interval' | 'quiet'): void {
+  /** 节拍/静默/手动汇报共用出口：exit 赢检查 + 互重置。 */
+  private _firePace(task: BgTask, reason: 'interval' | 'quiet' | 'manual'): void {
     if (task.status !== 'running') return; // exit 赢
     task.lastReportAt = this._now();
     const quietSec = Math.round((this._now() - task.lastOutputAt) / 1000);
@@ -532,8 +538,11 @@ export class BgRegistry {
     const tail = delta.length > BG_NOTIFY_TAIL_CHARS ? `…${delta.slice(-BG_NOTIFY_TAIL_CHARS)}` : delta;
     // 有代理看不见的内容（增量截断或缓冲丢弃）时才附日志指引，避免常态噪声。
     const hint = delta.length > BG_NOTIFY_TAIL_CHARS || read.clamped ? this.logHint(task) : '';
+    const reasonText = reason === 'quiet'
+      ? `已 ${quietSec} 秒无新输出`
+      : reason === 'manual' ? '用户手动触发' : '周期汇报';
     this._notify(task, [
-      `[后台任务 ${task.id} 运行中] ${reason === 'quiet' ? `已 ${quietSec} 秒无新输出` : '周期汇报'} · 已运行 ${fmtDur(this._now() - task.startedAt)}`,
+      `[后台任务 ${task.id} 运行中] ${reasonText} · 已运行 ${fmtDur(this._now() - task.startedAt)}`,
       tail ? `新增输出:\n${tail}` : '（无新增输出）',
       ...(hint ? [hint] : []),
       '无需操作；需要干预时用 bg_status / bg_control。',
@@ -617,6 +626,18 @@ export class BgRegistry {
   }
 
   // -- 控制 -----------------------------------------------------------------
+
+  /**
+   * 立即汇报（宿主面板手动触发器）：与节拍/静默同一出口——推进通知增量
+   * 游标、立即投递通知并互重置双节奏计时。终态或不存在的任务返回 false
+   * （与引擎 exit 赢语义一致）。
+   */
+  reportNow(taskId: string): boolean {
+    const task = this._tasks.get(taskId);
+    if (!task || task.status !== 'running') return false;
+    this._firePace(task, 'manual');
+    return true;
+  }
 
   /**
    * 终止任务。graceful（工具面）：POSIX 先 SIGTERM 进程组，2s 未退出再 SIGKILL

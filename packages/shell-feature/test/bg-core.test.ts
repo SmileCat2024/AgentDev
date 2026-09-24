@@ -197,6 +197,39 @@ describe('双节奏引擎', () => {
     const readyCount = h.deliveries.filter((d) => d.text.includes('已就绪')).length;
     expect(readyCount).toBe(1);
   });
+
+  it('reportNow：手动触发同款汇报（增量 + 双节奏互重置）', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 30_000 });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    child.stdout.emit('data', 'manual-delta\n');
+    expect(h.registry.reportNow(id)).toBe(true);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain(`${id} 运行中`);
+    expect(h.deliveries[0].text).toContain('用户手动触发');
+    expect(h.deliveries[0].text).toContain('manual-delta');
+
+    // 双节奏互重置：t=10s 手动触发后，原 t=40s 的 quiet（锚点 t=10s 输出 +30s）
+    // 保持不变，但 interval 墙钟从 t=10s 重新起算——t=40s 只触发 quiet 一条。
+    await vi.advanceTimersByTimeAsync(29_749); // t=40s（扣除聚合窗口已走的 251ms）
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(2);
+    expect(h.deliveries[1].text).toContain('无新输出');
+  });
+
+  it('reportNow：不存在的任务与终态任务返回 false 且不投递', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn();
+    expect(h.registry.reportNow('bg-404')).toBe(false);
+    child.emit('close', 0);
+    expect(h.registry.reportNow(id)).toBe(false);
+    await flushAggregation();
+    const texts = h.deliveries.map((d) => d.text).join('\n');
+    expect(texts).toContain('已完成'); // 终态通知照常，无手动汇报混入
+    expect(texts).not.toContain('手动触发');
+  });
 });
 
 describe('事件优先级：exit 赢', () => {

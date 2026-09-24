@@ -6,7 +6,7 @@
  * 不能依赖文件存在）：
  * - bash_bg 启动观察 2s：窗口内退出直接带回结果（预判错了，白捡前台体验）；
  * - 节奏参数单位为秒，模型侧声明 clamp（interval ≥ 60s / quietAfter ≥ 30s）；
- * - bg_wait 单次 ≤ 30s，超时不是失败（返回"仍在运行"）；长等靠完成注入；
+ * - bg_wait 单次 ≤ 120s，超时不是失败（返回"仍在运行"）；长等靠完成注入；
  * - bg_control 的 tune 统一 clamp（转后台任务的 20s 继承节奏因此只能调宽）。
  */
 
@@ -52,7 +52,10 @@ const BG_LIST_INLINE_DESCRIPTION = '列出全部后台任务的全景：任务�
 
 const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出（超长增量只显示首尾，完整内容按提示的日志路径用 read 工具读取）。如果有因投递失败滞留的通知，会在这里补发。';
 
-const BG_WAIT_INLINE_DESCRIPTION = '现场等待一个后台任务，至多 maxWaitSec（上限 30）秒：完成立刻拿到结果；到时间还没完，返回"仍在运行 + 新增输出"，这不是失败。它只适合"我觉得它马上就好"的短等待——更长的等待靠汇报消息，不要反复调用本工具轮询。';
+// 文案约束：工具描述只写机制（调用后发生什么），禁止任何"用它能得到什么"的收益表述——
+// 收益句会被模型当成调用理由，把不需要等待的模型也诱导来等；"不等也有结果"的出口
+// 信息只出现在超时返回文案里（模型已等待、正决定是否继续等的决策点，那里它是止损）。
+const BG_WAIT_INLINE_DESCRIPTION = '现场等待一个后台任务，至多 maxWaitSec（默认 30，上限 120）秒：窗口内完成立刻拿到结果；到时仍在运行则返回当前状态与新增输出，这不是失败。';
 
 const BG_CONTROL_INLINE_DESCRIPTION = '控制一个后台任务：kill 停掉（进程树终止；任务已结束时返回当前终态和尾部输出）；stdin 向任务写入输入（如回答安装程序的 y/n 确认）；intervalSec / quietAfterSec 修改汇报节奏，立刻生效（最小 60 / 30）。';
 
@@ -233,7 +236,7 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
       type: 'object',
       properties: {
         taskId: { type: 'string', description: '任务号，如 bg-1' },
-        maxWaitSec: { type: 'number', description: '至多等待秒数，上限 30' },
+        maxWaitSec: { type: 'number', description: '至多等待秒数，默认 30，上限 120' },
       },
       required: ['taskId'],
     },
@@ -241,13 +244,13 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
     timeout: { defaultMs: BG_WAIT_MAX_MS + 5_000, maxMs: BG_WAIT_MAX_MS + 5_000 },
     execute: async (args) => {
       const { taskId, maxWaitSec } = args as { taskId: string; maxWaitSec?: number };
-      const waitMs = Math.round((maxWaitSec ?? 10) * 1000);
+      const waitMs = Math.round((maxWaitSec ?? 30) * 1000);
       const task = await registry.wait(taskId, waitMs);
       if (!task) {
         const s = registry.snapshot(registry.get(taskId)!);
         return [
           `${taskId} 仍在运行（已运行 ${fmtDur(s.durationMs)}，安静 ${Math.round(s.quietMs / 1000)}s）。`,
-          '本次等待已到时（不是失败）。不建议继续反复等待——汇报消息会自动送达；确需干预用 bg_control。',
+          '本次等待已到时（不是失败）。可以继续做别的或直接结束回合——任务完成时结果会自动送达并唤醒你；确需干预用 bg_control。',
         ].join('\n');
       }
       const s = registry.snapshot(task);

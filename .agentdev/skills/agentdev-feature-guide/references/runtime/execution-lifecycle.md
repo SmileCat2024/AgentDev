@@ -201,7 +201,7 @@ class AuditedQueueFeature extends QueueFeature {
 如果父类已声明一个 StepFinish 钩子方法，覆盖相同方法名并调用 `super`（`static hooks` 声明从父类继承，无需重写）：
 
 ```ts
-import { Decision, type StepFinishDecisionContext } from 'agentdev';
+import { Decision, type StepFinishDecisionContext } from '@agentdevjs/core';
 
 class StopAwareTodoFeature extends TodoFeature {
   override async recordToolUsage(ctx: StepFinishDecisionContext) {

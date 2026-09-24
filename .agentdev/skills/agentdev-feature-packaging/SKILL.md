@@ -67,14 +67,14 @@ tar tzvf agentdev-<name>-feature-<version>.tgz | grep media
 | 位置 | 角色 | 消费方式 |
 |---|---|---|
 | `packages/<name>-feature/` | 独立 npm 包源码 | `npm pack` → tgz → Claw 以 `@agentdevjs/<name>-feature` 安装 |
-| `src/features/<name>/` | 框架内部副本 | 被 tsup bundle 进框架 dist，随 `agentdev` npm 包发布 |
+| `src/features/<name>/` | 框架内部副本 | 被 tsup bundle 进 `@agentdevjs/core` dist 随其发布 |
 
 当前已知双路径 feature：`shell`、`audit`、`audio-feedback`、`memory`、`qqbot`、`tts`、`visual`、`websearch`、`plugin-compat`。
 
 修改双路径 feature 时的完整动作：
 
 1. 改 `packages/<name>-feature/src/`；
-2. 同步改 `src/features/<name>/`（import 路径不同：包内从 `'agentdev'` 导入，框架副本从 `'../../core/*.js'` 相对导入，注意适配）；
+2. 同步改 `src/features/<name>/`（import 路径不同：包内从 `'@agentdevjs/core'` 导入，框架副本从 `'../../core/*.js'` 相对导入，注意适配）；
 3. `cd packages/<name>-feature && npm run build && npm pack`；
 4. `cd <AgentDev 仓库根> && npm run build`（重建框架 dist）；
 5. 按下节同步 tgz 到 Claw。

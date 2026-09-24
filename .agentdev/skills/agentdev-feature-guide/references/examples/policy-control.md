@@ -10,7 +10,7 @@ import {
   type DecisionResult,
   type FeatureInitContext,
   type ToolContext,
-} from 'agentdev';
+} from '@agentdevjs/core';
 
 interface PermissionService {
   canWrite(resourceId: string, signal?: AbortSignal): Promise<boolean>;
@@ -74,7 +74,7 @@ export class WritePolicyFeature implements AgentFeature {
 ## 控制流工具
 
 ```ts
-import { createTool, type AgentFeature, type Tool } from 'agentdev';
+import { createTool, type AgentFeature, type Tool } from '@agentdevjs/core';
 
 export class CheckpointRequestFeature implements AgentFeature {
   readonly name = 'checkpoint-request';

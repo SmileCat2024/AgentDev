@@ -7,7 +7,7 @@ import {
   type FeatureContext,
   type FeatureInitContext,
   type Tool,
-} from 'agentdev';
+} from '@agentdevjs/core';
 
 interface RemoteAction {
   id: string;

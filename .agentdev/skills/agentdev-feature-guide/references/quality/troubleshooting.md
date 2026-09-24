@@ -229,7 +229,6 @@ manifest 只声明配置形状，不会自动写入 Feature 字段。
 8. 调试宿主是否读取了正确项目根。
 9. 是否重建并重启持有模板缓存的进程。
 
-内联模板应直接放在 `Tool.render`；只实现 `getRenderTemplates()` 不会自动改变默认包模板交付链。
 
 ## Feature Skills 没有发现
 

@@ -50,7 +50,7 @@ my-feature/
 
 ```ts
 import { fileURLToPath } from 'url';
-import type { AgentFeature } from 'agentdev';
+import type { AgentFeature } from '@agentdevjs/core';
 
 export class ItemFeature implements AgentFeature {
   readonly name = 'item';

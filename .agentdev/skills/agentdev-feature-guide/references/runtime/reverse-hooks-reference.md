@@ -28,14 +28,14 @@ Feature 参与运行循环的唯一方式是**静态钩子声明**（`static hoo
 在 Feature 类上声明静态属性 `hooks`，键是**本类中的方法名**，值是生命周期 + 三原语声明：
 
 ```ts
-import { CoreLifecycle, Decision } from 'agentdev';
-import type { HookDeclarations } from 'agentdev';
+import { CoreLifecycle, Decision } from '@agentdevjs/core';
+import type { HookDeclarations } from '@agentdevjs/core';
 import type {
   CallStartContext,
   CallFinishContext,
   ToolContext,
   ToolResultTransformContext,
-} from 'agentdev';
+} from '@agentdevjs/core';
 
 export class MyFeature implements AgentFeature {
   static hooks: HookDeclarations = {
@@ -124,7 +124,7 @@ guard 钩子可声明 `role`：
 从 `agentdev` 包根导入（框架内副本从对应相对路径导入）：
 
 ```ts
-import { CoreLifecycle, Decision, normalizeDecision } from 'agentdev';
+import { CoreLifecycle, Decision, normalizeDecision } from '@agentdevjs/core';
 import type {
   HookDeclarations,
   CallStartContext,
@@ -134,7 +134,7 @@ import type {
   ToolContext,
   ToolFinishedDecisionContext,
   ToolResultTransformContext,
-} from 'agentdev';
+} from '@agentdevjs/core';
 ```
 
 当前 Studio 支持的 AgentDev 版本会从包根导出上下文类型、`CoreLifecycle`、`Decision` 与 `HookDeclarations`。如果某个导入名报“不存在”，不要直接改成 `as any`：先确认 Feature 项目实际安装的 `agentdev` 版本与 `.d.ts`，再对照 [类型与运行时不同步的排障步骤](../quality/troubleshooting.md#运行时存在但-typescript-导入失败)。

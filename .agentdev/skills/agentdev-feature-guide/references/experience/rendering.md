@@ -6,8 +6,7 @@
 - [模板名称引用](#模板名称引用)
 - [Feature 模板文件](#feature-模板文件)
 - [包信息与模板名称](#包信息与模板名称)
-- [内联模板](#内联模板)
-- [选择模板方式](#选择模板方式)
+- [声明规则](#声明规则)
 - [安全与可读性](#安全与可读性)
 - [构建产物](#构建产物)
 - [排查顺序](#排查顺序)
@@ -46,22 +45,25 @@ render: 'record-update'
 
 ## 模板名称引用
 
-适合可复用 Feature 和独立调试宿主。完整链路：
+模板渲染发生在浏览器端（Claw 前端与 DebugHub 查看器两条管线）。完整链路：
 
 ```text
 Tool.render 使用模板名
 → Feature.getTemplateNames() 声明模板名
 → Feature.getPackageInfo() 提供包根
-→ 构建生成 *.render.js
-→ Viewer 按模板 URL 加载
+→ 构建生成 dist/templates/*.render.js
+→ ViewerWorker 注册装载条目（磁盘校验，缺失条目被剔除并告警）
+→ 浏览器按 FEATURE_TEMPLATE_MAP 解析模板名并加载
 ```
 
 工具和 Feature 必须使用完全相同的模板名。
 
+硬边界：`Tool.render` 的模板配置经 inspector 序列化跨进程到达浏览器，只有模板名字符串能存活。不存在内联模板对象通道，框架也不读取 `getRenderTemplates()`。声明了模板名就必须走上面的文件模板链路；名字没有任何注册来源时，浏览器控制台会持续告警 `Template "..." not found in FEATURE_TEMPLATE_MAP`，并按 JSON 兜底渲染。
+
 ## Feature 模板文件
 
 ```ts
-import type { InlineRenderTemplate } from 'agentdev';
+import type { InlineRenderTemplate } from '@agentdevjs/core';
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -101,7 +103,7 @@ import { fileURLToPath } from 'url';
 import {
   getPackageInfoFromSource,
   type PackageInfo,
-} from 'agentdev';
+} from '@agentdevjs/core';
 
 const source = fileURLToPath(import.meta.url).replace(/\\/g, '/');
 
@@ -122,61 +124,15 @@ class RecordFeature {
 }
 ```
 
-Viewer 根据包类型生成 URL：
-
-```text
-独立 @agentdevjs 包:
-/template/@agentdevjs/record-feature/record-update.render.js
-
-@agentdevjs/core 内置 Feature:
-/template/@agentdevjs/core/record/record-update.render.js
-```
+模板 URL 由 ViewerWorker 从注册事实生成（`/tpl/{mountId}/{rel}`，mountId 由装载根目录哈希而来），对前端不透明：前端不做任何本地路径推断，只查 FEATURE_TEMPLATE_MAP。
 
 `getTemplateNames()` 返回不带 `.render.js` 的名称。
 
-## 内联模板
+## 声明规则
 
-内联模板直接放进 `Tool.render`，适合少量、无需文件交付的模板。
-
-```ts
-import type { InlineRenderTemplate } from 'agentdev';
-
-const inlineTemplate = {
-  call: (args: Record<string, unknown>) =>
-    `<div>${escapeHtml(args.id)}</div>`,
-  result: (data: Record<string, unknown>, success?: boolean) =>
-    `<div class="${success ? 'tool-result' : 'tool-error'}">${escapeHtml(data.message)}</div>`,
-} satisfies InlineRenderTemplate;
-
-createTool({
-  name: 'record_ping',
-  description: '检查记录服务是否可用。',
-  render: {
-    call: inlineTemplate,
-    result: inlineTemplate,
-  },
-  execute: async () => ({ message: 'ok' }),
-});
-```
-
-`getRenderTemplates()` 可以把模板对象按名称暴露给会主动读取该方法的宿主。默认包模板交付仍使用 `getPackageInfo()` + `getTemplateNames()`；默认工具内联展示直接使用 `Tool.render`。
-
-## 选择模板方式
-
-使用包模板，当：
-
-- Feature 会作为 npm 包复用；
-- 调试宿主和 Agent 可能在不同进程；
-- 模板较多，需要独立文件维护；
-- 希望构建产物可检查。
-
-使用内联模板，当：
-
-- 模板非常小；
-- Feature 只在同进程查看器中使用；
-- 不需要独立模板资源交付。
-
-不使用自定义模板，当 JSON 已足够清楚。不要为了形式统一给每个工具写一层无信息增益的 HTML。
+- 不需要自定义渲染就不要声明 `render`：浏览器默认按 JSON 渲染，零维护成本。不要为了形式统一给每个工具写一层无信息增益的 HTML。
+- 自定义渲染只有一条交付路径：模板文件（`src/templates/*.render.ts` → `dist/templates/*.render.js`）+ `getTemplateNames()` + `getPackageInfo()`。缺少任何一环，模板名在浏览器端都无法解析。
+- 模板较多时按工具语义拆分文件；一个模板名对应一个 `.render.ts` 文件。
 
 ## 安全与可读性
 
@@ -215,9 +171,13 @@ dist/
     └── record-update.render.js
 ```
 
+框架对两种装载布局做探测：独立包用 `dist/templates/`；`@agentdevjs/core` 内置 Feature 用 `dist/features/<featureName>/templates/`（随框架 monorepo 构建产出）。
+
 模板引用、构建入口、发布文件列表和资源复制的完整规则使用 `agentdev-feature-packaging` 技能。
 
 ## 排查顺序
+
+浏览器控制台出现 `Template "..." not found in FEATURE_TEMPLATE_MAP` 告警时，说明某工具声明的模板名没有注册来源，按序检查：
 
 1. 检查工具 `render.call` / `render.result`。
 2. 检查模板名是否完全一致。

@@ -38,7 +38,6 @@ interface AgentFeature {
 
   getPackageInfo?(): PackageInfo | null;
   getTemplateNames?(): string[];
-  getRenderTemplates?(): Record<string, InlineRenderTemplate>;
 
   getFeatureManifest?(): FeatureManifestDefinition | null;
   getContextInjectors?(): Map<string | RegExp, ContextInjector>;

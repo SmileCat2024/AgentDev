@@ -48,7 +48,7 @@ description: AgentDev Feature 的完整设计、实现、扩展、测试、审�
 5. 设计 Agent 可理解的工具名、描述、参数和错误结果。
 6. 按执行语义标记工具：普通、独占或可并发。
 7. 需要人类配置时声明 manifest，并在 `onInitiate(ctx)` 中解析 `ctx.featureConfig`。
-8. 需要展示时选择内联模板或包模板。
+8. 需要展示时声明包模板（模板文件 + `getTemplateNames()` + `getPackageInfo()`，见渲染指南）。
 9. 需要配套知识时在 Feature 中提供 `skills/`。
 10. 用项目采用的测试框架验证工具、hooks、配置和状态恢复。
 
@@ -87,8 +87,8 @@ description: AgentDev Feature 的完整设计、实现、扩展、测试、审�
 ## 最小实现
 
 ```ts
-import type { AgentFeature, FeatureInitContext, Tool } from 'agentdev';
-import { createTool } from 'agentdev';
+import type { AgentFeature, FeatureInitContext, Tool } from '@agentdevjs/core';
+import { createTool } from '@agentdevjs/core';
 
 export class NotesFeature implements AgentFeature {
   readonly name = 'notes';

@@ -35,7 +35,7 @@ import {
   type HookDeclarations,
   type DecisionResult,
   type ToolContext,
-} from 'agentdev';
+} from '@agentdevjs/core';
 
 static hooks: HookDeclarations = {
   decideTool: {

@@ -3,7 +3,7 @@
 ## 无状态转换 Feature
 
 ```ts
-import { createTool, type AgentFeature, type Tool } from 'agentdev';
+import { createTool, type AgentFeature, type Tool } from '@agentdevjs/core';
 
 function normalizeText(value: unknown): string {
   if (typeof value !== 'string') throw new Error('text 必须是字符串');
@@ -53,7 +53,7 @@ import {
   type AgentFeature,
   type FeatureStateSnapshot,
   type Tool,
-} from 'agentdev';
+} from '@agentdevjs/core';
 
 interface QueueItem {
   id: string;

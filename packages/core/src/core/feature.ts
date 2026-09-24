@@ -7,7 +7,6 @@
 
 import type { Tool } from './types.js';
 import type { ToolCall } from './types.js';
-import type { InlineRenderTemplate } from './types.js';
 import type { LLMClient } from './types.js';
 import type { AgentConfig } from './types.js';
 import type { Logger } from './logging.js';
@@ -225,26 +224,6 @@ export interface AgentFeature {
    * ```
    */
   getTemplateNames?(): string[];
-
-  /**
-   * 声明渲染模板（推荐方式）
-   * 直接返回模板对象，无需文件路径
-   *
-   * @example
-   * ```typescript
-   * getRenderTemplates(): Record<string, InlineRenderTemplate> {
-   *   return {
-   *     'bash': {
-   *       call: (args) => `<div class="bash-command">> ${escapeHtml(args.command)}</div>`,
-   *       result: (data, success) => success
-   *         ? `<pre class="bash-output">${escapeHtml(data)}</pre>`
-   *         : `<div class="tool-error">${escapeHtml(data)}</div>`
-   *     }
-   *   };
-   * }
-   * ```
-   */
-  getRenderTemplates?(): Record<string, InlineRenderTemplate>;
 
   /**
    * 声明 Feature 的项目级静态配置契约（Manifest）

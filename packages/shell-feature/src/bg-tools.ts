@@ -162,7 +162,6 @@ export function createBgListTool(registry: BgRegistry): Tool {
     name: 'bg_list',
     description: BG_LIST_INLINE_DESCRIPTION,
     parameters: { type: 'object', properties: {} },
-    render: { call: 'default', result: 'text' },
     execute: async () => {
       const list = registry.list();
       if (list.length === 0) return '当前没有后台任务。';
@@ -190,7 +189,6 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
       properties: { taskId: { type: 'string', description: '任务号，如 bg-1' } },
       required: ['taskId'],
     },
-    render: { call: 'default', result: 'text' },
     execute: async (args) => {
       const { taskId } = args as { taskId: string };
       const task = registry.get(taskId);
@@ -240,7 +238,6 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
       },
       required: ['taskId'],
     },
-    render: { call: 'default', result: 'text' },
     timeout: { defaultMs: BG_WAIT_MAX_MS + 5_000, maxMs: BG_WAIT_MAX_MS + 5_000 },
     execute: async (args) => {
       const { taskId, maxWaitSec } = args as { taskId: string; maxWaitSec?: number };
@@ -274,7 +271,6 @@ export function createBgControlTool(registry: BgRegistry): Tool {
       },
       required: ['taskId'],
     },
-    render: { call: 'default', result: 'text' },
     execute: async (args) => {
       const { taskId, kill, stdin, intervalSec, quietAfterSec } = args as {
         taskId: string; kill?: boolean; stdin?: string; intervalSec?: number; quietAfterSec?: number;

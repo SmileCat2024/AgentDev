@@ -53,7 +53,7 @@ export class MCPToolAdapter implements Tool {
     this.parameters = this.extractParameters(registeredTool);
     this.render = {
       call: config.render?.call || 'mcp-tool',
-      result: config.render?.result || 'mcp-result',
+      result: config.render?.result || 'mcp-tool',
     };
   }
 

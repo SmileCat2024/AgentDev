@@ -208,7 +208,7 @@ describe('双节奏引擎', () => {
     await flushAggregation();
     expect(h.deliveries.length).toBe(1);
     expect(h.deliveries[0].text).toContain(`${id} 运行中`);
-    expect(h.deliveries[0].text).toContain('用户手动触发');
+    expect(h.deliveries[0].text).toContain('用户请求推送当前状态');
     expect(h.deliveries[0].text).toContain('manual-delta');
 
     // 双节奏互重置：t=10s 手动触发后，原 t=40s 的 quiet（锚点 t=10s 输出 +30s）
@@ -228,7 +228,7 @@ describe('双节奏引擎', () => {
     await flushAggregation();
     const texts = h.deliveries.map((d) => d.text).join('\n');
     expect(texts).toContain('已完成'); // 终态通知照常，无手动汇报混入
-    expect(texts).not.toContain('手动触发');
+    expect(texts).not.toContain('用户请求推送当前状态');
   });
 });
 
@@ -258,6 +258,20 @@ describe('事件优先级：exit 赢', () => {
     // killed 只来自主动 kill 指令：发起方已从工具结果收到回执，
     // 再投递"[已终止]"是纯冗余；close 事件被 killed 终态挡住也不重复通报
     expect(h.deliveries.length).toBe(0);
+  });
+
+  it('kill manual（面板用户打断）补发打断通知：发起方是用户，模型需要知情', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({});
+    child.stdout.emit('data', 'partial output\n');
+    await flushAggregation();
+    h.deliveries.length = 0; // 排除先前的增量通知，只断言打断通知
+    expect(h.registry.kill(id, { manual: true })).toBe(true);
+    child.emit('close', 1); // close 被 killed 终态挡住：不产生第二条
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain(`${id} 已被用户手动打断`);
+    expect(h.deliveries[0].text).toContain('partial output');
   });
 });
 

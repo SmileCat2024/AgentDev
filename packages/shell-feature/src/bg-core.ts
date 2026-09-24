@@ -268,7 +268,7 @@ export class BgRegistry {
   private readonly _viewerUrl: string;
   private readonly _deliverImpl: (text: string, sourceRef: string) => Promise<void>;
   private readonly _now: () => number;
-  private readonly _observer: BgObserver | null;
+  private readonly _observers: BgObserver[] = [];
   private readonly _exitGuard: (() => void) | null;
   private _pendingNotify: Array<{ taskId: string; text: string }> = [];
   private _flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -279,7 +279,7 @@ export class BgRegistry {
     this._viewerUrl = opts.viewerUrl ?? `http://127.0.0.1:${port}`;
     this._deliverImpl = opts.deliverImpl ?? ((text, sourceRef) => this._httpDeliver(text, sourceRef));
     this._now = opts.now ?? Date.now;
-    this._observer = typeof opts.observer === 'function' ? opts.observer : null;
+    if (typeof opts.observer === 'function') this._observers.push(opts.observer);
     this._exitGuard = opts.enableExitGuard === false
       ? null
       : () => this.killAll();
@@ -288,13 +288,23 @@ export class BgRegistry {
     }
   }
 
+  /**
+   * 追加观察者（进程级共享登记表场景）：同进程多会话 agent 实例复用同一
+   * registry，各实例把自己的 observer 接进来，任务事件即可镜像到每个
+   * 会话的通道。同一函数引用不重复挂。
+   */
+  addObserver(fn: BgObserver): void {
+    if (!this._observers.includes(fn)) this._observers.push(fn);
+  }
+
   // -- 查询 ---------------------------------------------------------------
 
   private _emit(kind: BgObserverEvent['kind'], task: BgTask): void {
-    if (!this._observer) return;
-    try {
-      this._observer({ kind, task });
-    } catch { /* 宿主镜像失败不影响引擎 */ }
+    for (const observer of this._observers) {
+      try {
+        observer({ kind, task });
+      } catch { /* 宿主镜像失败不影响引擎 */ }
+    }
   }
 
   get(taskId: string): BgTask | undefined {
@@ -498,7 +508,7 @@ export class BgRegistry {
     }
     // 输出观察（节流）：宿主镜像面拿到 ~1s 粒度的输出到达事实；终态由
     // 'finalized' 无节流兜底，最后一段输出不会因节流丢失。
-    if (this._observer && this._now() - task.lastOutputObservedAt >= BG_OBSERVER_OUTPUT_MIN_GAP_MS) {
+    if (this._observers.length > 0 && this._now() - task.lastOutputObservedAt >= BG_OBSERVER_OUTPUT_MIN_GAP_MS) {
       task.lastOutputObservedAt = this._now();
       this._emit('output', task);
     }
@@ -540,12 +550,12 @@ export class BgRegistry {
     const hint = delta.length > BG_NOTIFY_TAIL_CHARS || read.clamped ? this.logHint(task) : '';
     const reasonText = reason === 'quiet'
       ? `已 ${quietSec} 秒无新输出`
-      : reason === 'manual' ? '用户手动触发' : '周期汇报';
+      : reason === 'manual' ? '用户请求推送当前状态' : '周期汇报';
     this._notify(task, [
       `[后台任务 ${task.id} 运行中] ${reasonText} · 已运行 ${fmtDur(this._now() - task.startedAt)}`,
       tail ? `新增输出:\n${tail}` : '（无新增输出）',
       ...(hint ? [hint] : []),
-      '无需操作；需要干预时用 bg_status / bg_control。',
+      '查看详情用 bg_status；调整汇报间隔、写入 stdin 或停止任务用 bg_control。',
     ].join('\n'));
     this._armTimers(task); // 任一触发即互重置
     this._emit('report', task);
@@ -598,9 +608,10 @@ export class BgRegistry {
       try { task.logStream.end(); } catch { /* 尽力而为（进程退出兜底路径） */ }
       task.logStream = null;
     }
-    // killed 只来自主动 kill 指令（exit 事件一律走 done）：发起方已从
-    // 工具结果收到终止回执，再通报是纯冗余。done / 失败是任务自身的
-    // 结果，通知保留（退出码 + 尾部输出 + 完整日志入口有信息量）。
+    // killed 只来自主动 kill 指令（exit 事件一律走 done）：工具路径的发起方
+    // （模型）已从工具结果收到终止回执，再通报是纯冗余。done / 失败是任务
+    // 自身的结果，通知保留（退出码 + 尾部输出 + 完整日志入口有信息量）。
+    // 用户手动打断（面板路径 kill manual）另在 kill() 内补发通知。
     if (status !== 'killed') {
       const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
       const label = exitCode === 0 ? '已完成' : '已失败';
@@ -644,12 +655,26 @@ export class BgRegistry {
    * ——dev server 等长任务能优雅退出；Windows taskkill 无 TERM 等价物，保持 /F。
    * 内部清理路径（killAll / dispose / exit guard）不 graceful：进程即将同步退出，
    * 没有机会补刀。
+   *
+   * manual（宿主面板路径）：发起方是用户而非模型，模型不知道任务被打断——
+   * 终止后补发一条"用户手动打断"通知（命令 / 时长 / 尾部输出 / 日志入口，
+   * 结构同 done 通知），让模型不会继续等待一个已死的任务。
    */
-  kill(taskId: string, opts: { graceful?: boolean } = {}): boolean {
+  kill(taskId: string, opts: { graceful?: boolean; manual?: boolean } = {}): boolean {
     const task = this._tasks.get(taskId);
     if (!task || task.status !== 'running') return false;
     const child = task.child;
     this._finalize(task, 'killed', null); // 先置终态：close 事件不再重复 finalize
+    if (opts.manual) {
+      const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
+      this._notify(task, [
+        `[后台任务 ${task.id} 已被用户手动打断]`,
+        `命令: ${task.command}`,
+        `运行时长 ${fmtDur(task.endedAt! - task.startedAt)}`,
+        this.logHint(task),
+        ...(tail ? [`尾部输出:\n${tail}`] : []),
+      ].join('\n'));
+    }
     if (child) {
       try {
         if (opts.graceful && process.platform !== 'win32' && typeof child.pid === 'number') {

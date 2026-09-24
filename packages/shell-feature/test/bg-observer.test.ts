@@ -242,4 +242,51 @@ describe('ShellFeature 集成面', () => {
     });
     expect(events.map((e) => e.kind)).toEqual(['registered']);
   });
+
+  it('进程级共享：同 agentId+workdir 的后建实例复用同一 registry，observer 各自接线', async () => {
+    const eventsA: BgObserverEvent[] = [];
+    const eventsB: BgObserverEvent[] = [];
+    const bashPath = findGitBashPath(undefined);
+    const makeCtx = (feature: ShellFeature, agentId: string) =>
+      ({
+        agentId,
+        config: {},
+        logger: console,
+        featureConfig: bashPath ? { bashPath } : {},
+        getFeature: () => undefined,
+        registerTool: () => {},
+        dataSourceRegistry: {},
+      }) as Parameters<typeof feature.getAsyncTools>[0];
+
+    const featureA = new ShellFeature({ workspaceDir: workdir, bgObserver: (e) => eventsA.push(e) });
+    await featureA.getAsyncTools(makeCtx(featureA, 'agent-shared-reg'));
+    const registryA = featureA.getBgRegistry();
+    if (!registryA) {
+      // 本机无 Bash：跳过共享断言（与上方集成用例同一降级策略）。
+      return;
+    }
+
+    // 模拟同进程新会话实例：Agent 实例新建，任务表应复用而非另起空表。
+    const featureB = new ShellFeature({ workspaceDir: workdir, bgObserver: (e) => eventsB.push(e) });
+    expect(featureB.getBgRegistry()).toBeNull();
+    await featureB.getAsyncTools(makeCtx(featureB, 'agent-shared-reg'));
+    expect(featureB.getBgRegistry()).toBe(registryA);
+
+    const child = makeFakeChild();
+    registryA.register(child, {
+      command: 'cmd-shared',
+      workdir,
+      intervalMs: 60_000,
+      quietAfterMs: 30_000,
+    });
+    // 两个会话的 observer 都收到事件；存量任务对后建实例可见。
+    expect(eventsA.map((e) => e.kind)).toEqual(['registered']);
+    expect(eventsB.map((e) => e.kind)).toEqual(['registered']);
+    expect(featureB.getBgRegistry()!.list()).toHaveLength(1);
+
+    // 不同 workdir 不共享（测试隔离语义）。
+    const featureC = new ShellFeature({ workspaceDir: `${workdir}-c`, bgObserver: () => {} });
+    await featureC.getAsyncTools(makeCtx(featureC, 'agent-shared-reg'));
+    expect(featureC.getBgRegistry()).not.toBe(registryA);
+  });
 });

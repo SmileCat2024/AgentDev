@@ -37,18 +37,18 @@ export const BASH_BG_INLINE_DESCRIPTION = `在后台启动一条 bash 命令，�
 参数说明：
 - command：要执行的 bash 命令
 - intervalSec（可选，默认 90）：任务正常运行时，最坏每隔这么多秒收到一条进度消息。最小 60，填小按 60 算
-- quietAfterSec（可选，默认 60）：进程多少秒没有任何输出后，改按这个间隔报告"没动静"。最小 30，填小按 30 算
+- quietAfterSec（可选，默认 60）：进程多少秒没有任何输出后，开始收到"无新输出"提醒。最小 30，填小按 30 算
 - readyPattern（可选）：输出中出现这段文字时，立即收到一次“已就绪”通知，适合 dev server
 
 启动后观察 2 秒：窗口内结束的命令直接返回结果（失败时包含退出码）；仍在运行则返回任务号，后续进度与最终结果会自动送达。
 
-较长任务可按需放宽节奏，例如：
+较长任务可按需放宽汇报间隔，例如：
 - 构建 / 测试：intervalSec=300, quietAfterSec=30（有输出说明正常；突然安静大概率是卡了）
 - dev server：intervalSec=600, quietAfterSec=600（安静是健康状态，别打扰），配 readyPattern 如 "listening on"
 
 重要：不要轮询、不要 sleep 等待。完成与汇报会作为消息自动送达，你继续做别的事，或者直接结束回合即可——消息到达会自动唤醒你。需要主动查看时用 bg_status。`;
 
-const BG_LIST_INLINE_DESCRIPTION = '列出全部后台任务的全景：任务号、命令、状态、运行时长、安静时长、当前汇报节奏、下次汇报倒计时。收到任何后台任务消息后，可用它掌握全局。';
+const BG_LIST_INLINE_DESCRIPTION = '列出全部后台任务的全景：任务号、命令、状态、运行时长、安静时长、当前汇报间隔、下次汇报倒计时。收到任何后台任务消息后，可用它掌握全局。';
 
 const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出（超长增量只显示首尾，完整内容按提示的日志路径用 read 工具读取）。如果有因投递失败滞留的通知，会在这里补发。';
 
@@ -57,7 +57,7 @@ const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，
 // 信息只出现在超时返回文案里（模型已等待、正决定是否继续等的决策点，那里它是止损）。
 const BG_WAIT_INLINE_DESCRIPTION = '现场等待一个后台任务，至多 maxWaitSec（默认 30，上限 120）秒：窗口内完成立刻拿到结果；到时仍在运行则返回当前状态与新增输出，这不是失败。';
 
-const BG_CONTROL_INLINE_DESCRIPTION = '控制一个后台任务：kill 停掉（进程树终止；任务已结束时返回当前终态和尾部输出）；stdin 向任务写入输入（如回答安装程序的 y/n 确认）；intervalSec / quietAfterSec 修改汇报节奏，立刻生效（最小 60 / 30）。';
+const BG_CONTROL_INLINE_DESCRIPTION = '控制一个后台任务：kill 停掉（进程树终止；任务已结束时返回当前终态和尾部输出）；stdin 向任务写入输入（如回答安装程序的 y/n 确认）；intervalSec / quietAfterSec 修改汇报间隔与无输出提醒阈值，立刻生效（最小 60 / 30）。';
 
 // ---------------------------------------------------------------------------
 // bash_bg
@@ -72,8 +72,8 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
       type: 'object',
       properties: {
         command: { type: 'string', description: '要执行的 bash 命令' },
-        intervalSec: { type: 'number', description: '可选，默认 90 秒。活跃任务的最大汇报间隔，最小 60' },
-        quietAfterSec: { type: 'number', description: '可选，默认 60 秒。无输出持续多久后按此节奏报告，最小 30' },
+        intervalSec: { type: 'number', description: '可选，默认 90 秒。两次汇报之间的最大间隔，最小 60' },
+        quietAfterSec: { type: 'number', description: '可选，默认 60 秒。无输出持续此值后开始推送无新输出提醒，最小 30' },
         readyPattern: { type: 'string', description: '可选：输出匹配该文字时发一次性"已就绪"消息（dev server 类用）' },
       },
       required: ['command'],
@@ -145,9 +145,9 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
       return [
         `后台任务已启动：${task.id}（已运行 ${fmtDur(s.durationMs)}）`,
         `命令: ${command}`,
-        `节奏：每 ${Math.round(task.pace.intervalMs / 1000)}s 汇报一次；静默 ${Math.round(task.pace.quietAfterMs / 1000)}s 起按静默节奏报告${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
+        `汇报：每 ${Math.round(task.pace.intervalMs / 1000)}s 推送一次运行情况；连续 ${Math.round(task.pace.quietAfterMs / 1000)}s 无输出时会推送"无新输出"提醒${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
         '任务一结束会立刻收到完整结果。不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。',
-        '需要主动查看用 bg_status；调整节奏 / 写入输入 / 停止用 bg_control。',
+        '查看详情用 bg_status；调整汇报间隔、写入 stdin 或停止任务用 bg_control。',
       ].join('\n');
     },
   });
@@ -170,7 +170,7 @@ export function createBgListTool(registry: BgRegistry): Tool {
           `${t.id} [${t.status}]`,
           `已运行 ${fmtDur(t.durationMs)}`,
           t.status === 'running' ? `安静 ${Math.round(t.quietMs / 1000)}s` : `退出码 ${t.exitCode === null ? 'null' : t.exitCode}`,
-          `节奏 ${Math.round(t.pace.intervalMs / 1000)}s/${Math.round(t.pace.quietAfterMs / 1000)}s${t.inheritedPace ? '（前台转入紧凑节奏，可 bg_control 放宽）' : ''}`,
+          `汇报间隔 ${Math.round(t.pace.intervalMs / 1000)}s / 无输出提醒 ${Math.round(t.pace.quietAfterMs / 1000)}s${t.inheritedPace ? '（前台转入的短间隔，可 bg_control 放宽）' : ''}`,
           t.nextReportInMs !== null ? `下次汇报 ~${Math.round(t.nextReportInMs / 1000)}s` : '',
         ].filter(Boolean);
         return `${parts.join(' · ')}\n  命令: ${t.command}`;
@@ -247,7 +247,7 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
         const s = registry.snapshot(registry.get(taskId)!);
         return [
           `${taskId} 仍在运行（已运行 ${fmtDur(s.durationMs)}，安静 ${Math.round(s.quietMs / 1000)}s）。`,
-          '本次等待已到时（不是失败）。可以继续做别的或直接结束回合——任务完成时结果会自动送达并唤醒你；确需干预用 bg_control。',
+          '本次等待已到时（不是失败）。可以继续做别的或直接结束回合——任务完成时结果会自动送达并唤醒你；要向任务输入、停止任务或调整汇报间隔用 bg_control。',
         ].join('\n');
       }
       const s = registry.snapshot(task);
@@ -266,8 +266,8 @@ export function createBgControlTool(registry: BgRegistry): Tool {
         taskId: { type: 'string', description: '任务号，如 bg-1' },
         kill: { type: 'boolean', description: 'true 时终止任务：先温和终止（允许收尾），2 秒未退出强杀进程树' },
         stdin: { type: 'string', description: '向任务 stdin 写入的文本（通常以 \\n 结尾）' },
-        intervalSec: { type: 'number', description: '新的活跃节奏（秒），最小 60' },
-        quietAfterSec: { type: 'number', description: '新的静默节奏（秒），最小 30' },
+        intervalSec: { type: 'number', description: '新的汇报间隔（秒），最小 60' },
+        quietAfterSec: { type: 'number', description: '无输出持续多久（秒）后开始推送无新输出提醒，最小 30' },
       },
       required: ['taskId'],
     },
@@ -290,9 +290,9 @@ export function createBgControlTool(registry: BgRegistry): Tool {
           ...(quietAfterSec !== undefined ? { quietAfterMs: Math.round(quietAfterSec * 1000) } : {}),
         });
         if (pace) {
-          actions.push(`节奏已调整为每 ${Math.round(pace.intervalMs / 1000)}s 汇报 / 静默 ${Math.round(pace.quietAfterMs / 1000)}s 起（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）`);
+          actions.push(`汇报间隔已调整为每 ${Math.round(pace.intervalMs / 1000)}s 一次 / 无输出 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）`);
         } else {
-          actions.push('节奏调整失败：任务不在运行');
+          actions.push('调整失败：任务不在运行');
         }
       }
       if (kill === true) {

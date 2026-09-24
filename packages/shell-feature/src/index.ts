@@ -167,12 +167,26 @@ export class ShellFeature implements AgentFeature {
 
   /**
    * 后台登记表惰性初始化（getAsyncTools 才有 agentId）。
-   * 绑定首个 agentId：通知投递邮箱归属第一个装配本 feature 的 agent——当前
-   * 装配模型是一 feature 实例一 agent；跨 agent 复用需上移托管层。
+   * 进程级共享（key = agentId::workdir）：后台 bash 进程是 OS 级资源，
+   * 独立于会话活着；任务表挂在 agent 实例上的话，会话切换 / 新会话的
+   * 实例会拿到一张空表，面板与 bg_status 都看不到仍在跑的任务。同进程
+   * 的多会话实例复用同一张表，并把自己的 bgObserver 追加进去（各会话
+   * 通道都能收到实时事件）。workdir 参与 key，不同测试的 tmpdir 天然隔离。
+   * 通知投递邮箱仍归属首个建表的 agent 实例（既有行为，不变）。
    */
+  private static readonly sharedRegistries = new Map<string, BgRegistry>();
+
   private ensureRegistry(agentId: string): BgRegistry {
     if (!this._registry) {
-      this._registry = new BgRegistry({ agentId, ...(this.bgObserver ? { observer: this.bgObserver } : {}) });
+      const key = `${agentId}::${this.workdir}`;
+      const shared = ShellFeature.sharedRegistries.get(key);
+      if (shared) {
+        this._registry = shared;
+        if (this.bgObserver) shared.addObserver(this.bgObserver);
+      } else {
+        this._registry = new BgRegistry({ agentId, ...(this.bgObserver ? { observer: this.bgObserver } : {}) });
+        ShellFeature.sharedRegistries.set(key, this._registry);
+      }
     }
     return this._registry;
   }

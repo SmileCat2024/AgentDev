@@ -358,6 +358,7 @@ export type {
   ExecutionReason,
   ExecutionError,
   ModelRequestOutcome,
+  PendingWakeup,
   CallOutcome,
 } from './core/lifecycle.js';
 export type { MessageExecutionMeta } from './core/types.js';

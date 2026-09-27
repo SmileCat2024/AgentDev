@@ -56,6 +56,7 @@ import type {
   SubAgentDestroyContext,
   SubAgentInterruptContext,
   CallOutcome,
+  PendingWakeup,
 } from './lifecycle.js';
 import { TemplateComposer } from '../template/composer.js';
 import { DataSourceRegistry } from '../template/data-source.js';
@@ -165,6 +166,9 @@ class AgentBase {
 
   // Continuation request（控制工具通过 registerContinuationRequest 登记）
   private _continuationRequest: CallContinuationRequest | null = null;
+
+  // Pending-work 申报（ADR-0019）：source → provider，call 结束时扇出聚合
+  private _pendingWorkProviders = new Map<string, () => PendingWakeup[]>();
 
   // 用户输入缓存（用于 Feature 修改待注入的输入内容）
   private _pendingInput: string | null = null;
@@ -302,6 +306,37 @@ class AgentBase {
     const request = this._continuationRequest;
     this._continuationRequest = null;
     return request;
+  }
+
+  /**
+   * 注册一个 pending-work 申报器（ADR-0019）。
+   *
+   * Feature 在拿到 agent 引用后申报：provider 返回当前仍待唤醒的后台工作
+   * 列表。同一 source 重复注册时后者覆盖前者（feature 在 CallStart 重注册
+   * 幂等）。未注册 = 降级现状（回合结束仍判 completed）。
+   */
+  registerPendingWorkProvider(source: string, provider: () => PendingWakeup[]): void {
+    this._pendingWorkProviders.set(source, provider);
+  }
+
+  /**
+   * 聚合全部申报器的待唤醒工作（call 结束盖戳、StepFinish 决策上下文共用）。
+   *
+   * 单个 provider 异常按空处理并吞掉——申报是旁路事实层，不允许影响主链路。
+   */
+  collectPendingWakeups(): PendingWakeup[] {
+    const wakeups: PendingWakeup[] = [];
+    for (const provider of this._pendingWorkProviders.values()) {
+      try {
+        const items = provider();
+        if (Array.isArray(items)) {
+          wakeups.push(...items);
+        }
+      } catch {
+        // 申报器异常按空处理（ADR-0019：事实层旁路，不进主链路错误路径）
+      }
+    }
+    return wakeups;
   }
 
   /**
@@ -505,7 +540,20 @@ class AgentBase {
 
       // 保存上下文
       this.persistentContext = context;
-      const outcome = this.createCallOutcome(result, callStartTime);
+
+      // ========== suspended 盖戳（ADR-0019）==========
+      // 回合自然完成但仍有待唤醒的后台工作 → 改判 suspended。
+      // 盖戳集中在这一处（result 返回后、createCallOutcome 前），error /
+      // cancelled / continuation 等更强或并行的终态不被覆盖。
+      // 陷阱 1：completed 必须同步置 false，否则 createCallOutcome 的
+      // status 三元以 result.completed 为第一优先级，会短路回 completed。
+      const pendingWakeups = this.collectPendingWakeups();
+      if (result.finishReason === 'completed' && pendingWakeups.length > 0) {
+        result.finishReason = 'suspended';
+        result.completed = false;
+      }
+
+      const outcome = this.createCallOutcome(result, callStartTime, pendingWakeups);
       this._lastCallOutcome = outcome;
 
       // ========== Call Finish（成功）==========
@@ -543,7 +591,9 @@ class AgentBase {
       // 会话事件流：turn.completed / turn.failed
       try {
         const { emitTurnCompleted, emitTurnFailed } = await import('./session-events.js');
-        if (result.completed) {
+        // suspended 的 completed=false 是盖戳副作用：挂起不是失败，
+        // 必须显式走 turn.completed（带 suspended 标志），不得发 turn.failed。
+        if (result.completed || result.finishReason === 'suspended') {
           const callUsage = this.usageStats.getCallUsage(this._callIndex)?.totalUsage;
           emitTurnCompleted(
             this._callIndex,
@@ -552,6 +602,7 @@ class AgentBase {
               outputTokens: callUsage.outputTokens,
               totalTokens: callUsage.totalTokens,
             },
+            outcome,
           );
         } else {
           emitTurnFailed(this._callIndex, outcome);
@@ -2298,6 +2349,8 @@ class AgentBase {
         dispatchTurnMetadata: (metadata: Record<string, unknown>, context: Context) => this.dispatchTurnMetadata(metadata, context),
         stepSaveFn: this._createStepSaveFn(),
         peekContinuationRequest: () => this._continuationRequest,
+        // ADR-0019：StepFinish 决策上下文据此感知待唤醒后台工作
+        collectPendingWakeups: () => this.collectPendingWakeups(),
         // 模型热切换族（ADR-0009）：hook ctx 的 agent 是 facade，转发到本体，
         // 保证 ctx.agent.setModel / setLLM / getLLMMeta 与直调行为一致。
         setModel: (presetName: string, opts?: { thinkingEffort?: string | null; source?: string }) => this.setModel(presetName, opts),
@@ -2332,14 +2385,18 @@ class AgentBase {
   private createCallOutcome(
     result: ReActResult,
     startedAt: number,
+    pendingWakeups?: PendingWakeup[],
   ): CallOutcome {
     const status = result.completed
       ? 'completed'
       : result.finishReason === 'cancelled'
         ? 'cancelled'
-        : result.finishReason === 'continued'
+        : result.finishReason === 'suspended'
+          // 挂起 = 移交给后续唤醒单元，status 轴复用 continued（ADR-0019）
           ? 'continued'
-          : 'failed';
+          : result.finishReason === 'continued'
+            ? 'continued'
+            : 'failed';
     return {
       status,
       reason: result.finishReason,
@@ -2349,6 +2406,7 @@ class AgentBase {
       finishedAt: Date.now(),
       ...(result.error ? { error: result.error } : {}),
       ...(result.model ? { model: result.model } : {}),
+      ...(pendingWakeups && pendingWakeups.length > 0 ? { pendingWakeups } : {}),
     };
   }
 

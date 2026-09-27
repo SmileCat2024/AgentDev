@@ -112,6 +112,8 @@ export interface BgTaskSnapshot {
   id: string;
   command: string;
   status: BgTaskStatus;
+  /** 建表会话归属（登记时盖戳；null = 装配方未声明）。 */
+  sessionId: string | null;
   exitCode: number | null;
   startedAt: number;
   endedAt: number | null;
@@ -134,6 +136,8 @@ export interface BgTask {
   id: string;
   command: string;
   workdir: string;
+  /** 建表会话归属（登记时盖戳；null = 装配方未声明，见 BgRegistryOptions.sessionId）。 */
+  sessionId: string | null;
   child: ChildProcess | null;
   startedAt: number;
   status: BgTaskStatus;
@@ -250,6 +254,12 @@ export function spawnBackgroundProcess(
 
 export interface BgRegistryOptions {
   agentId: string;
+  /**
+   * 建表会话归属（ADR-0019 决策 8）：宿主多会话拓扑下由装配方声明，
+   * 随任务登记盖戳、随通知投递（user-turn body）。框架不解释其语义；
+   * 缺省不携带，投递行为与现状一致。
+   */
+  sessionId?: string;
   /** 投递目标 ViewerWorker 基址（缺省 127.0.0.1:AGENTDEV_VIEWER_PORT||2026）。 */
   viewerUrl?: string;
   /** 测试禁用 process exit 兜底。 */
@@ -281,6 +291,8 @@ export class BgRegistry {
   private readonly _tasks = new Map<string, BgTask>();
   private _nextId = 1;
   private readonly _agentId: string;
+  /** 建表会话归属（随任务登记盖戳、随通知投递；null = 未声明）。 */
+  private _sessionId: string | null;
   private readonly _viewerUrl: string;
   private readonly _deliverImpl: (text: string, sourceRef: string) => Promise<void>;
   private readonly _now: () => number;
@@ -291,6 +303,7 @@ export class BgRegistry {
 
   constructor(opts: BgRegistryOptions) {
     this._agentId = opts.agentId;
+    this._sessionId = typeof opts.sessionId === 'string' && opts.sessionId ? opts.sessionId : null;
     const port = process.env.AGENTDEV_VIEWER_PORT || '2026';
     this._viewerUrl = opts.viewerUrl ?? `http://127.0.0.1:${port}`;
     this._deliverImpl = opts.deliverImpl ?? ((text, sourceRef) => this._httpDeliver(text, sourceRef));
@@ -302,6 +315,14 @@ export class BgRegistry {
     if (this._exitGuard) {
       process.on('exit', this._exitGuard);
     }
+  }
+
+  /**
+   * 更新建表会话归属：共享登记表被同 agentId 的新实例收养时，后续登记的
+   * 任务盖戳新会话；已登记任务的归属保持登记时刻的事实不变。
+   */
+  setSessionId(sessionId: string | undefined): void {
+    this._sessionId = typeof sessionId === 'string' && sessionId ? sessionId : null;
   }
 
   /**
@@ -347,6 +368,7 @@ export class BgRegistry {
       id: task.id,
       command: task.command,
       status: task.status,
+      sessionId: task.sessionId,
       exitCode: task.exitCode,
       startedAt: task.startedAt,
       endedAt: task.endedAt,
@@ -431,6 +453,7 @@ export class BgRegistry {
       id,
       command: opts.command,
       workdir: opts.workdir,
+      sessionId: this._sessionId,
       child,
       startedAt: now,
       status: 'running',
@@ -839,6 +862,8 @@ export class BgRegistry {
   }
 
   private async _httpDeliver(text: string, sourceRef: string): Promise<void> {
+    // 聚合批次的归属取末任务（与 sourceRef 同源）；任务已清理时回退当前值。
+    const sessionId = this._tasks.get(sourceRef)?.sessionId ?? this._sessionId;
     const res = await fetch(
       `${this._viewerUrl}/api/agents/${encodeURIComponent(this._agentId)}/user-turn`,
       {
@@ -849,6 +874,8 @@ export class BgRegistry {
           kind: 'reminder',
           source: 'shell',
           sourceRef,
+          // 建表会话归属（ADR-0019 决策 8）：宿主按会话路由唤醒的事实字段。
+          ...(sessionId ? { sessionId } : {}),
           metadata: { shell: { taskId: sourceRef } },
         }),
         signal: AbortSignal.timeout(DELIVER_TIMEOUT_MS),

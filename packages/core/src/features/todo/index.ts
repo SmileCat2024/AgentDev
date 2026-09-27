@@ -247,6 +247,10 @@ export class TodoFeature implements AgentFeature {
     // 首次调用不注入
     if (ctx.isFirstCall) return;
 
+    // bg reminder 唤醒的 call（user-turn metadata 带 shell 命名空间）跳过注入：
+    // 后台汇报自带全部信息，唤醒的 call 不该被催"继续推进任务计划"（ADR-0019）。
+    if (ctx.metadata?.shell !== undefined) return;
+
     // 检查是否有待执行任务
     const hasActiveTasks = Array.from(this.tasks.values()).some(
       t => t.status === 'pending' || t.status === 'in_progress'

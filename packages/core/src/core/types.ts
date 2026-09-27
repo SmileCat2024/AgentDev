@@ -758,6 +758,11 @@ export interface QueuedInput {
   source?: string;
   /** 来源侧事件/请求标识，不承担全局幂等语义 */
   sourceRef?: string;
+  /**
+   * 会话归属事实（ADR-0019 决策 8）：宿主多会话拓扑下，投递方声明本条
+   * 输入归属的会话。框架只透传不解释；不携带时路由行为与现状一致。
+   */
+  sessionId?: string;
   /** 随消息流动的能力激活通知（capability refs，如 skill.grill-me） */
   capabilityActivations?: string[];
   /** 随消息流动的自由元数据（user-turn 的 metadata 原样入队；框架只透传不解释） */
@@ -777,6 +782,12 @@ export interface UserTurnInput {
   images?: ImageInput[];
   source?: string;
   sourceRef?: string;
+  /**
+   * 会话归属事实（ADR-0019 决策 8）：宿主多会话拓扑下，投递方声明本条
+   * 输入归属的会话。框架只透传不解释（排队项随行、dequeue 可见）；不携带
+   * 时路由行为与现状一致。
+   */
+  sessionId?: string;
   /** 随消息流动的能力激活通知（capability refs）；经 lease 响应 payload 与排队项原样随行 */
   capabilityActivations?: string[];
   /**
@@ -1205,6 +1216,7 @@ export type {
   ExecutionStatus,
   ExecutionReason,
   ExecutionError,
+  PendingWakeup,
   CallOutcome,
 } from './lifecycle.js';
 

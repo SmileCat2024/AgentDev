@@ -12,7 +12,7 @@ import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
 import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta, TurnKind } from '../types.js';
-import type { HookResult, StepFinishDecisionContext } from '../lifecycle.js';
+import type { HookResult, StepFinishDecisionContext, PendingWakeup } from '../lifecycle.js';
 import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
 import type { ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
@@ -52,6 +52,7 @@ export class ReActLoopRunner {
       dispatchTurnMetadata(metadata: Record<string, unknown>, context: Context): Promise<void>;
       stepSaveFn?: () => Promise<void>;
       peekContinuationRequest?: () => CallContinuationRequest | null;
+      collectPendingWakeups(): PendingWakeup[];
       // 模型热切换族（ADR-0009）：StepStart 等 hook ctx 的 agent 引用是本 facade，
       // 必须转发到 Agent 本体，否则 Feature 侧 ctx.agent.setModel 与直调不等价。
       setModel(presetName: string, opts?: { thinkingEffort?: string | null; source?: string }): boolean;
@@ -317,6 +318,7 @@ export class ReActLoopRunner {
               toolCallsCount: 0,
               hasActiveSubAgents: this.checkActiveSubAgents(),
               hasPendingMessages: this.checkPendingMessages(),
+              hasPendingWakeups: this.checkPendingWakeups(),
               waitCalled: false,
             };
             const decisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
@@ -537,6 +539,7 @@ export class ReActLoopRunner {
             toolCallsCount: response.toolCalls?.length ?? 0,
             hasActiveSubAgents: this.checkActiveSubAgents(),
             hasPendingMessages: this.checkPendingMessages(),
+            hasPendingWakeups: this.checkPendingWakeups(),
             waitCalled,
           };
           const stepFinishDecisionResult = await this.hooksRegistry.executeDecision(CoreLifecycle.StepFinish, stepFinishDecisionCtx);
@@ -802,6 +805,16 @@ export class ReActLoopRunner {
   private checkPendingMessages(): boolean {
     const subAgentFeature = this.agent.features?.get('subagent') as any;
     return subAgentFeature?.agentPool?.hasPendingMessages?.() ?? false;
+  }
+
+  /**
+   * 检查是否有待唤醒的后台工作（ADR-0019 pending-work 申报）
+   *
+   * 只填决策上下文事实，不改各 return 路径的 finishReason；
+   * suspended 盖戳集中在 agent.ts 的 call 出口单点。
+   */
+  private checkPendingWakeups(): boolean {
+    return this.agent.collectPendingWakeups().length > 0;
   }
 
   /**

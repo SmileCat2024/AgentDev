@@ -100,7 +100,18 @@ export type SessionEvent =
   | { type: 'turn.started'; turn: number }
   | { type: 'item.started'; item: SessionItem }
   | { type: 'item.completed'; item: SessionItem }
-  | { type: 'turn.completed'; turn: number; usage?: TurnUsage }
+  | {
+      type: 'turn.completed';
+      turn: number;
+      usage?: TurnUsage;
+      /**
+       * 挂起标志（ADR-0019）：回合因 pendingWakeups 非空而改判 suspended。
+       * 挂起不是失败，事件仍是 turn.completed，无头消费端据此区分真完成。
+       */
+      suspended?: boolean;
+      /** 回合结束时刻的待唤醒工作快照（与 CallOutcome.pendingWakeups 同源） */
+      pendingWakeups?: PendingWakeup[];
+    }
   | { type: 'turn.failed'; turn: number; error: TurnFailure };
 
 export type SessionEventListener = (event: SessionEvent) => void;
@@ -206,9 +217,20 @@ export function emitToolResultEvents(call: ToolCall, result: ToolExecResult, tur
 
 /**
  * 发射回合完成事件（附 token 用量）。
+ *
+ * outcome 透传挂起事实（ADR-0019）：reason 为 suspended 时带 suspended 标志
+ * 与 pendingWakeups 快照；其余 reason 不加字段，事件形状向后兼容。
  */
-export function emitTurnCompleted(turn: number, usage?: TurnUsage): void {
-  emitSessionEvent({ type: 'turn.completed', turn, ...(usage ? { usage } : {}) });
+export function emitTurnCompleted(turn: number, usage?: TurnUsage, outcome?: CallOutcome): void {
+  emitSessionEvent({
+    type: 'turn.completed',
+    turn,
+    ...(usage ? { usage } : {}),
+    ...(outcome?.reason === 'suspended' ? { suspended: true } : {}),
+    ...(outcome?.pendingWakeups && outcome.pendingWakeups.length > 0
+      ? { pendingWakeups: outcome.pendingWakeups }
+      : {}),
+  });
 }
 
 /**
@@ -218,7 +240,7 @@ export function emitTurnCompleted(turn: number, usage?: TurnUsage): void {
  * - CallOutcome（agent.ts 主链路）：展开为结构化 TurnFailure
  * - 简单 message（宿主致命错误等）：仅带 message
  */
-import type { CallOutcome } from './lifecycle.js';
+import type { CallOutcome, PendingWakeup } from './lifecycle.js';
 
 export function emitTurnFailed(turn: number, source: string | CallOutcome): void {
   if (typeof source === 'string') {

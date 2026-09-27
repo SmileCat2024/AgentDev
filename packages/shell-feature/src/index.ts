@@ -18,7 +18,13 @@ import { fileURLToPath } from 'url';
 import { resolve } from 'path';
 import type { AgentFeature, FeatureInitContext, FeatureManifestDefinition, PackageInfo } from '@agentdevjs/core';
 import type { Tool } from '@agentdevjs/core';
-import type { HookDeclarations, StepFinishDecisionContext, DecisionResult } from '@agentdevjs/core';
+import type {
+  CallStartContext,
+  HookDeclarations,
+  PendingWakeup,
+  StepFinishDecisionContext,
+  DecisionResult,
+} from '@agentdevjs/core';
 import { CoreLifecycle, Decision, getPackageInfoFromSource } from '@agentdevjs/core';
 import { createShellCommandTool, findGitBashPath } from './tools.js';
 import { createPowerShellTool, findPowerShellPath } from './powershell.js';
@@ -44,6 +50,11 @@ export interface ShellFeatureConfig {
   resourceRoot?: string;
   /** 宿主集成观察者：任务登记/输出（节流）/汇报/就绪/终态/调速时回调。 */
   bgObserver?: BgObserver;
+  /**
+   * 建表会话归属（ADR-0019 决策 8）：宿主多会话拓扑下由装配方声明，
+   * 随任务登记盖戳、随通知投递。缺省不携带，行为与现状一致。
+   */
+  sessionId?: string;
 }
 
 interface ResolvedShellConfig {
@@ -80,6 +91,7 @@ export class ShellFeature implements AgentFeature {
    */
   static hooks: HookDeclarations = {
     endTurnOnPendingWaitCheck: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard' as const, role: 'advisor' as const },
+    registerPendingWorkOnCallStart: { lifecycle: CoreLifecycle.CallStart, kind: 'observe' as const },
   };
 
   private bashDescription?: string;
@@ -90,6 +102,7 @@ export class ShellFeature implements AgentFeature {
   private readonly workdir: string;
   private readonly resourceRoot: string;
   private readonly bgObserver?: BgObserver;
+  private readonly sessionId?: string;
   /** 后台任务登记表（首次 getAsyncTools 时按 agentId 惰性创建）。 */
   private _registry: BgRegistry | null = null;
 
@@ -98,6 +111,7 @@ export class ShellFeature implements AgentFeature {
     this.workdir = config.workdir || this.workspaceDir;
     this.resourceRoot = config.resourceRoot || process.cwd();
     this.bgObserver = typeof config.bgObserver === 'function' ? config.bgObserver : undefined;
+    this.sessionId = typeof config.sessionId === 'string' && config.sessionId ? config.sessionId : undefined;
   }
 
   /** 后台任务登记表（惰性创建前为 null）。宿主集成面：状态镜像 / 面板请求转发。 */
@@ -114,6 +128,30 @@ export class ShellFeature implements AgentFeature {
   async endTurnOnPendingWaitCheck(_ctx: StepFinishDecisionContext): Promise<DecisionResult> {
     if (!this._registry?.hasActiveWaitCheck()) return Decision.Continue;
     return Decision.Deny;
+  }
+
+  /**
+   * CallStart（observe）：向 agent 申报 pending-work provider（ADR-0019）。
+   *
+   * 首个能拿到 agent 引用的时机注册；从共享 BgRegistry 取 running 任务映射
+   * 为 PendingWakeup 快照。registry 尚未惰性创建（本实例还没起过后台任务）
+   * 时申报空表——同进程其他会话实例建表后，共享表对其可见。每次 CallStart
+   * 重复注册幂等（同 source 覆盖）。peer 版本 core 无此 API 时静默降级
+   * （回合结束仍判 completed，现状行为）。
+   */
+  registerPendingWorkOnCallStart(ctx: CallStartContext): void {
+    const agent = ctx.agent as
+      | { registerPendingWorkProvider?: (source: string, provider: () => PendingWakeup[]) => void }
+      | undefined;
+    if (typeof agent?.registerPendingWorkProvider !== 'function') return;
+    agent.registerPendingWorkProvider('shell', () => {
+      const registry = this._registry;
+      if (!registry) return [];
+      return registry
+        .list()
+        .filter(snap => snap.status === 'running')
+        .map(snap => ({ source: 'shell', id: snap.id, summary: snap.command }));
+    });
   }
 
   /**
@@ -205,9 +243,12 @@ export class ShellFeature implements AgentFeature {
       const shared = ShellFeature.sharedRegistries.get(key);
       if (shared) {
         this._registry = shared;
+        // 收养即更新归属锚点：后续登记的任务盖戳本实例会话；
+        // 已登记任务保持登记时刻的归属事实不变。
+        shared.setSessionId(this.sessionId);
         if (this.bgObserver) shared.addObserver(this.bgObserver);
       } else {
-        this._registry = new BgRegistry({ agentId, ...(this.bgObserver ? { observer: this.bgObserver } : {}) });
+        this._registry = new BgRegistry({ agentId, ...(this.sessionId ? { sessionId: this.sessionId } : {}), ...(this.bgObserver ? { observer: this.bgObserver } : {}) });
         ShellFeature.sharedRegistries.set(key, this._registry);
       }
     }

@@ -984,6 +984,10 @@ class ViewerWorker {
       && (typeof input.sourceRef !== 'string' || input.sourceRef.length === 0 || input.sourceRef.length > 512)) {
       return { success: false, code: 'invalid_input', error: 'sourceRef must be a non-empty string up to 512 characters' };
     }
+    if (input.sessionId !== undefined
+      && (typeof input.sessionId !== 'string' || input.sessionId.length === 0 || input.sessionId.length > 128)) {
+      return { success: false, code: 'invalid_input', error: 'sessionId must be a non-empty string up to 128 characters' };
+    }
     if (input.capabilityActivations !== undefined
       && (!Array.isArray(input.capabilityActivations)
         || input.capabilityActivations.length > 16
@@ -1056,7 +1060,7 @@ class ViewerWorker {
         error: 'This runtime does not accept external user turns',
       };
     }
-    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata, input.kind);
+    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata, input.kind, input.sessionId);
     this.emitSessionEvent({ kind: 'queued-inputs', agentId });
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
@@ -1158,6 +1162,7 @@ class ViewerWorker {
     capabilityActivations?: string[],
     metadata?: Record<string, unknown>,
     kind?: TurnKind,
+    sessionId?: string,
   ): QueuedInput {
     if (!session.queuedInputs) {
       (session as any).queuedInputs = [];
@@ -1170,6 +1175,8 @@ class ViewerWorker {
       ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
       ...(source ? { source } : {}),
       ...(sourceRef ? { sourceRef } : {}),
+      // 会话归属事实（ADR-0019 决策 8）：排队项随行，dequeue 消费端可见。
+      ...(sessionId ? { sessionId } : {}),
       ...(Array.isArray(capabilityActivations) && capabilityActivations.length > 0 ? { capabilityActivations } : {}),
       ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     };

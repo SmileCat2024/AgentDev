@@ -161,12 +161,17 @@ export type ExecutionStatus = 'completed' | 'failed' | 'cancelled' | 'continued'
  *
  * `reason` 描述生命周期语义，错误来源由 `error.category` 表达，避免一个字段
  * 同时承担供应商协议、框架控制流和宿主业务状态三种含义。
+ *
+ * `suspended`（ADR-0019）：回合结束时仍有待唤醒的后台工作（pendingWakeups
+ * 非空）。它是一种中间停止——移交给后续唤醒单元，不是失败；status 轴上映射
+ * 为 `continued`。
  */
 export type ExecutionReason =
   | 'completed'
   | 'cancelled'
   | 'limit_reached'
   | 'continued'
+  | 'suspended'
   | 'error';
 
 /** 可序列化的错误事实。category 是稳定的机器分类，message 只供展示。 */
@@ -184,6 +189,22 @@ export interface ModelRequestOutcome {
 }
 
 /**
+ * 回合结束时刻仍待唤醒的一项后台工作（ADR-0019）。
+ *
+ * 它是运行时事实快照：不进对话上下文、不进 checkpoint 语义，随 CallOutcome
+ * 自然透传。框架不解释 `source` 语义——与 user-turn metadata 同一纪律，
+ * key 由申报方命名空间化。
+ */
+export interface PendingWakeup {
+  /** 申报方命名空间（如 'shell'） */
+  source: string;
+  /** 申报方内部的工作标识 */
+  id: string;
+  /** 人可读的一行摘要（如命令行） */
+  summary: string;
+}
+
+/**
  * 一次 Agent Call（而非宿主任务）的结构化终态。
  * 该对象可安全持久化、跨进程传输和用于 JSONL/CLI 消费。
  */
@@ -196,6 +217,11 @@ export interface CallOutcome {
   finishedAt: number;
   error?: ExecutionError;
   model?: ModelRequestOutcome;
+  /**
+   * 回合结束时刻的待唤醒后台工作快照。reason 为 suspended 时必然非空；
+   * 其余 reason 下也可能携带（如 cancelled 时仍有任务在跑）。
+   */
+  pendingWakeups?: PendingWakeup[];
 }
 
 /** @deprecated 使用 CallOutcome.reason。保留旧 hook/API 的类型兼容。 */
@@ -410,6 +436,9 @@ export interface StepFinishDecisionContext extends StepFinishedContext {
 
   /** 是否调用了 wait 工具 */
   waitCalled?: boolean;
+
+  /** 是否有待唤醒的后台工作（pendingWakeups 非空，ADR-0019） */
+  hasPendingWakeups?: boolean;
 }
 
 /**

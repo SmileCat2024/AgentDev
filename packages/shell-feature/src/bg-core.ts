@@ -8,6 +8,16 @@
  * - 双节奏（interval=活跃节奏，纯墙钟；quietAfter=静默节奏，输出重置计时）：
  *   任一触发即汇报并互重置计时；exit 为最高优先级事件，与 pending 定时器
  *   同时到达时 exit 赢（丢弃节拍汇报，不发鬼魂消息）。
+ * - 到点检查（bg_wait 安排的 deadline）：不阻塞工具调用——登记一次性
+ *   waitTimer 后工具立即返回，本回合由 ShellFeature 的 StepFinish guard
+ *   结束（hasActiveWaitCheck 触发 Decision.Deny）。deadline 到点走与
+ *   节拍/静默完全相同的汇报出口（reason='wait'）；任务提前终态时
+ *   deadline 随 _clearTimers 清除，终态通知先行（exit 赢语义不变）。
+ * - 订阅吸收：wait 的语义是"确保 afterSec 内收到一次汇报"，上界取
+ *   min(pace 剩余, afterSec) 先到先得——任何运行中推送（节拍/静默/手动/
+ *   就绪）先于 deadline 送达时，订阅被该推送吸收（清除并注明），不会
+ *   紧跟着再来一条近重复的到点检查；推送尾部"下次汇报最坏 Ns 内"的
+ *   确定性声明因此永远为真（发声时刻不存在待触发的订阅）。
  * - reportNow（宿主面板手动触发器）：立即走与节拍/静默完全相同的汇报出口
  *   （通知增量 + 双节奏互重置），只是把触发源从定时器换成用户点击。
  * - readyPattern：输出首次匹配即发一次性"已就绪"，此后任务按节奏继续汇报。
@@ -55,9 +65,9 @@ export const BG_NOTIFY_TAIL_CHARS = 2_000;
 /** bg_status 单次返回的增量输出字符预算：超出按头 60% + 尾 40% 截断，中段只可从完整日志恢复。 */
 export const BG_STATUS_MAX_CHARS = 10_000;
 /**
- * bg_wait 单次等待上限（120s）：给愿意现场守一会儿的模型一个有界出口。
- * 工具文案负责把大多数等待引导回"结束回合、等消息送达"——上限只兜住
- * 眼看就要结束的收尾等待，不是给长任务准备的轮询预算。
+ * bg_wait 可声明的到点检查最大时刻（120s）。等待本身不占工具调用，上限
+ * 只约束"到点检查"的表达：想等更长就该调 intervalSec 汇报节奏，而不是
+ * 安排一次超远期的检查点。
  */
 export const BG_WAIT_MAX_MS = 120_000;
 /** 前台命令固定预算（毫秒）；宿主可经 manifest 配置覆盖。 */
@@ -155,9 +165,15 @@ export interface BgTask {
   readyFired: boolean;
   intervalTimer: ReturnType<typeof setTimeout> | null;
   quietTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * bg_wait 安排的到点检查定时器（一次性）。触发即走统一汇报出口
+   * （reason='wait'）；任务终态时随 _clearTimers 清除（exit 赢）。
+   * 重复 bg_wait 覆盖重置（最新意图为准）；到点前任何运行中推送先
+   * 送达时被吸收（订阅目的已提前达成，见类头"订阅吸收"契约）。
+   */
+  waitTimer: ReturnType<typeof setTimeout> | null;
   /** 投递失败滞留的通知文本（bg_status 时补发）。 */
   unsent: string[];
-  finalizeWaiters: Array<() => void>;
   pendingOutput: string;
   /** 完整输出日志（追加流）；ring buffer 只是预览，内存外的真相在这里。 */
   logPath: string | null;
@@ -194,7 +210,7 @@ export function buildBashInvocation(
   const resourceRoot = opts.resourceRoot.replace(/\\/g, '/');
   const bashrcPath = resourceRoot + '/.agentdev/bashrc';
   const normalizedCommand = rewriteWindowsNullRedirect(command);
-  // 后台永不加 `< /dev/null` 防挂起重定向：stdin 留 pipe 供 bg_control 写入，
+  // 后台永不加 `< /dev/null` 防挂起重定向：stdin 留 pipe 供 bg_write 写入，
   // 等待输入的命令挂起是产品语义（防挂起是前台概念，那里没有写入口）。
   const quotedCommand = quoteShellCommand(normalizedCommand, false);
   const quotedBashrc = `'${bashrcPath.replace(/'/g, `'\\''`)}'`;
@@ -210,7 +226,7 @@ export function buildBashInvocation(
   };
 }
 
-/** 后台 spawn：stdin 留 pipe（bg_control 可写），`< /dev/null` 重定向防挂起语义不变。 */
+/** 后台 spawn：stdin 留 pipe（bg_write 可写），`< /dev/null` 重定向防挂起语义不变。 */
 export function spawnBackgroundProcess(
   command: string,
   opts: BgSpawnOptions,
@@ -438,8 +454,8 @@ export class BgRegistry {
       readyFired: false,
       intervalTimer: null,
       quietTimer: null,
+      waitTimer: null,
       unsent: [],
-      finalizeWaiters: [],
       pendingOutput: '',
       logPath: null,
       logStream: null,
@@ -534,9 +550,17 @@ export class BgRegistry {
     this._resetQuietTimer(task);
   }
 
-  /** 节拍/静默/手动汇报共用出口：exit 赢检查 + 互重置。 */
-  private _firePace(task: BgTask, reason: 'interval' | 'quiet' | 'manual'): void {
+  /** 节拍/静默/到点检查/手动汇报共用出口：exit 赢检查 + 互重置 + 订阅吸收。 */
+  private _firePace(task: BgTask, reason: 'interval' | 'quiet' | 'wait' | 'manual'): void {
     if (task.status !== 'running') return; // exit 赢
+    // 订阅吸收：本次汇报先于 deadline 送达 → 订阅目的已提前达成，清除并注明，
+    // 避免紧跟一条近重复的到点检查（也让下方"下次汇报最坏 Ns"声明恒真）。
+    const absorbedWait = reason !== 'wait' && task.waitTimer !== null;
+    if (absorbedWait) {
+      clearTimeout(task.waitTimer!);
+      task.waitTimer = null;
+    }
+    if (reason === 'wait') task.waitTimer = null; // 一次性消耗
     task.lastReportAt = this._now();
     const quietSec = Math.round((this._now() - task.lastOutputAt) / 1000);
     // 通知增量 = 自上次通知以来的新输出（notifyOffset 独立游标，构造即推进——
@@ -550,12 +574,18 @@ export class BgRegistry {
     const hint = delta.length > BG_NOTIFY_TAIL_CHARS || read.clamped ? this.logHint(task) : '';
     const reasonText = reason === 'quiet'
       ? `已 ${quietSec} 秒无新输出`
-      : reason === 'manual' ? '用户请求推送当前状态' : '周期汇报';
+      : reason === 'wait' ? '到点检查（你订阅的一次性检查，已消耗）' : reason === 'manual' ? '用户请求推送当前状态' : '周期汇报';
+    const reasonSuffix = absorbedWait ? ' · 你订阅的检查已由本次汇报提前达成' : '';
+    // 节奏自述用可解释语汇（不用"节奏 Ns/Ms"式缩写），模型无需记忆参数映射；
+    // 下次汇报上界 = 双节奏刚重置的满值取 min（interval 纯墙钟不被输出推迟）。
+    const intervalCfgSec = Math.round(task.pace.intervalMs / 1000);
+    const quietCfgSec = Math.round(task.pace.quietAfterMs / 1000);
+    const nextWorstSec = Math.round(Math.min(task.pace.intervalMs, task.pace.quietAfterMs) / 1000);
     this._notify(task, [
-      `[后台任务 ${task.id} 运行中] ${reasonText} · 已运行 ${fmtDur(this._now() - task.startedAt)}`,
+      `[后台任务 ${task.id} 运行中] ${reasonText}${reasonSuffix} · 已运行 ${fmtDur(this._now() - task.startedAt)} · 每 ${intervalCfgSec}s 汇报 / 静默 ${quietCfgSec}s 起提醒`,
       tail ? `新增输出:\n${tail}` : '（无新增输出）',
       ...(hint ? [hint] : []),
-      '查看详情用 bg_status；调整汇报间隔、写入 stdin 或停止任务用 bg_control。',
+      `下次自动汇报最坏 ${nextWorstSec}s 内到达，任务结束会立刻收到完整结果。无干预需要时直接结束回合——进展会自动送达，不要反复订阅检查或 sleep 等待。`,
     ].join('\n'));
     this._armTimers(task); // 任一触发即互重置
     this._emit('report', task);
@@ -579,10 +609,17 @@ export class BgRegistry {
     if (this.tail(task, 10_000).includes(task.readyPattern)) {
       task.readyFired = true;
       task.lastReportAt = this._now();
+      // 就绪通知也是运行中推送：吸收待触发的订阅（订阅吸收契约）。
+      const absorbedWait = task.waitTimer !== null;
+      if (absorbedWait) {
+        clearTimeout(task.waitTimer!);
+        task.waitTimer = null;
+      }
       // 就绪事件消耗掉此前的输出增量：下条节拍只报就绪之后的新输出。
       task.notifyOffset = task.totalBytes;
       this._notify(task, [
         `[后台任务 ${task.id} 已就绪] 输出匹配就绪标志，任务继续在后台运行。`,
+        ...(absorbedWait ? ['你订阅的检查已由本条就绪通知提前达成。'] : []),
         `命令: ${task.command}`,
       ].join('\n'));
       this._armTimers(task); // 就绪事件重置双节奏
@@ -593,6 +630,7 @@ export class BgRegistry {
   private _clearTimers(task: BgTask): void {
     if (task.intervalTimer) { clearTimeout(task.intervalTimer); task.intervalTimer = null; }
     if (task.quietTimer) { clearTimeout(task.quietTimer); task.quietTimer = null; }
+    if (task.waitTimer) { clearTimeout(task.waitTimer); task.waitTimer = null; }
   }
 
   // -- 终态 -----------------------------------------------------------------
@@ -625,7 +663,6 @@ export class BgRegistry {
     }
     this._trimDone();
     this._emit('finalized', task);
-    for (const wake of task.finalizeWaiters.splice(0)) wake();
   }
 
   private _trimDone(): void {
@@ -736,28 +773,40 @@ export class BgRegistry {
     if (this._exitGuard) process.removeListener('exit', this._exitGuard);
   }
 
-  // -- 有界等待 -------------------------------------------------------------
+  // -- 到点检查（bg_wait） ---------------------------------------------------
 
-  /** 等待任务终态；超时返回 null（不是失败）。 */
-  async wait(taskId: string, maxWaitMs: number): Promise<BgTask | null> {
+  /**
+   * 安排一次到点检查：afterMs 后任务仍在运行，则走与节拍/静默完全相同的
+   * 汇报出口推送"到点检查"通知；任务提前终态时 deadline 随终态清除，终态
+   * 通知先行（exit 赢）。重复安排覆盖重置（最新意图为准）。
+   *
+   * 到点前任何运行中推送（节拍/静默/手动/就绪）先送达时，订阅被其吸收
+   * （订阅吸收契约）——wait 的语义是"确保 afterMs 内收到一次汇报"，信息
+   * 提前到达即目的达成。已终态的任务不安排（scheduled=false），调用方直接
+   * 渲染终态快照。
+   */
+  scheduleWaitCheck(taskId: string, afterMs: number): { snapshot: BgTaskSnapshot; waitSec: number; scheduled: boolean } {
     const task = this._tasks.get(taskId);
     if (!task) throw new Error(`未找到后台任务 ${taskId}（用 bg_list 查看现有任务）`);
-    if (task.status !== 'running') return task;
-    const bounded = Math.max(1, Math.min(maxWaitMs, BG_WAIT_MAX_MS));
-    return await new Promise<BgTask | null>((resolve) => {
-      let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-        timer = null;
-        const i = task.finalizeWaiters.indexOf(wake);
-        if (i >= 0) task.finalizeWaiters.splice(i, 1); // 超时离场：不留已失效 waiter
-        resolve(null);
-      }, bounded);
-      timer.unref?.();
-      const wake = () => {
-        if (timer) { clearTimeout(timer); timer = null; }
-        resolve(task);
-      };
-      task.finalizeWaiters.push(wake);
-    });
+    if (task.status !== 'running') {
+      return { snapshot: this.snapshot(task), waitSec: 0, scheduled: false };
+    }
+    const bounded = Math.max(1, Math.min(mustFinite(afterMs, 'afterSec'), BG_WAIT_MAX_MS));
+    if (task.waitTimer) clearTimeout(task.waitTimer);
+    task.waitTimer = setTimeout(() => {
+      task.waitTimer = null;
+      this._firePace(task, 'wait');
+    }, bounded);
+    task.waitTimer.unref?.();
+    return { snapshot: this.snapshot(task), waitSec: Math.ceil(bounded / 1000), scheduled: true };
+  }
+
+  /** 是否存在待触发的到点检查（ShellFeature 的 StepFinish guard 据此结束当前回合）。 */
+  hasActiveWaitCheck(): boolean {
+    for (const task of this._tasks.values()) {
+      if (task.status === 'running' && task.waitTimer) return true;
+    }
+    return false;
   }
 
   // -- 通知管线（聚合 + 投递 + 滞留补发） ------------------------------------

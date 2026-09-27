@@ -28,7 +28,7 @@ import {
   runForegroundWithBudget,
   type BgRegisterOptions,
 } from '../src/bg-core.js';
-import { createBashBgTool, createBgControlTool, createBgStatusTool, createShellCommandTool } from '../src/index.js';
+import { createBashBgTool, createBgKillTool, createBgStatusTool, createBgTuneTool, createBgWaitTool, createBgWriteTool, createShellCommandTool } from '../src/index.js';
 import { findGitBashPath } from '../src/tools.js';
 
 const workdir = mkdtempSync(join(tmpdir(), 'agentdev-shell-bg-'));
@@ -580,36 +580,210 @@ describe('完整输出落盘', () => {
   });
 });
 
-describe('bg_control 已终止任务', () => {
+describe('bg_kill / bg_tune / bg_write 工具面', () => {
   it('kill 目标已结束时返回终态和尾部输出', async () => {
     const h = makeHarness();
     const { child, id } = h.spawn();
-    child.stdout.emit('data', 'final output\\n');
+    child.stdout.emit('data', 'final output\n');
     child.emit('close', 7);
-    const tool = createBgControlTool(h.registry);
+    const tool = createBgKillTool(h.registry);
 
-    const result = await tool.execute!({ taskId: id, kill: true } as never, {} as never) as string;
+    const result = await tool.execute!({ taskId: id } as never, {} as never) as string;
     expect(result).toContain('[done]');
     expect(result).toContain('退出码 7');
     expect(result).toContain('final output');
   });
-});
 
-describe('bg_wait', () => {
-  it('超时返回 null（不是失败），终态返回任务', async () => {
+  it('bg_tune 调整节奏返回自解释回执，clamp 到下限，缺调整项报错', async () => {
+    const h = makeHarness();
+    const { id } = h.spawn({});
+    const tool = createBgTuneTool(h.registry);
+
+    const out = await tool.execute!({ taskId: id, intervalSec: 300, quietAfterSec: 30 } as never, {} as never) as string;
+    expect(out).toContain('每 300s 一条运行汇报');
+    expect(out).toContain('静默 30s 起提醒');
+
+    const out2 = await tool.execute!({ taskId: id, intervalSec: 5 } as never, {} as never) as string;
+    expect(out2).toContain('每 60s 一条运行汇报'); // 低于下限按 60
+
+    const out3 = await tool.execute!({ taskId: id } as never, {} as never) as string;
+    expect(out3).toContain('未指定调整项');
+  });
+
+  it('bg_write 写入运行中任务的 stdin，终态任务返回失败原因', async () => {
     const h = makeHarness();
     const { child, id } = h.spawn({});
+    const tool = createBgWriteTool(h.registry);
 
-    // fake timers 下 wait 的超时定时器不会自动走：先取 promise，推进时间再 await。
-    const t1p = h.registry.wait(id, 50);
-    await vi.advanceTimersByTimeAsync(51);
-    const t1 = await t1p;
-    expect(t1).toBeNull();
+    const out = await tool.execute!({ taskId: id, text: 'y\n' } as never, {} as never) as string;
+    expect(out).toContain('已写入');
+    expect((child.stdin.write as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual(['y\n']);
 
     child.emit('close', 0);
-    const t2 = await h.registry.wait(id, 50); // 已终态：立即返回
-    expect(t2).not.toBeNull();
-    expect(t2!.status).toBe('done');
+    const out2 = await tool.execute!({ taskId: id, text: 'y\n' } as never, {} as never) as string;
+    expect(out2).toContain('写入失败');
+  });
+});
+
+describe('bg_wait 到点检查', () => {
+  it('到点触发检查汇报（与节拍同出口），触发后一次性消耗', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    const r = h.registry.scheduleWaitCheck(id, 20_000);
+    expect(r.scheduled).toBe(true);
+    expect(r.waitSec).toBe(20);
+    expect(h.registry.hasActiveWaitCheck()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    child.stdout.emit('data', 'mid-output\n'); // 检查通知携带自安排以来的增量
+    await vi.advanceTimersByTimeAsync(10_000); // t=20s：deadline 到点
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain(`${id} 运行中`);
+    expect(h.deliveries[0].text).toContain('到点检查');
+    expect(h.deliveries[0].text).toContain('mid-output');
+    expect(h.registry.hasActiveWaitCheck()).toBe(false);
+
+    // 一次性：再推进 40s（t=60s），interval(300s) 未到、无新检查。
+    await vi.advanceTimersByTimeAsync(40_000);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+  });
+
+  it('任务提前终态时 deadline 被清除，终态通知先行（exit 赢）', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    h.registry.scheduleWaitCheck(id, 20_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    child.emit('close', 0); // 终态先到：deadline 与节拍一并让路
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain(`${id} 已完成`);
+    expect(h.deliveries[0].text).not.toContain('到点检查');
+    expect(h.registry.hasActiveWaitCheck()).toBe(false);
+  });
+
+  it('kill 同样清除 deadline，检查不再触发', async () => {
+    const h = makeHarness();
+    const { id } = h.spawn({});
+    h.registry.scheduleWaitCheck(id, 20_000);
+    h.registry.kill(id);
+    expect(h.registry.hasActiveWaitCheck()).toBe(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(0); // kill 回执语义：不通报、不检查
+  });
+
+  it('重复安排覆盖重置（最新意图为准）', async () => {
+    const h = makeHarness();
+    const { id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    h.registry.scheduleWaitCheck(id, 30_000);
+    const r = h.registry.scheduleWaitCheck(id, 10_000); // 覆盖
+    expect(r.waitSec).toBe(10);
+    await vi.advanceTimersByTimeAsync(11_000);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('到点检查');
+
+    // 原始 30s deadline 已被覆盖：推进到 t=31s 无第二条。
+    await vi.advanceTimersByTimeAsync(20_000);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+  });
+
+  it('终态任务：不安排检查，直接返回终态快照', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({});
+    child.emit('close', 3);
+    const r = h.registry.scheduleWaitCheck(id, 10_000);
+    expect(r.scheduled).toBe(false);
+    expect(r.snapshot.status).toBe('done');
+    expect(r.snapshot.exitCode).toBe(3);
+    expect(h.registry.hasActiveWaitCheck()).toBe(false);
+  });
+
+  it('声明值 clamp 与非法值拒绝', () => {
+    const h = makeHarness();
+    const { id } = h.spawn({});
+    expect(h.registry.scheduleWaitCheck(id, 999_000).waitSec).toBe(120); // 上限
+    expect(h.registry.scheduleWaitCheck(id, 0.5).waitSec).toBe(1); // 下限
+    expect(() => h.registry.scheduleWaitCheck(id, Number.NaN)).toThrow(/有限数值/);
+    expect(() => h.registry.scheduleWaitCheck('bg-404', 1_000)).toThrow(/未找到/);
+  });
+
+  it('工具面：running 任务返回安排与引导文案，终态任务返回终态', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+    const tool = createBgWaitTool(h.registry);
+
+    const out = await tool.execute!({ taskId: id, afterSec: 20 } as never, {} as never) as string;
+    expect(out).toContain('已安排 20s 后检查');
+    expect(out).toContain('立即进入等待');
+    expect(out).toContain('本回合到此结束');
+    // 一条线引导：自述自动汇报节奏，并指向 bg_tune 接管
+    expect(out).toContain('每 300s 一条（下次最坏 ~300s 后）');
+    expect(out).toContain('静默 300s 起提醒');
+    expect(out).toContain('无需再订阅等待');
+    expect(out).toContain('bg_tune');
+    expect(h.registry.hasActiveWaitCheck()).toBe(true);
+
+    child.emit('close', 0);
+    const out2 = await tool.execute!({ taskId: id } as never, {} as never) as string;
+    expect(out2).toContain('已结束');
+    expect(out2).toContain('退出码 0');
+  });
+
+  it('订阅吸收：节拍汇报先于 deadline 送达，订阅被吸收不再触发检查', async () => {
+    const h = makeHarness();
+    // interval 声明会被 register clamp 到 BG_MIN_INTERVAL_MS(60s)，直接用 60s。
+    const { id } = h.spawn({ intervalMs: BG_MIN_INTERVAL_MS, quietAfterMs: 300_000 });
+
+    h.registry.scheduleWaitCheck(id, 90_000);
+    expect(h.registry.hasActiveWaitCheck()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(BG_MIN_INTERVAL_MS); // t=60s：interval 先到
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('周期汇报');
+    expect(h.deliveries[0].text).toContain('提前达成');
+    expect(h.registry.hasActiveWaitCheck()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(30_000); // t=90s：原 deadline 无检查推送
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+
+    // 节奏恢复正常：interval 重算后 t=120s 再来一条，且无吸收标注。
+    await vi.advanceTimersByTimeAsync(BG_MIN_INTERVAL_MS);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(2);
+    expect(h.deliveries[1].text).toContain('周期汇报');
+    expect(h.deliveries[1].text).not.toContain('提前达成');
+  });
+
+  it('订阅吸收：就绪通知先于 deadline 送达，同样吸收订阅', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({
+      readyPattern: 'READY',
+      intervalMs: 300_000,
+      quietAfterMs: 300_000,
+    });
+
+    h.registry.scheduleWaitCheck(id, 20_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    child.stdout.emit('data', 'READY\n'); // 就绪先到
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('已就绪');
+    expect(h.deliveries[0].text).toContain('提前达成');
+    expect(h.registry.hasActiveWaitCheck()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(20_000); // 原 deadline 无检查推送
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
   });
 });
 
@@ -767,7 +941,7 @@ afterEach(() => {
 });
 
 describe('命令构造', () => {
-  it('后台命令永不加 stdin 防挂起重定向（bg_control 需要可写的 stdin）', () => {
+  it('后台命令永不加 stdin 防挂起重定向（bg_write 需要可写的 stdin）', () => {
     // 旧行为：shouldAddStdinRedirect 对无重定向命令恒 true，等待输入的
     // 命令（cat / read / node stdin）全部立即 EOF 退出，stdin 写入失效。
     const inv = buildBashInvocation('cat', {

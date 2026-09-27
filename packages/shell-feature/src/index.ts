@@ -18,7 +18,8 @@ import { fileURLToPath } from 'url';
 import { resolve } from 'path';
 import type { AgentFeature, FeatureInitContext, FeatureManifestDefinition, PackageInfo } from '@agentdevjs/core';
 import type { Tool } from '@agentdevjs/core';
-import { getPackageInfoFromSource } from '@agentdevjs/core';
+import type { HookDeclarations, StepFinishDecisionContext, DecisionResult } from '@agentdevjs/core';
+import { CoreLifecycle, Decision, getPackageInfoFromSource } from '@agentdevjs/core';
 import { createShellCommandTool, findGitBashPath } from './tools.js';
 import { createPowerShellTool, findPowerShellPath } from './powershell.js';
 import { createSafeTrashDeleteTool, createSafeTrashListTool, createSafeTrashRestoreTool } from './tools-trash.js';
@@ -27,10 +28,12 @@ import type { BgObserver, BgTask } from './bg-core.js';
 import {
   BASH_BG_INLINE_DESCRIPTION,
   createBashBgTool,
-  createBgControlTool,
+  createBgKillTool,
   createBgListTool,
   createBgStatusTool,
+  createBgTuneTool,
   createBgWaitTool,
+  createBgWriteTool,
 } from './bg-tools.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -70,6 +73,15 @@ export class ShellFeature implements AgentFeature {
   readonly source = __filename.replace(/\\/g, '/');
   readonly description = '提供 Bash/PowerShell 命令执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 
+  /**
+   * bg_wait 安排到点检查后结束当前回合：等待不占工具调用，由通知推送
+   * （节拍/静默/终态同一管线）唤醒。到点检查触发或任务终态后 waitTimer
+   * 清除，此后不再干预流程（Continue）。
+   */
+  static hooks: HookDeclarations = {
+    endTurnOnPendingWaitCheck: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard' as const, role: 'advisor' as const },
+  };
+
   private bashDescription?: string;
   private bashBgDescription?: string;
   private powershellDescription?: string;
@@ -91,6 +103,17 @@ export class ShellFeature implements AgentFeature {
   /** 后台任务登记表（惰性创建前为 null）。宿主集成面：状态镜像 / 面板请求转发。 */
   getBgRegistry(): BgRegistry | null {
     return this._registry;
+  }
+
+  /**
+   * StepFinish guard（advisor）：本回合安排过 bg_wait 到点检查时结束当前
+   * call（Decision.Deny 在 react-loop 的既有语义），把等待交给通知推送——
+   * 任务提前完成则终态通知先行，否则到点收到检查汇报。无待触发检查时
+   * 一律 Continue，不干预正常流程。
+   */
+  async endTurnOnPendingWaitCheck(_ctx: StepFinishDecisionContext): Promise<DecisionResult> {
+    if (!this._registry?.hasActiveWaitCheck()) return Decision.Continue;
+    return Decision.Deny;
   }
 
   /**
@@ -239,7 +262,9 @@ export class ShellFeature implements AgentFeature {
         tools.push(createBgListTool(registry));
         tools.push(createBgStatusTool(registry));
         tools.push(createBgWaitTool(registry));
-        tools.push(createBgControlTool(registry));
+        tools.push(createBgTuneTool(registry));
+        tools.push(createBgWriteTool(registry));
+        tools.push(createBgKillTool(registry));
       } else {
         console.warn('[shell] Bash is enabled but was not found on this system. Skipping Bash tool.');
       }
@@ -327,10 +352,12 @@ export type {
 export {
   BASH_BG_INLINE_DESCRIPTION,
   createBashBgTool,
-  createBgControlTool,
+  createBgKillTool,
   createBgListTool,
   createBgStatusTool,
+  createBgTuneTool,
   createBgWaitTool,
+  createBgWriteTool,
 } from './bg-tools.js';
 export { createPowerShellTool, runPowerShellCommand, findPowerShellPath } from './powershell.js';
 

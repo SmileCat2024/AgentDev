@@ -264,7 +264,7 @@ export function createShellCommandTool(
         return [
           `命令超过前台等待预算（${sec}s），未被打断，已转为后台任务 ${task.id}。`,
           `命令: ${command}`,
-          `当前每 ${sec}s 汇报一次，一完成立刻收到完整结果；预计长跑可用 bg_control 放宽汇报间隔（如 intervalSec=300）。`,
+          `已继承紧凑汇报节奏：每 ${sec}s 一条、静默 ${sec}s 起提醒——这是刚超时的紧迫度，不是长跑节奏。若任务还要跑较久，用 bg_tune 放宽到正常节奏（如 intervalSec=300, quietAfterSec=30）；一完成立刻收到完整结果。`,
           '不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。主动查看用 bg_status。',
         ].join('\n');
       }

@@ -1,13 +1,15 @@
 /**
- * 后台 Bash 工具族 — bash_bg / bg_list / bg_status / bg_wait / bg_control
+ * 后台 Bash 工具族 — bash_bg / bg_list / bg_status / bg_wait / bg_tune / bg_write / bg_kill
  *
  * 工具面契约（与 .agentdev/prompts/tool-bash-bg.md 一致；description 兜底内联
  * 完整教学文案——resourceRoot 缺省环境下 prompts 文件读不到，防轮询协议声明
  * 不能依赖文件存在）：
  * - bash_bg 启动观察 2s：窗口内退出直接带回结果（预判错了，白捡前台体验）；
  * - 节奏参数单位为秒，模型侧声明 clamp（interval ≥ 60s / quietAfter ≥ 30s）；
- * - bg_wait 单次 ≤ 120s，超时不是失败（返回"仍在运行"）；长等靠完成注入；
- * - bg_control 的 tune 统一 clamp（转后台任务的 20s 继承节奏因此只能调宽）。
+ * - bg_wait 不占用工具调用：登记 afterSec 后的到点检查即返回，本回合随即
+ *   结束（StepFinish guard），等待由通知推送承载（≤ 120s，长等待走 intervalSec）；
+ * - 观察与进程干预分面：bg_tune 调汇报节奏（统一 clamp，转后台任务的 20s
+ *   继承节奏因此只能调宽）、bg_write 写 stdin、bg_kill 停止。
  */
 
 import type { Tool } from '@agentdevjs/core';
@@ -16,7 +18,6 @@ import type { BgRegistry, BgSpawnOptions } from './bg-core.js';
 import {
   BG_CAPTURE_WINDOW_MS,
   BG_STATUS_MAX_CHARS,
-  BG_WAIT_MAX_MS,
   cleanBashStderr,
   fmtDur,
   formatForegroundOutput,
@@ -52,12 +53,13 @@ const BG_LIST_INLINE_DESCRIPTION = '列出全部后台任务的全景：任务�
 
 const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出（超长增量只显示首尾，完整内容按提示的日志路径用 read 工具读取）。如果有因投递失败滞留的通知，会在这里补发。';
 
-// 文案约束：工具描述只写机制（调用后发生什么），禁止任何"用它能得到什么"的收益表述——
-// 收益句会被模型当成调用理由，把不需要等待的模型也诱导来等；"不等也有结果"的出口
-// 信息只出现在超时返回文案里（模型已等待、正决定是否继续等的决策点，那里它是止损）。
-const BG_WAIT_INLINE_DESCRIPTION = '现场等待一个后台任务，至多 maxWaitSec（默认 30，上限 120）秒：窗口内完成立刻拿到结果；到时仍在运行则返回当前状态与新增输出，这不是失败。';
+const BG_WAIT_INLINE_DESCRIPTION = '安排一次到点检查并立即进入等待：调用后本回合随即结束，afterSec 秒后任务仍在运行则自动收到一条运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。这是一次性订阅——之后的进展交给任务的自动汇报（频率不合适用 bg_tune 调整），想立即看一眼用 bg_status。对已结束的任务调用会直接返回终态。';
 
-const BG_CONTROL_INLINE_DESCRIPTION = '控制一个后台任务：kill 停掉（进程树终止；任务已结束时返回当前终态和尾部输出）；stdin 向任务写入输入（如回答安装程序的 y/n 确认）；intervalSec / quietAfterSec 修改汇报间隔与无输出提醒阈值，立刻生效（最小 60 / 30）。';
+const BG_TUNE_INLINE_DESCRIPTION = '调整一个后台任务的自动汇报节奏，立即生效并重新计时：intervalSec = 最多每隔这么多秒收到一条运行汇报（最小 60）；quietAfterSec = 连续静默多少秒后开始收到提醒（最小 30）。任务比预期跑得久、汇报太吵时放宽（如构建类任务 intervalSec=300）；想盯得更密也用它。调整一次长期生效，无需反复调用。';
+
+const BG_WRITE_INLINE_DESCRIPTION = '向一个运行中的后台任务写入 stdin（如回答安装程序的 y/n 确认）。文本通常以 \\n 结尾；任务不在运行或 stdin 不可用时返回写入失败。';
+
+const BG_KILL_INLINE_DESCRIPTION = '停止一个后台任务：先温和终止（允许收尾），2 秒未退出强杀进程树。任务已结束时返回当前终态和尾部输出。';
 
 // ---------------------------------------------------------------------------
 // bash_bg
@@ -147,14 +149,14 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
         `命令: ${command}`,
         `汇报：每 ${Math.round(task.pace.intervalMs / 1000)}s 推送一次运行情况；连续 ${Math.round(task.pace.quietAfterMs / 1000)}s 无输出时会推送"无新输出"提醒${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
         '任务一结束会立刻收到完整结果。不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。',
-        '查看详情用 bg_status；调整汇报间隔、写入 stdin 或停止任务用 bg_control。',
+        '查看详情用 bg_status；调节奏用 bg_tune；向任务输入用 bg_write；停止任务用 bg_kill。',
       ].join('\n');
     },
   });
 }
 
 // ---------------------------------------------------------------------------
-// bg_list / bg_status / bg_wait / bg_control
+// bg_list / bg_status / bg_wait / bg_tune / bg_write / bg_kill
 // ---------------------------------------------------------------------------
 
 export function createBgListTool(registry: BgRegistry): Tool {
@@ -170,7 +172,7 @@ export function createBgListTool(registry: BgRegistry): Tool {
           `${t.id} [${t.status}]`,
           `已运行 ${fmtDur(t.durationMs)}`,
           t.status === 'running' ? `安静 ${Math.round(t.quietMs / 1000)}s` : `退出码 ${t.exitCode === null ? 'null' : t.exitCode}`,
-          `汇报间隔 ${Math.round(t.pace.intervalMs / 1000)}s / 无输出提醒 ${Math.round(t.pace.quietAfterMs / 1000)}s${t.inheritedPace ? '（前台转入的短间隔，可 bg_control 放宽）' : ''}`,
+          `每 ${Math.round(t.pace.intervalMs / 1000)}s 汇报 / 静默 ${Math.round(t.pace.quietAfterMs / 1000)}s 起提醒${t.inheritedPace ? '（前台转入的紧凑值，可 bg_tune 放宽）' : ''}`,
           t.nextReportInMs !== null ? `下次汇报 ~${Math.round(t.nextReportInMs / 1000)}s` : '',
         ].filter(Boolean);
         return `${parts.join(' · ')}\n  命令: ${t.command}`;
@@ -234,83 +236,104 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
       type: 'object',
       properties: {
         taskId: { type: 'string', description: '任务号，如 bg-1' },
-        maxWaitSec: { type: 'number', description: '至多等待秒数，默认 30，上限 120' },
+        afterSec: { type: 'number', description: '多少秒后自动检查并汇报一次，默认 30，上限 120' },
       },
       required: ['taskId'],
     },
-    timeout: { defaultMs: BG_WAIT_MAX_MS + 5_000, maxMs: BG_WAIT_MAX_MS + 5_000 },
     execute: async (args) => {
-      const { taskId, maxWaitSec } = args as { taskId: string; maxWaitSec?: number };
-      const waitMs = Math.round((maxWaitSec ?? 30) * 1000);
-      const task = await registry.wait(taskId, waitMs);
-      if (!task) {
-        const s = registry.snapshot(registry.get(taskId)!);
-        return [
-          `${taskId} 仍在运行（已运行 ${fmtDur(s.durationMs)}，安静 ${Math.round(s.quietMs / 1000)}s）。`,
-          '本次等待已到时（不是失败）。可以继续做别的或直接结束回合——任务完成时结果会自动送达并唤醒你；要向任务输入、停止任务或调整汇报间隔用 bg_control。',
-        ].join('\n');
+      const { taskId, afterSec } = args as { taskId: string; afterSec?: number };
+      const afterMs = Math.round((afterSec ?? 30) * 1000);
+      const r = registry.scheduleWaitCheck(taskId, afterMs);
+      if (!r.scheduled) {
+        const s = r.snapshot;
+        return `${taskId} 已结束 [${s.status}]，退出码 ${s.exitCode === null ? 'null' : s.exitCode}，运行 ${fmtDur(s.durationMs)}。尾部输出可用 bg_status 查看。`;
       }
-      const s = registry.snapshot(task);
-      return `${taskId} 已结束 [${s.status}]，退出码 ${s.exitCode === null ? 'null' : s.exitCode}，运行 ${fmtDur(s.durationMs)}。尾部输出可用 bg_status 查看。`;
+      const s = r.snapshot;
+      return [
+        `已安排 ${r.waitSec}s 后检查 ${taskId}，立即进入等待——本回合到此结束，到点自动收到运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。`,
+        `${taskId} 自身的自动汇报：每 ${Math.round(s.pace.intervalMs / 1000)}s 一条（下次最坏 ~${Math.round((s.nextReportInMs ?? 0) / 1000)}s 后），静默 ${Math.round(s.pace.quietAfterMs / 1000)}s 起提醒。之后无需再订阅等待——等自动汇报就好；觉得太密或太疏，用 bg_tune 调一次节奏，之后交给它。`,
+      ].join('\n');
     },
   });
 }
 
-export function createBgControlTool(registry: BgRegistry): Tool {
+export function createBgTuneTool(registry: BgRegistry): Tool {
   return createTool({
-    name: 'bg_control',
-    description: BG_CONTROL_INLINE_DESCRIPTION,
+    name: 'bg_tune',
+    description: BG_TUNE_INLINE_DESCRIPTION,
     parameters: {
       type: 'object',
       properties: {
         taskId: { type: 'string', description: '任务号，如 bg-1' },
-        kill: { type: 'boolean', description: 'true 时终止任务：先温和终止（允许收尾），2 秒未退出强杀进程树' },
-        stdin: { type: 'string', description: '向任务 stdin 写入的文本（通常以 \\n 结尾）' },
-        intervalSec: { type: 'number', description: '新的汇报间隔（秒），最小 60' },
-        quietAfterSec: { type: 'number', description: '无输出持续多久（秒）后开始推送无新输出提醒，最小 30' },
+        intervalSec: { type: 'number', description: '汇报间隔（秒）：最多每隔这么久收到一条运行汇报。最小 60，填小按 60 算' },
+        quietAfterSec: { type: 'number', description: '静默提醒阈值（秒）：连续静默这么久后开始收到提醒。最小 30，填小按 30 算' },
       },
       required: ['taskId'],
     },
     execute: async (args) => {
-      const { taskId, kill, stdin, intervalSec, quietAfterSec } = args as {
-        taskId: string; kill?: boolean; stdin?: string; intervalSec?: number; quietAfterSec?: number;
+      const { taskId, intervalSec, quietAfterSec } = args as {
+        taskId: string; intervalSec?: number; quietAfterSec?: number;
       };
+      if (intervalSec === undefined && quietAfterSec === undefined) {
+        return '未指定调整项。可用：intervalSec（汇报间隔）/ quietAfterSec（静默提醒阈值），至少传一个。';
+      }
+      const pace = registry.tune(taskId, {
+        ...(intervalSec !== undefined ? { intervalMs: Math.round(intervalSec * 1000) } : {}),
+        ...(quietAfterSec !== undefined ? { quietAfterMs: Math.round(quietAfterSec * 1000) } : {}),
+      });
+      if (!pace) return `未找到运行中的后台任务 ${taskId}。用 bg_list 查看现有任务。`;
+      return `汇报节奏已调整：每 ${Math.round(pace.intervalMs / 1000)}s 一条运行汇报 / 静默 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）。之后交给自动汇报，无需反复调用。`;
+    },
+  });
+}
+
+export function createBgWriteTool(registry: BgRegistry): Tool {
+  return createTool({
+    name: 'bg_write',
+    description: BG_WRITE_INLINE_DESCRIPTION,
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: '任务号，如 bg-1' },
+        text: { type: 'string', description: '要写入 stdin 的文本，通常以 \\n 结尾' },
+      },
+      required: ['taskId', 'text'],
+    },
+    execute: async (args) => {
+      const { taskId, text } = args as { taskId: string; text: string };
       const task = registry.get(taskId);
       if (!task) return `未找到后台任务 ${taskId}。用 bg_list 查看现有任务。`;
+      return registry.writeStdin(taskId, text)
+        ? `已写入 ${taskId} 的 stdin。`
+        : `写入失败：${taskId} 不在运行或 stdin 不可用。`;
+    },
+  });
+}
 
-      const actions: string[] = [];
-      if (stdin !== undefined) {
-        actions.push(registry.writeStdin(taskId, stdin)
-          ? '已写入 stdin'
-          : 'stdin 写入失败（任务不在运行或 stdin 不可用）');
+export function createBgKillTool(registry: BgRegistry): Tool {
+  return createTool({
+    name: 'bg_kill',
+    description: BG_KILL_INLINE_DESCRIPTION,
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: '任务号，如 bg-1' },
+      },
+      required: ['taskId'],
+    },
+    execute: async (args) => {
+      const { taskId } = args as { taskId: string };
+      const task = registry.get(taskId);
+      if (!task) return `未找到后台任务 ${taskId}。用 bg_list 查看现有任务。`;
+      if (registry.kill(taskId, { graceful: true })) {
+        return `已向 ${taskId} 发送终止信号（未及时退出会自动强杀）。`;
       }
-      if (intervalSec !== undefined || quietAfterSec !== undefined) {
-        const pace = registry.tune(taskId, {
-          ...(intervalSec !== undefined ? { intervalMs: Math.round(intervalSec * 1000) } : {}),
-          ...(quietAfterSec !== undefined ? { quietAfterMs: Math.round(quietAfterSec * 1000) } : {}),
-        });
-        if (pace) {
-          actions.push(`汇报间隔已调整为每 ${Math.round(pace.intervalMs / 1000)}s 一次 / 无输出 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）`);
-        } else {
-          actions.push('调整失败：任务不在运行');
-        }
-      }
-      if (kill === true) {
-        if (registry.kill(taskId, { graceful: true })) {
-          actions.push('已发送终止信号（未及时退出会自动强杀）');
-        } else {
-          const snapshot = registry.snapshot(task);
-          const tail = registry.tail(task, 1_000);
-          actions.push([
-            `任务不在运行，当前状态 [${snapshot.status}]，退出码 ${snapshot.exitCode === null ? 'null' : snapshot.exitCode}，运行 ${fmtDur(snapshot.durationMs)}。`,
-            ...(tail ? [`尾部输出:\n${tail}`] : []),
-          ].join('\n'));
-        }
-      }
-      if (actions.length === 0) {
-        return '未指定操作。可用：kill / stdin / intervalSec / quietAfterSec。';
-      }
-      return actions.join('\n');
+      const snapshot = registry.snapshot(task);
+      const tail = registry.tail(task, 1_000);
+      return [
+        `任务不在运行，当前状态 [${snapshot.status}]，退出码 ${snapshot.exitCode === null ? 'null' : snapshot.exitCode}，运行 ${fmtDur(snapshot.durationMs)}。`,
+        ...(tail ? [`尾部输出:\n${tail}`] : []),
+      ].join('\n');
     },
   });
 }

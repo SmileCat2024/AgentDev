@@ -40,7 +40,7 @@ export class ImageReaderFeature implements AgentFeature {
   }
 
   getTemplateNames(): string[] {
-    return [];
+    return ['read-image'];
   }
 
   getTools(): Tool[] {

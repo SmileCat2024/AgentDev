@@ -58,6 +58,7 @@ export function createReadImageTool(options: ReadImageToolOptions = {}): Tool {
       },
       required: ['path'],
     },
+    render: { call: 'read-image', result: 'read-image' },
     execute: async (args) => {
       const inputPath = String((args as Record<string, unknown>).path ?? '');
       if (!inputPath || typeof inputPath !== 'string') {

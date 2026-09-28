@@ -88,6 +88,10 @@ export { system, user, assistant, toolResult, createMessage } from './core/messa
 export { withImages, isWithImagesResult } from './core/tool-result-images.js';
 export type { WithImagesResult } from './core/tool-result-images.js';
 
+// 工具 display 分离（文本给 LLM，富数据给前端渲染）
+export { withDisplay, isWithDisplayResult } from './core/tool-result-display.js';
+export type { WithDisplayResult } from './core/tool-result-display.js';
+
 // LLM
 // 注：LLM 实现（AnthropicLLM / OpenAILLM / OpenAIResponsesLLM / createLLM / compile*）
 // 已拆分到 @agentdevjs/llm 包；此处仅保留 LLM 契约类型（见下方 core/types.js 导出）。

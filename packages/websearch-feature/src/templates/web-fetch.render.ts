@@ -19,6 +19,9 @@ function escapeHtml(text: unknown): string {
   return str.replace(/[&<>"']/g, m => map[m]!);
 }
 
+/** 结果预览长度上限：全文已进模型上下文，卡片只保留可读预览。 */
+const PREVIEW_CHARS = 2000;
+
 /**
  * Web Fetch 渲染模板
  */
@@ -38,10 +41,10 @@ const webFetchRender: InlineRenderTemplate = {
         <span>${escapeHtml(content)}</span>
       </div>`;
     }
-    // 成功获取内容
+    // 成功获取内容：宿主提供卡面与折叠，这里只做长度说明 + 文本预览（不设内层背景/滚动）
     return `<div class="web-fetch-result">
-      <div style="font-size:12px; opacity:0.8; margin-bottom:4px;">Fetched ${content.length} chars</div>
-      <pre style="background:var(--bg-secondary); padding:8px; border-radius:4px; overflow:auto; max-height:300px;">${escapeHtml(content.slice(0, 1000))}${content.length > 1000 ? '\n...(truncated)' : ''}</pre>
+      <div class="tool-result-note">已获取 ${content.length} 字符${content.length > PREVIEW_CHARS ? '（预览截断）' : ''}</div>
+      <pre class="bash-output">${escapeHtml(content.slice(0, PREVIEW_CHARS))}</pre>
     </div>`;
   }
 };

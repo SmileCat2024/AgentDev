@@ -1939,7 +1939,7 @@ export const VIEWER_CSS = `  <style>
     }
 
     /* System Tool Rendering */
-    .bash-command { font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-primary); }
+    .bash-command { font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
     .bash-output { font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-secondary); white-space: pre-wrap; margin: 0; }
     .file-path { color: #58a6ff; }
     .tool-result-body .tool-search-results,
@@ -1970,6 +1970,27 @@ export const VIEWER_CSS = `  <style>
       font-size: 11px;
     }
     .tool-result-warning { color: var(--warning-color); }
+
+    /* 后台任务模板（bash_bg / bg_list / bg_status / bg 小操作）与模板通用元素 */
+    .tool-plain-text { margin: 0; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .tool-plain-text.warn { color: var(--warning-color); }
+    .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .tool-chip {
+      display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+      border-radius: 10px; border: 1px solid var(--border-color);
+      color: var(--text-secondary); font-size: 11px; white-space: nowrap;
+    }
+    .tool-chip.ok { color: var(--success-color); border-color: color-mix(in srgb, var(--success-color) 40%, var(--border-color)); }
+    .tool-chip.err { color: var(--error-color); border-color: color-mix(in srgb, var(--error-color) 40%, var(--border-color)); }
+    .tool-bg-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+    .tool-bg-id {
+      font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+      color: var(--code-accent); font-size: 12px; font-weight: 600;
+    }
+    .tool-bg-meta { color: var(--text-secondary); font-size: 11px; }
+    .tool-bg-tasks { display: flex; flex-direction: column; gap: 10px; }
+    .tool-bg-row { display: flex; flex-direction: column; gap: 4px; }
+    .tool-bg-row-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 
     .ls-grid {
       display: grid;
@@ -2148,16 +2169,22 @@ export const VIEWER_CSS = `  <style>
       background: transparent !important;
     }
 
-    /* 修复行号不随内容滚动的问题：将 absolute 改为 sticky */
+    /* 行号栏 sticky 化后必须不透明：横向滚动时相邻半区的代码会从它底下穿过。
+       向右 0.5em 的实体投影补齐行号元素（4em/7.5em）与代码行左内边距
+       （4.5em/8em）之间的缝隙，正好止于代码文字起点。 */
     .d2h-code-side-linenumber {
       position: sticky !important;
       left: 0 !important;
       z-index: 1 !important;
+      background-color: var(--tool-msg-bg);
+      box-shadow: 0.5em 0 0 var(--tool-msg-bg);
     }
     .d2h-code-linenumber {
       position: sticky !important;
       left: 0 !important;
       z-index: 1 !important;
+      background-color: var(--tool-msg-bg);
+      box-shadow: 0.5em 0 0 var(--tool-msg-bg);
     }
 
     /* 用户输入容器（默认隐藏） */

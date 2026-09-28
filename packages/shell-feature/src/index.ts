@@ -353,6 +353,9 @@ export class ShellFeature implements AgentFeature {
   getTemplateNames(): string[] {
     return [
       'bash',
+      'bg',
+      'bg-list',
+      'bg-status',
       'trash-delete',
       'trash-list',
       'trash-restore',

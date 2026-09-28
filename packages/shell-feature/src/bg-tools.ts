@@ -13,7 +13,7 @@
  */
 
 import type { Tool } from '@agentdevjs/core';
-import { createTool } from '@agentdevjs/core';
+import { createTool, withDisplay } from '@agentdevjs/core';
 import type { BgRegistry, BgSpawnOptions } from './bg-core.js';
 import {
   BG_CAPTURE_WINDOW_MS,
@@ -64,6 +64,13 @@ const BG_KILL_INLINE_DESCRIPTION = '停止一个后台任务：先温和终止�
 // ---------------------------------------------------------------------------
 // bash_bg
 // ---------------------------------------------------------------------------
+
+/** 终态的人话标签：killed → 已停止；done 按退出码分流（null 不直接示人）。 */
+function terminalLabel(status: string, exitCode: number | null): string {
+  if (status === 'killed') return '已停止';
+  if (exitCode === 0) return '已完成';
+  return `失败，退出码 ${exitCode ?? '未知'}`;
+}
 
 export function createBashBgTool(description: string, opts: BgToolOptions): Tool {
   const { registry } = opts;
@@ -144,13 +151,25 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
         throw err;
       }
       const s = registry.snapshot(task);
-      return [
-        `后台任务已启动：${task.id}（已运行 ${fmtDur(s.durationMs)}）`,
-        `命令: ${command}`,
-        `汇报：每 ${Math.round(task.pace.intervalMs / 1000)}s 推送一次运行情况；连续 ${Math.round(task.pace.quietAfterMs / 1000)}s 无输出时会推送"无新输出"提醒${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
-        '任务一结束会立刻收到完整结果。不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。',
-        '查看详情用 bg_status；调节奏用 bg_tune；向任务输入用 bg_write；停止任务用 bg_kill。',
-      ].join('\n');
+      // LLM 文本通道（教学契约）与 display 通道（前端任务卡）分离：
+      // 文本一字不动，结构化数据仅供渲染模板消费。
+      return withDisplay(
+        [
+          `后台任务已启动：${task.id}（已运行 ${fmtDur(s.durationMs)}）`,
+          `命令: ${command}`,
+          `汇报：每 ${Math.round(task.pace.intervalMs / 1000)}s 推送一次运行情况；连续 ${Math.round(task.pace.quietAfterMs / 1000)}s 无输出时会推送"无新输出"提醒${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
+          '任务一结束会立刻收到完整结果。不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。',
+          '查看详情用 bg_status；调节奏用 bg_tune；向任务输入用 bg_write；停止任务用 bg_kill。',
+        ].join('\n'),
+        {
+          kind: 'bg-started',
+          taskId: task.id,
+          command,
+          intervalSec: Math.round(task.pace.intervalMs / 1000),
+          quietAfterSec: Math.round(task.pace.quietAfterMs / 1000),
+          ...(readyPattern ? { readyPattern } : {}),
+        },
+      );
     },
   });
 }
@@ -164,6 +183,7 @@ export function createBgListTool(registry: BgRegistry): Tool {
     name: 'bg_list',
     description: BG_LIST_INLINE_DESCRIPTION,
     parameters: { type: 'object', properties: {} },
+    render: { call: 'bg-list', result: 'bg-list' },
     execute: async () => {
       const list = registry.list();
       if (list.length === 0) return '当前没有后台任务。';
@@ -177,7 +197,26 @@ export function createBgListTool(registry: BgRegistry): Tool {
         ].filter(Boolean);
         return `${parts.join(' · ')}\n  命令: ${t.command}`;
       });
-      return `后台任务全景（${list.filter((t) => t.status === 'running').length} 运行中 / ${list.length} 总计）：\n${lines.join('\n')}`;
+      return withDisplay(
+        `后台任务全景（${list.filter((t) => t.status === 'running').length} 运行中 / ${list.length} 总计）：\n${lines.join('\n')}`,
+        {
+          kind: 'bg-list',
+          running: list.filter((t) => t.status === 'running').length,
+          total: list.length,
+          tasks: list.map((t) => ({
+            id: t.id,
+            status: t.status,
+            command: t.command,
+            durationMs: t.durationMs,
+            quietMs: t.quietMs,
+            exitCode: t.exitCode,
+            intervalSec: Math.round(t.pace.intervalMs / 1000),
+            quietAfterSec: Math.round(t.pace.quietAfterMs / 1000),
+            inheritedPace: !!t.inheritedPace,
+            nextReportInMs: t.nextReportInMs,
+          })),
+        },
+      );
     },
   });
 }
@@ -191,6 +230,7 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
       properties: { taskId: { type: 'string', description: '任务号，如 bg-1' } },
       required: ['taskId'],
     },
+    render: { call: 'bg-status', result: 'bg-status' },
     execute: async (args) => {
       const { taskId } = args as { taskId: string };
       const task = registry.get(taskId);
@@ -213,9 +253,7 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
           + `\n…[增量过长：已省略中段 ${omitted} 字符]\n`
           + body.slice(-(BG_STATUS_MAX_CHARS - headSize));
       }
-      const catchUp = view.unsentCatchUp.length > 0
-        ? `\n\n[滞留通知补发]\n${view.unsentCatchUp.join('\n---\n')}`
-        : '';
+      const catchUp = view.unsentCatchUp;
       const clampedNote = view.clamped
         ? '\n（注：部分早期输出超出内存缓冲，完整内容在日志文件中）'
         : '';
@@ -223,7 +261,24 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
       const bodyText = body
         ? `\n\n新增输出:\n${body}`
         : '\n\n（自上次查看以来无新增输出）';
-      return head + bodyText + clampedNote + logNote + catchUp;
+      return withDisplay(
+        head + bodyText + clampedNote + logNote + (catchUp.length > 0 ? `\n\n[滞留通知补发]\n${catchUp.join('\n---\n')}` : ''),
+        {
+          kind: 'bg-status',
+          taskId: s.id,
+          status: s.status,
+          durationMs: s.durationMs,
+          exitCode: s.exitCode,
+          quietMs: s.quietMs,
+          nextReportInMs: s.nextReportInMs,
+          command: s.command,
+          newOutput: body,
+          outputTruncated: overBudget,
+          clamped: view.clamped,
+          ...(overBudget || view.clamped ? { logHint: registry.logHint(task) } : {}),
+          ...(catchUp.length > 0 ? { catchUp } : {}),
+        },
+      );
     },
   });
 }
@@ -240,18 +295,19 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
       },
       required: ['taskId'],
     },
+    render: { call: 'bg', result: 'bg' },
     execute: async (args) => {
       const { taskId, afterSec } = args as { taskId: string; afterSec?: number };
       const afterMs = Math.round((afterSec ?? 30) * 1000);
       const r = registry.scheduleWaitCheck(taskId, afterMs);
       if (!r.scheduled) {
         const s = r.snapshot;
-        return `${taskId} 已结束 [${s.status}]，退出码 ${s.exitCode === null ? 'null' : s.exitCode}，运行 ${fmtDur(s.durationMs)}。尾部输出可用 bg_status 查看。`;
+        return `${taskId} 已结束（${terminalLabel(s.status, s.exitCode)}），运行 ${fmtDur(s.durationMs)}。`;
       }
       const s = r.snapshot;
       return [
         `已安排 ${r.waitSec}s 后检查 ${taskId}，立即进入等待——本回合到此结束，到点自动收到运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。`,
-        `${taskId} 自身的自动汇报：每 ${Math.round(s.pace.intervalMs / 1000)}s 一条（下次最坏 ~${Math.round((s.nextReportInMs ?? 0) / 1000)}s 后），静默 ${Math.round(s.pace.quietAfterMs / 1000)}s 起提醒。之后无需再订阅等待——等自动汇报就好；觉得太密或太疏，用 bg_tune 调一次节奏，之后交给它。`,
+        `${taskId} 自身的自动汇报：每 ${Math.round(s.pace.intervalMs / 1000)}s 一条。之后无需再订阅等待——等自动汇报就好；觉得太密或太疏，用 bg_tune 调一次节奏，之后交给它。`,
       ].join('\n');
     },
   });
@@ -270,6 +326,7 @@ export function createBgTuneTool(registry: BgRegistry): Tool {
       },
       required: ['taskId'],
     },
+    render: { call: 'bg', result: 'bg' },
     execute: async (args) => {
       const { taskId, intervalSec, quietAfterSec } = args as {
         taskId: string; intervalSec?: number; quietAfterSec?: number;
@@ -299,6 +356,7 @@ export function createBgWriteTool(registry: BgRegistry): Tool {
       },
       required: ['taskId', 'text'],
     },
+    render: { call: 'bg', result: 'bg' },
     execute: async (args) => {
       const { taskId, text } = args as { taskId: string; text: string };
       const task = registry.get(taskId);
@@ -321,17 +379,18 @@ export function createBgKillTool(registry: BgRegistry): Tool {
       },
       required: ['taskId'],
     },
+    render: { call: 'bg', result: 'bg' },
     execute: async (args) => {
       const { taskId } = args as { taskId: string };
       const task = registry.get(taskId);
       if (!task) return `未找到后台任务 ${taskId}。用 bg_list 查看现有任务。`;
       if (registry.kill(taskId, { graceful: true })) {
-        return `已向 ${taskId} 发送终止信号（未及时退出会自动强杀）。`;
+        return `已停止 ${taskId}。`;
       }
       const snapshot = registry.snapshot(task);
       const tail = registry.tail(task, 1_000);
       return [
-        `任务不在运行，当前状态 [${snapshot.status}]，退出码 ${snapshot.exitCode === null ? 'null' : snapshot.exitCode}，运行 ${fmtDur(snapshot.durationMs)}。`,
+        `${taskId} 已结束（${terminalLabel(snapshot.status, snapshot.exitCode)}），运行 ${fmtDur(snapshot.durationMs)}。`,
         ...(tail ? [`尾部输出:\n${tail}`] : []),
       ].join('\n');
     },

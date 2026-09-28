@@ -30,6 +30,18 @@ import {
 } from '../src/bg-core.js';
 import { createBashBgTool, createBgKillTool, createBgStatusTool, createBgTuneTool, createBgWaitTool, createBgWriteTool, createShellCommandTool } from '../src/index.js';
 import { findGitBashPath } from '../src/tools.js';
+import { isWithDisplayResult } from '@agentdevjs/core';
+
+/**
+ * 直调 execute 的文本断言助手：bg_status / bash_bg 启动 / bash 转后台走
+ * withDisplay 双通道（生产路径由 tool-executor 解包，LLM 文本不变），
+ * 这里显式解包并顺带锁定 display 形态。
+ */
+function expectWithText(r: unknown): { text: string; display: unknown } {
+  expect(isWithDisplayResult(r)).toBe(true);
+  const w = r as { text: string; display: unknown };
+  return { text: w.text, display: w.display };
+}
 
 const workdir = mkdtempSync(join(tmpdir(), 'agentdev-shell-bg-'));
 
@@ -505,10 +517,11 @@ describe('完整输出落盘', () => {
     expect(s.droppedOutputBytes).toBeGreaterThan(0);
     // bg_status 视角：clamped + 超预算 → 截断提示与日志指引都在
     const tool = createBgStatusTool(h.registry);
-    const r1 = await tool.execute!({ taskId: id } as never, {} as never) as string;
-    expect(r1).toContain('省略中段');
-    expect(r1).toContain('超出内存缓冲');
-    expect(r1).toContain(s.logPath!);
+    const r1 = expectWithText(await tool.execute!({ taskId: id } as never, {} as never));
+    expect(r1.text).toContain('省略中段');
+    expect(r1.text).toContain('超出内存缓冲');
+    expect(r1.text).toContain(s.logPath!);
+    expect((r1.display as Record<string, unknown>).kind).toBe('bg-status');
     child.emit('close', 0);
     const total = first.length + 5 * chunk.length;
     const text = await readLogWhen(s.logPath!, (t) => t.length >= total);
@@ -539,14 +552,14 @@ describe('完整输出落盘', () => {
     const { child, id } = h.spawn({});
     child.stdout.emit('data', 'HEAD' + 'y'.repeat(BG_STATUS_MAX_CHARS + 2_000) + 'TAIL');
     const tool = createBgStatusTool(h.registry);
-    const r1 = await tool.execute!({ taskId: id } as never, {} as never) as string;
-    expect(r1).toContain('HEAD');
-    expect(r1).toContain('TAIL');
-    expect(r1).toContain('省略中段');
-    expect(r1).toContain(h.registry.get(id)!.logPath!);
-    const r2 = await tool.execute!({ taskId: id } as never, {} as never) as string;
-    expect(r2).toContain('无新增输出');
-    expect(r2).not.toContain('省略中段');
+    const r1 = expectWithText(await tool.execute!({ taskId: id } as never, {} as never));
+    expect(r1.text).toContain('HEAD');
+    expect(r1.text).toContain('TAIL');
+    expect(r1.text).toContain('省略中段');
+    expect(r1.text).toContain(h.registry.get(id)!.logPath!);
+    const r2 = expectWithText(await tool.execute!({ taskId: id } as never, {} as never));
+    expect(r2.text).toContain('无新增输出');
+    expect(r2.text).not.toContain('省略中段');
   });
 
   it('完成通知始终带完整日志路径', async () => {
@@ -589,7 +602,7 @@ describe('bg_kill / bg_tune / bg_write 工具面', () => {
     const tool = createBgKillTool(h.registry);
 
     const result = await tool.execute!({ taskId: id } as never, {} as never) as string;
-    expect(result).toContain('[done]');
+    expect(result).toContain('已结束');
     expect(result).toContain('退出码 7');
     expect(result).toContain('final output');
   });
@@ -725,8 +738,8 @@ describe('bg_wait 到点检查', () => {
     expect(out).toContain('立即进入等待');
     expect(out).toContain('本回合到此结束');
     // 一条线引导：自述自动汇报节奏，并指向 bg_tune 接管
-    expect(out).toContain('每 300s 一条（下次最坏 ~300s 后）');
-    expect(out).toContain('静默 300s 起提醒');
+    expect(out).toContain('每 300s 一条');
+    expect(out).not.toContain('静默');
     expect(out).toContain('无需再订阅等待');
     expect(out).toContain('bg_tune');
     expect(h.registry.hasActiveWaitCheck()).toBe(true);
@@ -734,7 +747,7 @@ describe('bg_wait 到点检查', () => {
     child.emit('close', 0);
     const out2 = await tool.execute!({ taskId: id } as never, {} as never) as string;
     expect(out2).toContain('已结束');
-    expect(out2).toContain('退出码 0');
+    expect(out2).toContain('已完成');
   });
 
   it('订阅吸收：节拍汇报先于 deadline 送达，订阅被吸收不再触发检查', async () => {
@@ -882,10 +895,11 @@ describe('工具集成（真实子进程）', () => {
       resourceRoot: process.cwd(),
       registry: h.registry,
     });
-    const out = await tool.execute!({ command: 'sleep 5' } as never, {} as never) as string;
+    const r = expectWithText(await tool.execute!({ command: 'sleep 5' } as never, {} as never));
     const task = h.registry.get('bg-1')!;
-    expect(out).toContain('90s');
-    expect(out).toContain('60s');
+    expect(r.text).toContain('90s');
+    expect(r.text).toContain('60s');
+    expect((r.display as Record<string, unknown>).kind).toBe('bg-started');
     expect(task.pace).toEqual({ intervalMs: 90_000, quietAfterMs: 60_000 });
     h.registry.kill(task.id);
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -918,14 +932,15 @@ describe('工具集成（真实子进程）', () => {
     const controller = new AbortController();
     // 直调 execute 没有 executor 计时：模拟 executor 400ms 后超时 abort。
     setTimeout(() => controller.abort(), 400).unref?.();
-    const out = (await tool.execute!(
+    const r = expectWithText(await tool.execute!(
       { command: 'sleep 3; echo survived' } as never,
       { signal: controller.signal, timeoutMs: 400, termination: () => 'timeout' } as never,
-    )) as string;
+    ));
 
-    expect(out).toContain('已转为后台任务');
+    expect(r.text).toContain('已转为后台任务');
     // 命令回显含 'survived' 字样是预期的；断言的是命令输出未随返回（独立行出现）。
-    expect(out).not.toMatch(/^survived$/m);
+    expect(r.text).not.toMatch(/^survived$/m);
+    expect((r.display as Record<string, unknown>).kind).toBe('bg-started');
     const list = h.registry.list();
     expect(list.length).toBe(1);
     expect(list[0].status).toBe('running');

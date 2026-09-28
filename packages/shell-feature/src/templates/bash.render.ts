@@ -59,6 +59,44 @@ export interface BashCallProgressContext {
   outputTail?: string;
 }
 
+/**
+ * 后台任务启动 display 载荷：bash_bg 启动成功 / bash 超前台预算转后台时，
+ * execute 经 withDisplay 附带（LLM 文本通道不变，前端渲染任务卡）。
+ */
+export interface BgStartedDisplay {
+  kind: 'bg-started';
+  taskId: string;
+  command: string;
+  intervalSec: number;
+  quietAfterSec: number;
+  readyPattern?: string;
+  inherited?: boolean;
+}
+
+function isBgStartedDisplay(data: unknown): data is BgStartedDisplay {
+  return !!data && typeof data === 'object'
+    && (data as Record<string, unknown>).kind === 'bg-started';
+}
+
+function chip(label: string): string {
+  return `<span class="tool-chip">${label}</span>`;
+}
+
+/** 后台任务启动卡：任务号 + 命令 + 汇报节奏（不包卡片，宿主提供卡面）。 */
+function renderBgStarted(d: BgStartedDisplay): string {
+  const chips = [
+    chip(`每 ${d.intervalSec}s 汇报`),
+    ...(d.readyPattern ? [chip(`就绪标记 &quot;${escapeHtml(d.readyPattern)}&quot;`)] : []),
+    ...(d.inherited ? [chip('继承紧凑节奏，可 bg_tune 放宽')] : []),
+  ].join('');
+  return `<div class="tool-bg-head">`
+    + `<span class="tool-bg-id">${escapeHtml(d.taskId)}</span>`
+    + `<span class="tool-chip ok">后台任务已启动</span>`
+    + `</div>`
+    + `<div class="bash-command">$ ${escapeHtml(d.command)}</div>`
+    + `<div class="tool-chips">${chips}</div>`;
+}
+
 function isZhUi(): boolean {
   try {
     return String(navigator.language || '').toLowerCase().startsWith('zh');
@@ -124,13 +162,21 @@ export function renderCallProgress(progress: BashCallProgressContext): string {
 }
 
 const bashRender: InlineRenderTemplate = {
-  call: (args: { command?: string }, _success?: boolean, progress?: BashCallProgressContext) => {
+  call: (args: { command?: string; intervalSec?: number; quietAfterSec?: number; readyPattern?: string; timeout?: number }, _success?: boolean, progress?: BashCallProgressContext) => {
     const command = args?.command || '';
     const progressHtml = progress && typeof progress === 'object' ? renderCallProgress(progress) : '';
-    return `<div class="bash-command">> ${escapeHtml(command)}</div>${progressHtml}`;
+    // bash_bg / powershell 的可选节奏与超时参数：有传入才显示，bash 前台调用零变化。
+    const chips: string[] = [];
+    if (typeof args?.intervalSec === 'number') chips.push(`每 ${args.intervalSec}s 汇报`);
+    if (typeof args?.quietAfterSec === 'number') chips.push(`静默 ${args.quietAfterSec}s 提醒`);
+    if (args?.readyPattern) chips.push(`就绪标记 &quot;${escapeHtml(args.readyPattern)}&quot;`);
+    if (typeof args?.timeout === 'number' && args.timeout > 0) chips.push(`超时 ${formatTimeoutCompact(args.timeout)}`);
+    const chipsHtml = chips.length > 0 ? `<div class="tool-chips">${chips.map(chip).join('')}</div>` : '';
+    return `<div class="bash-command">> ${escapeHtml(command)}</div>${chipsHtml}${progressHtml}`;
   },
   result: (data: unknown, success?: boolean) => {
     if (!success) return formatError(data);
+    if (isBgStartedDisplay(data)) return renderBgStarted(data);
     const output = formatOutput(data);
     return `<pre class="bash-output">${escapeHtml(output)}</pre>`;
   }

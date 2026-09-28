@@ -1942,7 +1942,35 @@ export const VIEWER_CSS = `  <style>
     .bash-command { font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-primary); }
     .bash-output { font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; color: var(--text-secondary); white-space: pre-wrap; margin: 0; }
     .file-path { color: #58a6ff; }
-    
+    .tool-result-body .tool-search-results,
+    .tool-result-body .tool-file-list,
+    .tool-result-body .tool-tree {
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .tool-search-file + .tool-search-file { margin-top: 12px; }
+    .tool-search-path { color: var(--text-secondary); overflow-wrap: anywhere; margin-bottom: 3px; }
+    .tool-search-line { display: flex; gap: 16px; min-width: max-content; white-space: pre; }
+    .tool-search-line::before {
+      content: ':' attr(data-line);
+      flex: none;
+      width: 44px;
+      text-align: right;
+      color: var(--text-secondary);
+      user-select: none;
+    }
+    .tool-file-item { padding: 2px 0; overflow-wrap: anywhere; }
+    .tool-tree { white-space: pre; }
+    .tool-result-note {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+    .tool-result-warning { color: var(--warning-color); }
+
     .ls-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));

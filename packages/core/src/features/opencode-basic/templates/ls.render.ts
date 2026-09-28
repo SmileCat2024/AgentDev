@@ -33,10 +33,10 @@ export default {
       </div>`;
     }
 
-    return `<div style="font-family:&quot;Fira Code&quot;, &quot;Cascadia Code&quot;, &quot;Source Code Pro&quot;, &quot;JetBrains Mono&quot;, ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size:11px; line-height:1.4; max-height:400px; overflow:auto; white-space:pre; color:var(--text-primary);">${escapeHtml(data.tree || '')}</div>
-      <div style="color:var(--text-secondary); padding:4px 0; font-size:11px;">
+    return `<div class="tool-tree">${escapeHtml(data.tree || '')}</div>
+      <div class="tool-result-note">
         ${data.count} file${data.count !== 1 ? 's' : ''} found
-        ${data.truncated ? '<span style="color:var(--warning-color)"> (truncated)</span>' : ''}
+        ${data.truncated ? '<span class="tool-result-warning"> (truncated)</span>' : ''}
       </div>`;
   }
 } as const satisfies InlineRenderTemplate;

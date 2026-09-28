@@ -42,10 +42,10 @@ export default {
     if (!data.files || data.files.length === 0) {
       return '<div style="color:var(--warning-color)">No files found</div>';
     }
-    return `<div style="font-family:&quot;Fira Code&quot;, &quot;Cascadia Code&quot;, &quot;Source Code Pro&quot;, &quot;JetBrains Mono&quot;, ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size:12px; max-height:300px; overflow:auto;">
-      ${data.files.map((f: string) => `<div style="color:var(--text-primary); padding:2px 0;">${escapeHtml(f)}</div>`).join('')}
-      ${data.truncated ? '<div style="color:var(--warning-color); padding:4px 0;">(Results truncated...)</div>' : ''}
-      <div style="color:var(--text-secondary); padding:4px 0;">Found ${data.count} file${data.count !== 1 ? 's' : ''}</div>
+    return `<div class="tool-file-list">
+      ${data.files.map((f: string) => `<div class="tool-file-item">${escapeHtml(f)}</div>`).join('')}
+      ${data.truncated ? '<div class="tool-result-note tool-result-warning">Results truncated</div>' : ''}
+      <div class="tool-result-note">Found ${data.count} file${data.count !== 1 ? 's' : ''}</div>
     </div>`;
   }
 } as const satisfies InlineRenderTemplate;

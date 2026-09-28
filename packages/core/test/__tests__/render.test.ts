@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import grepTemplate from '../../src/features/opencode-basic/templates/grep.render.js';
+import globTemplate from '../../src/features/opencode-basic/templates/glob.render.js';
+import lsTemplate from '../../src/features/opencode-basic/templates/ls.render.js';
 import {
   interpolateTemplate,
   applyTemplate,
@@ -7,6 +10,37 @@ import {
   getToolDisplayName,
   RENDER_TEMPLATES,
 } from '../../src/core/render.js';
+
+describe('opencode-basic result templates', () => {
+  it('renders Grep groups without a nested scroll and escapes file, line and text', () => {
+    const html = grepTemplate.result({
+      results: [
+        { path: '<file>.ts', lineNum: '1" onmouseover="x', lineText: '<script>alert(1)</script>' },
+        { path: '<file>.ts', lineNum: 2, lineText: 'second' },
+        { path: 'next.ts', lineNum: 8, lineText: 'third' },
+      ],
+      matches: 3,
+      truncated: true,
+    }, true);
+    expect(html).toContain('class="tool-search-results"');
+    expect(html.match(/class="tool-search-file"/g)).toHaveLength(2);
+    expect(html).toContain('&lt;file&gt;.ts');
+    expect(html).toContain('data-line="1&quot; onmouseover=&quot;x"');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).toContain('Results truncated');
+    expect(html).not.toMatch(/max-height|overflow:auto/);
+  });
+
+  it('renders Glob and LS file lists without a nested scroll', () => {
+    const glob = globTemplate.result({ files: ['<file>.ts'], count: 1, truncated: true }, true);
+    const ls = lsTemplate.result({ tree: '<root>\n  file.ts', count: 1, truncated: false }, true);
+    expect(glob).toContain('class="tool-file-list"');
+    expect(glob).toContain('&lt;file&gt;.ts');
+    expect(ls).toContain('class="tool-tree"');
+    expect(ls).toContain('&lt;root&gt;');
+    expect(glob + ls).not.toMatch(/max-height|overflow:auto/);
+  });
+});
 
 // ============= interpolateTemplate =============
 

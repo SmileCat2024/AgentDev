@@ -119,6 +119,11 @@ export class ShellFeature implements AgentFeature {
     return this._registry;
   }
 
+  async onDestroy(): Promise<void> {
+    if (this._registry && this.bgObserver) this._registry.removeObserver(this.bgObserver);
+    this._registry = null;
+  }
+
   /**
    * StepFinish guard（advisor）：本回合安排过 bg_wait 到点检查时结束当前
    * call（Decision.Deny 在 react-loop 的既有语义），把等待交给通知推送——

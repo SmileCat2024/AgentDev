@@ -334,6 +334,11 @@ export class BgRegistry {
     if (!this._observers.includes(fn)) this._observers.push(fn);
   }
 
+  removeObserver(fn: BgObserver): void {
+    const index = this._observers.indexOf(fn);
+    if (index !== -1) this._observers.splice(index, 1);
+  }
+
   // -- 查询 ---------------------------------------------------------------
 
   private _emit(kind: BgObserverEvent['kind'], task: BgTask): void {
@@ -397,8 +402,14 @@ export class BgRegistry {
 
   /** 尾部输出（字符）。 */
   tail(task: BgTask, maxChars: number): string {
-    const text = task.chunks.join('');
-    return text.length > maxChars ? text.slice(-maxChars) : text;
+    const pieces: string[] = [];
+    let remaining = maxChars;
+    for (let i = task.chunks.length - 1; i >= 0 && remaining > 0; i--) {
+      const chunk = task.chunks[i];
+      pieces.push(chunk.slice(-remaining));
+      remaining -= chunk.length;
+    }
+    return pieces.reverse().join('');
   }
 
   /** 通知/状态文本中的完整日志指引行：有路径给路径，落盘失败给不可用提示。 */

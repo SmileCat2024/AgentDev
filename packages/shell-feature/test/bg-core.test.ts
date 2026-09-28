@@ -114,6 +114,38 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('后台任务输出尾部', () => {
+  it('跨多个 chunk 提取尾部且不遍历无关的历史输出', () => {
+    const h = makeHarness();
+    const { id } = h.spawn();
+    const task = h.registry.get(id)!;
+    task.chunks = ['old', 'middle', 'latest'];
+    expect(h.registry.tail(task, 8)).toBe('lelatest');
+    expect(h.registry.tail(task, 2)).toBe('st');
+    expect(h.registry.tail(task, 0)).toBe('');
+    h.registry.dispose();
+  });
+});
+
+describe('后台任务观察者生命周期', () => {
+  it('会话退出后摘除观察者，后续任务输出不再广播给旧会话', () => {
+    const h = makeHarness();
+    const first = vi.fn();
+    const second = vi.fn();
+    h.registry.addObserver(first);
+    h.registry.addObserver(second);
+    const { child } = h.spawn();
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    h.registry.removeObserver(first);
+    child.stdout.emit('data', 'progress');
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(2);
+    h.registry.killAll();
+    h.registry.dispose();
+  });
+});
+
 describe('双节奏引擎', () => {
   it('风暴回归：interval 与 quiet 同刻双到期时只发一条，不产生零延迟循环', async () => {
     const h = makeHarness();

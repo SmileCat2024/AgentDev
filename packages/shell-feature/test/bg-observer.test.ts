@@ -284,6 +284,16 @@ describe('ShellFeature 集成面', () => {
     expect(eventsB.map((e) => e.kind)).toEqual(['registered']);
     expect(featureB.getBgRegistry()!.list()).toHaveLength(1);
 
+    await featureA.onDestroy();
+    vi.advanceTimersByTime(1_001);
+    child.stdout.emit('data', 'new output');
+    expect(eventsA.map((e) => e.kind)).toEqual(['registered']);
+    expect(eventsB.map((e) => e.kind)).toEqual(['registered', 'output']);
+    expect(featureA.getBgRegistry()).toBeNull();
+    expect(featureB.getBgRegistry()).toBe(registryA);
+    await featureB.onDestroy();
+    registryA.killAll();
+
     // 不同 workdir 不共享（测试隔离语义）。
     const featureC = new ShellFeature({ workspaceDir: `${workdir}-c`, bgObserver: () => {} });
     await featureC.getAsyncTools(makeCtx(featureC, 'agent-shared-reg'));

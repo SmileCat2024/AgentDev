@@ -2013,10 +2013,12 @@ class ViewerWorker {
     const lastMsg = messages[messages.length - 1];
     if (!lastMsg) return '';
 
-    // 提取关键字段生成签名
+    // 图片附件也属于消息内容：工具文本已经入队、图片随结果后到时，
+    // 仅比较文本会把附件更新吞掉，前端直到下一条消息都收不到 probe。
     const sig = {
       r: lastMsg.role,
       c: lastMsg.content,
+      i: lastMsg.images,
       // 工具调用只比较数量和名称（因为 toolCalls 可能包含动态 ID）
       tc: lastMsg.toolCalls?.map((tc: any) => ({ n: tc.name, a: tc.arguments }))
     };

@@ -127,6 +127,27 @@ describe('changeKind classification (push-time)', () => {
     expect(probe.changeKind).toBe('tail');
   });
 
+  it('classifies last tool-result image attachment as a tail change', () => {
+    const { worker, agentId } = createWorker();
+    const user = makeMsg('user', 'inspect image');
+    const assistant = makeMsg('assistant', '', {
+      toolCalls: [{ id: 'read-1', name: 'read_image', arguments: { path: 'image.png' } }],
+    });
+    const toolWithoutImage = makeMsg('tool', '{"success":true}', { toolCallId: 'read-1' });
+    push(worker, agentId, [user, assistant, toolWithoutImage]);
+
+    const toolWithImage = makeMsg('tool', '{"success":true}', {
+      toolCallId: 'read-1',
+      images: [{ path: 'C:/managed/image.png', mediaType: 'image/png' }],
+    });
+    push(worker, agentId, [user, assistant, toolWithImage]);
+
+    const probe = readOverview(worker, agentId)._messagesProbe;
+    expect(probe.changeKind).toBe('tail');
+    expect(probe.sinceIndex).toBe(2);
+    expect(readMessages(worker, agentId, 'tail=1').json.messages[0].images).toEqual(toolWithImage.images);
+  });
+
   it('classifies count decrease as rewrite', () => {
     const { worker, agentId } = createWorker();
     const m1 = makeMsg('user', 'a');

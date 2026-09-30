@@ -1,6 +1,5 @@
 /**
  * Write 工具渲染模板
- * 使用 .render.ts 原版本（带 details 折叠 diff，更实用）
  */
 
 import type { InlineRenderTemplate } from '../../../core/types.js';
@@ -41,16 +40,22 @@ export default {
 
     // 使用 Diff2Html 生成 Diff
     try {
-      return Diff2Html.html(diffContent, {
+      return stripViewedCheckbox(Diff2Html.html(diffContent, {
         drawFileList: false,
         matching: 'lines',
         outputFormat: 'side-by-side',
         colorScheme: 'dark'
-      });
+      }));
     } catch {
       return `<pre style="background:var(--hover-bg); padding:8px;">${escapeHtml(diffContent)}</pre>`;
     }
   }
 } as const satisfies InlineRenderTemplate;
+
+// Diff2Html 3.x 无条件在每个 diff 文件头输出 Viewed 折叠复选框（无配置
+// 开关），是与宿主行级折叠并存的块内折叠控件，统一移除。
+function stripViewedCheckbox(html: string): string {
+  return html.replace(/<label class="d2h-file-collapse">[\s\S]*?<\/label>/g, '');
+}
 
 declare const Diff2Html: any;

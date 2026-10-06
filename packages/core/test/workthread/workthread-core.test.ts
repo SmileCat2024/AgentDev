@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { WorkThreadStore, WorkThreadNotFoundError, WorkThreadRevisionConflictError } from '../../src/core/workthread/store.js';
-import { WorkThread, WorkThreadNotFoundError as CoreThreadNotFound, DEFAULT_SUCCESSION_INSTRUCTION } from '../../src/core/workthread/core.js';
+import { WorkThread, WorkThreadNotFoundError as CoreThreadNotFound, DEFAULT_SUCCESSION_INSTRUCTION, HANDOFF_STALE_MS } from '../../src/core/workthread/core.js';
 import { WorkThreadRuntimeBridge } from '../../src/core/workthread/bridge.js';
 import {
   appendCommand,
@@ -882,6 +882,196 @@ describe('WorkThread succession gates (K3 / K9 / R8 / R3)', () => {
     const after = await thread.failSessionHandoff(wt.threadId, { reason: 'unwarranted', stage: 'unknown' });
     expect(after.status).toBe('open');
     expect(after.lastLifecycleEvent).toBeNull();
+  });
+});
+
+/**
+ * PR-F2 特征测试：state-kernel 迁移前的现状行为锁定（只锁现状，不判断对错）。
+ * 构造手法约定：
+ * - 「构造态」用 store.update 直接写盘（与上方 stale / re-begin 用例同手法）
+ * - 时钟相关用例直接构造盘上 startedAt，不 mock timers；fresh 侧在陈旧线内侧
+ *   留时延裕量（构造与 begin 的时钟读数之间存在磁盘事务时延，精确压线
+ *   STALE-1 会随时延翻转为 stale，方向不安全；stale 侧压线构造只会更陈旧，
+ *   方向安全）
+ */
+describe('WorkThread handoff state characteristics (PR-F2 behavior lock)', () => {
+  let root: string;
+  beforeAll(async () => {
+    root = await makeTempRoot();
+  });
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('failSessionHandoff repeats on rotation_failed: another handoff_failed event lands and stage is rewritable (现状允许重复立卷)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'rf2-dup-s1' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-dup-s1', reason: 'context_guard' });
+
+    const first = await thread.failSessionHandoff(wt.threadId, { reason: 'compact_crashed', stage: 'compact_or_successor' });
+    expect(first.status).toBe('rotation_failed');
+
+    // 挡板仍在：第二次失败同样有立卷资格（守卫只看 closed 与 pendingSuccession，不看 status）
+    const second = await thread.failSessionHandoff(wt.threadId, { reason: 'retry_crashed', stage: 'advance_head' });
+    expect(second.status).toBe('rotation_failed');
+    expect(second.pendingSuccession!.stage).toBe('advance_head', '挡板 stage 被新调用改写');
+    expect(second.lastLifecycleEvent?.type).toBe('handoff_failed');
+    expect(second.lastLifecycleEvent?.reason).toBe('retry_crashed');
+    expect(second.lastLifecycleEvent?.stage).toBe('advance_head');
+
+    // 事件流水：两次 handoff_failed 都在卷
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.lifecycleEvents.filter((e) => e.type === 'handoff_failed')).toHaveLength(2);
+  });
+
+  it('failSessionHandoff on a constructed open + pendingSuccession state lands rotation_failed (ADR-0021 勘误回归锚：守卫不检查 status)', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'rf2-open-s1' } });
+
+    // 直接写盘构造：status 保持 open，但挡板已在（异常残留形态）
+    await thread.store.update(wt.threadId, (draft) => {
+      draft.pendingSuccession = { fromSessionId: 'rf2-open-s1', reason: 'trim', stage: 'started', startedAt: Date.now() };
+      return draft;
+    });
+
+    const failed = await thread.failSessionHandoff(wt.threadId, { reason: 'compact_crashed', stage: 'compact_or_successor' });
+    expect(failed.status).toBe('rotation_failed', '现有守卫只检查终态与挡板存在，不检查 status');
+    expect(failed.pendingSuccession!.stage).toBe('compact_or_successor');
+    expect(failed.lastLifecycleEvent?.type).toBe('handoff_failed');
+  });
+
+  it('beginSessionHandoff on rotation_failed is allowed (恢复重走)：rotation_failed → rotating', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'rf2-rebegin-s1' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-rebegin-s1', reason: 'context_guard' });
+    await thread.failSessionHandoff(wt.threadId, { reason: 'compact_crashed', stage: 'compact_or_successor' });
+
+    // handoff_in_progress 守卫只拦 status === 'rotating'；rotation_failed 可重开
+    const rebegun = await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-rebegin-s1', reason: 'manual_recovery' });
+    expect(rebegun.status).toBe('rotating');
+    expect(rebegun.pendingSuccession!.reason).toBe('manual_recovery');
+    expect(rebegun.pendingSuccession!.stage).toBe('started', '重走把 stage 复位为 started');
+    expect(rebegun.lastLifecycleEvent?.type).toBe('handoff_started');
+  });
+
+  it('delivery path lazily clears a stale barrier on rotation_failed: barrier cleared, status stays rotation_failed', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'rf2-stale-s1' } });
+    await thread.appendCommand({ threadId: wt.threadId, text: 'later' });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-stale-s1', reason: 'context_guard' });
+    await thread.failSessionHandoff(wt.threadId, { reason: 'compact_crashed', stage: 'compact_or_successor' });
+
+    // 把挡板时间拨到 stale（对照 rotating 场景 stale 用例的构造手法）
+    await thread.store.update(wt.threadId, (draft) => {
+      draft.pendingSuccession!.startedAt = Date.now() - 10 * 60 * 1000;
+      return draft;
+    });
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(0);
+    expect(result.reason).toBe('bridge_disabled'); // dormant bridge：清除后无投递发生
+
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.pendingSuccession).toBeNull('惰性清除落盘');
+    expect(record!.status).toBe('rotation_failed', 'clearStaleHandoff 只把 rotating 归回 open，rotation_failed 原样保持');
+    expect(record!.lastLifecycleEvent?.type).toBe('handoff_stale');
+    expect(record!.commands.find((c) => c.text === 'later')!.status).toBe(WorkThreadCommandStatus.PENDING);
+  });
+
+  it('closeThread is allowed on rotating and rotation_failed; pending command cancellation applies in both', async () => {
+    // rotating 状态收口
+    {
+      const { thread } = makeThread(root);
+      const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'rf2-close-rot' } });
+      await thread.appendCommand({ threadId: wt.threadId, text: 'x' });
+      await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-close-rot', reason: 'trim' });
+
+      const closed = await thread.closeThread(wt.threadId, { reason: 'user' });
+      expect(closed.status).toBe('closed');
+      expect(closed.commands.find((c) => c.text === 'x')!.status).toBe(WorkThreadCommandStatus.CANCELLED);
+      expect(closed.pendingSuccession).toBeTruthy('现状：收口直接落 closed，不清挡板');
+    }
+
+    // rotation_failed 状态收口
+    {
+      const { thread } = makeThread(root);
+      const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'rf2-close-fail' } });
+      await thread.appendCommand({ threadId: wt.threadId, text: 'y' });
+      await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-close-fail', reason: 'trim' });
+      await thread.failSessionHandoff(wt.threadId, { reason: 'compact_crashed', stage: 'compact_or_successor' });
+
+      const closed = await thread.closeThread(wt.threadId, { reason: 'head_session_deleted' });
+      expect(closed.status).toBe('closed');
+      expect(closed.commands.find((c) => c.text === 'y')!.status).toBe(WorkThreadCommandStatus.CANCELLED);
+      expect(closed.lastLifecycleEvent?.type).toBe('closed');
+    }
+  });
+
+  it('advanceHead on rotation_failed is allowed: lands open with the barrier cleared', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'rf2-adv-s1' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-adv-s1', reason: 'context_guard' });
+    const failed = await thread.failSessionHandoff(wt.threadId, { reason: 'compact_crashed', stage: 'compact_or_successor' });
+    expect(failed.status).toBe('rotation_failed');
+
+    const advanced = await thread.advanceHead({
+      threadId: wt.threadId,
+      fromSessionId: 'rf2-adv-s1',
+      toSessionId: 'rf2-adv-s2',
+      endKind: 'trim',
+    });
+    expect(advanced.status).toBe('open');
+    expect(advanced.pendingSuccession).toBeNull('挡板清空');
+    expect(advanced.headSessionId).toBe('rf2-adv-s2');
+    expect(advanced.lastLifecycleEvent?.type).toBe('handoff_completed');
+  });
+
+  it('beginSessionHandoff fresh clock boundary: inside HANDOFF_STALE_MS rejects, at the line reopens (stale 覆写重开)', async () => {
+    // ── fresh 侧：elapsed < HANDOFF_STALE_MS → handoff_in_progress 拒绝
+    {
+      const { thread } = makeThread(root);
+      const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'rf2-clock-fresh' } });
+      // 陈旧线内侧 60s 裕量：构造与 begin 之间的磁盘事务时延 << 60s，确定性地 fresh
+      await thread.store.update(wt.threadId, (draft) => {
+        draft.status = 'rotating';
+        draft.pendingSuccession = {
+          fromSessionId: 'rf2-clock-fresh',
+          reason: 'trim',
+          stage: 'started',
+          startedAt: Date.now() - HANDOFF_STALE_MS + 60_000,
+        };
+        return draft;
+      });
+      const barrierStartedAt = (await thread.getThread(wt.threadId))!.pendingSuccession!.startedAt;
+
+      await expect(
+        () => thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-clock-fresh', reason: 'again' }),
+      ).rejects.toMatchObject({ code: 'handoff_in_progress', status: 409 });
+
+      const record = await thread.getThread(wt.threadId);
+      expect(record!.pendingSuccession!.startedAt).toBe(barrierStartedAt, '拒绝请求不得续命既有挡板时间戳');
+    }
+
+    // ── stale 侧：恰好压线 startedAt = now - HANDOFF_STALE_MS（elapsed ≥ 陈旧线）
+    // 构造到 begin 之间经过的任何时延只会让挡板更陈旧，方向安全 → 放行覆写重开
+    {
+      const { thread } = makeThread(root);
+      const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'rf2-clock-stale' } });
+      await thread.store.update(wt.threadId, (draft) => {
+        draft.status = 'rotating';
+        draft.pendingSuccession = {
+          fromSessionId: 'rf2-clock-stale',
+          reason: 'trim',
+          stage: 'started',
+          startedAt: Date.now() - HANDOFF_STALE_MS,
+        };
+        return draft;
+      });
+
+      const reopened = await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'rf2-clock-stale', reason: 'manual_recovery' });
+      expect(reopened.status).toBe('rotating');
+      expect(reopened.pendingSuccession!.reason).toBe('manual_recovery', 'stale 残卷可覆写重开');
+    }
   });
 });
 

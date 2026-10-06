@@ -148,7 +148,10 @@ function threadIdentityError(message: string, code: string, status: number): Err
 //   残留）；pending 指令批量 CANCELLED。
 // - setHold 不上表：hold 是伴随字段门禁，不是 status 轴转换。
 // event.type 直接用落盘 lifecycle 词汇；lifecycleEvent 由内核生成（type/status/
-// at/payload 与现状逐字节同构），外壳经 pushLifecycleEvent 追加落盘。
+// payload 与现状同构；at 由内核在 effect 后独立采样，与旧实现「事务体单次
+// Date.now() 复用到挡板 startedAt / closedAt」可能差 1ms——差分测试 fake
+// timers 步内恒定不可见，无消费方依赖该相等性），外壳经 pushLifecycleEvent
+// 追加落盘。
 
 /** 锚点转换表事件词汇：type 即落盘 lifecycle type；字段由外壳归一后传入。 */
 type AnchorEvent = {

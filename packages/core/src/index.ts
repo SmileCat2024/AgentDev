@@ -287,6 +287,20 @@ export type {
   WorkThreadDeliveryOutcome,
 } from './core/workthread/index.js';
 
+// 状态机统一内核（ADR-0021：纯函数转换求值器，新状态机一律用内核定义）
+export { defineStateMachine, reduce } from './core/state-kernel/index.js';
+export type {
+  StateMachineDef,
+  TransitionDef,
+  KernelEvent,
+  KernelCtx,
+  KernelLifecycleEvent,
+  Guard,
+  GuardRejection,
+  StateDef,
+  ReduceResult,
+} from './core/state-kernel/index.js';
+
 // Continuation request 类型
 export type {
   CallContinuationRequest,

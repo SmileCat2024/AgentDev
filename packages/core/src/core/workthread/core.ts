@@ -37,6 +37,8 @@ import {
 import { WorkThreadRuntimeBridge, WORKTHREAD_BRIDGE_DISABLED_REASON } from './bridge.js';
 import type { WorkThreadBridge } from './bridge.js';
 import { generateWorkThreadId } from './store.js';
+import { defineStateMachine, reduce } from '../state-kernel/index.js';
+import type { StateMachineDef } from '../state-kernel/index.js';
 
 export { WorkThreadNotFoundError };
 
@@ -126,11 +128,217 @@ function threadIdentityError(message: string, code: string, status: number): Err
   return Object.assign(new Error(message), { code, status });
 }
 
+// ── 锚点状态机转换表（state-kernel，PR-F3 / ADR-0021 阶段 1）──────────
+//
+// 精确等价对照（实施计划 §3 转换表 ↔ §1.1 现状基准）：
+// - handoff_started（begin）：hold / rotating+fresh / head≠from 三守卫 → rotating；
+//   effect 置挡板 + R3 播种（策略抛错 = 整体失败：reduce 向上抛，store.update
+//   丢弃 draft，不留半套挡板）。closed 由终态保护统一拒绝。
+//   反直觉现状（F2 用例锁定，严禁顺手修正）：rotation_failed + fresh 挡板上
+//   begin 放行覆写——fresh 守卫只拦 status === 'rotating'（R8 单飞在该态失效）。
+// - handoff_failed（fail）：from '*'（守卫不查 status：构造态 open+挡板同样
+//   落卷，F2 用例 2 锁定）+ 挡板存在守卫 → rotation_failed；挡板保留，stage 补写。
+// - handoff_completed（advance）：hold / head CAS / already_head / duplicate_session
+//   → open；effect chain 收口 + 追加 + 清挡板。异步身份三道校验不进表（内核
+//   严格同步），留在外壳事务内 reduce 之后执行——抛错时 store.update 整体丢弃
+//   draft，磁盘终态与「守卫前置」等价。
+// - handoff_stale（clearStaleHandoff）：挡板存在守卫；to 条件目标——仅 rotating
+//   回 open，rotation_failed 清挡板后 status 保持（F2 用例 4 锁定）。
+// - closed（closeThread）：无守卫 → closed；不清挡板（现状：closed 记录挡板
+//   残留）；pending 指令批量 CANCELLED。
+// - setHold 不上表：hold 是伴随字段门禁，不是 status 轴转换。
+// event.type 直接用落盘 lifecycle 词汇；lifecycleEvent 由内核生成（type/status/
+// at/payload 与现状逐字节同构），外壳经 pushLifecycleEvent 追加落盘。
+
+/** 锚点转换表事件词汇：type 即落盘 lifecycle type；字段由外壳归一后传入。 */
+type AnchorEvent = {
+  type: 'handoff_started' | 'handoff_failed' | 'handoff_completed' | 'handoff_stale' | 'closed';
+  fromSessionId?: string;
+  toSessionId?: string;
+  reason?: string;
+  stage?: string;
+  error?: string | null;
+  endKind?: string;
+};
+
+/** 构建锚点转换表（闭包捕获 R3 接续策略；每个 WorkThread 实例定义期校验一次）。 */
+function createWorkThreadAnchorMachine(
+  continuationPolicy: WorkThreadContinuationPolicy,
+): StateMachineDef<WorkThreadRecord, AnchorEvent> {
+  return {
+    id: 'workthread-anchor',
+    statusField: 'status',
+    states: {
+      open: {},
+      rotating: {},
+      rotation_failed: {},
+      closed: { terminal: true },
+    },
+    transitions: [
+      {
+        event: 'handoff_started',
+        from: '*',
+        guards: [
+          // K9：归档/行政冻结期不开新交接
+          (record) => (record.hold === true ? { code: 'thread_held' } : true),
+          // R8 single-flight：仅拦 rotating + fresh；stale 残卷可覆写重开
+          (record, _event, ctx) => {
+            const pending = record.pendingSuccession;
+            return record.status === 'rotating' && pending?.startedAt
+              && ctx.now() - pending.startedAt < HANDOFF_STALE_MS
+              ? { code: 'handoff_in_progress' }
+              : true;
+          },
+          (record, event) => (
+            record.headSessionId !== event.fromSessionId ? { code: 'head_mismatch' } : true
+          ),
+        ],
+        to: 'rotating',
+        eventPayload: (_record, event) => ({ fromSessionId: event.fromSessionId!, reason: event.reason! }),
+        effect: (record, event, ctx) => {
+          const now = ctx.now();
+          record.pendingSuccession = {
+            fromSessionId: event.fromSessionId!,
+            reason: event.reason!,
+            stage: 'started',
+            startedAt: now,
+          };
+          // R3：恢复指令随挡板同笔原子写入。策略抛错 = 整个 begin 失败，
+          // 不留半套挡板（显式失败优于静默缺指令）。
+          const instructionText = continuationPolicy.composeSuccessionInstruction({
+            threadId: record.threadId,
+            fromSessionId: event.fromSessionId!,
+            reason: event.reason!,
+          });
+          if (typeof instructionText === 'string' && instructionText.trim()) {
+            const instruction = createCommandRecord({
+              threadId: record.threadId,
+              kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
+              text: instructionText,
+              source: 'thread-succession',
+              idempotencyKey: `succession:${record.threadId}:${event.fromSessionId}`,
+            });
+            instruction.createdAt = now;
+            appendCommandToRecord(record, instruction);
+            pruneCommands(record);
+          }
+        },
+      },
+      {
+        // from 必须是 '*'：现状守卫不查 status（构造态 open+挡板也立卷）
+        event: 'handoff_failed',
+        from: '*',
+        guards: [
+          // 迟到失败者没有立卷资格（无挡板 → 拒绝，外壳处置为 no-op）
+          (record) => (record.pendingSuccession ? true : false),
+        ],
+        to: 'rotation_failed',
+        eventPayload: (_record, event) => ({
+          reason: event.reason!,
+          stage: event.stage || 'unknown',
+          error: event.error ?? null,
+        }),
+        effect: (record, event) => {
+          const pending = record.pendingSuccession;
+          if (pending) {
+            // 挡板保留；stage 补写（缺省沿用盘上值，再缺省 'unknown'）
+            pending.stage = event.stage || pending.stage || 'unknown';
+          }
+        },
+      },
+      {
+        event: 'handoff_completed',
+        from: '*',
+        guards: [
+          (record) => (record.hold === true ? { code: 'thread_held' } : true),
+          (record, event) => (
+            record.headSessionId !== event.fromSessionId ? { code: 'head_mismatch' } : true
+          ),
+          (record, event) => (
+            record.headSessionId === event.toSessionId ? { code: 'already_head' } : true
+          ),
+          (record, event) => (
+            (record.sessionChain || []).some((entry) => entry.sessionId === event.toSessionId)
+              ? { code: 'duplicate_session' }
+              : true
+          ),
+        ],
+        to: 'open',
+        eventPayload: (_record, event) => ({
+          fromSessionId: event.fromSessionId!,
+          toSessionId: event.toSessionId!,
+          reason: event.endKind!,
+        }),
+        effect: (record, event, ctx) => {
+          const now = ctx.now();
+          const currentHead = (record.sessionChain || []).find(
+            (entry) => entry.sessionId === record.headSessionId,
+          );
+          if (currentHead) {
+            currentHead.role = 'predecessor';
+            currentHead.endedAt = now;
+            currentHead.endKind = event.endKind || 'manual';
+            currentHead.successorSessionId = event.toSessionId!;
+          }
+          record.sessionChain = record.sessionChain || [];
+          record.sessionChain.push({
+            sessionId: event.toSessionId!,
+            role: 'head',
+            startedAt: now,
+            endedAt: null,
+            endKind: null,
+            successorSessionId: null,
+          });
+          record.headSessionId = event.toSessionId!;
+          // 交接完成：同一次落盘内清除交接意图（与 head 推进原子成对）。
+          record.pendingSuccession = null;
+        },
+      },
+      {
+        event: 'handoff_stale',
+        from: '*',
+        guards: [
+          // 无挡板 → 拒绝（外壳处置为 no-op）
+          (record) => (record.pendingSuccession ? true : false),
+        ],
+        // 条件目标：仅 rotating 回 open；rotation_failed 等清挡板后 status 保持
+        to: (record) => (record.status === 'rotating' ? 'open' : null),
+        eventPayload: () => ({}),
+        effect: (record) => {
+          record.pendingSuccession = null;
+        },
+      },
+      {
+        event: 'closed',
+        from: '*',
+        to: WORKTHREAD_TERMINAL_STATUS,
+        eventPayload: (_record, event) => ({ reason: event.reason! }),
+        effect: (record, event, ctx) => {
+          const closedAt = ctx.now();
+          record.closedAt = closedAt;
+          record.closeReason = event.reason!;
+          const now = ctx.now();
+          // 现状：收口不清挡板；pending 指令随关闭一并取消
+          for (const c of record.commands || []) {
+            if (c.status === WorkThreadCommandStatus.PENDING) {
+              c.status = WorkThreadCommandStatus.CANCELLED;
+              c.lastReason = 'thread_closed';
+              c.updatedAt = now;
+            }
+          }
+        },
+      },
+    ],
+  };
+}
+
+
 export class WorkThread {
   readonly store: WorkThreadStore;
   private readonly _bridge: WorkThreadBridge;
   private readonly _identitySource?: (agentId: string, sessionId: string) => Promise<string | null> | string | null;
   private readonly _continuationPolicy: WorkThreadContinuationPolicy;
+  private readonly _anchorMachine: StateMachineDef<WorkThreadRecord, AnchorEvent>;
 
   constructor({ store, bridge, identitySource, continuationPolicy }: WorkThreadOptions) {
     this.store = store;
@@ -141,6 +349,7 @@ export class WorkThread {
       continuationPolicy && typeof continuationPolicy.composeSuccessionInstruction === 'function'
         ? continuationPolicy
         : { composeSuccessionInstruction: () => DEFAULT_SUCCESSION_INSTRUCTION };
+    this._anchorMachine = defineStateMachine(createWorkThreadAnchorMachine(this._continuationPolicy));
   }
 
   // ── 查询 ─────────────────────────────────────────────────────────
@@ -293,69 +502,45 @@ export class WorkThread {
     const normalizedFrom = validateId(opts.fromSessionId, 'fromSessionId');
     const normalizedReason = cleanText(opts.reason) || 'manual';
     const { record } = await this.store.update(threadId, (draft) => {
-      if (draft.status === WORKTHREAD_TERMINAL_STATUS) {
+      const result = reduce(
+        this._anchorMachine,
+        draft,
+        { type: 'handoff_started', fromSessionId: normalizedFrom, reason: normalizedReason },
+        { now: () => Date.now() },
+      );
+      if (result.type === 'transitioned') {
+        pushLifecycleEvent(draft, result.lifecycleEvent);
+        return draft;
+      }
+      if (result.type === 'unhandled') {
+        throw new Error(
+          `WorkThread "${threadId}" status "${draft.status}" is not a declared anchor state`,
+        );
+      }
+      // rejected：guard code（或终态保护）→ 现有错误形态（code/status/message 逐一对应）
+      if (result.reason === 'terminal') {
         throw Object.assign(new Error(`WorkThread "${threadId}" is closed`), {
           code: 'thread_closed',
           status: 409,
         });
       }
-      if (draft.hold === true) {
+      if (result.reason === 'thread_held') {
         throw Object.assign(new Error(`WorkThread "${threadId}" is held (administrative freeze)`), {
           code: 'thread_held',
           status: 409,
         });
       }
-      if (
-        draft.status === 'rotating'
-        && draft.pendingSuccession?.startedAt
-        && Date.now() - draft.pendingSuccession.startedAt < HANDOFF_STALE_MS
-      ) {
+      if (result.reason === 'handoff_in_progress') {
         throw Object.assign(
           new Error(`WorkThread "${threadId}" already has a handoff in progress; concurrent succession requests are rejected`),
           { code: 'handoff_in_progress', status: 409 },
         );
       }
-      if (draft.headSessionId !== normalizedFrom) {
-        throw Object.assign(
-          new Error(`Handoff source is not the current head of workthread "${threadId}"`),
-          { code: 'head_mismatch', status: 409 },
-        );
-      }
-      const now = Date.now();
-      draft.status = 'rotating';
-      draft.pendingSuccession = {
-        fromSessionId: normalizedFrom,
-        reason: normalizedReason,
-        stage: 'started',
-        startedAt: now,
-      };
-      // R3：恢复指令随挡板同笔原子写入。策略抛错 = 整个 begin 失败，
-      // 不留半套挡板（显式失败优于静默缺指令）。
-      const instructionText = this._continuationPolicy.composeSuccessionInstruction({
-        threadId,
-        fromSessionId: normalizedFrom,
-        reason: normalizedReason,
-      });
-      if (typeof instructionText === 'string' && instructionText.trim()) {
-        const instruction = createCommandRecord({
-          threadId,
-          kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
-          text: instructionText,
-          source: 'thread-succession',
-          idempotencyKey: `succession:${threadId}:${normalizedFrom}`,
-        });
-        instruction.createdAt = now;
-        appendCommandToRecord(draft, instruction);
-        pruneCommands(draft);
-      }
-      pushLifecycleEvent(draft, {
-        type: 'handoff_started',
-        status: 'rotating',
-        at: now,
-        fromSessionId: normalizedFrom,
-        reason: normalizedReason,
-      });
-      return draft;
+      // 唯一剩余守卫 code：head_mismatch
+      throw Object.assign(
+        new Error(`Handoff source is not the current head of workthread "${threadId}"`),
+        { code: 'head_mismatch', status: 409 },
+      );
     });
     return record;
   }
@@ -365,10 +550,11 @@ export class WorkThread {
    */
   private async clearStaleHandoff(threadId: string): Promise<void> {
     await this.store.update(threadId, (draft) => {
-      if (!draft.pendingSuccession) return draft;
-      draft.pendingSuccession = null;
-      if (draft.status === 'rotating') draft.status = 'open';
-      pushLifecycleEvent(draft, { type: 'handoff_stale', status: draft.status, at: Date.now() });
+      const result = reduce(this._anchorMachine, draft, { type: 'handoff_stale' }, { now: () => Date.now() });
+      // rejected（终态 / 无挡板）= 现状 no-op：投递路径进入前已有 closed 门禁
+      if (result.type === 'transitioned') {
+        pushLifecycleEvent(draft, result.lifecycleEvent);
+      }
       return draft;
     });
   }
@@ -389,19 +575,21 @@ export class WorkThread {
   ): Promise<WorkThreadRecord> {
     const tid = validateId(threadId, 'threadId');
     const { record } = await this.store.update(tid, (draft) => {
-      if (draft.status === WORKTHREAD_TERMINAL_STATUS || !draft.pendingSuccession) {
-        return draft;
+      const result = reduce(
+        this._anchorMachine,
+        draft,
+        {
+          type: 'handoff_failed',
+          reason: cleanText(opts.reason) || 'handoff_failed',
+          stage: cleanText(opts.stage),
+          error: opts.error != null ? String(opts.error) : null,
+        },
+        { now: () => Date.now() },
+      );
+      // rejected（closed 终态 / 无挡板守卫）= 现状 no-op：迟到失败者没有立卷资格
+      if (result.type === 'transitioned') {
+        pushLifecycleEvent(draft, result.lifecycleEvent);
       }
-      draft.status = 'rotation_failed';
-      draft.pendingSuccession.stage = cleanText(opts.stage) || draft.pendingSuccession.stage || 'unknown';
-      pushLifecycleEvent(draft, {
-        type: 'handoff_failed',
-        status: 'rotation_failed',
-        at: Date.now(),
-        reason: cleanText(opts.reason) || 'handoff_failed',
-        stage: cleanText(opts.stage) || 'unknown',
-        error: opts.error != null ? String(opts.error) : null,
-      });
       return draft;
     });
     return record;
@@ -709,10 +897,12 @@ export class WorkThread {
     const threadId = validateId(opts.threadId, 'threadId');
     const normalizedTo = validateId(opts.toSessionId, 'toSessionId');
     const normalizedFrom = validateId(opts.fromSessionId, 'fromSessionId');
+    const normalizedEndKind = cleanText(opts.endKind) || 'manual';
 
-    // T001 身份连续性不变量：successor 加入前的三道校验在下方 store 事务内
-    // 执行（per-thread 串行锁保护，结构守卫在前）；任一失败抛稳定错误且
-    // 线程记录零变更（旧 head 保持有效）：
+    // T001 身份连续性不变量：successor 加入前的三道校验在下方 store 事务内、
+    // reduce 之后执行（内核严格同步，异步守卫不进转换表；结构守卫在表内已先行
+    // 求值，身份校验失败时 store.update 整体丢弃 draft，磁盘终态与「守卫前置」
+    // 等价）：
     //   - thread_held：行政冻结期（归档）head 不得推进——归档宣告终局后，
     //     在途接力的迟到推进同样被拒（与 begin 的 K9 门禁同源）；
     //   - session_workspace_mismatch：successor 不属于线程的工作空间宿主；
@@ -724,38 +914,57 @@ export class WorkThread {
     const { record } = await this.store.update(
       threadId,
       async (draft) => {
-        if (draft.status === WORKTHREAD_TERMINAL_STATUS) {
-          throw Object.assign(new Error(`WorkThread "${threadId}" is closed`), {
-            code: 'thread_closed',
-            status: 409,
-          });
-        }
-        if (draft.hold === true) {
-          throw Object.assign(
-            new Error(`WorkThread "${threadId}" is held (administrative freeze); head cannot advance`),
-            { code: 'thread_held', status: 409 },
-          );
-        }
-        if (draft.headSessionId !== normalizedFrom) {
-          throw Object.assign(
-            new Error(
-              `Head mismatch on workthread "${threadId}": expected ${normalizedFrom}, current ${draft.headSessionId}`,
-            ),
-            { code: 'head_mismatch', status: 409 },
-          );
-        }
-        if (draft.headSessionId === normalizedTo) {
-          throw Object.assign(
-            new Error(`Session "${normalizedTo}" is already the head of workthread "${threadId}"`),
-            { code: 'already_head', status: 409 },
-          );
-        }
-        if ((draft.sessionChain || []).some((entry) => entry.sessionId === normalizedTo)) {
+        const result = reduce(
+          this._anchorMachine,
+          draft,
+          {
+            type: 'handoff_completed',
+            fromSessionId: normalizedFrom,
+            toSessionId: normalizedTo,
+            endKind: normalizedEndKind,
+          },
+          { now: () => Date.now() },
+        );
+        if (result.type !== 'transitioned') {
+          if (result.type === 'unhandled') {
+            throw new Error(
+              `WorkThread "${threadId}" status "${draft.status}" is not a declared anchor state`,
+            );
+          }
+          // rejected：guard code（或终态保护）→ 现有错误形态（code/status/message 逐一对应）
+          if (result.reason === 'terminal') {
+            throw Object.assign(new Error(`WorkThread "${threadId}" is closed`), {
+              code: 'thread_closed',
+              status: 409,
+            });
+          }
+          if (result.reason === 'thread_held') {
+            throw Object.assign(
+              new Error(`WorkThread "${threadId}" is held (administrative freeze); head cannot advance`),
+              { code: 'thread_held', status: 409 },
+            );
+          }
+          if (result.reason === 'head_mismatch') {
+            throw Object.assign(
+              new Error(
+                `Head mismatch on workthread "${threadId}": expected ${normalizedFrom}, current ${draft.headSessionId}`,
+              ),
+              { code: 'head_mismatch', status: 409 },
+            );
+          }
+          if (result.reason === 'already_head') {
+            throw Object.assign(
+              new Error(`Session "${normalizedTo}" is already the head of workthread "${threadId}"`),
+              { code: 'already_head', status: 409 },
+            );
+          }
+          // 唯一剩余守卫 code：duplicate_session
           throw Object.assign(
             new Error(`Session "${normalizedTo}" already appears in the chain of workthread "${threadId}"`),
             { code: 'duplicate_session', status: 409 },
           );
         }
+        pushLifecycleEvent(draft, result.lifecycleEvent);
 
         // T001 身份连续性不变量（事务内校验，结构守卫在前）：
         //   - session_workspace_mismatch：successor 不属于线程的工作空间宿主
@@ -814,38 +1023,6 @@ export class WorkThread {
           }
         }
 
-        const now = Date.now();
-        const currentHead = (draft.sessionChain || []).find(
-          (entry) => entry.sessionId === draft.headSessionId,
-        );
-        if (currentHead) {
-          currentHead.role = 'predecessor';
-          currentHead.endedAt = now;
-          currentHead.endKind = cleanText(opts.endKind) || 'manual';
-          currentHead.successorSessionId = normalizedTo;
-        }
-        draft.sessionChain = draft.sessionChain || [];
-        draft.sessionChain.push({
-          sessionId: normalizedTo,
-          role: 'head',
-          startedAt: now,
-          endedAt: null,
-          endKind: null,
-          successorSessionId: null,
-        });
-        draft.headSessionId = normalizedTo;
-        // 交接完成：同一次落盘内清除交接意图（与 head 推进原子成对）。
-        draft.pendingSuccession = null;
-        // 接续编排状态复位为 open（执行调度运行时状态归看板，不在此层驱动）。
-        draft.status = 'open';
-        pushLifecycleEvent(draft, {
-          type: 'handoff_completed',
-          status: 'open',
-          at: now,
-          fromSessionId: normalizedFrom,
-          toSessionId: normalizedTo,
-          reason: cleanText(opts.endKind) || 'manual',
-        });
         return draft;
       },
       { expectedRevision: Number.isInteger(opts.expectedRevision) ? opts.expectedRevision : undefined },
@@ -863,23 +1040,15 @@ export class WorkThread {
   async closeThread(threadId: string, opts: { reason?: string } = {}): Promise<WorkThreadRecord> {
     const tid = validateId(threadId, 'threadId');
     const { record } = await this.store.update(tid, (draft) => {
-      if (this.isTerminal(draft)) return draft;
-      draft.status = WORKTHREAD_TERMINAL_STATUS;
-      draft.closedAt = Date.now();
-      draft.closeReason = cleanText(opts.reason) || 'closed';
-      pushLifecycleEvent(draft, {
-        type: 'closed',
-        status: WORKTHREAD_TERMINAL_STATUS,
-        at: draft.closedAt,
-        reason: draft.closeReason,
-      });
-      const now = Date.now();
-      for (const c of draft.commands || []) {
-        if (c.status === WorkThreadCommandStatus.PENDING) {
-          c.status = WorkThreadCommandStatus.CANCELLED;
-          c.lastReason = 'thread_closed';
-          c.updatedAt = now;
-        }
+      const result = reduce(
+        this._anchorMachine,
+        draft,
+        { type: 'closed', reason: cleanText(opts.reason) || 'closed' },
+        { now: () => Date.now() },
+      );
+      // rejected 'terminal'（已 closed）= 现状幂等 no-op
+      if (result.type === 'transitioned') {
+        pushLifecycleEvent(draft, result.lifecycleEvent);
       }
       return draft;
     });

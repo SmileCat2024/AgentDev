@@ -15,6 +15,7 @@ import type { HooksRegistry } from '../hooks-registry.js';
 import { CoreLifecycle, normalizeDecision, Decision } from '../lifecycle.js';
 import { isWithImagesResult } from '../tool-result-images.js';
 import { isWithDisplayResult } from '../tool-result-display.js';
+import { isWithRewriteResult } from '../tool-call-rewrite.js';
 import { createLogger, runWithLogScope } from '../logging.js';
 
 const logger = createLogger('agent.tool');
@@ -77,8 +78,8 @@ export class ToolExecutor {
   ) {}
 
   /**
-   * 工具成功返回值 → ToolExecResult（保留 images / display 分离协议，
-   * 可选携带终止标注）。
+   * 工具成功返回值 → ToolExecResult（保留 images / display / effectiveCall
+   * 分离协议，可选携带终止标注）。
    */
   private buildSuccessExecResult(
     data: unknown,
@@ -100,11 +101,37 @@ export class ToolExecutor {
         ...(interrupted ? { interrupted } : {}),
       };
     }
+    if (isWithRewriteResult(data)) {
+      return {
+        success: true,
+        result: data.text,
+        effectiveCall: data.effectiveCall,
+        ...(data.display !== undefined ? { display: data.display } : {}),
+        ...(interrupted ? { interrupted } : {}),
+      };
+    }
     return {
       success: true,
       result: typeof data === 'string' ? data : JSON.stringify(data),
       ...(interrupted ? { interrupted } : {}),
     };
+  }
+
+  /**
+   * effectiveCall 校验链（ADR-0023）。返回 undefined 表示通过；
+   * 返回错误原因字符串表示失败（调用方放弃改写）。
+   */
+  private validateEffectiveCall(call: ToolCall, effective: ToolCall): string | undefined {
+    if (effective.id !== call.id) {
+      return `effectiveCall.id "${effective.id}" does not match original call id "${call.id}"`;
+    }
+    if (this.tools.get(call.name)?.rewritable !== true) {
+      return `tool "${call.name}" is not declared rewritable`;
+    }
+    if (!this.tools.has(effective.name)) {
+      return `rewrite target tool "${effective.name}" is not registered`;
+    }
+    return undefined;
   }
 
   /**
@@ -533,6 +560,24 @@ export class ToolExecutor {
           step,
         } satisfies ToolResultTransformContext),
       );
+
+      // ========== 工具调用改写校验（ADR-0023）==========
+      // 校验看到的是 ToolResultTransform 之后的最终结果。任一失败 → error 日志
+      // + 放弃改写（剥离 effectiveCall）：历史按原始调用写入，结果原样，
+      // 行为退回现状，不中断本轮。
+      if (execResult.effectiveCall) {
+        const failure = this.validateEffectiveCall(call, execResult.effectiveCall);
+        if (failure) {
+          logger.error('Tool call rewrite rejected', {
+            event: 'tool.rewrite.rejected',
+            toolName: call.name,
+            reason: failure,
+            original: { name: call.name, arguments: call.arguments },
+            effective: { name: execResult.effectiveCall.name, arguments: execResult.effectiveCall.arguments },
+          });
+          delete execResult.effectiveCall;
+        }
+      }
 
       result.duration = Date.now() - startTime;
 

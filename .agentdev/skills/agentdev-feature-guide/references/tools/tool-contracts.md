@@ -6,6 +6,7 @@
 - [描述](#描述)
 - [参数 Schema](#参数-schema)
 - [结果契约](#结果契约)
+- [调用改写](#调用改写)
 - [错误分类](#错误分类)
 - [副作用契约](#副作用契约)
 - [契约审查](#契约审查)
@@ -113,6 +114,43 @@ type UpdateResult =
 - 大列表分页或截断并返回 `nextCursor`；
 - 二进制数据返回路径、资源标识或摘要，不直接塞入巨大字符串；
 - 返回对象可被 `JSON.stringify()`。
+
+## 调用改写
+
+工具声明 `rewritable: true` 后，可在执行成功时经 `withRewrite(text, effectiveCall)` 声明"实际生效的调用"（ADR-0023）。框架把 assistant 历史中的该条 toolCall 替换为生效值——下一轮模型看到的就是生效调用，如同当时就是这么调的。
+
+```ts
+import { withRewrite } from '@agentdevjs/core';
+
+const tool = createTool({
+  name: 'read_file',
+  description: '...',
+  rewritable: true,
+  execute: async (args, ctx) => {
+    const normalized = { path: resolveAbsolutePath(args.path) };  // 参数规范化
+    const content = readFile(normalized.path);
+    return withRewrite(
+      JSON.stringify({ ok: true, path: normalized.path }),
+      { id: ctx.callId, name: 'read_file', arguments: normalized },
+    );
+  },
+});
+```
+
+约束与语义：
+
+| 项 | 规则 |
+|---|---|
+| `effectiveCall.id` | 必须等于原调用 id（取 `ctx.callId`），否则框架放弃改写并记 error 日志 |
+| `effectiveCall.name` | 必须是本 agent 已注册工具，否则放弃改写（装配错误） |
+| 前端展示数据 | `withRewrite(text, effectiveCall, display?)` 第三参数可选，与 `withDisplay` 同通道；改写发生时框架自动并入 `rewrittenCall` 快照，二者合并进同一 display 对象 |
+| 适用时机 | 仅成功执行可改写；抛出异常的路径无法携带改写 |
+| 原始调用去向 | 结构化日志（`tool.rewrite` 事件，agent.tool 命名空间）与 `display.rewrittenCall`（前端"已修改"标注数据源） |
+| 语义解释 | 框架零语义判断：改写是等价规范化还是实质修正、要不要在结果里向模型解释，全部由工具作者决定——需要解释就写进 `text` |
+
+适用场景：参数规范化（路径展开、默认值补全、别名大小写）、旧名向新名的迁移收敛。不适用场景：需要模型知情并重新决策的实质变更——那属于错误结果契约，不是改写。
+
+别名迁移（模型调旧名 A、实际执行正式工具 B）时，A 与 B 都必须注册，A 的执行体转发执行并声明 `effectiveCall.name = 'B'`。模型看到自己"调了 B"，逐渐学会直接调 B；迁移效果查结构化日志。
 
 ## 错误分类
 

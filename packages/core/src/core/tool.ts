@@ -27,6 +27,8 @@ export function createTool(
     parallelizable?: boolean;
     /** 超时契约声明（ticket 023 / ADR-0005），透传到 Tool.timeout */
     timeout?: Tool['timeout'];
+    /** 声明本工具可改写自身调用（ADR-0023），透传到 Tool.rewritable */
+    rewritable?: boolean;
   },
   sourceFile?: string
 ): Tool {
@@ -63,6 +65,7 @@ export function createTool(
     ...(config.executionMode ? { executionMode: config.executionMode } : {}),
     ...(config.parallelizable ? { parallelizable: config.parallelizable } : {}),
     ...(config.timeout ? { timeout: config.timeout } : {}),
+    ...(config.rewritable ? { rewritable: config.rewritable } : {}),
   };
 }
 

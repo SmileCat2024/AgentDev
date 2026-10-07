@@ -229,6 +229,16 @@ export interface Tool {
     maxMs: number;
     fromArg?: string;
   };
+  /**
+   * 声明本工具的执行体可在结果中声明 effectiveCall 改写自身调用（ADR-0023）。
+   *
+   * 声明后工具可经 withRewrite(...) 返回"实际生效的调用"（id 不变、
+   * name/arguments 为生效值），框架将 assistant 历史中的该条 toolCall
+   * 替换为生效值——下一轮模型看到的就是生效调用。
+   *
+   * 未声明的工具结果携带 effectiveCall 视为框架错误（校验失败、放弃改写）。
+   */
+  rewritable?: boolean;
 }
 
 /**

@@ -26,6 +26,9 @@ import { ClassifiedAPIError } from '../api-errors.js';
 import { getRetryDelay, sleep } from '../retry.js';
 
 const logger = createLogger('agent.react');
+// ADR-0023 改写事件日志：与 tool-executor 同 namespace（agent.tool），
+// 便于按命名空间聚合审计改写对照记录。
+const toolLogger = createLogger('agent.tool');
 
 /**
  * ReAct 循环执行器类
@@ -463,6 +466,31 @@ export class ReActLoopRunner {
           for (const call of toolCalls) {
             const result = resultsMap.get(call.id);
             if (result) {
+              // ========== 工具调用改写应用（ADR-0023）==========
+              // 校验已在 tool-executor 完成（失败的 effectiveCall 已剥离）。
+              // 此处仅应用：改写 assistant 历史 → display 附加原始调用快照 →
+              // 审计日志 → 按原始 call 写入 tool 消息（会话事件流因此发射的
+              // 是原始调用——事实先于改写）。
+              if (result.effectiveCall) {
+                const applied = context.rewriteToolCall(result.effectiveCall);
+                if (applied) {
+                  result.display = {
+                    ...(typeof result.display === 'object' && result.display !== null ? result.display : {}),
+                    rewrittenCall: { name: call.name, arguments: call.arguments },
+                  };
+                  toolLogger.info(`tool ${call.name} rewritten to ${result.effectiveCall.name}`, {
+                    event: 'tool.rewrite',
+                    original: { name: call.name, arguments: call.arguments },
+                    effective: { name: result.effectiveCall.name, arguments: result.effectiveCall.arguments },
+                  });
+                } else {
+                  toolLogger.error('Tool call rewrite missed: call id not found in assistant history', {
+                    event: 'tool.rewrite.missed',
+                    toolName: call.name,
+                    callId: call.id,
+                  });
+                }
+              }
               context.addToolMessage(call, result, callIndex);
               // timeout 终止不退出循环（ADR-0005）：模型看到元数据后自行决策
               // （重试 / 调大 timeout / 换路线）；user 终止才结束当前 call。

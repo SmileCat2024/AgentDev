@@ -92,6 +92,10 @@ export type { WithImagesResult } from './core/tool-result-images.js';
 export { withDisplay, isWithDisplayResult } from './core/tool-result-display.js';
 export type { WithDisplayResult } from './core/tool-result-display.js';
 
+// 工具调用改写声明（ADR-0023：工具声明实际生效的调用，框架改写 assistant 历史）
+export { withRewrite, isWithRewriteResult } from './core/tool-call-rewrite.js';
+export type { WithRewriteResult } from './core/tool-call-rewrite.js';
+
 // LLM
 // 注：LLM 实现（AnthropicLLM / OpenAILLM / OpenAIResponsesLLM / createLLM / compile*）
 // 已拆分到 @agentdevjs/llm 包；此处仅保留 LLM 契约类型（见下方 core/types.js 导出）。

@@ -1917,6 +1917,40 @@ export const VIEWER_CSS = `  <style>
       border-bottom: none;
     }
 
+    /* 工具调用改写标注（ADR-0023）：徽章靠右，点击展开原始调用 */
+    .tool-rewrite-badge {
+      margin-left: auto;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      cursor: pointer;
+      color: var(--warning-color);
+      background: rgba(255, 193, 7, 0.12);
+      border: 1px solid rgba(255, 193, 7, 0.35);
+      user-select: none;
+    }
+    .tool-rewrite-badge:hover { background: rgba(255, 193, 7, 0.22); }
+
+    .tool-rewrite-detail {
+      display: none;
+      padding: 8px 12px;
+      border-left: 2px solid var(--warning-color);
+      background: var(--tool-msg-bg);
+      border-top: 1px dashed var(--border-color);
+      border-bottom: 1px solid var(--border-color);
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .tool-rewrite-detail.expanded { display: block; }
+    .tool-rewrite-detail-title { margin-bottom: 4px; color: var(--text-secondary); }
+    .tool-rewrite-detail-args {
+      margin: 0;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--text-primary);
+    }
+
     .status-dot {
       width: 8px;
       height: 8px;

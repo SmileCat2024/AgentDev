@@ -1,4 +1,34 @@
-export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
+export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）：display.rewrittenCall 携带原始调用快照。
+    // 卡片主体显示生效调用（历史即改写后），徽章提示"已修改"，点击展开原始调用。
+    function getRewrittenCall(display) {
+      if (display && typeof display === 'object' && display.rewrittenCall
+          && typeof display.rewrittenCall === 'object'
+          && typeof display.rewrittenCall.name === 'string') {
+        return display.rewrittenCall;
+      }
+      return null;
+    }
+
+    function renderRewriteBadge(detailId, rewritten) {
+      if (!rewritten) return '';
+      return \`<span class="tool-rewrite-badge" onclick="toggleRewriteDetail('\${detailId}')" title="\${escapeHtml(t('tool_rewrite_original'))}">\${escapeHtml(t('tool_rewritten'))}</span>\`;
+    }
+
+    function renderRewriteDetail(detailId, rewritten) {
+      if (!rewritten) return '';
+      return \`
+        <div class="tool-rewrite-detail" id="\${detailId}">
+          <div class="tool-rewrite-detail-title">\${escapeHtml(t('tool_rewrite_original'))}</div>
+          <pre class="tool-rewrite-detail-args">\${escapeHtml(rewritten.name)} \${escapeHtml(JSON.stringify(rewritten.arguments ?? {}, null, 2))}</pre>
+        </div>\`;
+    }
+
+    window.toggleRewriteDetail = function(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('expanded');
+    };
+
+    // 生成单条消息的 HTML
     function renderMessage(msg, index) {
       const role = msg.role;
       const msgId = \`msg-\${index}\`;
@@ -187,8 +217,10 @@ export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
               <div class="message-content" id="\${msgId}" style="padding:0; overflow:hidden;">
                 <div class="tool-result-header">
                   <span class="status-dot \${success ? 'success' : 'error'}"></span>
-                  <span>\${displayName}</span>
+                  <span class="tool-result-name">\${displayName}</span>
+                  \${renderRewriteBadge('rw-' + msgId, getRewrittenCall(msg.display))}
                 </div>
+                \${renderRewriteDetail('rw-' + msgId, getRewrittenCall(msg.display))}
                 <div class="tool-result-body">\${bodyHtml}</div>
               </div>
             </div>
@@ -272,7 +304,7 @@ export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
 
         const isCollapsible = el.scrollHeight > 160;
         const isSystem = row.classList.contains('system');
-        const toolName = row.querySelector('.tool-result-header span:last-child')?.textContent || '';
+        const toolName = row.querySelector('.tool-result-header .tool-result-name')?.textContent || '';
         const isReadOrEdit = toolName === 'Read' || toolName === 'Edit';
         const shouldCollapse = isCollapsible && (isSystem || isReadOrEdit);
 
@@ -447,8 +479,10 @@ export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
             <div class="message-content" id="\${msgId}" style="padding:0; overflow:hidden;">
               <div class="tool-result-header">
                 <span class="status-dot \${success ? 'success' : 'error'}"></span>
-                <span>\${displayName}</span>
+                <span class="tool-result-name">\${displayName}</span>
+                \${renderRewriteBadge('rw-' + msgId, getRewrittenCall(msg.display))}
               </div>
+              \${renderRewriteDetail('rw-' + msgId, getRewrittenCall(msg.display))}
               <div class="tool-result-body">\${bodyHtml}</div>
             </div>\`;
         }
@@ -472,7 +506,7 @@ export const VIEWER_JS_MESSAGES = `    // 生成单条消息的 HTML
         const isCollapsible = el.scrollHeight > 160;
         const isSystem = row.classList.contains('system');
         // 检查是否是 read 或 edit 工具
-        const toolName = row.querySelector('.tool-result-header span:last-child')?.textContent || '';
+        const toolName = row.querySelector('.tool-result-header .tool-result-name')?.textContent || '';
         const isReadOrEdit = toolName === 'Read' || toolName === 'Edit';
         const shouldCollapse = isCollapsible && (isSystem || isReadOrEdit);
 

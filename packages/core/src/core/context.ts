@@ -66,6 +66,12 @@ export interface ToolExecResult {
   images?: ImageInput[];
   /** 前端展示数据（不注入 LLM，仅 tool 消息） */
   display?: unknown;
+  /**
+   * 实际生效的调用（ADR-0023）。id 必须与原调用一致（wire 层配对不变），
+   * name/arguments 为生效值。仅 `rewritable: true` 的工具经 withRewrite(...)
+   * 声明时有效；校验失败则放弃改写，历史按原始调用写入。
+   */
+  effectiveCall?: ToolCall;
 }
 
 /**
@@ -208,11 +214,81 @@ export class Context {
 
   /**
    * 应用中间件处理消息
+   *
+   * middleware 结果同时应用到 messages 与 enrichedMessages：与原消息对象
+   * 引用一致的幸存消息保留其 enriched 条目（id/timestamp/sequence 等元数据
+   * 不变），middleware 新增的消息按当前 sequence 全新丰富化。两数组对齐后
+   * 重建查询索引。
    */
   apply(middleware: (messages: Message[]) => Message[]): this {
-    this.messages = middleware(this.messages);
+    const prevEnriched = this.enrichedMessages;
+    // 引用对齐仅在两数组等长时有效（全部类型化写入路径均保持逐条对齐；
+    // legacy add() 不写 enriched，此时放弃对齐、全部重新丰富化）
+    const aligned = this.messages.length === prevEnriched.length;
+    const prevByRef = new Map<Message, EnrichedMessage>();
+    if (aligned) {
+      this.messages.forEach((m, i) => prevByRef.set(m, prevEnriched[i]));
+    }
+
+    const newMessages = middleware(this.messages);
+    const reused = new Set<EnrichedMessage>();
+    const newEnriched = newMessages.map(m => {
+      const prev = aligned ? prevByRef.get(m) : undefined;
+      if (prev && !reused.has(prev)) {
+        reused.add(prev);
+        return prev;
+      }
+      return this.enrich(m, { turn: m.turn ?? 0 });
+    });
+
+    this.messages = newMessages;
+    this.enrichedMessages = newEnriched;
+    this.rebuildIndexes();
     this.generation++;
     return this;
+  }
+
+  /**
+   * 按 id 定位 assistant 消息中的 toolCall 并替换为 effective（ADR-0023）。
+   *
+   * 实现纪律：
+   * - 以新 toolCalls 数组 + 新 ToolCall 对象替换，不原地修改已共享的数组与
+   *   对象——已推送的 DebugHub 快照与已发射的会话事件持有原引用，不受影响；
+   * - messages 与 enrichedMessages 两侧同步替换，parsed.toolCalls 与工具名
+   *   索引随之重建；
+   * - 长度与 sequence 不变，generation 不递增：改写后的历史是唯一真相
+   *   （ADR-0023 决策 6），增量 rollback 的 boundary（长度/sequence/generation）
+   *   在改写前后保持有效。
+   *
+   * @returns 是否命中。未命中 = 不存在含该 id 的 assistant toolCall，
+   *          历史保持不变，由调用方记日志放弃改写。
+   */
+  rewriteToolCall(effective: ToolCall): boolean {
+    let hit = false;
+
+    this.messages = this.messages.map(m => {
+      if (m.role !== 'assistant' || !m.toolCalls) return m;
+      const idx = m.toolCalls.findIndex(c => c.id === effective.id);
+      if (idx === -1) return m;
+      hit = true;
+      const toolCalls = [...m.toolCalls];
+      toolCalls[idx] = { ...effective };
+      return { ...m, toolCalls };
+    });
+
+    if (!hit) return false;
+
+    this.enrichedMessages = this.enrichedMessages.map(m => {
+      if (m.role !== 'assistant' || !m.toolCalls) return m;
+      const idx = m.toolCalls.findIndex(c => c.id === effective.id);
+      if (idx === -1) return m;
+      const toolCalls = [...m.toolCalls];
+      toolCalls[idx] = { ...effective };
+      return { ...m, toolCalls, parsed: { ...m.parsed, toolCalls: toolCalls.map(c => c.name) } };
+    });
+
+    this.rebuildIndexes();
+    return true;
   }
 
   /**

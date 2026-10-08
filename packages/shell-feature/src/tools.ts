@@ -20,7 +20,7 @@ import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import type { Tool } from '@agentdevjs/core';
-import { createTool, withDisplay } from '@agentdevjs/core';
+import { createTool, withDisplay, withRewrite } from '@agentdevjs/core';
 import {
   quoteShellCommand,
   shouldAddStdinRedirect,
@@ -211,6 +211,8 @@ export function createShellCommandTool(
   return createTool({
     name: 'bash',
     description: `${description}\n\n适用范围：短时、需要立即查看结果的前台命令。前台等待预算到期后命令会转入后台继续运行；对于预期长时间运行的构建、测试、开发服务器或无需立即等待的任务，请直接使用 bash_bg。`,
+    // ADR-0023：CMD 风格 >nul 重写为 >/dev/null 时，历史记录生效命令
+    rewritable: true,
     parameters: {
       type: 'object',
       properties: {
@@ -230,11 +232,17 @@ export function createShellCommandTool(
       const registry = options.registry;
       const workdir = options.workdir || options.workspaceDir || process.cwd();
       const effectiveBudgetMs = typeof context?.timeoutMs === 'number' ? context.timeoutMs : budgetMs;
-      console.log(`[shell] ${command}`);
+      // CMD 风格 >nul 重写为 >/dev/null（Git Bash 会把 nul 当字面量文件创建，
+      // Windows 保留名极难删除）。ADR-0023：重写发生时记录生效命令。
+      const runCommand = rewriteWindowsNullRedirect(command);
+      const effectiveCall = runCommand !== command && typeof context?.callId === 'string'
+        ? { id: context.callId, name: 'bash', arguments: { command: runCommand } }
+        : undefined;
+      console.log(`[shell] ${runCommand}`);
 
       const run = await runForegroundWithBudget(
         {
-          command,
+          command: runCommand,
           workdir,
           bashPath: options.bashPath || findGitBashPath() || '',
           resourceRoot: options.resourceRoot || process.cwd(),
@@ -248,7 +256,7 @@ export function createShellCommandTool(
             throw new Error('shell: 前台预算超时且未配置转后台 registry（装配错误）');
           }
           return registry.register(child, {
-            command,
+            command: runCommand,
             workdir,
             intervalMs: effectiveBudgetMs,
             quietAfterMs: effectiveBudgetMs,
@@ -261,22 +269,23 @@ export function createShellCommandTool(
       if (run.adoptedTask) {
         const task = run.adoptedTask;
         const sec = Math.round(effectiveBudgetMs / 1000);
-        return withDisplay(
-          [
+        const adoptedText = [
             `命令超过前台等待预算（${sec}s），未被打断，已转为后台任务 ${task.id}。`,
-            `命令: ${command}`,
+            `命令: ${runCommand}`,
             `已继承紧凑汇报节奏：每 ${sec}s 一条、静默 ${sec}s 起提醒——这是刚超时的紧迫度，不是长跑节奏。若任务还要跑较久，用 bg_tune 放宽到正常节奏（如 intervalSec=300, quietAfterSec=30）；一完成立刻收到完整结果。`,
             '不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。主动查看用 bg_status。',
-          ].join('\n'),
-          {
+          ].join('\n');
+        const adoptedDisplay = {
             kind: 'bg-started',
             taskId: task.id,
-            command,
+            command: runCommand,
             intervalSec: sec,
             quietAfterSec: sec,
             inherited: true,
-          },
-        );
+          };
+        return effectiveCall
+          ? withRewrite(adoptedText, effectiveCall, adoptedDisplay)
+          : withDisplay(adoptedText, adoptedDisplay);
       }
 
       const { outcome } = run;
@@ -293,7 +302,8 @@ export function createShellCommandTool(
           truncated: text.length < combined.length,
           logPath: logPath ?? null,
         });
-        return text ? `${text}\n${meta}` : meta;
+        const terminatedText = text ? `${text}\n${meta}` : meta;
+        return effectiveCall ? withRewrite(terminatedText, effectiveCall) : terminatedText;
       }
       if (outcome.kind !== 'completed') {
         // runForegroundWithBudget 的 abort 分支总是伴随 adoptedTask；防御兜底。
@@ -308,7 +318,7 @@ export function createShellCommandTool(
       if (!formatted.ok) {
         throw new Error(formatted.text || `Command failed with exit code ${outcome.code}`);
       }
-      return formatted.text;
+      return effectiveCall ? withRewrite(formatted.text, effectiveCall) : formatted.text;
     },
   });
 }

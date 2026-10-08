@@ -13,7 +13,7 @@
  */
 
 import type { Tool } from '@agentdevjs/core';
-import { createTool, withDisplay } from '@agentdevjs/core';
+import { createTool, withDisplay, withRewrite } from '@agentdevjs/core';
 import type { BgRegistry, BgSpawnOptions } from './bg-core.js';
 import {
   BG_CAPTURE_WINDOW_MS,
@@ -23,6 +23,7 @@ import {
   formatForegroundOutput,
   spawnBackgroundProcess,
 } from './bg-core.js';
+import { rewriteWindowsNullRedirect } from './shellQuoting.js';
 import { makeKillChild } from './shell-core.js';
 
 export interface BgToolOptions extends BgSpawnOptions {
@@ -90,15 +91,23 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
     render: { call: 'bash', result: 'bash' },
     // 2s 捕获窗 + spawn/格式化开销的余量；超时兜底（正常路径远快于此）
     timeout: { defaultMs: 15_000, maxMs: 15_000 },
-    execute: async (args) => {
+    // ADR-0023：CMD 风格 >nul 重写为 >/dev/null 时，历史记录生效命令
+    rewritable: true,
+    execute: async (args, context) => {
       const { command, intervalSec = 90, quietAfterSec = 60, readyPattern } = args as {
         command: string; intervalSec?: number; quietAfterSec?: number; readyPattern?: string;
       };
       if (!Number.isFinite(intervalSec) || !Number.isFinite(quietAfterSec)) {
         throw new Error(`intervalSec 与 quietAfterSec 必须是数字（收到 intervalSec=${String(intervalSec)}, quietAfterSec=${String(quietAfterSec)}）`);
       }
-      console.log(`[shell-bg] ${command}`);
-      const child = spawnBackgroundProcess(command, opts);
+      // CMD 风格 >nul 重写为 >/dev/null（与 bash 前台工具同规则）；重写发生时
+      // 记录生效命令（ADR-0023）
+      const runCommand = rewriteWindowsNullRedirect(command);
+      const effectiveCall = runCommand !== command && typeof context?.callId === 'string'
+        ? { id: context.callId, name: 'bash_bg', arguments: { ...args as Record<string, unknown>, command: runCommand } }
+        : undefined;
+      console.log(`[shell-bg] ${runCommand}`);
+      const child = spawnBackgroundProcess(runCommand, opts);
       let preStdout = '';
       let preStderr = '';
       const captured = await new Promise<{ closed: true; code: number } | { closed: false }>((resolve) => {
@@ -131,13 +140,14 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
         if (!formatted.ok) {
           throw new Error(`命令在捕获窗内失败，退出码 ${captured.code}${formatted.text ? `\n${formatted.text}` : ''}`);
         }
-        return `命令在捕获窗内已完成，退出码 ${captured.code}（你可能不需要后台模式）：\n${formatted.text}`;
+        const quickText = `命令在捕获窗内已完成，退出码 ${captured.code}（你可能不需要后台模式）：\n${formatted.text}`;
+        return effectiveCall ? withRewrite(quickText, effectiveCall) : quickText;
       }
 
       let task;
       try {
         task = registry.register(child, {
-          command,
+          command: runCommand,
           workdir: opts.workdir,
           intervalMs: Math.round(intervalSec * 1000),
           quietAfterMs: Math.round(quietAfterSec * 1000),
@@ -153,23 +163,24 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
       const s = registry.snapshot(task);
       // LLM 文本通道（教学契约）与 display 通道（前端任务卡）分离：
       // 文本一字不动，结构化数据仅供渲染模板消费。
-      return withDisplay(
-        [
+      const startedText = [
           `后台任务已启动：${task.id}（已运行 ${fmtDur(s.durationMs)}）`,
-          `命令: ${command}`,
+          `命令: ${runCommand}`,
           `汇报：每 ${Math.round(task.pace.intervalMs / 1000)}s 推送一次运行情况；连续 ${Math.round(task.pace.quietAfterMs / 1000)}s 无输出时会推送"无新输出"提醒${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
           '任务一结束会立刻收到完整结果。不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。',
           '查看详情用 bg_status；调节奏用 bg_tune；向任务输入用 bg_write；停止任务用 bg_kill。',
-        ].join('\n'),
-        {
+        ].join('\n');
+      const startedDisplay = {
           kind: 'bg-started',
           taskId: task.id,
-          command,
+          command: runCommand,
           intervalSec: Math.round(task.pace.intervalMs / 1000),
           quietAfterSec: Math.round(task.pace.quietAfterMs / 1000),
           ...(readyPattern ? { readyPattern } : {}),
-        },
-      );
+        };
+      return effectiveCall
+        ? withRewrite(startedText, effectiveCall, startedDisplay)
+        : withDisplay(startedText, startedDisplay);
     },
   });
 }

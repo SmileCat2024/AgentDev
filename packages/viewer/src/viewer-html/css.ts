@@ -1946,6 +1946,7 @@ export const VIEWER_CSS = `  <style>
     .tool-rewrite-detail-args {
       margin: 0;
       font-size: 12px;
+      font-family: "Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
       white-space: pre-wrap;
       word-break: break-all;
       color: var(--text-primary);

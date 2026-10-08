@@ -81,6 +81,25 @@ describe('viewer 工具调用改写标注（ADR-0023）', () => {
     expect(toggled).toEqual(['expanded']);
   });
 
+  it('refreshRewriteIndex：从 tool 消息 display 建 callId 索引，重入刷新不残留', () => {
+    const sandbox = createMessagesSandbox();
+    sandbox.refreshRewriteIndex([
+      { role: 'assistant', toolCalls: [{ id: 'c1', name: 'read_file', arguments: {} }] },
+      { role: 'tool', toolCallId: 'c1', display: { rewrittenCall: REWRITTEN }, content: '{}' },
+      { role: 'tool', toolCallId: 'c2', display: {}, content: '{}' },
+    ]);
+    expect(sandbox.rewrittenByCallId.get('c1')).toEqual(REWRITTEN);
+    expect(sandbox.rewrittenByCallId.has('c2')).toBe(false);
+    sandbox.refreshRewriteIndex([]);
+    expect(sandbox.rewrittenByCallId.size).toBe(0);
+  });
+
+  it('rewriteDetailId：callId 清洗为安全 DOM id', () => {
+    const sandbox = createMessagesSandbox();
+    expect(sandbox.rewriteDetailId('call-abc_1')).toBe('rw-call-call-abc_1');
+    expect(sandbox.rewriteDetailId('x:y/z')).toBe('rw-call-x_y_z');
+  });
+
   it('parseToolResult：rewrittenCall 不并入结果数据（标注元数据单独渲染）', () => {
     const sandbox: Record<string, any> = {};
     vm.createContext(sandbox);
@@ -107,6 +126,10 @@ describe('viewer 工具调用改写标注（ADR-0023）', () => {
     expect(html).toContain('.tool-rewrite-badge');
     expect(html).toContain('getRewrittenCall');
     expect(html).toContain('tool_rewritten');
+    // 徽章挂在调用块：调用容器携带 callId 锚点，渲染期建索引 + 分批补装
+    expect(html).toContain('data-tool-call-id');
+    expect(html).toContain('refreshRewriteIndex');
+    expect(html).toContain('retrofitRewriteBadgeOnCallBlock');
     // M-1 回归守卫：折叠逻辑以类名取工具名，不依赖 span 位置（徽章不再是 last child 的隐患）
     expect(html).toContain('tool-result-name');
     expect(html).toContain('.tool-result-header .tool-result-name');

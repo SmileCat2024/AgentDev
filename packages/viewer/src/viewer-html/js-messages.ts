@@ -1,5 +1,6 @@
 export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）：display.rewrittenCall 携带原始调用快照。
-    // 卡片主体显示生效调用（历史即改写后），徽章提示"已修改"，点击展开原始调用。
+    // 改写发生在调用上——徽章挂在 assistant 调用块头部，卡片主体显示生效调用
+    // （历史即改写后），点击徽章展开原始请求。
     function getRewrittenCall(display) {
       if (display && typeof display === 'object' && display.rewrittenCall
           && typeof display.rewrittenCall === 'object'
@@ -7,6 +8,35 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
         return display.rewrittenCall;
       }
       return null;
+    }
+
+    // 渲染期改写索引：callId → 原始调用快照。改写元数据随 tool 消息的 display 抵达，
+    // 而徽章挂在 assistant 调用块上——渲染入口先建索引供调用块反查。
+    // （var：模板各段为同页 script 全局共享，var 才挂到全局）
+    var rewrittenByCallId = new Map();
+    function refreshRewriteIndex(messages) {
+      rewrittenByCallId = new Map();
+      for (const m of messages) {
+        if (m && m.role === 'tool' && m.toolCallId) {
+          const rw = getRewrittenCall(m.display);
+          if (rw) rewrittenByCallId.set(m.toolCallId, rw);
+        }
+      }
+    }
+
+    function rewriteDetailId(callId) {
+      return 'rw-call-' + String(callId).replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+
+    // 结果消息晚于调用块到达（分批投递）时，向已渲染的调用卡补装徽章与明细（幂等）。
+    function retrofitRewriteBadgeOnCallBlock(toolCallId, rewritten) {
+      const block = document.querySelector('.tool-call-container[data-tool-call-id="' + String(toolCallId) + '"]');
+      if (!block || block.querySelector('.tool-rewrite-badge')) return;
+      const header = block.querySelector('.tool-header');
+      if (!header) return;
+      const detailId = rewriteDetailId(toolCallId);
+      header.insertAdjacentHTML('beforeend', renderRewriteBadge(detailId, rewritten));
+      header.insertAdjacentHTML('afterend', renderRewriteDetail(detailId, rewritten));
     }
 
     function renderRewriteBadge(detailId, rewritten) {
@@ -122,6 +152,8 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
           const toolsHtml = msg.toolCalls.map(call => {
             const displayName = getToolDisplayName(call.name);
             const template = getToolRenderTemplate(call.name);
+            const callIdAttr = call.id ? \` data-tool-call-id="\${escapeHtml(String(call.id))}"\` : '';
+            const rewritten = rewrittenByCallId.get(call.id) || null;
             let innerHtml;
 
             if (template.call) {
@@ -131,10 +163,12 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
             }
 
             return \`
-              <div class="tool-call-container">
+              <div class="tool-call-container"\${callIdAttr}>
                 <div class="tool-header">
                   <span class="tool-header-name">\${displayName}</span>
+                  \${renderRewriteBadge(rewriteDetailId(call.id), rewritten)}
                 </div>
+                \${renderRewriteDetail(rewriteDetailId(call.id), rewritten)}
                 <div class="tool-content">\${innerHtml}</div>
               </div>
             \`;
@@ -171,6 +205,7 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
 
       // 获取当前消息数量
       const currentCount = container.querySelectorAll('.message-row').length;
+      if (newMessages.some(msg => msg.role === 'tool')) refreshRewriteIndex(currentMessages);
 
       newMessages.forEach((msg, i) => {
         const index = startIndex + i;
@@ -218,9 +253,7 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
                 <div class="tool-result-header">
                   <span class="status-dot \${success ? 'success' : 'error'}"></span>
                   <span class="tool-result-name">\${displayName}</span>
-                  \${renderRewriteBadge('rw-' + msgId, getRewrittenCall(msg.display))}
                 </div>
-                \${renderRewriteDetail('rw-' + msgId, getRewrittenCall(msg.display))}
                 <div class="tool-result-body">\${bodyHtml}</div>
               </div>
             </div>
@@ -229,6 +262,11 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
 
         // 追加到容器
         container.insertAdjacentHTML('beforeend', html);
+        // 改写快照随 tool 消息抵达：若对应调用块已在早前批次渲染，补装徽章（幂等）
+        if (msg.role === 'tool' && msg.toolCallId) {
+          const rw = getRewrittenCall(msg.display);
+          if (rw) retrofitRewriteBadgeOnCallBlock(msg.toolCallId, rw);
+        }
       });
 
       // 对新消息应用折叠逻辑
@@ -283,6 +321,11 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
         const toolResultBody = lastRow.querySelector('.tool-result-body');
         if (toolResultBody) {
           toolResultBody.innerHTML = bodyHtml;
+        }
+        // 结果在位更新时同样确保调用块徽章已装（幂等）
+        if (msg.toolCallId) {
+          const rw = getRewrittenCall(msg.display);
+          if (rw) retrofitRewriteBadgeOnCallBlock(msg.toolCallId, rw);
         }
       }
 
@@ -343,6 +386,7 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
         return;
       }
 
+      refreshRewriteIndex(messages);
       const html = messages.map((msg, index) => {
         const role = msg.role;
         const msgId = \`msg-\${index}\`;
@@ -425,6 +469,8 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
             const toolsHtml = msg.toolCalls.map(call => {
               const displayName = getToolDisplayName(call.name);
               const template = getToolRenderTemplate(call.name);
+              const callIdAttr = call.id ? \` data-tool-call-id="\${escapeHtml(String(call.id))}"\` : '';
+              const rewritten = rewrittenByCallId.get(call.id) || null;
               let innerHtml;
 
               if (template.call) {
@@ -434,10 +480,12 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
               }
 
               return \`
-                <div class="tool-call-container">
+                <div class="tool-call-container"\${callIdAttr}>
                   <div class="tool-header">
                     <span class="tool-header-name">\${displayName}</span>
+                    \${renderRewriteBadge(rewriteDetailId(call.id), rewritten)}
                   </div>
+                  \${renderRewriteDetail(rewriteDetailId(call.id), rewritten)}
                   <div class="tool-content">\${innerHtml}</div>
                 </div>
               \`;
@@ -480,9 +528,7 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
               <div class="tool-result-header">
                 <span class="status-dot \${success ? 'success' : 'error'}"></span>
                 <span class="tool-result-name">\${displayName}</span>
-                \${renderRewriteBadge('rw-' + msgId, getRewrittenCall(msg.display))}
               </div>
-              \${renderRewriteDetail('rw-' + msgId, getRewrittenCall(msg.display))}
               <div class="tool-result-body">\${bodyHtml}</div>
             </div>\`;
         }

@@ -35,6 +35,12 @@ describe('OpencodeBasic path argument compatibility', () => {
         call: { id: 'write_alias', name: 'write', arguments: { filepath: 'sample.txt' } },
       } as any);
       expect(writeDecision).toBe(Decision.Continue);
+
+      // edit 不经读前置闸门（盲改防护撤除）：未读过的文件也放行
+      const editDecision = await feature.validateWriteOperation({
+        call: { id: 'edit_unread', name: 'edit', arguments: { filePath: 'never-read.txt' } },
+      } as any);
+      expect(editDecision).toBe(Decision.Continue);
     } finally {
       await rm(workspaceDir, { recursive: true, force: true });
     }

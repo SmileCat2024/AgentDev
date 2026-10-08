@@ -129,7 +129,9 @@ export class OpencodeBasicFeature implements AgentFeature {
   /**
    * 工具使用前拦截器
    * - 记录 read 操作的文件路径
-   * - 验证 write / edit 操作是否已先读取（write 创建的新文件自动豁免）
+   * - 验证 write 操作是否已先读取（write 创建的新文件自动豁免）；
+   *   edit 不经此闸门（盲改防护已按摩擦治理决策撤除，编辑安全由 edit 自身
+   *   的精确匹配与唯一性要求承担）
    */
   async validateWriteOperation(ctx: ToolContext): Promise<DecisionResult> {
     const toolName = ctx.call.name;
@@ -151,8 +153,8 @@ export class OpencodeBasicFeature implements AgentFeature {
       return Decision.Continue;
     }
 
-    // 验证 write 和 edit 操作
-    if (toolName === 'write' || toolName === 'edit') {
+    // 验证 write 操作
+    if (toolName === 'write') {
       const filePath = normalizeNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
       const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
 
@@ -161,8 +163,7 @@ export class OpencodeBasicFeature implements AgentFeature {
         .then(() => true)
         .catch(() => false);
 
-      // 新建文件（仅 write 会走到此分支），允许并记录，
-      // 这样后续可以直接 edit 而不需要重新 read
+      // 新建文件，允许并记录，后续对同一文件的 write 不再被此闸门拦截
       if (!exists) {
         this.readFiles.add(normalizedPath);
 

@@ -221,6 +221,15 @@ function detectLineEndings(content: string): LineEndingType {
 }
 
 /**
+ * 行尾归一：\r\n 与孤立 \r 统一为 \n。
+ * edit 匹配时对内容与 oldString/newString 三侧对称使用，写回经
+ * writeTextContent 按目标文件行尾风格还原。
+ */
+function normalizeLineEndings(content: string): string {
+  return content.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+}
+
+/**
  * 写入文件时保留行尾符。
  * 如果目标文件使用 CRLF，将 content 中的 LF 转换为 CRLF。
  */
@@ -946,42 +955,29 @@ const indentationFlexibleReplacer: Replacer = function* (content, find) {
 };
 
 /**
- * 转义符标准化替换器
+ * 反转义字面转义序列：\n \t \r \' \" \` \\ \<换行续行> \$ → 对应真实字符。
+ *
+ * 用于 edit 的转义错位前置探测：模型从工具结果的 JSON 序列化形态或终端
+ * 输出里抄文本时，oldString 会携带字面反斜杠序列而文件里是真实字符
+ * （历史会话实证：193 次 escape 形态命中，其中现行版本下 52 次）。
  */
-const escapeNormalizedReplacer: Replacer = function* (content, find) {
-  const unescapeString = (str: string): string => {
-    return str.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (_, capturedChar) => {
-      switch (capturedChar) {
-        case 'n': return '\n';
-        case 't': return '\t';
-        case 'r': return '\r';
-        case "'": return "'";
-        case '"': return '"';
-        case '`': return '`';
-        case '\\': return '\\';
-        case '\n': return '\n';
-        case '$': return '$';
-        default: return _;
-      }
-    });
-  };
-
-  const unescapedFind = unescapeString(find);
-
-  if (content.includes(unescapedFind)) {
-    yield unescapedFind;
-  }
-
-  const lines = content.split('\n');
-  const findLines = unescapedFind.split('\n');
-
-  for (let i = 0; i <= lines.length - findLines.length; i++) {
-    const block = lines.slice(i, i + findLines.length).join('\n');
-    if (unescapeString(block) === unescapedFind) {
-      yield block;
+function unescapeEscapedSequences(str: string): string {
+  return str.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (_, capturedChar) => {
+    switch (capturedChar) {
+      case 'n': return '\n';
+      case 't': return '\t';
+      case 'r': return '\r';
+      case "'": return "'";
+      case '"': return '"';
+      case '`': return '`';
+      case '\\': return '\\';
+      case '\n': return '\n';
+      case '$': return '$';
+      default: return _;
     }
-  }
-};
+  });
+}
+
 
 /**
  * 边界修剪替换器
@@ -1079,7 +1075,6 @@ const REPLACERS: ReplacerEntry[] = [
   { name: 'blockAnchorReplacer', fn: blockAnchorReplacer },
   { name: 'whitespaceNormalizedReplacer', fn: whitespaceNormalizedReplacer },
   { name: 'indentationFlexibleReplacer', fn: indentationFlexibleReplacer },
-  { name: 'escapeNormalizedReplacer', fn: escapeNormalizedReplacer },
   { name: 'trimmedBoundaryReplacer', fn: trimmedBoundaryReplacer },
   { name: 'contextAwareReplacer', fn: contextAwareReplacer },
   { name: 'multiOccurrenceReplacer', fn: multiOccurrenceReplacer },
@@ -1186,8 +1181,8 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   },
   execute: async (args = {}) => {
     const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
-    const oldString = (args as Record<string, unknown>).oldString as string;
-    const newString = (args as Record<string, unknown>).newString as string;
+    const oldString = normalizeLineEndings((args as Record<string, unknown>).oldString as string);
+    const newString = normalizeLineEndings((args as Record<string, unknown>).newString as string);
     const replaceAll = (args as Record<string, unknown>).replaceAll as boolean | undefined;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
 
@@ -1201,40 +1196,63 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       throw new Error(`File not found: ${resolvedFilePath}`);
     }
 
-    // Read-before-write 校验：必须先读才能编辑
-    const dedupEntry = readDedupState.get(resolvedFilePath);
-    if (!dedupEntry) {
-      throw new Error(
-        `File has not been read yet. Read it first before editing it: ${resolvedFilePath}`
-      );
-    }
-    // Staleness 校验：文件在上次读取后被外部修改则拒绝编辑
-    const currentMtime = (await stat(resolvedFilePath)).mtimeMs;
-    if (currentMtime !== dedupEntry.mtimeMs) {
-      throw new Error(
-        `File has been modified since last read. Read the file again before editing it: ${resolvedFilePath}`
-      );
-    }
-
-    // 读取文件，检测编码和行尾符
+    // 读取文件，检测编码和行尾符。
+    // 行尾三侧对称归一（内容 / oldString / newString）：\r\n 与孤立 \r 统一为 \n，
+    // 写回时按检测到的行尾风格还原。模型侧的 oldString 常带 read 工具输出的
+    // \r 残留，不归一则精确匹配必失败（历史会话中 CRLF 是 edit 失败主因之一）。
     const buffer = await readFile(resolvedFilePath, { encoding: null });
     const encoding = detectEncoding(buffer);
     const lineEndings = detectLineEndings(buffer.toString(encoding));
-    const contentOld = buffer.toString(encoding).replaceAll('\r\n', '\n');
+    const contentOld = normalizeLineEndings(buffer.toString(encoding));
+
+    // 转义错位前置探测（先于引号归一：归一后仍可叠加 findActualString）：
+    // oldString 含字面转义序列（反斜杠+n、反斜杠+引号等）且反转义后在文件中
+    // 唯一命中（或 replaceAll）→ 判定为表示层错位：模型从工具结果的 JSON
+    // 序列化形态或终端输出里抄了文本。对 oldString 与 newString 做同构反转义，
+    // 消除'匹配侧宽容、写入侧原样'的不对称（历史事故：转义形态 newString 把
+    // 字面反斜杠写进文件）。多处命中不自动归一——报错引导补上下文，错报比
+    // 错写安全。
+    let effectiveOldString = oldString;
+    let effectiveNewString = newString;
+    let escapeNormalized = false;
+    const unescapedOld = unescapeEscapedSequences(effectiveOldString);
+    if (unescapedOld !== effectiveOldString && contentOld.includes(unescapedOld)) {
+      const first = contentOld.indexOf(unescapedOld);
+      if (replaceAll || contentOld.indexOf(unescapedOld, first + unescapedOld.length) === -1) {
+        effectiveOldString = unescapedOld;
+        effectiveNewString = unescapeEscapedSequences(effectiveNewString);
+        escapeNormalized = true;
+      }
+    }
 
     // 引号标准化：尝试将 oldString 匹配到文件中的实际字符串（可能含 curly quotes）
-    const actualOldString = findActualString(contentOld, oldString);
-    const effectiveOldString = actualOldString ?? oldString;
+    const actualOldString = findActualString(contentOld, effectiveOldString);
+    if (actualOldString) {
+      effectiveOldString = actualOldString;
+    }
 
-    // 缩进敏感语言（Python/YAML 等）禁用跨行模糊替换器：只走精确与字符级归一匹配
+    // 缩进敏感语言（Python/YAML 等）禁用跨行模糊替换器：只走精确与字符级归一匹配。
+    // 转义错位探测不受此限：反转义后唯一命中是字节级事实，不是相似度猜测。
     const fileExt = path.extname(resolvedFilePath).slice(1).toLowerCase();
     const allowFuzzyReplacers = !INDENTATION_SENSITIVE_EXTENSIONS.has(fileExt);
-    const replaceResult = replace(contentOld, effectiveOldString, newString, replaceAll, allowFuzzyReplacers);
+    const replaceResult = replace(contentOld, effectiveOldString, effectiveNewString, replaceAll, allowFuzzyReplacers);
     const contentNew = replaceResult.content;
 
-    // 当使用了非精确匹配（模糊匹配器）时，生成警告信息
     let warning: string | undefined;
     let matchedPreview: string | undefined;
+
+    // 转义归一已发生时显式告知：oldString 与 newString 均按反转义写入。
+    // 若模型本意是编辑字面转义序列本身（正则/字符串字面量），给出逃生口。
+    if (escapeNormalized) {
+      warning =
+        'Escape-sequence normalization applied: oldString contained literal escape sequences ' +
+        '(backslash + n/t/r/quote) that did not match the file, but its unescaped form matched exactly. ' +
+        'The same unescaping was applied to newString before writing. ' +
+        'If you intended to edit literal escape sequences themselves (e.g. inside a regex or string literal), ' +
+        're-read the file and retry with the exact text as-is.';
+    }
+
+    // 当使用了非精确匹配（模糊匹配器）时，生成警告信息
     if (replaceResult.matchedReplacer !== 'simpleReplacer') {
       const actualLines = replaceResult.actualMatchedString.split('\n');
       const providedLines = effectiveOldString.split('\n');
@@ -1254,6 +1272,7 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
 
       const diffType = indentOnly ? 'indentation/whitespace' : 'content formatting';
       warning =
+        (escapeNormalized ? 'Escape normalization was also applied to oldString/newString. ' : '') +
         `Edit applied via fuzzy matching (${replaceResult.matchedReplacer}). ` +
         `The oldString did not exactly match the file content — ${diffType} differs. ` +
         `The newString was written as-is, which may produce incorrect indentation or formatting. ` +

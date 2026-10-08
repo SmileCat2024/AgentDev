@@ -1324,6 +1324,273 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
 export const editTool = createEditTool();
 
 // ============================================================================
+// Batch Replace Tool - 跨文件批量替换
+// ============================================================================
+
+/** 单次批量替换的文件数上限：超过直接报错，防 glob 失手波及过大范围（写操作不做静默截断） */
+const MAX_BATCH_REPLACE_FILES = 500;
+/** 单文件大小上限（字节）：超过跳过并在结果中列出 */
+const MAX_BATCH_REPLACE_FILE_BYTES = 10 * 1024 * 1024;
+/** 拼接 diff 的总长度上限（字符）：超过截断，diff 仅影响展示与审计摘要 */
+const MAX_BATCH_REPLACE_DIFF_CHARS = 256 * 1024;
+
+/**
+ * 字面转义序列探测：find/replace 经工具调用参数传输时，反斜杠转义
+ * （\n \r \t \\）常以字面两字符形态到达（edit 的 escape 探测处理同一现象）。
+ */
+const LITERAL_ESCAPE_RE = /\\\\|\\[nrt]/;
+
+/**
+ * 字面转义序列反转义：\r\n → CRLF，\n → LF，\t → tab，\\ → 反斜杠。
+ * 从左到右扫描，\\ 消费两字符，避免链式 replace 的顺序陷阱。
+ * 仅用于字面模式；regex 模式的 find 是正则源码，字面反斜杠是正确形态。
+ */
+function unescapeLiteralEscapes(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\' && i + 1 < s.length) {
+      const next = s[i + 1];
+      if (next === 'n') { out += '\n'; i++; continue; }
+      if (next === 't') { out += '\t'; i++; continue; }
+      if (next === 'r') {
+        if (i + 3 < s.length && s[i + 2] === '\\' && s[i + 3] === 'n') {
+          out += '\r\n'; i += 3; continue;
+        }
+        out += '\r'; i++; continue;
+      }
+      if (next === '\\') { out += '\\'; i++; continue; }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * 跨文件批量替换工具：sed -i / 一次性 codemod 脚本的受监管替代。
+ * 字面匹配为默认，正则需显式 regex: true；无读前置守卫；
+ * 返回逐文件命中数与 diff 摘要，变更对模型与审计流同时可见。
+ */
+export function createBatchReplaceTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
+  return createTool({
+  name: 'batch_replace',
+  description:
+    'Replace a literal string or regex across multiple files matched by glob patterns. Use this for mechanical bulk edits (import path renames, API renames, repeated wording fixes) instead of sed/perl or throwaway scripts. Literal match by default; set regex: true to treat find as a regular expression. Returns per-file replacement counts and a diff summary. In literal mode, \\n \\r\\n \\t in find/replace are interpreted as newline/tab when the literal text does not match. Files keep their original line endings; a multi-line find given with LF still matches CRLF files automatically.',
+  parameters: {
+    type: 'object',
+    properties: {
+      paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Glob patterns selecting files to edit, e.g. ["src/**/*.ts"]. Relative to the workspace directory. node_modules/.git/dist and other build/cache directories are always excluded.'
+      },
+      find: {
+        type: 'string',
+        description: 'The text to find. Literal by default; a regular expression when regex: true.'
+      },
+      replace: {
+        type: 'string',
+        description: 'Replacement text. Supports $1 $2 group references in regex mode; written literally otherwise.'
+      },
+      regex: {
+        type: 'boolean',
+        description: 'Treat find as a global regular expression (default false). Line endings are not adapted in regex mode; use \\r?\\n for cross-line patterns.'
+      },
+      exclude: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Additional glob patterns to exclude, on top of the built-in ignore list.'
+      }
+    },
+    additionalProperties: false,
+    required: ['paths', 'find', 'replace']
+  },
+  execute: async (args = {}) => {
+    const raw = args as Record<string, unknown>;
+    const patterns = ((raw.paths ?? []) as unknown[]).filter(
+      (p): p is string => typeof p === 'string'
+    );
+    const find = raw.find as string;
+    const replace = raw.replace as string;
+    const useRegex = raw.regex === true;
+    const exclude = ((raw.exclude ?? []) as unknown[]).filter(
+      (p): p is string => typeof p === 'string'
+    );
+
+    if (patterns.length === 0) {
+      throw new Error('paths must be a non-empty array of glob patterns');
+    }
+    if (typeof find !== 'string' || find === '') {
+      throw new Error('find must be a non-empty string');
+    }
+    if (typeof replace !== 'string') {
+      throw new Error('replace must be a string');
+    }
+
+    let regex: RegExp | undefined;
+    if (useRegex) {
+      try {
+        regex = new RegExp(find, 'g');
+      } catch (err) {
+        throw new Error('Invalid regular expression: ' + (err as Error).message);
+      }
+    }
+
+    // 汇总 glob 结果：去重，且不允许经 ../ 逃逸出工作区
+    const ignore = [...IGNORE_PATTERNS, ...exclude];
+    const candidates = new Set<string>();
+    for (const pattern of patterns) {
+      for await (const file of globIterate(pattern, {
+        cwd: workspaceDir,
+        absolute: true,
+        windowsPathsNoEscape: true,
+        nodir: true,
+        ignore,
+      })) {
+        const rel = path.relative(workspaceDir, file);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
+        candidates.add(path.normalize(file).normalize('NFC'));
+      }
+    }
+
+    if (candidates.size === 0) {
+      return withDisplay(
+        JSON.stringify({
+          filesScanned: 0,
+          filesMatched: 0,
+          totalReplacements: 0,
+          message: 'No files matched the given patterns',
+        }),
+        { filesScanned: 0, filesMatched: 0, totalReplacements: 0, diff: '' }
+      );
+    }
+    if (candidates.size > MAX_BATCH_REPLACE_FILES) {
+      throw new Error(
+        'Matched ' + candidates.size + ' files, exceeding the limit of ' + MAX_BATCH_REPLACE_FILES +
+        '. Narrow the paths patterns (e.g. target one directory or file extension at a time) and retry.'
+      );
+    }
+
+    const perFile: Array<{ file: string; count: number }> = [];
+    const skippedBinary: string[] = [];
+    const skippedLarge: string[] = [];
+    const readErrors: Array<{ file: string; error: string }> = [];
+    const patches: string[] = [];
+    let totalReplacements = 0;
+    let diffTruncated = false;
+    let escapeNormalized = false;
+
+    for (const file of [...candidates].sort()) {
+      let buffer: Buffer;
+      try {
+        const stats = await stat(file);
+        if (stats.size > MAX_BATCH_REPLACE_FILE_BYTES) {
+          skippedLarge.push(file);
+          continue;
+        }
+        buffer = await readFile(file, { encoding: null });
+      } catch (err) {
+        readErrors.push({ file, error: (err as Error).message });
+        continue;
+      }
+      if (buffer.includes(0)) {
+        skippedBinary.push(file);
+        continue;
+      }
+
+      const encoding = detectEncoding(buffer);
+      const content = buffer.toString(encoding);
+
+      // 字面模式的两级容错（顺序固定）：
+      // 1. 转义归一：find 以字面 \n \r\n \t \\ 形态到达（参数传输字面化）且原样
+      //    零命中时，find/replace 同构反转义后重试
+      // 2. 行尾适配：反转义出的 LF 形态多行 find 在 CRLF 文件上零命中时，
+      //    同步换算为 \r\n，替换结果与文件行尾保持一致
+      let effectiveFind = find;
+      let effectiveReplace = replace;
+      if (!useRegex && !content.includes(effectiveFind) && LITERAL_ESCAPE_RE.test(effectiveFind)) {
+        effectiveFind = unescapeLiteralEscapes(effectiveFind);
+        effectiveReplace = unescapeLiteralEscapes(effectiveReplace);
+        escapeNormalized = true;
+      }
+      if (!useRegex && effectiveFind.includes('\n') && !content.includes(effectiveFind) && content.includes('\r\n')) {
+        effectiveFind = effectiveFind.replaceAll('\n', '\r\n');
+        effectiveReplace = effectiveReplace.replaceAll('\n', '\r\n');
+      }
+
+      let count = 0;
+      let contentNew = content;
+      if (useRegex && regex) {
+        const matches = content.match(regex);
+        count = matches ? matches.length : 0;
+        if (count > 0) contentNew = content.replace(regex, replace);
+      } else {
+        count = content.split(effectiveFind).length - 1;
+        if (count > 0) contentNew = content.split(effectiveFind).join(effectiveReplace);
+      }
+
+      if (count === 0 || contentNew === content) continue;
+
+      const lineEndings = detectLineEndings(content);
+      await writeTextContent(file, contentNew, encoding, lineEndings);
+
+      // 与 write 工具一致：写后刷新读取状态，避免后续 write 的 staleness 误拒
+      try {
+        const mtimeMs = (await stat(file)).mtimeMs;
+        readDedupState.set(file, { mtimeMs, offset: undefined, limit: undefined });
+      } catch {
+        // ignore
+      }
+
+      totalReplacements += count;
+      perFile.push({ file, count });
+
+      if (!diffTruncated) {
+        const patch = createTwoFilesPatch(file, file, content, contentNew);
+        if (patches.join('').length + patch.length > MAX_BATCH_REPLACE_DIFF_CHARS) {
+          diffTruncated = true;
+        } else {
+          patches.push(patch);
+        }
+      }
+    }
+
+    const filesScanned =
+      candidates.size - skippedBinary.length - skippedLarge.length - readErrors.length;
+    const message =
+      totalReplacements === 0
+        ? 'No occurrences found; no files were modified'
+        : 'Replaced ' + totalReplacements + ' occurrence(s) across ' + perFile.length + ' file(s)';
+
+    return withDisplay(
+      JSON.stringify({
+        filesScanned,
+        filesMatched: perFile.length,
+        totalReplacements,
+        perFile,
+        ...(skippedBinary.length ? { skippedBinary } : {}),
+        ...(skippedLarge.length ? { skippedLarge } : {}),
+        ...(readErrors.length ? { readErrors } : {}),
+        ...(escapeNormalized ? { escapeNormalized: true } : {}),
+        ...(diffTruncated ? { diffTruncated: true } : {}),
+        message,
+      }),
+      {
+        filesScanned,
+        filesMatched: perFile.length,
+        totalReplacements,
+        diff: patches.join(''),
+        ...(diffTruncated ? { diffTruncated: true } : {}),
+      }
+    );
+  }
+  });
+}
+
+export const batchReplaceTool = createBatchReplaceTool();
+
+
+// ============================================================================
 // LS Tool - 目录列表
 // ============================================================================
 

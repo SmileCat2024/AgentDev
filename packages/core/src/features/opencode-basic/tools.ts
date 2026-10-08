@@ -5,6 +5,8 @@
 
 import { createTool } from '../../core/tool.js';
 import { withDisplay } from '../../core/tool-result-display.js';
+import { withRewrite } from '../../core/tool-call-rewrite.js';
+import type { ToolCall } from '../../core/types.js';
 import { access, open, readFile, writeFile, opendir, stat, mkdir } from 'fs/promises';
 import { globIterate } from 'glob';
 import { spawn } from 'child_process';
@@ -129,6 +131,27 @@ function resolveWorkspaceSearchPath(searchPath: string | undefined, workspaceDir
     return workspaceDir;
   }
   return resolveWorkspacePath(searchPath, workspaceDir);
+}
+
+/**
+ * 路径解析发散检测（ADR-0023 确定性纠正类）：请求路径经 expandPath 解析后
+ * 与原值不同（相对路径、~ 展开、NFC 归一、首尾空白）时，构造以绝对路径
+ * 为 filePath 的生效调用；解析结果与请求一致（绝对路径常态）或 context
+ * 未携带 callId（非运行时直接调用）时返回 undefined，不触发调用改写。
+ * 参数别名键（filepath/path）从生效参数中剔除，统一为规范名 filePath。
+ */
+function pathRewriteCall(
+  context: unknown,
+  toolName: string,
+  requestedPath: string,
+  resolvedPath: string,
+  args: Record<string, unknown>,
+): ToolCall | undefined {
+  if (resolvedPath === requestedPath) return undefined;
+  const callId = (context as { callId?: string } | undefined)?.callId;
+  if (!callId) return undefined;
+  const { filePath: _filePath, filepath: _filepath, path: _path, ...rest } = args;
+  return { id: callId, name: toolName, arguments: { ...rest, filePath: resolvedPath } };
 }
 
 /**
@@ -379,6 +402,8 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   name: 'read',
   description: 'Read a file from the local filesystem. Can read files with offset/limit for pagination, and can also read directory contents. For large files, use offset and limit parameters to read in chunks.',
   render: 'read',
+  // ADR-0023：相对路径/~ 展开/NFC 等确定性解析发散时，历史记录生效的绝对路径
+  rewritable: true,
   parallelizable: true,
   parameters: {
     type: 'object',
@@ -399,7 +424,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     additionalProperties: false,
     required: ['filePath']
   },
-  execute: async (args = {}) => {
+  execute: async (args = {}, context) => {
     const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
     const offsetParam = typeof (args as Record<string, unknown>).offset === 'number'
       ? (args as Record<string, unknown>).offset as number
@@ -408,6 +433,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       ? (args as Record<string, unknown>).limit as number
       : undefined;
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
+    const rewriteCall = pathRewriteCall(context, 'read', filePath, resolvedFilePath, args as Record<string, unknown>);
 
     if (offsetParam !== undefined && offsetParam < 1) {
       throw new Error('offset must be greater than or equal to 1');
@@ -466,7 +492,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       }
 
       const truncated = totalEntries > end;
-      return {
+      const result = {
         type: 'directory',
         path: resolvedFilePath,
         totalEntries,
@@ -475,6 +501,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
         truncated,
         entries
       };
+      return rewriteCall ? withRewrite(JSON.stringify(result), rewriteCall) : result;
     }
 
     // 处理文件
@@ -532,7 +559,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       // stat 失败，跳过去重状态更新
     }
 
-    return {
+    const result = {
       type: 'file',
         path: resolvedFilePath,
       totalLines,
@@ -543,6 +570,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       lastReadLine,
       content: contentWithLines.join('\n')
     };
+    return rewriteCall ? withRewrite(JSON.stringify(result), rewriteCall) : result;
   }
   });
 }
@@ -561,6 +589,8 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   name: 'write',
   description: 'Write content to a file. Creates new files or overwrites existing files. THIS TOOL WILL OVERWRITE THE EXISTING FILE IF it exists. Only use this tool when explicitly requested to do so. Always prefer editing existing files using the edit tool when the file already exists.',
   render: 'write',
+  // ADR-0023：相对路径/~ 展开/NFC 等确定性解析发散时，历史记录生效的绝对路径
+  rewritable: true,
   parameters: {
     type: 'object',
     properties: {
@@ -576,10 +606,30 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     additionalProperties: false,
     required: ['filePath', 'content']
   },
-  execute: async (args = {}) => {
-    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
+  execute: async (args = {}, context) => {
     const content = (args as Record<string, unknown>).content as string;
+
+    // 废路径兜底：filePath 缺失或空白时不丢内容，落临时文件并返回迁移指引。
+    // 路径含值但不可解析（如 null byte）仍走安全拦截报错；content 非 string
+    // 属参数错误而非路径废值，按原逻辑报 Missing。
+    if (!tryNamedPathArg(args, 'filePath', 'filepath', 'path') && typeof content === 'string') {
+      const tempDir = path.join(workspaceDir, '.agentdev', 'temp');
+      await mkdir(tempDir, { recursive: true });
+      const tempPath = path.join(
+        tempDir,
+        `write-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`,
+      );
+      await writeFile(tempPath, content, 'utf8');
+      return (
+        `No usable filePath was provided, so the content was not discarded: ` +
+        `it has been saved to ${tempPath}. ` +
+        `Move it to the intended location (e.g. via the bash tool), or call write again with the correct filePath.`
+      );
+    }
+
+    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
+    const rewriteCall = pathRewriteCall(context, 'write', filePath, resolvedFilePath, args as Record<string, unknown>);
 
     // 检测现有文件的编码
     let encoding: FileEncoding = 'utf8';
@@ -625,15 +675,16 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       // ignore
     }
 
-    return withDisplay(
-      JSON.stringify({
+    const writeResult = JSON.stringify({
         filePath: resolvedFilePath,
         existed: exists,
         lines: content.split('\n').length,
         message: `File ${exists ? 'updated' : 'created'} successfully`,
-      }),
-      { filePath: resolvedFilePath, existed: exists, diff }
-    );
+      });
+    const writeDisplay = { filePath: resolvedFilePath, existed: exists, diff };
+    return rewriteCall
+      ? withRewrite(writeResult, rewriteCall, writeDisplay)
+      : withDisplay(writeResult, writeDisplay);
   }
   });
 }

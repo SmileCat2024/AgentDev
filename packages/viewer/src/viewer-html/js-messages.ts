@@ -58,6 +58,30 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
       if (el) el.classList.toggle('expanded');
     };
 
+    // 工具调用卡（单条 call）的完整 HTML。两处 assistant 行渲染分支共用同一实现，
+    // 避免卡片结构与改写标注的展开逻辑各写一份而漂移。
+    function renderToolCallCardHtml(call) {
+      const displayName = getToolDisplayName(call.name);
+      const template = getToolRenderTemplate(call.name);
+      const callIdAttr = call.id ? \` data-tool-call-id="\${escapeHtml(String(call.id))}"\` : '';
+      const rewritten = rewrittenByCallId.get(call.id) || null;
+      const detailId = rewriteDetailId(call.id);
+      const innerHtml = template.call
+        ? applyTemplate(template.call, call.arguments)
+        : \`<pre style="margin:0; font-size:12px;">\${JSON.stringify(call.arguments, null, 2)}</pre>\`;
+
+      return \`
+        <div class="tool-call-container"\${callIdAttr}>
+          <div class="tool-header">
+            <span class="tool-header-name">\${displayName}</span>
+            \${renderRewriteBadge(detailId, rewritten)}
+          </div>
+          \${renderRewriteDetail(detailId, rewritten)}
+          <div class="tool-content">\${innerHtml}</div>
+        </div>
+      \`;
+    }
+
     // 生成单条消息的 HTML
     function renderMessage(msg, index) {
       const role = msg.role;
@@ -149,30 +173,7 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
         }
 
         if (msg.toolCalls && msg.toolCalls.length > 0) {
-          const toolsHtml = msg.toolCalls.map(call => {
-            const displayName = getToolDisplayName(call.name);
-            const template = getToolRenderTemplate(call.name);
-            const callIdAttr = call.id ? \` data-tool-call-id="\${escapeHtml(String(call.id))}"\` : '';
-            const rewritten = rewrittenByCallId.get(call.id) || null;
-            let innerHtml;
-
-            if (template.call) {
-              innerHtml = applyTemplate(template.call, call.arguments);
-            } else {
-              innerHtml = \`<pre style="margin:0; font-size:12px;">\${JSON.stringify(call.arguments, null, 2)}</pre>\`;
-            }
-
-            return \`
-              <div class="tool-call-container"\${callIdAttr}>
-                <div class="tool-header">
-                  <span class="tool-header-name">\${displayName}</span>
-                  \${renderRewriteBadge(rewriteDetailId(call.id), rewritten)}
-                </div>
-                \${renderRewriteDetail(rewriteDetailId(call.id), rewritten)}
-                <div class="tool-content">\${innerHtml}</div>
-              </div>
-            \`;
-          }).join('');
+          const toolsHtml = msg.toolCalls.map(renderToolCallCardHtml).join('');
           innerContent += toolsHtml;
         }
 
@@ -466,30 +467,7 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
           }
 
           if (msg.toolCalls && msg.toolCalls.length > 0) {
-            const toolsHtml = msg.toolCalls.map(call => {
-              const displayName = getToolDisplayName(call.name);
-              const template = getToolRenderTemplate(call.name);
-              const callIdAttr = call.id ? \` data-tool-call-id="\${escapeHtml(String(call.id))}"\` : '';
-              const rewritten = rewrittenByCallId.get(call.id) || null;
-              let innerHtml;
-
-              if (template.call) {
-                innerHtml = applyTemplate(template.call, call.arguments);
-              } else {
-                innerHtml = \`<pre style="margin:0; font-size:12px;">\${JSON.stringify(call.arguments, null, 2)}</pre>\`;
-              }
-
-              return \`
-                <div class="tool-call-container"\${callIdAttr}>
-                  <div class="tool-header">
-                    <span class="tool-header-name">\${displayName}</span>
-                    \${renderRewriteBadge(rewriteDetailId(call.id), rewritten)}
-                  </div>
-                  \${renderRewriteDetail(rewriteDetailId(call.id), rewritten)}
-                  <div class="tool-content">\${innerHtml}</div>
-                </div>
-              \`;
-            }).join('');
+            const toolsHtml = msg.toolCalls.map(renderToolCallCardHtml).join('');
             innerContent += toolsHtml;
           }
 

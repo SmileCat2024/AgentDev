@@ -67,9 +67,11 @@ export interface ToolExecResult {
   /** 前端展示数据（不注入 LLM，仅 tool 消息） */
   display?: unknown;
   /**
-   * 实际生效的调用（ADR-0023）。id 必须与原调用一致（wire 层配对不变），
-   * name/arguments 为生效值。仅 `rewritable: true` 的工具经 withRewrite(...)
-   * 声明时有效；校验失败则放弃改写，历史按原始调用写入。
+   * 实际生效的调用（ADR-0023）。框架内部字段，不供工具手工填写：
+   * 执行器仅从 withRewrite(...) 的标记结果中取出并填入，由校验链确认后
+   * 应用到 assistant 历史。id 必须与原调用一致（wire 层配对不变），
+   * name/arguments 为生效值。校验失败（工具未声明 rewritable、id 不符、
+   * 目标工具未注册）则剥离本字段，历史按原始调用写入。
    */
   effectiveCall?: ToolCall;
 }

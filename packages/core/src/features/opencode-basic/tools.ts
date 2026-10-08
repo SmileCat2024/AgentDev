@@ -90,6 +90,13 @@ export function deserializeReadDedupState(data: unknown): void {
   }
 }
 
+/**
+ * 路径参数别名键：模型可能用 filepath / path 等别名传路径。
+ * 这是别名清单的唯一来源——参数读取（normalizeNamedPathArg）与生效调用
+ * 的别名剔除（omitPathAliasKeys）共用，避免两处清单漂移。
+ */
+const PATH_ARG_ALIAS_KEYS = ['filePath', 'filepath', 'path'] as const;
+
 function normalizeNamedPathArg(args: unknown, ...keys: string[]): string {
   if (!args || typeof args !== 'object') {
     throw new Error(`Missing required parameter: "${keys[0]}"`);
@@ -134,6 +141,19 @@ function resolveWorkspaceSearchPath(searchPath: string | undefined, workspaceDir
 }
 
 /**
+ * 剔除参数中的路径别名键（保留规范名 filePath），用于构造生效调用参数。
+ * 别名清单与 normalizeNamedPathArg 的读取清单同源（PATH_ARG_ALIAS_KEYS）。
+ */
+function omitPathAliasKeys(args: Record<string, unknown>): Record<string, unknown> {
+  const rest: Record<string, unknown> = {};
+  for (const key of Object.keys(args)) {
+    if ((PATH_ARG_ALIAS_KEYS as readonly string[]).includes(key)) continue;
+    rest[key] = args[key];
+  }
+  return rest;
+}
+
+/**
  * 路径解析发散检测（ADR-0023 确定性纠正类）：请求路径经 expandPath 解析后
  * 与原值不同（相对路径、~ 展开、NFC 归一、首尾空白）时，构造以绝对路径
  * 为 filePath 的生效调用；解析结果与请求一致（绝对路径常态）或 context
@@ -150,8 +170,7 @@ function pathRewriteCall(
   if (resolvedPath === requestedPath) return undefined;
   const callId = (context as { callId?: string } | undefined)?.callId;
   if (!callId) return undefined;
-  const { filePath: _filePath, filepath: _filepath, path: _path, ...rest } = args;
-  return { id: callId, name: toolName, arguments: { ...rest, filePath: resolvedPath } };
+  return { id: callId, name: toolName, arguments: { ...omitPathAliasKeys(args), filePath: resolvedPath } };
 }
 
 /**
@@ -425,7 +444,7 @@ export function createReadTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     required: ['filePath']
   },
   execute: async (args = {}, context) => {
-    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
+    const filePath = normalizeNamedPathArg(args, ...PATH_ARG_ALIAS_KEYS);
     const offsetParam = typeof (args as Record<string, unknown>).offset === 'number'
       ? (args as Record<string, unknown>).offset as number
       : undefined;
@@ -627,7 +646,7 @@ export function createWriteTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
       );
     }
 
-    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
+    const filePath = normalizeNamedPathArg(args, ...PATH_ARG_ALIAS_KEYS);
     const resolvedFilePath = resolveWorkspacePath(filePath, workspaceDir);
     const rewriteCall = pathRewriteCall(context, 'write', filePath, resolvedFilePath, args as Record<string, unknown>);
 
@@ -1231,7 +1250,7 @@ export function createEditTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
     required: ['filePath', 'oldString', 'newString']
   },
   execute: async (args = {}) => {
-    const filePath = normalizeNamedPathArg(args, 'filePath', 'filepath', 'path');
+    const filePath = normalizeNamedPathArg(args, ...PATH_ARG_ALIAS_KEYS);
     const oldString = normalizeLineEndings((args as Record<string, unknown>).oldString as string);
     const newString = normalizeLineEndings((args as Record<string, unknown>).newString as string);
     const replaceAll = (args as Record<string, unknown>).replaceAll as boolean | undefined;

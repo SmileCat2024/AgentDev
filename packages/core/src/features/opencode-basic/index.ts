@@ -32,7 +32,7 @@ import {
   createLsTool,
   createGlobTool,
   createGrepTool,
-  normalizeNamedPathArg,
+  tryNamedPathArg,
   resolveWorkspacePath,
   serializeReadDedupState,
   deserializeReadDedupState,
@@ -139,7 +139,11 @@ export class OpencodeBasicFeature implements AgentFeature {
 
     // 记录 read 操作
     if (toolName === 'read') {
-      const filePath = normalizeNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
+      // 无可用路径（缺失/空串/纯白）时不抛错：抛错会被框架捕获并记为
+      // Reverse hook execution failed 噪音日志；放行即可，read 自身会
+      // 给出面向模型的缺参报错。
+      const filePath = tryNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
+      if (filePath === undefined) return Decision.Continue;
       const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
       this.readFiles.add(normalizedPath);
 
@@ -156,7 +160,10 @@ export class OpencodeBasicFeature implements AgentFeature {
 
     // 验证 write 操作
     if (toolName === 'write') {
-      const filePath = normalizeNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
+      // 无可用路径时无"已存在文件"可查，闸门无职责：直接放行，交由
+      // write 自身的废路径兜底（内容落 .agentdev/temp）处理。
+      const filePath = tryNamedPathArg(ctx.call.arguments || {}, 'filePath', 'filepath', 'path');
+      if (filePath === undefined) return Decision.Continue;
       const normalizedPath = resolveWorkspacePath(filePath, this.workspaceDir);
 
       // 检查文件是否存在

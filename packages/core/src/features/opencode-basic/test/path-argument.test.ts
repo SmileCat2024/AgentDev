@@ -45,4 +45,33 @@ describe('OpencodeBasic path argument compatibility', () => {
       await rm(workspaceDir, { recursive: true, force: true });
     }
   });
+
+  it('should pass through hooks when path is missing or blank (no noise, execute handles it)', async () => {
+    const workspaceDir = await mkdtemp(join(tmpdir(), 'agentdev-opencode-'));
+    const feature = new OpencodeBasicFeature({ workspaceDir });
+
+    try {
+      await feature.onInitiate({ logger: { info() {}, warn() {} } } as any);
+
+      // read：无路径无文件可跟踪，放行；缺参报错由 read 自身给出
+      const readBlank = await feature.validateWriteOperation({
+        call: { id: 'read_blank', name: 'read', arguments: { filePath: '   ' } },
+      } as any);
+      expect(readBlank).toBe(Decision.Continue);
+
+      // write：无路径无"已存在文件"可查，闸门无职责放行；
+      // 兜底（.agentdev/temp 落盘）由 write 的 execute 承担
+      const writeBlank = await feature.validateWriteOperation({
+        call: { id: 'write_blank', name: 'write', arguments: { filePath: '' } },
+      } as any);
+      expect(writeBlank).toBe(Decision.Continue);
+
+      const writeMissing = await feature.validateWriteOperation({
+        call: { id: 'write_missing', name: 'write', arguments: {} },
+      } as any);
+      expect(writeMissing).toBe(Decision.Continue);
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
 });

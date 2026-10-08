@@ -2119,8 +2119,6 @@ export function createGrepTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
 
 export const grepTool = createGrepTool();
 
-export { normalizeNamedPathArg };
-
 export { tryNamedPathArg };
 
 export { resolveWorkspacePath };

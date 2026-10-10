@@ -78,6 +78,34 @@ export interface SessionContinuityEntry {
 }
 
 /**
+ * 种子注入项声明 — 变换在保留素材之外追加注入的单条种子消息定位。
+ *
+ * `kind` 由变换自声明（官方取值如 `'summary'`、`'trim-notice'`），
+ * 消费方按 kind 选择投影规则；`messageIndex` 是该注入项在
+ * `SuccessorSeed.seedMessages` 数组中的下标（0 基）。
+ */
+export interface SeedInjectionDeclaration {
+  /** 注入类型（变换自声明，官方取值如 'summary' / 'trim-notice'）。 */
+  kind: string;
+  /** 该注入项在 seedMessages 数组中的下标。 */
+  messageIndex: number;
+}
+
+/**
+ * 种子边界声明（ADR-0024 PR-3 marker 落盘）。
+ *
+ * 变换产物对自身 seed 构成的账目：总条数 + 变换追加的注入项位置。
+ * 供接续协议的消费方（如线程流读取）按持久 marker 切分 seed 段，
+ * 不依赖消息内容启发式或数组位置推导。
+ */
+export interface SeedBoundary {
+  /** seedMessages 总条数（与 seedMessages.length 一致）。 */
+  seedMessageCount: number;
+  /** 变换在保留素材之外追加的注入项（如尾部摘要、trim 注解），按数组顺序。 */
+  appendedInjection: SeedInjectionDeclaration[];
+}
+
+/**
  * 变换产物 — 下一个 Session 的种子。
  *
  * 以 Claw 现行 handoff JSON v1（`HANDOFF_SCHEMA_VERSION=1`）为蓝本框架化，
@@ -96,6 +124,14 @@ export interface SuccessorSeed {
   schemaVersion: number;
   /** 下一个 Session 的种子消息（消息回放式变换的产物）。 */
   seedMessages: SessionSeedMessage[];
+  /**
+   * 种子边界声明（可选，ADR-0024 PR-3）。
+   *
+   * 官方变换产物必须声明，且数字与实际 seed 构成一致；自定义变换一视同仁。
+   * **存量兼容：无 seedBoundary 的旧产物不是错误**，消费方按缺失处理
+   * （如将该棒标记 incomplete 并带原因码），不得回退为消息内容启发式切分。
+   */
+  seedBoundary?: SeedBoundary;
   /** 跨 session 转移的 Feature 连续性状态（按需）。 */
   featureContinuity?: SessionContinuityEntry[];
   /** 被标记为重要的文件路径（供下一个 session 重新加载）。 */

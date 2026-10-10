@@ -25,9 +25,21 @@ function createFeature() {
   });
 }
 
-function createContextRecorder() {
+/**
+ * 镜像 Context 的消息记录器：
+ * - typed add* 双数组同步（messages[] / enrichedMessages[]）
+ * - legacy add() 只写 messages[]（既有行为，测试对照用）
+ * - enriched 条目按 push 顺序分配递增 sequence（镜像 Context.enrich）
+ * - getAllEnriched() 返回浅拷贝（镜像 Context.getAllEnriched）
+ */
+function createContextRecorder(options: { startSequence?: number; prefill?: number } = {}) {
   const messages: Array<{ role: string; content: string; turn?: number; toolCallId?: string; images?: any[] }> = [];
-  const enrichedMessages: Array<{ role: string; content: string; turn?: number; toolCallId?: string; images?: any[] }> = [];
+  const enrichedMessages: Array<{ role: string; content: string; turn?: number; toolCallId?: string; images?: any[]; sequence: number }> = [];
+  let sequence = options.startSequence ?? 0;
+  for (let i = 0; i < (options.prefill ?? 0); i++) {
+    messages.push({ role: 'system', content: `prefill-${i}` });
+    enrichedMessages.push({ role: 'system', content: `prefill-${i}`, sequence: sequence++ });
+  }
   const context = {
     add(msg: any): void {
       messages.push({ role: msg.role, content: msg.content, turn: msg.turn });
@@ -36,20 +48,23 @@ function createContextRecorder() {
     },
     addSystemMessage(content: string, turn: number): void {
       messages.push({ role: 'system', content, turn });
-      enrichedMessages.push({ role: 'system', content, turn });
+      enrichedMessages.push({ role: 'system', content, turn, sequence: sequence++ });
     },
     addUserMessage(content: string, turn: number): void {
       messages.push({ role: 'user', content, turn });
-      enrichedMessages.push({ role: 'user', content, turn });
+      enrichedMessages.push({ role: 'user', content, turn, sequence: sequence++ });
     },
     addAssistantMessage(response: { content: string }, turn: number): void {
       messages.push({ role: 'assistant', content: response.content, turn });
-      enrichedMessages.push({ role: 'assistant', content: response.content, turn });
+      enrichedMessages.push({ role: 'assistant', content: response.content, turn, sequence: sequence++ });
     },
     addSerializedToolMessage(toolCallId: string, content: string, turn: number, images?: any[]): void {
       const message = { role: 'tool', content, turn, toolCallId, images };
       messages.push(message);
-      enrichedMessages.push(message);
+      enrichedMessages.push({ ...message, sequence: sequence++ });
+    },
+    getAllEnriched(): typeof enrichedMessages {
+      return enrichedMessages.map(m => ({ ...m }));
     },
   };
   return { messages, enrichedMessages, context };
@@ -233,7 +248,9 @@ describe('HandoffSeedFeature', () => {
     assert.deepEqual(messages[0], {
       role: 'tool', content, turn: 1, toolCallId: 'tc-1', images,
     });
-    assert.deepEqual(enrichedMessages[0], messages[0]);
+    // enriched 条目携带 sequence 元数据，正文字段与 messages 侧逐字段一致
+    const { sequence: _seq, ...enrichedBody } = enrichedMessages[0];
+    assert.deepEqual(enrichedBody, messages[0]);
   });
 
   it('should handle mixed-role seed messages with correct enriched sync', async () => {
@@ -264,5 +281,103 @@ describe('HandoffSeedFeature', () => {
     assert.equal(messages.length, 5);
     assert.equal(enrichedMessages.length, 5,
       'all replayed messages, including tool results, should reach enrichedMessages');
+  });
+});
+
+describe('HandoffSeedFeature captureState（注入事实回写，ADR-0024 PR-3）', () => {
+  function inject(feature: HandoffSeedFeature, recorder: ReturnType<typeof createContextRecorder>) {
+    return feature.injectHandoffSummary({
+      input: 'hello',
+      isFirstCall: true,
+      context: recorder.context,
+      agent: { _callIndex: 0 },
+    } as any);
+  }
+
+  it('未注入时快照保持旧最小形态 { injected: false }', () => {
+    const feature = createFeature();
+    assert.deepEqual(feature.captureState(), { injected: false });
+  });
+
+  it('注入后快照回写 packageId / seedCount / seq 区间，区间与实际注入一致', async () => {
+    const feature = createFeature(); // pkg-1, 3 条 seed
+    const recorder = createContextRecorder({ prefill: 2 });
+    await inject(feature, recorder);
+
+    const snapshot = feature.captureState() as Record<string, unknown>;
+    assert.equal(snapshot.injected, true);
+    assert.equal(snapshot.packageId, 'pkg-1');
+    assert.equal(snapshot.seedCount, 3);
+    // seed 落在 enriched[2..4]：first/last 指向实际注入区间（非下标推导）
+    assert.equal(snapshot.firstMessageSeq, recorder.enrichedMessages[2].sequence);
+    assert.equal(snapshot.lastMessageSeq, recorder.enrichedMessages[4].sequence);
+    assert.equal(
+      (snapshot.lastMessageSeq as number) - (snapshot.firstMessageSeq as number) + 1,
+      3,
+      'seq 区间长度应等于 seedCount（交叉校验契约）',
+    );
+  });
+
+  it('importantFiles 注入不进入 seed 区间账目', async () => {
+    const feature = new HandoffSeedFeature({
+      handoff: {
+        packageId: 'pkg-files',
+        sourceSessionId: 'session-files',
+        mode: 'trim-transcript',
+        seedMessages: [
+          { role: 'user', content: 'do work', turn: 1 },
+          { role: 'assistant', content: 'done', turn: 1 },
+        ],
+        importantFiles: ['definitely-missing-file-for-test.ts'],
+      },
+    });
+    const recorder = createContextRecorder();
+    await inject(feature, recorder);
+
+    // importantFiles 未命中 → name-only 补充块追加在 seed 段之后
+    assert.ok(recorder.enrichedMessages.length > 2, 'important-file block should be injected after seed');
+    const snapshot = feature.captureState() as Record<string, unknown>;
+    assert.equal(snapshot.seedCount, 2);
+    assert.equal(snapshot.firstMessageSeq, recorder.enrichedMessages[0].sequence);
+    assert.equal(snapshot.lastMessageSeq, recorder.enrichedMessages[1].sequence);
+  });
+
+  it('无 seedMessages 但有 sourceSummary 时，快照记录单条合成注入', async () => {
+    const feature = new HandoffSeedFeature({
+      handoff: {
+        packageId: 'pkg-label',
+        sourceSessionId: 'session-label',
+        mode: 'summary-message',
+        sourceSummary: 'previous session overview',
+      },
+    });
+    const recorder = createContextRecorder({ prefill: 1 });
+    await inject(feature, recorder);
+
+    const snapshot = feature.captureState() as Record<string, unknown>;
+    assert.equal(snapshot.seedCount, 1);
+    assert.equal(snapshot.firstMessageSeq, recorder.enrichedMessages[1].sequence);
+    assert.equal(snapshot.lastMessageSeq, recorder.enrichedMessages[1].sequence);
+  });
+
+  it('旧快照（仅 injected:true）读取不报错，往返保持旧形态', () => {
+    const feature = createFeature();
+    feature.restoreState({ injected: true });
+    assert.deepEqual(feature.captureState(), { injected: true });
+  });
+
+  it('新快照 restore 后 captureState 全等，且不重复注入', async () => {
+    const source = createFeature();
+    const recorderA = createContextRecorder({ prefill: 2 });
+    await inject(source, recorderA);
+    const snapshot = source.captureState();
+
+    const target = createFeature();
+    target.restoreState(JSON.parse(JSON.stringify(snapshot)));
+    assert.deepEqual(target.captureState(), snapshot);
+
+    const recorderB = createContextRecorder({ prefill: 2 });
+    await inject(target, recorderB);
+    assert.equal(recorderB.messages.length, 2, 'restore 后不得重复注入 seed');
   });
 });

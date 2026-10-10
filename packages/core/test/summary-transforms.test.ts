@@ -208,6 +208,21 @@ describe('SummaryTransformation', () => {
     assert.deepEqual(seed.importantFiles, ['a.ts']);
     assert.equal((seed.meta as any).mode, 'summarized-nine-section');
   });
+
+  it('declares seedBoundary: 全部产物为单一 summary 注入', async () => {
+    const t = new SummaryTransformation();
+    const snapshot = makeSnapshot([{ role: 'user', content: 'task', turn: 0 }]);
+    const seed = await t.transform({ sourceSnapshot: snapshot }, { llm: makeLLM('summary body') });
+
+    const boundary = seed.seedBoundary!;
+    assert.equal(boundary.seedMessageCount, seed.seedMessages.length, 'seedMessageCount 必须等于 seedMessages.length');
+    assert.deepEqual(boundary.appendedInjection, [{ kind: 'summary', messageIndex: 0 }]);
+    assert.equal(seed.seedMessages[boundary.appendedInjection[0].messageIndex].role, 'system');
+    assert.ok(
+      seed.seedMessages[boundary.appendedInjection[0].messageIndex].content.includes('summary body'),
+      'messageIndex 必须指向摘要注入消息',
+    );
+  });
 });
 
 describe('TrimTranscriptWithSummaryTransformation', () => {
@@ -228,5 +243,35 @@ describe('TrimTranscriptWithSummaryTransformation', () => {
     assert.equal(last.role, 'system');
     assert.ok(last.content.includes('appended summary'));
     assert.equal((seed.meta as any).mode, 'trim-transcript-with-summary');
+  });
+
+  it('declares seedBoundary: 保留 + 折叠注 + 1 条尾部摘要注入，账目自洽', async () => {
+    const t = new TrimTranscriptWithSummaryTransformation();
+    const snapshot = makeSnapshot([
+      { role: 'user', content: 'do task', turn: 0 },
+      { role: 'assistant', content: '', turn: 0, toolCalls: [{ name: 'read', arguments: '{"filePath":"a.js"}' }] },
+      { role: 'tool', toolCallId: 'tc1', content: '{"success":true,"result":"file body"}', turn: 0 },
+      { role: 'user', content: 'next', turn: 1 },
+      { role: 'assistant', content: 'done', turn: 1 },
+    ]);
+    const seed = await t.transform({ sourceSnapshot: snapshot }, { llm: makeLLM('appended summary') });
+
+    const boundary = seed.seedBoundary!;
+    const stats = (seed.meta as any).trimStats;
+    // 总数 = 实际 seedMessages 长度 = trim 账目（保留 + 折叠注）+ 1 条摘要注入
+    assert.equal(boundary.seedMessageCount, seed.seedMessages.length);
+    assert.equal(
+      boundary.seedMessageCount,
+      stats.keptSeedMessageCount + stats.foldedToolNoteCount + 1,
+      'seedMessageCount 必须与变换内部账目一致（保留 + 折叠注 + 摘要）',
+    );
+
+    assert.equal(boundary.appendedInjection.length, 1);
+    const [injection] = boundary.appendedInjection;
+    assert.equal(injection.kind, 'summary');
+    assert.equal(injection.messageIndex, seed.seedMessages.length - 1, '摘要注入指向末位');
+    const target = seed.seedMessages[injection.messageIndex];
+    assert.equal(target.role, 'system');
+    assert.ok(target.content.includes('appended summary'));
   });
 });

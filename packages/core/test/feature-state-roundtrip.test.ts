@@ -84,7 +84,12 @@ const MUTATIONS: Record<string, Mutate> = {
     };
   },
   'handoff-seed': feature => {
-    (feature as unknown as { injected: boolean }).injected = true;
+    const f = feature as unknown as {
+      injected: boolean;
+      injectionFacts?: { packageId: string; seedCount: number; firstMessageSeq?: number; lastMessageSeq?: number };
+    };
+    f.injected = true;
+    f.injectionFacts = { packageId: 'pkg-roundtrip', seedCount: 2, firstMessageSeq: 4, lastMessageSeq: 5 };
   },
   lsp: feature => {
     (feature as unknown as { clients: Map<string, unknown> }).clients = new Map([
@@ -171,7 +176,7 @@ describe('feature state roundtrip (B 前置摸底)', () => {
     it('各 feature captureState 顶层字段稳定', async () => {
       const cases: Array<[string, string[]]> = [
         ['example-feature', ['counter', 'enabled', 'lastInput', 'notes']],
-        ['handoff-seed', ['injected']],
+        ['handoff-seed', ['firstMessageSeq', 'injected', 'lastMessageSeq', 'packageId', 'seedCount']],
         ['output-guard', ['truncateCount']],
         ['file-history', [
           'sessionId',

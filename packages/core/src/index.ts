@@ -215,6 +215,8 @@ export type {
   TransformInput,
   TransformContext,
   SuccessorSeed,
+  SeedBoundary,
+  SeedInjectionDeclaration,
   SessionSeedMessage,
   SessionContinuityEntry,
 } from './core/continuity/index.js';

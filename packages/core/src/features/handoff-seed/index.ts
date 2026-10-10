@@ -9,6 +9,9 @@
  * - seed turn 对齐与 `_callIndex` 推进
  * - serialized tool message 重放（保留图片附件，不丢字段）
  *
+ * captureState 回写实际注入事实（packageId / seedCount / first-last
+ * enriched seq 区间）——ADR-0024 PR-3 marker 双落盘的注入侧。
+ *
  * env 传递约定（如 handoff 文件路径）留宿主，框架只提供 feature 类。
  */
 
@@ -126,6 +129,13 @@ export class HandoffSeedFeature implements AgentFeature {
 
   private readonly handoff: HandoffSeedPayload;
   private injected = false;
+  /** 注入事实（注入完成时记录，captureState 回写进会话快照）。 */
+  private injectionFacts?: {
+    packageId: string;
+    seedCount: number;
+    firstMessageSeq?: number;
+    lastMessageSeq?: number;
+  };
   private logger?: FeatureInitContext['logger'];
 
   constructor(config: HandoffSeedFeatureConfig) {
@@ -169,8 +179,17 @@ export class HandoffSeedFeature implements AgentFeature {
   }
 
   captureState(): FeatureStateSnapshot {
+    if (!this.injected || !this.injectionFacts) {
+      const snapshot: HandoffSeedSnapshot = { injected: this.injected };
+      return snapshot;
+    }
+    const facts = this.injectionFacts;
     const snapshot: HandoffSeedSnapshot = {
-      injected: this.injected,
+      injected: true,
+      ...(facts.packageId ? { packageId: facts.packageId } : {}),
+      seedCount: facts.seedCount,
+      ...(Number.isFinite(facts.firstMessageSeq) ? { firstMessageSeq: facts.firstMessageSeq } : {}),
+      ...(Number.isFinite(facts.lastMessageSeq) ? { lastMessageSeq: facts.lastMessageSeq } : {}),
     };
     return snapshot;
   }
@@ -178,6 +197,15 @@ export class HandoffSeedFeature implements AgentFeature {
   restoreState(snapshot: FeatureStateSnapshot): void {
     const state = snapshot as HandoffSeedSnapshot | null | undefined;
     this.injected = Boolean(state?.injected);
+    // 旧快照（仅 injected:true）没有注入事实：seedCount 缺失视为无 facts，不报错。
+    this.injectionFacts = this.injected && state && Number.isFinite(state.seedCount)
+      ? {
+          packageId: typeof state.packageId === 'string' ? state.packageId : '',
+          seedCount: Number(state.seedCount),
+          firstMessageSeq: Number.isFinite(state.firstMessageSeq) ? Number(state.firstMessageSeq) : undefined,
+          lastMessageSeq: Number.isFinite(state.lastMessageSeq) ? Number(state.lastMessageSeq) : undefined,
+        }
+      : undefined;
   }
 
   async injectHandoffSummary(ctx: CallStartContext): Promise<void> {
@@ -189,6 +217,9 @@ export class HandoffSeedFeature implements AgentFeature {
     const seedMessages: HandoffSeedMessage[] = Array.isArray(this.handoff.seedMessages) ? this.handoff.seedMessages : [];
 
     let injectionTurn = fallbackTurn;
+
+    // 注入前 enriched 基线：seed 段的 seq 区间由此计算（注入侧 marker）。
+    const enrichedBefore = ctx.context.getAllEnriched().length;
 
     if (seedMessages.length > 0) {
       seedMessages.forEach((message, index) => {
@@ -217,6 +248,8 @@ export class HandoffSeedFeature implements AgentFeature {
       return;
     }
 
+    this.recordInjectionFacts(ctx.context, enrichedBefore, seedMessages.length > 0 ? seedMessages.length : 1);
+
     this.injected = true;
     this.logger?.info('Injected handoff seed', {
       packageId: this.handoff.packageId || null,
@@ -226,6 +259,30 @@ export class HandoffSeedFeature implements AgentFeature {
     });
 
     this.injectImportantContext(ctx, injectionTurn);
+  }
+
+  /**
+   * 记录实际注入事实（ADR-0024 PR-3 marker 双落盘的注入侧）。
+   *
+   * seed 注入在同步循环内逐条走 typed Context API，每条恰好产生一个
+   * enriched 条目且 sequence 连续——first/lastMessageSeq 即 seed 段的
+   * 权威 seq 边界。importantFiles/Skills 注入不属 seed 段，不计入区间。
+   */
+  private recordInjectionFacts(
+    context: CallStartContext['context'],
+    enrichedBefore: number,
+    seedCount: number,
+  ): void {
+    const enriched = context.getAllEnriched();
+    const first = enriched[enrichedBefore];
+    const last = enriched[enriched.length - 1];
+    this.injectionFacts = {
+      packageId: this.handoff.packageId || '',
+      seedCount,
+      ...(first && last
+        ? { firstMessageSeq: first.sequence, lastMessageSeq: last.sequence }
+        : {}),
+    };
   }
 
   private injectImportantContext(ctx: CallStartContext, baseTurn: number): void {

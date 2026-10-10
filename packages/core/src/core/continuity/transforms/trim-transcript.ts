@@ -16,6 +16,7 @@ import type {
   TransformInput,
   TransformContext,
   SuccessorSeed,
+  SeedBoundary,
   SessionSeedMessage,
 } from '../index.js';
 
@@ -665,10 +666,17 @@ export class TrimTranscriptTransformation implements SessionTransformation {
 
     const policy = normalizeExportPolicy({ ...this.defaultPolicy, ...(input.policy ?? {}) });
     const { seedMessages, stats } = buildTrimmedSeedMessages(rawMessages, policy);
+    // seed 边界账目（ADR-0024 PR-3）：全部产物为保留素材 + 折叠注（折叠注的
+    // 投影由 stats / keepSystemTags 规则覆盖），变换自身不追加注入项。
+    const seedBoundary: SeedBoundary = {
+      seedMessageCount: seedMessages.length,
+      appendedInjection: [],
+    };
 
     return {
       schemaVersion: HANDOFF_SCHEMA_VERSION,
       seedMessages,
+      seedBoundary,
       meta: {
         compilerVersion: HANDOFF_COMPILER_VERSION,
         seedKind: 'message-replay',

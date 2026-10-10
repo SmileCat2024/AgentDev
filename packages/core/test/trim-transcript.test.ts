@@ -12,6 +12,7 @@ import {
   buildTrimmedSeedMessages,
   normalizeExportPolicy,
   DEFAULT_EXPORT_POLICY,
+  TrimTranscriptTransformation,
 } from '../src/core/continuity/transforms/index.js';
 
 describe('trim-compact fixes (golden, ported from Claw)', () => {
@@ -583,5 +584,36 @@ describe('trim-compact fixes (golden, ported from Claw)', () => {
       const tc1Tool = seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc1');
       assert.ok(!tc1Tool, 'tool result outside preserved range should be folded/dropped');
     });
+  });
+});
+
+describe('TrimTranscriptTransformation seedBoundary（ADR-0024 PR-3）', () => {
+  it('declares seedBoundary: 全部产物为保留素材 + 折叠注，无追加注入', async () => {
+    const t = new TrimTranscriptTransformation();
+    const snapshot = {
+      runtime: {
+        context: {
+          messages: [
+            { role: 'user', content: 'do task', turn: 0 },
+            { role: 'assistant', content: '', turn: 0, toolCalls: [{ name: 'read', arguments: '{"filePath":"a.js"}' }] },
+            { role: 'tool', toolCallId: 'tc1', content: '{"success":true,"result":"body"}', turn: 0 },
+            { role: 'user', content: 'next', turn: 1 },
+            { role: 'assistant', content: 'done', turn: 1 },
+          ],
+        },
+      },
+    } as any;
+
+    const seed = await t.transform({ sourceSnapshot: snapshot }, { llm: null as never });
+    const boundary = seed.seedBoundary!;
+    const stats = (seed.meta as any).stats;
+
+    assert.equal(boundary.seedMessageCount, seed.seedMessages.length);
+    assert.equal(
+      boundary.seedMessageCount,
+      stats.keptSeedMessageCount + stats.foldedToolNoteCount,
+      'seedMessageCount 必须与变换内部账目一致（保留 + 折叠注）',
+    );
+    assert.deepEqual(boundary.appendedInjection, [], 'trim 变换不追加注入项');
   });
 });

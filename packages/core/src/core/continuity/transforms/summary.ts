@@ -20,6 +20,7 @@ import type {
   TransformInput,
   TransformContext,
   SuccessorSeed,
+  SeedBoundary,
   SessionSeedMessage,
 } from '../index.js';
 import {
@@ -367,10 +368,17 @@ export class SummaryTransformation implements SessionTransformation {
     const prompt = buildSummaryPrompt({ additionalInstructions: policy.additionalInstructions });
     const summaryText = await generateSummaryText(ctx, snapshot, prompt);
     const scanned = scanFilesAndSkills(extractMessages(snapshot));
+    const seedMessages = [buildSummarySeedMessage(summaryText)];
+    // seed 边界账目：summary 变换的全部产物都是注入（无保留素材）。
+    const seedBoundary: SeedBoundary = {
+      seedMessageCount: seedMessages.length,
+      appendedInjection: [{ kind: 'summary', messageIndex: seedMessages.length - 1 }],
+    };
 
     return {
       schemaVersion: HANDOFF_SCHEMA_VERSION,
-      seedMessages: [buildSummarySeedMessage(summaryText)],
+      seedMessages,
+      seedBoundary,
       importantFiles: scanned.files,
       importantSkills: scanned.skills,
       fileRanges: scanned.fileRanges,
@@ -431,10 +439,17 @@ export class TrimTranscriptWithSummaryTransformation implements SessionTransform
       ...seedMessages,
       buildSummarySeedMessage(summaryText),
     ];
+    // seed 边界账目（ADR-0024 PR-3）：保留素材 + 折叠注 + 尾部摘要注入，
+    // 数字在变换内部手上——seedMessageCount 覆盖全部构成，摘要注入指向末位。
+    const seedBoundary: SeedBoundary = {
+      seedMessageCount: combinedSeedMessages.length,
+      appendedInjection: [{ kind: 'summary', messageIndex: combinedSeedMessages.length - 1 }],
+    };
 
     return {
       schemaVersion: HANDOFF_SCHEMA_VERSION,
       seedMessages: combinedSeedMessages,
+      seedBoundary,
       importantFiles: scanned.files,
       importantSkills: scanned.skills,
       fileRanges: scanned.fileRanges,

@@ -12,11 +12,18 @@
  * - `submitTurn(params)`：真实投递函数，默认 submitUserTurn。
  */
 
+import { WorkThreadCommandKind } from './inbox.js';
+
 export const WORKTHREAD_BRIDGE_DISABLED_REASON = 'bridge_disabled';
 export const RUNTIME_NOT_ACCEPTING_REASON = 'runtime_not_accepting';
 
 export interface WorkThreadBridgeSubmitTurnParams {
   agentId: string;
+  /**
+   * turn 身份（WorkThreadCommandKind 词表，如 'user_message' | 'reminder'）。
+   * 存量指令记录缺 kind 时以 user_message 投递（读时守卫，不报错）。
+   */
+  kind: string;
   text: string;
   source: string;
   sourceRef: string;
@@ -37,7 +44,7 @@ export interface WorkThreadBridge {
   isEnabled(): boolean;
   deliver(params: {
     thread: { agentId?: string; headSessionId?: string; threadId?: string };
-    command: { commandId?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
+    command: { commandId?: string; kind?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
   }): Promise<WorkThreadDeliveryOutcome>;
 }
 
@@ -73,7 +80,7 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
 
   async deliver(params: {
     thread: { agentId?: string; headSessionId?: string; threadId?: string };
-    command: { commandId?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
+    command: { commandId?: string; kind?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
   }): Promise<WorkThreadDeliveryOutcome> {
     const { thread, command } = params;
     if (!this.isEnabled()) {
@@ -95,8 +102,11 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
     try {
       // 契约对齐：submitUserTurn 的参数名是 agentId。参数漂移会让客户端预校验
       // 抛 invalid_input（不可重试），指令被误判 failed——契约测试覆盖此点。
+      // turn 身份随指令原样转发（ADR-0024 决策 3）；存量记录缺 kind 时按
+      // user_message 投递，读取路径不因身份缺失报错。
       await this._submitTurn({
         agentId: viewerAgentId,
+        kind: command.kind || WorkThreadCommandKind.USER_MESSAGE,
         text: command.text || '',
         source: 'thread',
         sourceRef: command.commandId || '',

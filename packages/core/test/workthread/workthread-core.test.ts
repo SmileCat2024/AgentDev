@@ -471,6 +471,21 @@ describe('WorkThread (anchor layer)', () => {
     expect(after!.commands.map((c) => c.kind)).toEqual(['user_message', 'user_message']);
   });
 
+  it('appendCommand persists kind "reminder" as turn identity (ADR-0024 decision 3)', async () => {
+    // turn 身份槽位：定时唤醒提醒与用户消息共用指令入箱路径，身份落盘
+    // 不丢——投递链路的转发由 bridge 契约测试覆盖。
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'k2' } });
+    const { command } = await thread.appendCommand({
+      threadId: wt.threadId,
+      text: '定时提醒：日程到点',
+      kind: 'reminder',
+    });
+    expect(command.kind).toBe('reminder');
+    const record = await thread.getThread(wt.threadId);
+    expect(record!.commands[0].kind).toBe('reminder');
+  });
+
   it('appendCommand persists metadata and accepts metadata-only turns', async () => {
     // user-turn 自由元数据随指令持久化（如会话引用）；K8 放宽为
     // text / images / metadata 至少其一非空——metadata-only 是内容承载。
@@ -1241,6 +1256,72 @@ describe('WorkThread command status contract (K8) and image passthrough', () => 
     const result = await thread.deliverPendingCommands(wt.threadId);
     expect(result.delivered).toBe(1);
     expect(turns[0].images).toEqual(['/tmp/a.png', '/tmp/b.png']);
+  });
+
+  it('appendCommand carries turn identity kind and the bridge forwards it to submitTurn', async () => {
+    // ADR-0024 决策 3：turn 身份（user_message | reminder）随投递链路原样
+    // 转发到 submitTurn；未传 kind 的指令以官方默认 user_message 落地。
+    const turns: Array<Record<string, unknown>> = [];
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: () => 'viewer-kind',
+        submitTurn: async (params) => { turns.push(params); return { success: true }; },
+      }),
+    );
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'kind-s1' } });
+    await thread.appendCommand({ threadId: wt.threadId, text: '时间到了，请提醒用户', kind: 'reminder' });
+    await thread.appendCommand({ threadId: wt.threadId, text: '请继续' });
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(2);
+    expect(turns.map((t) => t.kind)).toEqual(['reminder', 'user_message']);
+  });
+
+  it('legacy pending commands without kind deliver as user_message (no read error)', async () => {
+    // 存量记录兼容：kind 槽位之前的旧指令记录（无 kind 字段）读取与投递
+    // 均不报错，投递时身份守卫归一为 user_message。
+    const turns: Array<Record<string, unknown>> = [];
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: () => 'viewer-legacy',
+        submitTurn: async (params) => { turns.push(params); return { success: true }; },
+      }),
+    );
+
+    const legacyThreadId = 'wt-legacy-nokind';
+    await mkdir(join(root, 'threads'), { recursive: true });
+    await writeJson(join(root, 'threads', `${legacyThreadId}.json`), {
+      threadId: legacyThreadId,
+      agentId: 'coder',
+      workspaceId: 'coder',
+      title: '',
+      status: 'open',
+      rootSessionId: 'legacy-s1',
+      headSessionId: 'legacy-s1',
+      sessionChain: [
+        { sessionId: 'legacy-s1', role: 'head', startedAt: 1, endedAt: null, endKind: null, successorSessionId: null },
+      ],
+      commands: [
+        { commandId: 'cmd-legacy-1', text: '旧记录指令（无 kind）', status: 'pending', createdAt: 5, updatedAt: 5 },
+      ],
+      pendingSuccession: null,
+      hold: false,
+      lifecycleEvents: [],
+      lastLifecycleEvent: null,
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const result = await thread.deliverPendingCommands(legacyThreadId);
+    expect(result.delivered).toBe(1);
+    expect(turns[0].kind).toBe('user_message');
+    const record = await thread.getThread(legacyThreadId);
+    expect(record!.commands[0].status).toBe(WorkThreadCommandStatus.DELIVERED);
   });
 });
 

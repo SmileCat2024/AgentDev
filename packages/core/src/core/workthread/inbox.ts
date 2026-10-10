@@ -32,8 +32,14 @@ const TERMINAL_STATUSES = new Set<string>([
   WorkThreadCommandStatus.CANCELLED,
 ]);
 
+/**
+ * 指令 kind 的官方封闭词表。前两个是 turn 身份槽位（ADR-0024 决策 3：
+ * 用户消息与定时唤醒提醒共用线程行政检查，身份随投递链路原样转发）；
+ * 后两个是指令来源分类。appendCommand 对未知值显式拒绝（见 core.ts）。
+ */
 export const WorkThreadCommandKind = Object.freeze({
   USER_MESSAGE: 'user_message',
+  REMINDER: 'reminder',
   SYSTEM_CONTINUATION: 'system_continuation',
   EXTERNAL: 'external',
 } as const);

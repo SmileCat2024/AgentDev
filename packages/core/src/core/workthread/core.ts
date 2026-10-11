@@ -117,11 +117,16 @@ export interface WorkThreadContinuationPolicy {
   composeSuccessionInstruction(ctx: WorkThreadSuccessionContext): string;
 }
 
-/** R3 官方默认恢复指令（随挡板播种，睁眼第一句：先核对现实再继续）。 */
+/**
+ * R3 官方默认恢复指令（随挡板播种，睁眼第一句：先核对现实再继续）。
+ * 措辞对齐 trim / summary 变换注入 successor 上下文的系统提示（Claw 侧
+ * buildTrimNoticeSeedMessage 注解与框架 buildSummarySeedMessage 种子消息）
+ * ——接续唤醒与上下文内注解共用同一套「审视任务状态再继续」的指引，
+ * 不另起一套恢复措辞。
+ */
 export const DEFAULT_SUCCESSION_INSTRUCTION = [
-  '上下文已精简接力。先检查当前工作树、已有变更、测试结果和上一棒摘要，',
-  '确认哪些步骤已经完成；不要重复可能已有副作用的操作，然后继续当前任务。',
-  '需要人工决策或无法安全判断时，明确说明原因。',
+  '上下文已精简接续。继续工作前，请先审视当前任务状态：重新阅读仍然涉及的关键文件以确认其最新内容，',
+  '回顾上文中的关键结论、约定与未完成事项，核对进度后再决定下一步动作。',
 ].join('');
 
 function threadIdentityError(message: string, code: string, status: number): Error {

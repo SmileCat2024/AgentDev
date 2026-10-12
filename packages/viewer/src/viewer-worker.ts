@@ -967,11 +967,13 @@ class ViewerWorker {
    * 在这里原子完成，不能由宿主先 GET 再 POST 拼接，否则会产生 TOCTOU 竞态。
    */
   public submitUserTurn(agentId: string, input: UserTurnInput): UserTurnSubmissionResult {
-    if (!input || typeof input.text !== 'string' || input.text.length === 0) {
+    // 'resume'（空消息续跑）：text 允许为空——模型凭尾部工作现场自然续作，
+    // 消息内容由 agent 层启动前补齐；其余 kind 仍要求非空文本。
+    if (!input || typeof input.text !== 'string' || (input.text.length === 0 && input.kind !== 'resume')) {
       return { success: false, code: 'invalid_input', error: 'text must be a non-empty string' };
     }
-    if (input.kind !== undefined && input.kind !== 'user' && input.kind !== 'reminder') {
-      return { success: false, code: 'invalid_input', error: "kind must be 'user' or 'reminder' when provided" };
+    if (input.kind !== undefined && input.kind !== 'user' && input.kind !== 'reminder' && input.kind !== 'resume') {
+      return { success: false, code: 'invalid_input', error: "kind must be 'user', 'reminder' or 'resume' when provided" };
     }
     if (input.images !== undefined && !Array.isArray(input.images)) {
       return { success: false, code: 'invalid_input', error: 'images must be an array when provided' };
@@ -1013,13 +1015,14 @@ class ViewerWorker {
       };
     }
 
-    // reminder（机器通报）不冒充用户：跳过输入租约应答与 choices 冲突
-    // 检查（409 拦的是真人输入），直接进入会话邮箱排队，由空闲邮箱
-    // 消费循环或 call 内注入以 system 消息形态落地。
+    // reminder（机器通报）与 resume（空消息续跑）都不冒充用户：跳过输入
+    // 租约应答与 choices 冲突检查（409 拦的是真人输入），直接进入会话邮箱
+    // 排队，由空闲邮箱消费循环或 call 内注入落地。
     const isReminder = input.kind === 'reminder';
+    const isNonUserTurn = isReminder || input.kind === 'resume';
 
     const lease = session.inputLease;
-    if (!isReminder && lease?.mode === 'choices') {
+    if (!isNonUserTurn && lease?.mode === 'choices') {
       return {
         success: false,
         code: 'input_mode_conflict',
@@ -1028,7 +1031,7 @@ class ViewerWorker {
       };
     }
 
-    if (!isReminder && lease) {
+    if (!isNonUserTurn && lease) {
       const requestId = lease.requestId;
       const response = this.createTextInputResponse(input);
       if (!this.forwardInputResponse(agentId, session, requestId, input.text, response)) {
@@ -1171,7 +1174,9 @@ class ViewerWorker {
       id: `q-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       text,
       timestamp: Date.now(),
-      ...(kind === 'reminder' ? { kind } : {}),
+      // kind 随排队项落地：reminder 供消费端落 system 消息，resume 供
+      // react-loop 空启动分支识别；省略即 user。
+      ...(kind === 'reminder' || kind === 'resume' ? { kind } : {}),
       ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
       ...(source ? { source } : {}),
       ...(sourceRef ? { sourceRef } : {}),

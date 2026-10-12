@@ -5,6 +5,7 @@ import {
   emitAssistantResponseEvents,
   emitToolResultEvents,
   emitTurnCompleted,
+  emitTurnCancelled,
   emitTurnFailed,
   type SessionEvent,
 } from '../../src/core/session-events.js';
@@ -123,6 +124,24 @@ describe('session-events', () => {
         statusCode: 429,
         retryable: true,
       },
+    });
+  });
+
+  it('emitTurnCancelled 输出取消事件：中断即结果，不是失败', () => {
+    emitTurnCancelled(4);
+    emitTurnCancelled(5, {
+      status: 'cancelled',
+      reason: 'cancelled',
+      response: 'Interrupted by user',
+      steps: 2,
+      startedAt: 1,
+      finishedAt: 2,
+    });
+    expect(events[0]).toEqual({ type: 'turn.cancelled', turn: 4 });
+    expect(events[1]).toEqual({
+      type: 'turn.cancelled',
+      turn: 5,
+      error: { message: 'Interrupted by user', reason: 'cancelled' },
     });
   });
 

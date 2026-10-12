@@ -792,6 +792,7 @@ export class ReActLoopRunner {
       }
       if (items.length > 0) {
         logger.info(`${logLabel}：注入排队消息`, { count: items.length });
+        let injected = false;
         for (const qi of items) {
           // 排队消息在 call 内注入（不触发新 onCall），其携带的能力激活
           // 通知与自由元数据在此消息落地点派发给对应 feature（与 call
@@ -802,6 +803,11 @@ export class ReActLoopRunner {
           if (qi.metadata && Object.keys(qi.metadata).length > 0) {
             await this.agent.dispatchTurnMetadata(qi.metadata, context);
           }
+          if (qi.kind === 'resume') {
+            // 空消息续跑指令在 busy 排队中被消费：当前回合已在执行，
+            // 续作目的已被满足，消费即弃，不注入消息、不重启 step。
+            continue;
+          }
           // reminder（机器通报）注入为带 source 的 system 消息，
           // 与 tool result 合流到下一个 wire 级 user turn
           if (qi.kind === 'reminder') {
@@ -809,9 +815,10 @@ export class ReActLoopRunner {
           } else {
             context.addUserMessage(qi.text, callIndex, qi.images);
           }
+          injected = true;
         }
         this.pushToDebug(context.getAll());
-        return true;
+        return injected;
       }
     } catch (e) {
       logger.debug(`${logLabel}：队列查询失败，忽略`, { error: e instanceof Error ? e.message : String(e) });

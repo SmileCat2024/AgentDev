@@ -112,6 +112,7 @@ export type SessionEvent =
       /** 回合结束时刻的待唤醒工作快照（与 CallOutcome.pendingWakeups 同源） */
       pendingWakeups?: PendingWakeup[];
     }
+  | { type: 'turn.cancelled'; turn: number; error?: TurnFailure }
   | { type: 'turn.failed'; turn: number; error: TurnFailure };
 
 export type SessionEventListener = (event: SessionEvent) => void;
@@ -258,6 +259,26 @@ export function emitTurnFailed(turn: number, source: string | CallOutcome): void
         ...(typeof source.error.statusCode === 'number' ? { statusCode: source.error.statusCode } : {}),
         ...(typeof source.error.retryable === 'boolean' ? { retryable: source.error.retryable } : {}),
       } : {}),
+    },
+  });
+}
+
+/**
+ * 发射回合取消事件（中断即结果，ADR-0005：用户/宿主中断不是失败）。
+ * 与 turn.failed 区分：取消代表回合被显式中断且已按中断语义收尾，
+ * 消费端（无头 CLI / 线程看板）不应将其计入失败。
+ */
+export function emitTurnCancelled(turn: number, source?: CallOutcome): void {
+  if (!source) {
+    emitSessionEvent({ type: 'turn.cancelled', turn });
+    return;
+  }
+  emitSessionEvent({
+    type: 'turn.cancelled',
+    turn,
+    error: {
+      message: source.error?.message ?? source.response ?? source.reason,
+      ...(source.reason ? { reason: source.reason } : {}),
     },
   });
 }

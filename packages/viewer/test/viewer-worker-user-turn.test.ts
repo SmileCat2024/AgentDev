@@ -658,3 +658,67 @@ describe('ViewerWorker user-turn contract', () => {
     expect(session.queuedInputs).toHaveLength(0);
   });
 });
+
+describe('ViewerWorker resume turn contract (empty-message restart)', () => {
+  it('accepts kind=resume with empty text and queues it with the kind intact', () => {
+    const { worker, session, agentId } = createWorker();
+    const result = worker.submitUserTurn(agentId, {
+      text: '',
+      kind: 'resume',
+      source: 'thread-recovery',
+      sourceRef: 'wt-e2e',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.delivery).toBe('queued');
+    expect(session.queuedInputs).toHaveLength(1);
+    expect(session.queuedInputs[0]).toMatchObject({
+      text: '',
+      kind: 'resume',
+      source: 'thread-recovery',
+      sourceRef: 'wt-e2e',
+    });
+  });
+
+  it('resume does not answer a pending text lease (system action, not user input)', () => {
+    const { worker, session, agentId } = createWorker();
+    const writes: string[] = [];
+    session.inputLease = { requestId: 'input-waiting', prompt: '请输入', mode: 'text', timestamp: Date.now() };
+    (worker as any).udsClients.set('client-1', {
+      write(message: string) { writes.push(message); },
+    });
+
+    const result = worker.submitUserTurn(agentId, { text: '', kind: 'resume' });
+
+    expect(result.success).toBe(true);
+    expect(result.delivery).toBe('queued');
+    expect(writes).toHaveLength(0, 'resume must not resolve the input lease');
+    expect(session.inputLease?.requestId).toBe('input-waiting');
+    expect(session.queuedInputs[0]?.kind).toBe('resume');
+  });
+
+  it('resume skips the choices conflict guard (non-user turn)', () => {
+    const { worker, session, agentId } = createWorker();
+    session.inputLease = { requestId: 'choices-1', prompt: '选择', mode: 'choices', timestamp: Date.now() };
+
+    const result = worker.submitUserTurn(agentId, { text: '', kind: 'resume' });
+
+    expect(result.success).toBe(true);
+    expect(result.code).toBeUndefined();
+  });
+
+  it('still rejects empty text for user/reminder kinds and unknown kinds', () => {
+    const { worker, agentId } = createWorker();
+    const emptyUser = worker.submitUserTurn(agentId, { text: '' });
+    expect(emptyUser.success).toBe(false);
+    expect(emptyUser.code).toBe('invalid_input');
+
+    const emptyReminder = worker.submitUserTurn(agentId, { text: '', kind: 'reminder' });
+    expect(emptyReminder.success).toBe(false);
+    expect(emptyReminder.code).toBe('invalid_input');
+
+    const unknown = worker.submitUserTurn(agentId, { text: 'x', kind: 'system' } as any);
+    expect(unknown.success).toBe(false);
+    expect(unknown.code).toBe('invalid_input');
+  });
+});

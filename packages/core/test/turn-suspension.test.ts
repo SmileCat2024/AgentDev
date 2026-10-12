@@ -266,6 +266,47 @@ describe('session events：suspended 走 turn.completed 而非 turn.failed', () 
     });
   });
 
+  it('中断回合发 turn.cancelled（中断即结果，ADR-0005），不发 turn.failed', async () => {
+    const events: SessionEvent[] = [];
+    const unsubscribe = subscribeSessionEvents(e => events.push(e));
+
+    try {
+      let started = false;
+      const longTool: Tool = {
+        name: 'long',
+        description: 'Long tool with generous timeout',
+        timeout: { defaultMs: 60_000, maxMs: 60_000 },
+        execute: async (_args, ctx?: ToolExecutionContext) => {
+          started = true;
+          while (!ctx?.signal?.aborted) {
+            await sleep(5);
+          }
+          return 'partial output before user interrupt';
+        },
+      };
+      const agent = new Agent({ llm: new ToolCallLLM('long'), maxTurns: 5, tools: [longTool] });
+      registerShellProvider(agent);
+
+      const callPromise = agent.onCallDetailed('run long tool');
+      while (!started) {
+        await sleep(2);
+      }
+      expect(agent.interrupt()).toBe(true);
+      await callPromise;
+    } finally {
+      unsubscribe();
+    }
+
+    const cancelled = events.filter(e => e.type === 'turn.cancelled');
+    const failed = events.filter(e => e.type === 'turn.failed');
+    expect(failed).toHaveLength(0);
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]).toMatchObject({
+      type: 'turn.cancelled',
+      error: { reason: 'cancelled' },
+    });
+  });
+
   it('真完成回合的 turn.completed 不带 suspended 标志', async () => {
     const events: SessionEvent[] = [];
     const unsubscribe = subscribeSessionEvents(e => events.push(e));

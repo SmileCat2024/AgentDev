@@ -750,11 +750,14 @@ export interface InputLease {
 }
 
 /**
- * 输入身份：真人发言（缺省）或机器通报（如后台任务通知）。
- * reminder 落地为带 source 的 system 消息（LLM 编译层包为 <reminder>，
- * UI 紧凑渲染），且永不响应输入租约。
+ * 输入身份：真人发言（缺省）、机器通报（如后台任务通知）或空消息续跑。
+ * - reminder 落地为带 source 的 system 消息（LLM 编译层包为 <reminder>，
+ *   UI 紧凑渲染），且永不响应输入租约。
+ * - resume 不追加任何消息：凭既有上下文直接续跑（中断/崩溃后的续作回合）。
+ *   经输入通道排队，与其他消息串行消费；busy 排队中被消费时等价于
+ *   "续作目的已被执行中的回合满足"，静默丢弃。
  */
-export type TurnKind = 'user' | 'reminder';
+export type TurnKind = 'user' | 'reminder' | 'resume';
 
 /**
  * 排队的用户输入
@@ -843,6 +846,8 @@ export type UserTurnSubmissionResult =
  * - 'user'（缺省）：input 落为 user 消息。
  * - 'reminder'：机器通报唤醒的 call，input 落为带 source 的 system
  *   消息（LLM 编译层包为 <reminder>，UI 紧凑渲染，trim 按需丢弃）。
+ * - 'resume'：空消息续跑，不追加任何消息；启动前按中断结果补齐尾部
+ *   悬空工具调用（ADR-0005），凭既有上下文继续。
  */
 export interface CallTurnOptions {
   kind?: TurnKind;

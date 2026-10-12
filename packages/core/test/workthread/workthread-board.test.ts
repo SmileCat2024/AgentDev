@@ -73,7 +73,7 @@ describe('WorkThreadBoard', () => {
     expect((await board.getState(wt.threadId))?.status).toBe('failed');
   });
 
-  it('turn.cancelled is a lifecycle signal: event recorded, status unchanged', async () => {
+  it('turn.cancelled 收尾回 idle：中断即结果（ADR-0005），不打成 failed', async () => {
     const { core, board } = makeBoardFixtures(root);
     const wt = await core.start({ sessionRef: { agentId: 'cancel-agent', sessionId: 'cancel-session' } });
     await board.recordRuntimeEvent({
@@ -81,18 +81,18 @@ describe('WorkThreadBoard', () => {
       event: { type: 'turn.started', turn: 1 },
     });
 
-    // guard 轮换打断：cancelled 不得把看板打成 failed
+    // 用户/宿主中断：cancelled 不得把看板打成 failed，回合按取消收尾回空闲
     const cancelled = await board.recordRuntimeEvent({
       agentId: 'cancel-agent', sessionId: 'cancel-session', runtimeInstanceId: 'runtime-1',
       event: { type: 'turn.cancelled', turn: 1, error: { message: 'Session blocked by the context guard', reason: 'cancelled' } },
     });
     expect(cancelled.applied).toBe(true);
-    expect(cancelled.state?.status).toBe('running');
+    expect(cancelled.state?.status).toBe('idle');
 
     const stored = await board.getExecutionEvents(wt.threadId);
     expect(stored.events.some((e) => e.type === 'turn.cancelled')).toBe(true);
 
-    // 轮换接续：head 推进（锚点层）后，新 turn 自然完成，看板回 idle
+    // 轮换接续：head 推进（锚点层）后，新 turn 自然开始并完成
     await core.advanceHead({ threadId: wt.threadId, toSessionId: 'cancel-session-2', fromSessionId: 'cancel-session', endKind: 'context_rotation' });
     await board.recordRuntimeEvent({
       agentId: 'cancel-agent', sessionId: 'cancel-session-2', runtimeInstanceId: 'runtime-2',
@@ -270,9 +270,10 @@ describe('WorkThreadBoard', () => {
       [{ type: 'turn.started', turn: 1 }, 'running'],
       [{ type: 'item.started', item: { id: 'i1' } }, 'running'],
       [{ type: 'item.completed', item: { id: 'i1' } }, 'running'],
-      [{ type: 'turn.cancelled', turn: 1 }, 'running'],
       [{ type: 'turn.completed', turn: 1 }, 'idle'],
-      [{ type: 'turn.failed', turn: 2, error: { message: 'x' } }, 'failed'],
+      [{ type: 'turn.started', turn: 2 }, 'running'],
+      [{ type: 'turn.cancelled', turn: 2 }, 'idle'],
+      [{ type: 'turn.failed', turn: 3, error: { message: 'x' } }, 'failed'],
     ];
     for (const [event, expected] of cases) {
       const res = await emit(event);

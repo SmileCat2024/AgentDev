@@ -516,6 +516,11 @@ class AgentBase {
       finalInput = this._pendingInput ?? input;
       if (options?.kind === 'reminder') {
         context.addSystemMessage(finalInput, this._callIndex, options.source);
+      } else if (options?.kind === 'resume') {
+        // 空消息启动：不追加任何消息，凭既有上下文续跑（中断/崩溃后的
+        // 续作回合）。尾部悬空工具调用按中断结果补齐，保证消息协议完整。
+        finalInput = input;
+        this.padDanglingToolCalls(context);
       } else {
         context.addUserMessage(finalInput, this._callIndex, images);
       }
@@ -588,9 +593,9 @@ class AgentBase {
         emitNotification(createCallFinish(outcome));
       } catch { /* notification 模块不可用 */ }
 
-      // 会话事件流：turn.completed / turn.failed
+      // 会话事件流：turn.completed / turn.cancelled / turn.failed
       try {
-        const { emitTurnCompleted, emitTurnFailed } = await import('./session-events.js');
+        const { emitTurnCompleted, emitTurnCancelled, emitTurnFailed } = await import('./session-events.js');
         // suspended 的 completed=false 是盖戳副作用：挂起不是失败，
         // 必须显式走 turn.completed（带 suspended 标志），不得发 turn.failed。
         if (result.completed || result.finishReason === 'suspended') {
@@ -604,6 +609,9 @@ class AgentBase {
             },
             outcome,
           );
+        } else if (result.finishReason === 'cancelled') {
+          // 中断即结果（ADR-0005）：用户/宿主中断不是失败，回合按取消收尾。
+          emitTurnCancelled(this._callIndex, outcome);
         } else {
           emitTurnFailed(this._callIndex, outcome);
         }
@@ -880,6 +888,38 @@ class AgentBase {
       : [];
 
     return this;
+  }
+
+  /**
+   * 空消息启动（kind: 'resume'）前的悬空补齐：会话尾部 assistant 消息的
+   * toolCalls 若缺少对应工具结果（中断/崩溃现场），按 ADR-0005 中断结果
+   * 格式补齐，保证下一条 LLM 请求的消息协议完整。尾部已正常收尾（无缺
+   * 结果，或其后已有新的对话消息）时不做任何事。
+   */
+  private padDanglingToolCalls(context: Context): void {
+    const messages = context.getAll();
+    let lastAssistantIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+    if (lastAssistantIdx < 0) return;
+    const calls = messages[lastAssistantIdx].toolCalls ?? [];
+    if (calls.length === 0) return;
+    const after = messages.slice(lastAssistantIdx + 1);
+    // 尾部 assistant 之后出现新对话消息 = 旧回合已正常收尾，非悬空现场
+    if (after.some((m) => m.role === 'user' || m.role === 'system')) return;
+    const answered = new Set(
+      after.filter((m) => m.role === 'tool' && m.toolCallId !== undefined)
+        .map((m) => String(m.toolCallId)),
+    );
+    for (const call of calls) {
+      if (!answered.has(String(call.id))) {
+        context.addToolMessage(call, { success: false, result: { error: 'Interrupted' } }, this._callIndex);
+      }
+    }
   }
 
   /**

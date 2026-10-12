@@ -84,8 +84,8 @@ export const WORKTHREAD_BOARD_OPEN_STATUSES: ReadonlySet<WorkThreadBoardStatus> 
 // 执行状态机转换矩阵（看板层契约）。closed 为终态。
 //
 // `waiting_input` 是宿主播种的预留状态，事件翻译（recordRuntimeEvent）永不产生它：
-// turn.started → running、turn.completed → idle、turn.failed → failed，
-// item.* / turn.cancelled 不做状态转换。宿主经 setStatus 显式置位（如前端等待
+// turn.started → running、turn.completed → idle、turn.cancelled → idle、
+// turn.failed → failed，item.* 不做状态转换。宿主经 setStatus 显式置位（如前端等待
 // 人工输入）；其出边（→ running / idle / failed / closed）保证播种后后续 runtime
 // 事件（含终态失败）仍能自洽收敛，不会卡死在预留态或丢失终态事件。
 const BOARD_TRANSITIONS: Record<WorkThreadBoardStatus, ReadonlySet<WorkThreadBoardStatus>> = {
@@ -357,7 +357,8 @@ export class WorkThreadBoard {
       return { applied: true, state: await appendExecutionEvent(workThreadId) };
     }
     if (type === 'turn.cancelled') {
-      // 生命周期信号（guard 轮换 / 宿主中断）：只记录，不做状态转换。
+      // 中断即结果（ADR-0005）：用户/宿主中断不是失败，回合收尾回空闲。
+      await transition(workThreadId, 'idle', type);
       return { applied: true, state: await appendExecutionEvent(workThreadId) };
     }
     if (type === 'turn.failed') {

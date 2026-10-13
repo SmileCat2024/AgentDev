@@ -28,7 +28,7 @@ import {
   runForegroundWithBudget,
   type BgRegisterOptions,
 } from '../src/bg-core.js';
-import { createBashBgTool, createBgKillTool, createBgStatusTool, createBgTuneTool, createBgWaitTool, createBgWriteTool, createShellCommandTool } from '../src/index.js';
+import { createBashBgTool, createBgKillTool, createBgStatusTool, createBgTuneTool, createBgWaitTool, createBgWatchTool, createBgWriteTool, createShellCommandTool } from '../src/index.js';
 import { findGitBashPath } from '../src/tools.js';
 import { isWithDisplayResult } from '@agentdevjs/core';
 
@@ -696,6 +696,32 @@ describe('bg_wait 到点检查', () => {
     expect(h.deliveries.length).toBe(1);
   });
 
+  it('汇报携带间隔锚点：首条"距启动"，之后"距上次汇报"', async () => {
+    const h = makeHarness();
+    const { id } = h.spawn({ intervalMs: 60_000, quietAfterMs: 120_000 });
+
+    await vi.advanceTimersByTimeAsync(60_000); // 首条节拍（未有汇报，锚点=启动）
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('距启动 1m');
+    expect(h.deliveries[0].text).not.toContain('距上次汇报');
+
+    await vi.advanceTimersByTimeAsync(60_000); // 第二条节拍（锚点=上一条汇报）
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(2);
+    expect(h.deliveries[1].text).toContain('距上次汇报 1m');
+    expect(h.deliveries[1].text).not.toContain('距启动'); // 锚点不再回退到启动
+
+    // 到点检查汇报同样携带锚点：wait 首条前已有汇报时表述为"距上次汇报"
+    // （flushAggregation 累计 ~0.5s 漂移，间隔四舍五入为 30s/31s）。
+    h.registry.scheduleWaitCheck(id, 30_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(3);
+    expect(h.deliveries[2].text).toContain('到点检查');
+    expect(h.deliveries[2].text).toMatch(/距上次汇报 3[01]s/);
+  });
+
   it('任务提前终态时 deadline 被清除，终态通知先行（exit 赢）', async () => {
     const h = makeHarness();
     const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
@@ -754,7 +780,8 @@ describe('bg_wait 到点检查', () => {
   it('声明值 clamp 与非法值拒绝', () => {
     const h = makeHarness();
     const { id } = h.spawn({});
-    expect(h.registry.scheduleWaitCheck(id, 999_000).waitSec).toBe(120); // 上限
+    expect(h.registry.scheduleWaitCheck(id, 999_000).waitSec).toBe(999); // 无人为上限
+    expect(h.registry.scheduleWaitCheck(id, 10_000_000_000).waitSec).toBe(2_147_484); // 仅防 setTimeout 溢出的技术上限
     expect(h.registry.scheduleWaitCheck(id, 0.5).waitSec).toBe(1); // 下限
     expect(() => h.registry.scheduleWaitCheck(id, Number.NaN)).toThrow(/有限数值/);
     expect(() => h.registry.scheduleWaitCheck('bg-404', 1_000)).toThrow(/未找到/);
@@ -769,6 +796,8 @@ describe('bg_wait 到点检查', () => {
     expect(out).toContain('已安排 20s 后检查');
     expect(out).toContain('立即进入等待');
     expect(out).toContain('本回合到此结束');
+    // 吸收语义前置声明：自动汇报先到则订阅自然取消
+    expect(out).toContain('自然吸收取消');
     // 一条线引导：自述自动汇报节奏，并指向 bg_tune 接管
     expect(out).toContain('每 300s 一条');
     expect(out).not.toContain('静默');
@@ -795,6 +824,9 @@ describe('bg_wait 到点检查', () => {
     expect(h.deliveries.length).toBe(1);
     expect(h.deliveries[0].text).toContain('周期汇报');
     expect(h.deliveries[0].text).toContain('提前达成');
+    // 吸收标注讲清来源与去向：周期汇报不是到点检查，订阅自然取消、无需再订阅
+    expect(h.deliveries[0].text).toContain('自然取消');
+    expect(h.deliveries[0].text).toContain('无需再订阅等待');
     expect(h.registry.hasActiveWaitCheck()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(30_000); // t=90s：原 deadline 无检查推送
@@ -823,12 +855,167 @@ describe('bg_wait 到点检查', () => {
     await flushAggregation();
     expect(h.deliveries.length).toBe(1);
     expect(h.deliveries[0].text).toContain('已就绪');
+    expect(h.deliveries[0].text).toContain('距启动 5s');
     expect(h.deliveries[0].text).toContain('提前达成');
+    expect(h.deliveries[0].text).toContain('自然取消');
     expect(h.registry.hasActiveWaitCheck()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(20_000); // 原 deadline 无检查推送
     await flushAggregation();
     expect(h.deliveries.length).toBe(1);
+  });
+});
+
+describe('bg_watch 关键词监控', () => {
+  it('订阅后新输出命中：立即通知（含增量与锚点），一次性消耗', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    const r = h.registry.subscribeKeywordWatch(id, 'ERROR');
+    expect(r.scheduled).toBe(true);
+    expect(h.registry.hasActiveWatch()).toBe(true);
+
+    child.stdout.emit('data', 'build step 1 ok\n');
+    child.stdout.emit('data', 'FATAL ERROR: link failed\n');
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('关键词命中');
+    expect(h.deliveries[0].text).toContain('"ERROR"');
+    expect(h.deliveries[0].text).toContain('订阅已消耗');
+    expect(h.deliveries[0].text).toContain('距启动'); // 首条锚点
+    expect(h.deliveries[0].text).toContain('link failed'); // 增量携带命中上下文
+    expect(h.deliveries[0].text).toContain('下次自动汇报'); // 节奏预告照常
+    expect(h.registry.hasActiveWatch()).toBe(false);
+
+    // 一次性：再次出现同一关键词不再通知
+    child.stdout.emit('data', 'another ERROR here\n');
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+  });
+
+  it('只匹配订阅之后的新输出：订阅前的出现不触发', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    child.stdout.emit('data', 'old ERROR in old output\n');
+    const r = h.registry.subscribeKeywordWatch(id, 'ERROR');
+    expect(r.scheduled).toBe(true);
+
+    child.stdout.emit('data', 'no match here\n');
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(0); // 订阅前的 ERROR 不算
+
+    child.stdout.emit('data', 'fresh ERROR appears\n');
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('关键词命中');
+    // 注：匹配范围 = 订阅后新输出（上面的 0 条已证明旧 ERROR 不触发）；
+    // 通知增量走通知游标（含订阅前的未通知输出），给模型完整上下文。
+    expect(h.deliveries[0].text).toContain('old ERROR');
+    expect(h.deliveries[0].text).toContain('fresh ERROR');
+  });
+
+  it('关键词跨输出块边界仍命中（扫描起点回退一个关键词长度）', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    h.registry.subscribeKeywordWatch(id, 'failed');
+    child.stdout.emit('data', 'build fai'); // 第一块，不含完整关键词
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(0);
+    child.stdout.emit('data', 'led again\n'); // 第二块，与前块拼接后命中
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('关键词命中');
+  });
+
+  it('空/超长关键词拒绝；终态任务返回终态（终态优先于参数校验）', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({});
+    expect(() => h.registry.subscribeKeywordWatch(id, '')).toThrow(/不能为空/);
+    expect(() => h.registry.subscribeKeywordWatch(id, '   ')).toThrow(/不能为空/);
+    expect(() => h.registry.subscribeKeywordWatch(id, 'x'.repeat(21))).toThrow(/过长/);
+    expect(() => h.registry.subscribeKeywordWatch('bg-404', 'ok')).toThrow(/未找到/);
+
+    h.registry.subscribeKeywordWatch(id, 'ok');
+    child.emit('close', 0);
+    expect(h.registry.hasActiveWatch()).toBe(false); // 终态清除订阅
+    const r = h.registry.subscribeKeywordWatch(id, ''); // 终态优先：不抛参数错
+    expect(r.scheduled).toBe(false);
+    expect(r.snapshot.status).toBe('done');
+  });
+
+  it('重复订阅覆盖：旧关键词不触发，新关键词触发', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    h.registry.subscribeKeywordWatch(id, 'OLD');
+    const r = h.registry.subscribeKeywordWatch(id, 'NEW'); // 覆盖
+    expect(r.keyword).toBe('NEW');
+
+    child.stdout.emit('data', 'OLD appears\n');
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(0); // 旧关键词已失效
+
+    child.stdout.emit('data', 'NEW appears\n');
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('"NEW"');
+  });
+
+  it('命中通知吸收挂起的 wait 订阅（任何运行中推送契约）', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+
+    h.registry.scheduleWaitCheck(id, 90_000);
+    h.registry.subscribeKeywordWatch(id, 'TRIGGER');
+    child.stdout.emit('data', 'TRIGGER fired\n'); // 命中先于 deadline
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('关键词命中');
+    expect(h.deliveries[0].text).toContain('由本条关键词通知提前达成');
+    expect(h.registry.hasActiveWaitCheck()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(90_000); // 原 deadline 无到点检查
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+  });
+
+  it('周期汇报不吸收关键词订阅（目的不同：未命中即未达成）', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: BG_MIN_INTERVAL_MS, quietAfterMs: 300_000 });
+
+    h.registry.subscribeKeywordWatch(id, 'FAIL');
+    await vi.advanceTimersByTimeAsync(BG_MIN_INTERVAL_MS); // t=60s：周期汇报
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(1);
+    expect(h.deliveries[0].text).toContain('周期汇报');
+    expect(h.deliveries[0].text).not.toContain('提前达成');
+    expect(h.registry.hasActiveWatch()).toBe(true); // 订阅仍在挂
+
+    child.stdout.emit('data', 'test FAIL\n'); // 命中
+    await flushAggregation();
+    expect(h.deliveries.length).toBe(2);
+    expect(h.deliveries[1].text).toContain('关键词命中');
+  });
+
+  it('工具面：running 任务返回订阅回执，终态任务返回终态', async () => {
+    const h = makeHarness();
+    const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
+    const tool = createBgWatchTool(h.registry);
+
+    const out = await tool.execute!({ taskId: id, keyword: 'FAIL' } as never, {} as never) as string;
+    expect(out).toContain('已订阅关键词监控');
+    expect(out).toContain('"FAIL"');
+    expect(out).toContain('一次性订阅');
+    expect(out).toContain('本回合到此结束');
+    expect(out).toContain('照常送达');
+    expect(h.registry.hasActiveWatch()).toBe(true);
+
+    child.emit('close', 0);
+    const out2 = await tool.execute!({ taskId: id, keyword: 'FAIL' } as never, {} as never) as string;
+    expect(out2).toContain('已结束');
+    expect(out2).toContain('已完成');
   });
 });
 

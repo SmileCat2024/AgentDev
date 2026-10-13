@@ -15,9 +15,12 @@
  *   deadline 随 _clearTimers 清除，终态通知先行（exit 赢语义不变）。
  * - 订阅吸收：wait 的语义是"确保 afterSec 内收到一次汇报"，上界取
  *   min(pace 剩余, afterSec) 先到先得——任何运行中推送（节拍/静默/手动/
- *   就绪）先于 deadline 送达时，订阅被该推送吸收（清除并注明），不会
- *   紧跟着再来一条近重复的到点检查；推送尾部"下次汇报最坏 Ns 内"的
- *   确定性声明因此永远为真（发声时刻不存在待触发的订阅）。
+ *   就绪/关键词命中）先于 deadline 送达时，订阅被该推送吸收（清除并注明），
+ *   不会紧跟着再来一条近重复的到点检查；推送尾部"下次汇报最坏 Ns 内"的
+ *   确定性声明因此永远为真（发声时刻不存在待触发的订阅）。关键词订阅
+ *   （watch）目的不同——"特定内容出现才通知"，不被未命中的运行中推送
+ *   吸收（节拍汇报不消耗它）；但它的命中通知先于 wait deadline 送达时
+ *   吸收 wait 订阅（任何运行中推送契约）。
  * - reportNow（宿主面板手动触发器）：立即走与节拍/静默完全相同的汇报出口
  *   （通知增量 + 双节奏互重置），只是把触发源从定时器换成用户点击。
  * - readyPattern：输出首次匹配即发一次性"已就绪"，此后任务按节奏继续汇报。
@@ -65,11 +68,14 @@ export const BG_NOTIFY_TAIL_CHARS = 2_000;
 /** bg_status 单次返回的增量输出字符预算：超出按头 60% + 尾 40% 截断，中段只可从完整日志恢复。 */
 export const BG_STATUS_MAX_CHARS = 10_000;
 /**
- * bg_wait 可声明的到点检查最大时刻（120s）。等待本身不占工具调用，上限
- * 只约束"到点检查"的表达：想等更长就该调 intervalSec 汇报节奏，而不是
- * 安排一次超远期的检查点。
+ * bg_wait 到点检查的声明上限：仅防 setTimeout 32 位延迟溢出（2^31-1 ms
+ * ≈ 24.8 天，更大的值会因溢出立即触发、与"到点检查"意图相反），不再有
+ * 人为时长限制。等待期间任务的周期/静默汇报先到达时，订阅按"订阅吸收"
+ * 契约自然取消（见 _firePace）。
  */
-export const BG_WAIT_MAX_MS = 120_000;
+export const BG_WAIT_MAX_MS = 2_147_483_647;
+/** bg_watch 关键词订阅的长度上限（按 Unicode 码点计，中文友好）。 */
+export const BG_WATCH_MAX_CHARS = 20;
 /** 前台命令固定预算（毫秒）；宿主可经 manifest 配置覆盖。 */
 export const FOREGROUND_BUDGET_DEFAULT_MS = 20_000;
 /** 投递 HTTP 超时。 */
@@ -155,6 +161,8 @@ export interface BgTask {
    * 形成零延迟触发风暴（互重置语义的一半）。
    */
   lastReportAt: number;
+  /** 是否已发出过汇报/就绪通知：未发出时首次汇报的间隔锚点表述为"距启动"。 */
+  hasReported: boolean;
   /** bg_status 增量读取游标（绝对字节）。 */
   readOffset: number;
   /**
@@ -176,6 +184,17 @@ export interface BgTask {
    * 送达时被吸收（订阅目的已提前达成，见类头"订阅吸收"契约）。
    */
   waitTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * bg_watch 挂起的关键词订阅（null = 无）。只匹配订阅之后的新输出，
+   * 命中即消耗（走 _firePace reason='watch'，含增量与时间锚点）。重复
+   * 订阅覆盖重置（最新意图为准）。周期/静默汇报不吸收它——其目的是
+   * "特定内容出现才通知"，未命中即未达成（与 wait 的"确保有汇报"不同）。
+   */
+  watchKeyword: string | null;
+  /** 订阅时刻的绝对字节游标：此前的输出不参与匹配。 */
+  watchSinceBytes: number;
+  /** 已扫描到的绝对字节游标：每次只扫新增（起点回退一个关键词长度防跨界漏配）。 */
+  watchScanBytes: number;
   /** 投递失败滞留的通知文本（bg_status 时补发）。 */
   unsent: string[];
   pendingOutput: string;
@@ -475,6 +494,7 @@ export class BgRegistry {
       droppedBytes: 0,
       lastOutputAt: now,
       lastReportAt: now,
+      hasReported: false,
       readOffset: 0,
       notifyOffset: 0,
       pace: {
@@ -489,6 +509,9 @@ export class BgRegistry {
       intervalTimer: null,
       quietTimer: null,
       waitTimer: null,
+      watchKeyword: null,
+      watchSinceBytes: 0,
+      watchScanBytes: 0,
       unsent: [],
       pendingOutput: '',
       logPath: null,
@@ -532,6 +555,7 @@ export class BgRegistry {
       task.lastOutputAt = this._now();
       this._resetQuietTimer(task);
       this._checkReady(task);
+      this._checkWatch(task);
     };
     child.stdout?.on('data', onChunk);
     child.stderr?.on('data', onChunk);
@@ -584,8 +608,8 @@ export class BgRegistry {
     this._resetQuietTimer(task);
   }
 
-  /** 节拍/静默/到点检查/手动汇报共用出口：exit 赢检查 + 互重置 + 订阅吸收。 */
-  private _firePace(task: BgTask, reason: 'interval' | 'quiet' | 'wait' | 'manual'): void {
+  /** 节拍/静默/到点检查/手动汇报/关键词命中共用出口：exit 赢检查 + 互重置 + 订阅吸收。 */
+  private _firePace(task: BgTask, reason: 'interval' | 'quiet' | 'wait' | 'manual' | 'watch', detail?: string): void {
     if (task.status !== 'running') return; // exit 赢
     // 订阅吸收：本次汇报先于 deadline 送达 → 订阅目的已提前达成，清除并注明，
     // 避免紧跟一条近重复的到点检查（也让下方"下次汇报最坏 Ns"声明恒真）。
@@ -595,7 +619,13 @@ export class BgRegistry {
       task.waitTimer = null;
     }
     if (reason === 'wait') task.waitTimer = null; // 一次性消耗
+    // 距上次汇报的间隔（先于锚点更新计算）：让模型分清"这条汇报距上一条
+    // 过了多久"，不会把自己的 wait 到点与周期汇报混为一谈。
+    const sinceText = task.hasReported
+      ? `距上次汇报 ${fmtDur(this._now() - task.lastReportAt)}`
+      : `距启动 ${fmtDur(this._now() - task.lastReportAt)}`;
     task.lastReportAt = this._now();
+    task.hasReported = true;
     const quietSec = Math.round((this._now() - task.lastOutputAt) / 1000);
     // 通知增量 = 自上次通知以来的新输出（notifyOffset 独立游标，构造即推进——
     // 投递失败进 unsent 由 bg_status 补发，不因补发丢量或重复）。不推 readOffset：
@@ -608,15 +638,22 @@ export class BgRegistry {
     const hint = delta.length > BG_NOTIFY_TAIL_CHARS || read.clamped ? this.logHint(task) : '';
     const reasonText = reason === 'quiet'
       ? `已 ${quietSec} 秒无新输出`
-      : reason === 'wait' ? '到点检查（你订阅的一次性检查，已消耗）' : reason === 'manual' ? '用户请求推送当前状态' : '周期汇报';
-    const reasonSuffix = absorbedWait ? ' · 你订阅的检查已由本次汇报提前达成' : '';
+      : reason === 'wait' ? '到点检查（你订阅的一次性检查，已触发并消耗）'
+      : reason === 'watch' ? `关键词命中（"${detail ?? ''}" 出现在新输出中，订阅已消耗）`
+      : reason === 'manual' ? '用户请求推送当前状态' : '周期汇报';
+    // 吸收标注独立成行：讲清唤醒来源（任务自身节奏）与订阅去向（自然取消），
+    // 防止模型误以为"自己的 wait 等来了这条汇报"而重新订阅轮询。
+    const absorbedNote = absorbedWait
+      ? `你订阅的到点检查已由本条${reason === 'quiet' ? '静默提醒' : reason === 'manual' ? '手动推送' : reason === 'watch' ? '关键词通知' : '周期汇报'}提前达成并自然取消——本条是任务自身的自动汇报，不是你等的那次检查；后续汇报仍按上述节奏自动送达，无需再订阅等待。`
+      : '';
     // 节奏自述用可解释语汇（不用"节奏 Ns/Ms"式缩写），模型无需记忆参数映射；
     // 下次汇报上界 = 双节奏刚重置的满值取 min（interval 纯墙钟不被输出推迟）。
     const intervalCfgSec = Math.round(task.pace.intervalMs / 1000);
     const quietCfgSec = Math.round(task.pace.quietAfterMs / 1000);
     const nextWorstSec = Math.round(Math.min(task.pace.intervalMs, task.pace.quietAfterMs) / 1000);
     this._notify(task, [
-      `[后台任务 ${task.id} 运行中] ${reasonText}${reasonSuffix} · 已运行 ${fmtDur(this._now() - task.startedAt)} · 每 ${intervalCfgSec}s 汇报 / 静默 ${quietCfgSec}s 起提醒`,
+      `[后台任务 ${task.id} 运行中] ${reasonText} · ${sinceText} · 已运行 ${fmtDur(this._now() - task.startedAt)} · 每 ${intervalCfgSec}s 汇报 / 静默 ${quietCfgSec}s 起提醒`,
+      ...(absorbedNote ? [absorbedNote] : []),
       tail ? `新增输出:\n${tail}` : '（无新增输出）',
       ...(hint ? [hint] : []),
       `下次自动汇报最坏 ${nextWorstSec}s 内到达，任务结束会立刻收到完整结果。无干预需要时直接结束回合——进展会自动送达，不要反复订阅检查或 sleep 等待。`,
@@ -642,7 +679,11 @@ export class BgRegistry {
     if (!task.readyPattern || task.readyFired || task.status !== 'running') return;
     if (this.tail(task, 10_000).includes(task.readyPattern)) {
       task.readyFired = true;
+      const sinceText = task.hasReported
+        ? `距上次汇报 ${fmtDur(this._now() - task.lastReportAt)}`
+        : `距启动 ${fmtDur(this._now() - task.lastReportAt)}`;
       task.lastReportAt = this._now();
+      task.hasReported = true;
       // 就绪通知也是运行中推送：吸收待触发的订阅（订阅吸收契约）。
       const absorbedWait = task.waitTimer !== null;
       if (absorbedWait) {
@@ -653,11 +694,39 @@ export class BgRegistry {
       task.notifyOffset = task.totalBytes;
       this._notify(task, [
         `[后台任务 ${task.id} 已就绪] 输出匹配就绪标志，任务继续在后台运行。`,
-        ...(absorbedWait ? ['你订阅的检查已由本条就绪通知提前达成。'] : []),
+        sinceText,
+        ...(absorbedWait ? ['你订阅的到点检查已由本条就绪通知提前达成并自然取消——后续汇报仍按节奏自动送达，无需再订阅等待。'] : []),
         `命令: ${task.command}`,
       ].join('\n'));
       this._armTimers(task); // 就绪事件重置双节奏
       this._emit('ready', task);
+    }
+  }
+
+  /**
+   * 关键词订阅扫描（bg_watch）：每次输出到达检查自上次扫描以来的新增
+   * （起点回退一个关键词长度，防关键词跨输出块边界漏配）。命中即消耗
+   * 订阅并走统一汇报出口（reason='watch'）——与就绪通知同构，但可在
+   * 任务运行中途随时订阅、关键词自定义。ring buffer 丢弃越界时从丢弃
+   * 边界起扫（被丢弃部分不可见，与 bg_status 的 clamp 语义一致）。
+   */
+  private _checkWatch(task: BgTask): void {
+    const kw = task.watchKeyword;
+    if (!kw || task.status !== 'running') return;
+    const kwBytes = Buffer.byteLength(kw, 'utf8');
+    const start = Math.max(
+      task.watchSinceBytes,
+      task.watchScanBytes - kwBytes, // 负值也安全：max 兜底
+      task.droppedBytes,
+    );
+    const idx = this._offsetToIndex(task, start);
+    const text = task.chunks.slice(idx).join('');
+    task.watchScanBytes = task.totalBytes;
+    if (text.includes(kw)) {
+      task.watchKeyword = null;
+      task.watchSinceBytes = 0;
+      task.watchScanBytes = 0;
+      this._firePace(task, 'watch', kw);
     }
   }
 
@@ -675,6 +744,7 @@ export class BgRegistry {
     task.exitCode = exitCode;
     task.endedAt = this._now();
     task.child = null;
+    task.watchKeyword = null; // 关键词订阅随终态清除（终态通知先行，exit 赢）
     this._clearTimers(task);
     if (task.logStream) {
       try { task.logStream.end(); } catch { /* 尽力而为（进程退出兜底路径） */ }
@@ -825,6 +895,7 @@ export class BgRegistry {
     if (task.status !== 'running') {
       return { snapshot: this.snapshot(task), waitSec: 0, scheduled: false };
     }
+    // 上限只防 setTimeout 32 位溢出（≈24.8 天），无人为时长限制。
     const bounded = Math.max(1, Math.min(mustFinite(afterMs, 'afterSec'), BG_WAIT_MAX_MS));
     if (task.waitTimer) clearTimeout(task.waitTimer);
     task.waitTimer = setTimeout(() => {
@@ -839,6 +910,45 @@ export class BgRegistry {
   hasActiveWaitCheck(): boolean {
     for (const task of this._tasks.values()) {
       if (task.status === 'running' && task.waitTimer) return true;
+    }
+    return false;
+  }
+
+  // -- 关键词监控（bg_watch） -------------------------------------------------
+
+  /**
+   * 订阅关键词监控（一次性）：只匹配订阅之后的新输出，命中即消耗并走
+   * 统一汇报出口（reason='watch'）。重复订阅覆盖重置（最新意图为准）；
+   * 已终态任务不安排（scheduled=false），调用方直接渲染终态快照（与
+   * scheduleWaitCheck 同序）。关键词按码点计最长 BG_WATCH_MAX_CHARS，
+   * 空/超长拒绝。
+   */
+  subscribeKeywordWatch(taskId: string, keyword: string): {
+    snapshot: BgTaskSnapshot;
+    keyword: string;
+    scheduled: boolean;
+  } {
+    const task = this._tasks.get(taskId);
+    if (!task) throw new Error(`未找到后台任务 ${taskId}（用 bg_list 查看现有任务）`);
+    if (task.status !== 'running') {
+      return { snapshot: this.snapshot(task), keyword: '', scheduled: false };
+    }
+    const kw = typeof keyword === 'string' ? keyword.trim() : '';
+    const len = [...kw].length;
+    if (len === 0) throw new Error('keyword 不能为空');
+    if (len > BG_WATCH_MAX_CHARS) {
+      throw new Error(`keyword 过长（${len} 字符，上限 ${BG_WATCH_MAX_CHARS}）——关键词应短而精确`);
+    }
+    task.watchKeyword = kw;
+    task.watchSinceBytes = task.totalBytes; // 只匹配订阅之后的新输出
+    task.watchScanBytes = task.totalBytes;
+    return { snapshot: this.snapshot(task), keyword: kw, scheduled: true };
+  }
+
+  /** 是否存在待触发的关键词订阅（StepFinish guard 据此结束当前回合）。 */
+  hasActiveWatch(): boolean {
+    for (const task of this._tasks.values()) {
+      if (task.status === 'running' && task.watchKeyword) return true;
     }
     return false;
   }

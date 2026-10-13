@@ -39,6 +39,7 @@ import {
   createBgStatusTool,
   createBgTuneTool,
   createBgWaitTool,
+  createBgWatchTool,
   createBgWriteTool,
 } from './bg-tools.js';
 
@@ -85,9 +86,9 @@ export class ShellFeature implements AgentFeature {
   readonly description = '提供 Bash/PowerShell 命令执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 
   /**
-   * bg_wait 安排到点检查后结束当前回合：等待不占工具调用，由通知推送
-   * （节拍/静默/终态同一管线）唤醒。到点检查触发或任务终态后 waitTimer
-   * 清除，此后不再干预流程（Continue）。
+   * bg_wait / bg_watch 安排订阅后结束当前回合：等待不占工具调用，由通知
+   * 推送（节拍/静默/终态同一管线）唤醒。到点检查触发、关键词命中或任务
+   * 终态后订阅清除，此后不再干预流程（Continue）。
    */
   static hooks: HookDeclarations = {
     endTurnOnPendingWaitCheck: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard' as const, role: 'advisor' as const },
@@ -125,13 +126,14 @@ export class ShellFeature implements AgentFeature {
   }
 
   /**
-   * StepFinish guard（advisor）：本回合安排过 bg_wait 到点检查时结束当前
-   * call（Decision.Deny 在 react-loop 的既有语义），把等待交给通知推送——
-   * 任务提前完成则终态通知先行，否则到点收到检查汇报。无待触发检查时
-   * 一律 Continue，不干预正常流程。
+   * StepFinish guard（advisor）：本回合安排过 bg_wait 到点检查或 bg_watch
+   * 关键词订阅时结束当前 call（Decision.Deny 在 react-loop 的既有语义），
+   * 把等待交给通知推送——任务提前完成则终态通知先行，否则到点/命中/
+   * 节拍汇报唤醒。无待触发订阅时一律 Continue，不干预正常流程。
    */
   async endTurnOnPendingWaitCheck(_ctx: StepFinishDecisionContext): Promise<DecisionResult> {
-    if (!this._registry?.hasActiveWaitCheck()) return Decision.Continue;
+    if (!this._registry) return Decision.Continue;
+    if (!this._registry.hasActiveWaitCheck() && !this._registry.hasActiveWatch()) return Decision.Continue;
     return Decision.Deny;
   }
 
@@ -308,6 +310,7 @@ export class ShellFeature implements AgentFeature {
         tools.push(createBgListTool(registry));
         tools.push(createBgStatusTool(registry));
         tools.push(createBgWaitTool(registry));
+        tools.push(createBgWatchTool(registry));
         tools.push(createBgTuneTool(registry));
         tools.push(createBgWriteTool(registry));
         tools.push(createBgKillTool(registry));
@@ -380,6 +383,7 @@ export {
   BG_MIN_QUIET_MS,
   BG_CAPTURE_WINDOW_MS,
   BG_WAIT_MAX_MS,
+  BG_WATCH_MAX_CHARS,
   buildBashInvocation,
   cleanBashStderr,
   fmtDur,
@@ -406,6 +410,7 @@ export {
   createBgStatusTool,
   createBgTuneTool,
   createBgWaitTool,
+  createBgWatchTool,
   createBgWriteTool,
 } from './bg-tools.js';
 export { createPowerShellTool, runPowerShellCommand, findPowerShellPath } from './powershell.js';

@@ -1,5 +1,5 @@
 /**
- * 后台 Bash 工具族 — bash_bg / bg_list / bg_status / bg_wait / bg_tune / bg_write / bg_kill
+ * 后台 Bash 工具族 — bash_bg / bg_list / bg_status / bg_wait / bg_watch / bg_tune / bg_write / bg_kill
  *
  * 工具面契约（与 .agentdev/prompts/tool-bash-bg.md 一致；description 兜底内联
  * 完整教学文案——resourceRoot 缺省环境下 prompts 文件读不到，防轮询协议声明
@@ -7,7 +7,10 @@
  * - bash_bg 启动观察 2s：窗口内退出直接带回结果（预判错了，白捡前台体验）；
  * - 节奏参数单位为秒，模型侧声明 clamp（interval ≥ 60s / quietAfter ≥ 30s）；
  * - bg_wait 不占用工具调用：登记 afterSec 后的到点检查即返回，本回合随即
- *   结束（StepFinish guard），等待由通知推送承载（≤ 120s，长等待走 intervalSec）；
+ *   结束（StepFinish guard），等待由通知推送承载（无人为时长上限；期间
+ *   任务的周期/静默汇报先到达时，订阅被自然吸收取消）；
+ * - bg_watch 关键词监控订阅（一次性，≤ 20 字符）：只匹配订阅之后的新输出，
+ *   命中即通知（本回合随即结束，同 guard）；节拍汇报不消耗它；
  * - 观察与进程干预分面：bg_tune 调汇报节奏（统一 clamp，转后台任务的 20s
  *   继承节奏因此只能调宽）、bg_write 写 stdin、bg_kill 停止。
  */
@@ -54,7 +57,9 @@ const BG_LIST_INLINE_DESCRIPTION = '列出全部后台任务的全景：任务�
 
 const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出（超长增量只显示首尾，完整内容按提示的日志路径用 read 工具读取）。如果有因投递失败滞留的通知，会在这里补发。';
 
-const BG_WAIT_INLINE_DESCRIPTION = '安排一次到点检查并立即进入等待：调用后本回合随即结束，afterSec 秒后任务仍在运行则自动收到一条运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。这是一次性订阅——之后的进展交给任务的自动汇报（频率不合适用 bg_tune 调整），想立即看一眼用 bg_status。对已结束的任务调用会直接返回终态。';
+const BG_WAIT_INLINE_DESCRIPTION = '安排一次到点检查并立即进入等待：调用后本回合随即结束，afterSec 秒后任务仍在运行则自动收到一条运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。这是一次性订阅——期间任务自身的周期汇报/静默提醒先到达时，订阅被自然吸收取消（你会提前收到那条汇报，到点不再重复检查）；之后的进展交给任务的自动汇报（频率不合适用 bg_tune 调整），想立即看一眼用 bg_status。对已结束的任务调用会直接返回终态。';
+
+const BG_WATCH_INLINE_DESCRIPTION = '订阅一次关键词监控（≤ 20 字符）：只匹配订阅之后的新输出，出现该关键词时立即收到一条通知（含当时的新增输出）。一次性订阅——命中即消耗，要继续盯同一关键词就再订阅一次；重复订阅覆盖旧关键词。调用后本回合随即结束，由通知唤醒：关键词命中、任务的自动汇报或任务结束都会唤醒你。查历史输出用 bg_status；要"过 N 秒看一眼"用 bg_wait。对已结束的任务调用会直接返回终态。';
 
 const BG_TUNE_INLINE_DESCRIPTION = '调整一个后台任务的自动汇报节奏，立即生效并重新计时：intervalSec = 最多每隔这么多秒收到一条运行汇报（最小 60）；quietAfterSec = 连续静默多少秒后开始收到提醒（最小 30）。任务比预期跑得久、汇报太吵时放宽（如构建类任务 intervalSec=300）；想盯得更密也用它。调整一次长期生效，无需反复调用。';
 
@@ -186,7 +191,7 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
 }
 
 // ---------------------------------------------------------------------------
-// bg_list / bg_status / bg_wait / bg_tune / bg_write / bg_kill
+// bg_list / bg_status / bg_wait / bg_watch / bg_tune / bg_write / bg_kill
 // ---------------------------------------------------------------------------
 
 export function createBgListTool(registry: BgRegistry): Tool {
@@ -302,7 +307,7 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
       type: 'object',
       properties: {
         taskId: { type: 'string', description: '任务号，如 bg-1' },
-        afterSec: { type: 'number', description: '多少秒后自动检查并汇报一次，默认 30，上限 120' },
+        afterSec: { type: 'number', description: '多少秒后自动检查并汇报一次，默认 30，无上限。期间任务自身的汇报先到达时，本次订阅自然取消（提前达成）' },
       },
       required: ['taskId'],
     },
@@ -317,8 +322,36 @@ export function createBgWaitTool(registry: BgRegistry): Tool {
       }
       const s = r.snapshot;
       return [
-        `已安排 ${r.waitSec}s 后检查 ${taskId}，立即进入等待——本回合到此结束，到点自动收到运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。`,
+        `已安排 ${r.waitSec}s 后检查 ${taskId}，立即进入等待——本回合到此结束，到点自动收到运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。若任务自身的自动汇报先到点，本次订阅会被它自然吸收取消（你提前收到那条汇报，到点不再重复检查）。`,
         `${taskId} 自身的自动汇报：每 ${Math.round(s.pace.intervalMs / 1000)}s 一条。之后无需再订阅等待——等自动汇报就好；觉得太密或太疏，用 bg_tune 调一次节奏，之后交给它。`,
+      ].join('\n');
+    },
+  });
+}
+
+export function createBgWatchTool(registry: BgRegistry): Tool {
+  return createTool({
+    name: 'bg_watch',
+    description: BG_WATCH_INLINE_DESCRIPTION,
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: '任务号，如 bg-1' },
+        keyword: { type: 'string', description: '要监控的关键词，20 字符以内；只匹配订阅之后的新输出' },
+      },
+      required: ['taskId', 'keyword'],
+    },
+    render: { call: 'bg', result: 'bg' },
+    execute: async (args) => {
+      const { taskId, keyword } = args as { taskId: string; keyword: string };
+      const r = registry.subscribeKeywordWatch(taskId, keyword);
+      if (!r.scheduled) {
+        const s = r.snapshot;
+        return `${taskId} 已结束（${terminalLabel(s.status, s.exitCode)}），运行 ${fmtDur(s.durationMs)}。`;
+      }
+      return [
+        `已订阅关键词监控 ${taskId}："${r.keyword}"——只匹配订阅之后的新输出，命中立即通知（含当时新增输出）；本回合到此结束，交由推送唤醒。`,
+        `这是一次性订阅：命中即消耗，要继续盯同一关键词就再订阅一次。任务自身的自动汇报不受影响，照常送达。`,
       ].join('\n');
     },
   });

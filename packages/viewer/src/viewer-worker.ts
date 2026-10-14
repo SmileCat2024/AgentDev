@@ -645,6 +645,9 @@ class ViewerWorker {
    *
    * 增量取数（ADR-0012）：?since=<n> 返回自下标 n 起的尾部切片（附 baseCount）；
    * ?tail=1 返回最后一条。无参数路径的响应形状与历史完全一致（全量数组）。
+   *
+   * `timestamps` 是与 messages 等长对齐的时间元表（毫秒；null = 无时间锚）。
+   * runtime 从未推送时间数据时省略该字段，消费方按"全部无时间锚"降级。
    */
   private handleGetAgentMessages(req: IncomingMessage, res: ServerResponse, agentId: string, searchParams?: URLSearchParams): void {
     const session = this.agentSessions.get(agentId);
@@ -653,6 +656,11 @@ class ViewerWorker {
       res.end(JSON.stringify({ error: 'Agent not found' }));
       return;
     }
+
+    const timestamps = (session as any)._messageTimestamps as (number | null)[] | undefined;
+    const aligned = Array.isArray(timestamps) && timestamps.length === session.messages.length
+      ? timestamps
+      : undefined;
 
     const since = searchParams?.get('since');
     if (since !== null && since !== undefined) {
@@ -667,6 +675,7 @@ class ViewerWorker {
       res.end(JSON.stringify({
         messages: session.messages.slice(n),
         baseCount: n,
+        ...(aligned ? { timestamps: aligned.slice(n) } : {}),
       }));
       return;
     }
@@ -676,6 +685,7 @@ class ViewerWorker {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
         messages: last ? [last] : [],
+        ...(aligned && last ? { timestamps: [aligned[aligned.length - 1]] } : {}),
       }));
       return;
     }
@@ -684,6 +694,7 @@ class ViewerWorker {
     res.end(JSON.stringify({
       agentId,
       messages: session.messages,
+      ...(aligned ? { timestamps: aligned } : {}),
     }));
   }
 
@@ -1513,6 +1524,9 @@ class ViewerWorker {
       if (typeof store._totalBytes === 'number') {
         store._totalBytes -= JSON.stringify(removed).length;
       }
+      if (Array.isArray(store._messageTimestamps) && store._messageTimestamps.length > 0) {
+        store._messageTimestamps.shift();
+      }
     }
 
     // 字节限制
@@ -1531,6 +1545,9 @@ class ViewerWorker {
           // 删除超出部分
           session.messages = session.messages.slice(i + 1);
           store._totalBytes -= byteSize;
+          if (Array.isArray(store._messageTimestamps)) {
+            store._messageTimestamps = store._messageTimestamps.slice(i + 1);
+          }
           break;
         }
       }
@@ -1704,6 +1721,10 @@ class ViewerWorker {
    * 旧版推送只携带 messages，按 full 快照兼容处理。显式 append/tail 推送
    * 必须通过 baseCount + generation 校验；校验失败时保留当前 Viewer 状态，
    * 并等待后续 full 快照重新建立基线，不能把不完整增量拼进会话。
+   *
+   * `msg.timestamps` 是与 msg.messages 等长对齐的时间元表（毫秒；
+   * null = 无时间锚）。wire Message 不携带时间（导出面治理），展示层的
+   * 时间需求经该平行表下发；缺失时时间表状态与消息同生命周期地丢弃。
    */
   public handlePushMessages(msg: any): void {
     const { agentId, messages } = msg;
@@ -1714,10 +1735,29 @@ class ViewerWorker {
     const mode = msg.mode ?? 'full';
     const oldMessages = session.messages;
     let nextMessages: any[];
+    let nextTimestamps: (number | null)[] | undefined;
+
+    // 与传入 messages 切片等长对齐；缺位/非法值归 null
+    const alignTimestamps = (list: any[]): (number | null)[] => {
+      if (!Array.isArray(msg.timestamps)) return new Array(list.length).fill(null);
+      return Array.from({ length: list.length }, (_, i) => {
+        const ts = msg.timestamps[i];
+        return typeof ts === 'number' && Number.isFinite(ts) ? ts : null;
+      });
+    };
+    // 与当前已存表等长的读回；无表/失配时按全 null 视图
+    const readStoredTimestamps = (): (number | null)[] => {
+      if (Array.isArray(store._messageTimestamps)
+        && store._messageTimestamps.length === oldMessages.length) {
+        return store._messageTimestamps;
+      }
+      return new Array(oldMessages.length).fill(null);
+    };
 
     if (mode === 'full') {
       // full 是自愈边界：即使之前有失配，也用完整快照恢复并清除标记。
       nextMessages = messages;
+      nextTimestamps = Array.isArray(msg.timestamps) ? alignTimestamps(messages) : undefined;
       store._messagesNeedsResync = false;
       if (Number.isInteger(msg.generation) && msg.generation >= 0) {
         store._messagesGeneration = msg.generation;
@@ -1742,15 +1782,26 @@ class ViewerWorker {
         return;
       }
 
-      nextMessages = mode === 'append'
-        ? [...oldMessages, ...messages]
-        : [...oldMessages.slice(0, -1), messages[0]];
+      const headTimestamps = readStoredTimestamps();
+      const deltaTimestamps = alignTimestamps(messages);
+      if (mode === 'append') {
+        nextMessages = [...oldMessages, ...messages];
+        nextTimestamps = [...headTimestamps, ...deltaTimestamps];
+      } else {
+        nextMessages = [...oldMessages.slice(0, -1), messages[0]];
+        nextTimestamps = [...headTimestamps.slice(0, -1), deltaTimestamps[0]];
+      }
     }
 
     const change = this.classifyMessagesChange(oldMessages, nextMessages);
 
     if (change) {
       session.messages = nextMessages;
+      if (nextTimestamps) {
+        store._messageTimestamps = nextTimestamps;
+      } else {
+        delete store._messageTimestamps;
+      }
       // seq 只在真实变更时递增（ADR-0012 v2）：它是前端对账的同步版本号。
       // no-op 推送不清槽，避免未消费变更被后续相同推送覆盖。
       store._messagesChangeSeq = (typeof store._messagesChangeSeq === 'number' ? store._messagesChangeSeq : 0) + 1;

@@ -163,6 +163,10 @@ export class Context {
    * 添加一条消息
    */
   add(message: Message): this {
+    // enriched 侧同步落一条（时间锚 = 注入时刻）：add 是 feature 注入的公共
+    // API，只写 messages 会造成 enrichedMessages 失配，getTimestamps() 的
+    // 索引投影随之错位（增量推送的时间元表整体漂移为 null）。
+    this.addMessage(message, { turn: message.turn ?? 0 });
     this.messages.push({ ...message });
     return this;
   }
@@ -182,6 +186,17 @@ export class Context {
    */
   getAll(): Message[] {
     return cloneMessages(this.messages);
+  }
+
+  /**
+   * getAll() 的平行时间投影：逐条返回消息的发生时刻（毫秒）。
+   *
+   * 消息本身（wire 格式）不携带时间；enriched 侧的 timestamp 是唯一权威。
+   * enriched 缺位的条目（理论上仅出现在结构失配的旧快照）返回 null，
+   * 消费方（调试推送层）按"无时间锚"降级处理。
+   */
+  getTimestamps(): (number | null)[] {
+    return this.messages.map((_, index) => this.enrichedMessages[index]?.timestamp ?? null);
   }
 
   /**
@@ -338,6 +353,18 @@ export class Context {
     this.enrichedMessages = snapshot.enrichedMessages
       ? cloneEnrichedMessages(snapshot.enrichedMessages)
       : [];
+    // 结构失配的存量快照（旧版本写入路径不落 enriched）：缺位按对应
+    // messages 补建对齐，时间锚不可知（null，消费方按"无时间锚"降级）。
+    // 不对齐会让后续追加消息的 enriched 索引持续错位。
+    if (this.enrichedMessages.length < this.messages.length) {
+      for (let i = this.enrichedMessages.length; i < this.messages.length; i++) {
+        const m = this.messages[i];
+        const enriched = this.enrich(m, { turn: m.turn ?? 0 });
+        enriched.timestamp = null;
+        this.enrichedMessages.push(enriched);
+        this.updateIndexes(enriched);
+      }
+    }
     this.sequence = snapshot.sequence ?? this.enrichedMessages.length;
     this.generation = snapshot.generation ?? this.generation + 1;
     this.tombstones = snapshot.tombstones
@@ -376,10 +403,10 @@ export class Context {
   /**
    * 添加用户消息
    */
-  addUserMessage(content: string, turn: number, images?: ImageInput[]): void {
+  addUserMessage(content: string, turn: number, images?: ImageInput[], timestamp?: number): void {
     this.addMessage(
       { role: 'user', content, turn, images },
-      { turn }
+      { turn, ...(typeof timestamp === 'number' ? { timestamp } : {}) }
     );
     // 同步到 messages 数组（保持向后兼容）
     this.messages.push({ role: 'user', content, turn, images });
@@ -390,7 +417,7 @@ export class Context {
    *
    * 框架合成消息（错误/截断说明）可通过 execution 字段附带执行终态元数据。
    */
-  addAssistantMessage(response: LLMResponse & { execution?: MessageExecutionMeta }, turn: number): void {
+  addAssistantMessage(response: LLMResponse & { execution?: MessageExecutionMeta }, turn: number, timestamp?: number): void {
     // 会话事件流：reasoning / agent_message / tool_call started
     emitAssistantResponseEvents(response, turn);
 
@@ -412,7 +439,7 @@ export class Context {
         usage,
         ...(execution ? { execution } : {}),
       },
-      { turn }
+      { turn, ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}) }
     );
     // 同步到 messages 数组
     this.messages.push({
@@ -450,7 +477,7 @@ export class Context {
    * 序列化字符串，不应先解析成 ToolExecResult 再重新编码。该入口同时维护
    * messages[] 与 enrichedMessages[]，并保留工具返回的图片附件。
    */
-  addSerializedToolMessage(toolCallId: string, content: string, turn: number, images?: ImageInput[], display?: unknown): void {
+  addSerializedToolMessage(toolCallId: string, content: string, turn: number, images?: ImageInput[], display?: unknown, timestamp?: number): void {
     const normalizedImages = images?.length ? images : undefined;
     const message: Message = {
       role: 'tool',
@@ -460,17 +487,17 @@ export class Context {
       ...(normalizedImages ? { images: normalizedImages } : {}),
       ...(display !== undefined ? { display } : {}),
     };
-    this.addMessage(message, { turn });
+    this.addMessage(message, { turn, ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}) });
     this.messages.push({ ...message });
   }
 
   /**
    * 添加系统消息
    */
-  addSystemMessage(content: string, turn: number, source?: string, tag?: string): void {
+  addSystemMessage(content: string, turn: number, source?: string, tag?: string, timestamp?: number): void {
     this.addMessage(
       { role: 'system', content, turn, ...(tag ? { tag } : {}) },
-      { turn, source, ...(tag ? { tag } : {}) }
+      { turn, source, ...(tag ? { tag } : {}), ...(typeof timestamp === 'number' ? { timestamp } : {}) }
     );
     // 同步到 messages 数组
     this.messages.push({ role: 'system', content, turn, ...(source ? { source } : {}), ...(tag ? { tag } : {}) });
@@ -513,7 +540,9 @@ export class Context {
    */
   private enrich(message: Message, meta: MessageMeta): EnrichedMessage {
     const id = this.generateId();
-    const timestamp = Date.now();
+    const timestamp = typeof meta.timestamp === 'number' && Number.isFinite(meta.timestamp)
+      ? meta.timestamp
+      : Date.now();
 
     return {
       // 原始字段

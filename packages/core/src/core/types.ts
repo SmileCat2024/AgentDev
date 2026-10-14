@@ -931,12 +931,17 @@ export type MessagePushMode = 'full' | 'append' | 'tail';
  *
  * 旧版发送方省略 mode 时仍表示 full；增量模式则在类型层强制携带
  * baseCount + generation，避免发送方构造出无法校验的半个 delta。
+ *
+ * `timestamps` 是与 `messages` 等长对齐的时间元表（毫秒；null = 无时间锚），
+ * wire Message 本身不携带时间（ADR-0001 导出面治理），展示层的时间需求经
+ * 该平行表下发。省略时消费方按"全部无时间锚"降级。
  */
 export type PushMessagesMsg =
   | {
       type: 'push-messages';
       agentId: string;
       messages: Message[];
+      timestamps?: (number | null)[];
       /** 省略 mode 的旧协议推送按 full 处理。 */
       mode?: 'full';
       generation?: number;
@@ -945,6 +950,7 @@ export type PushMessagesMsg =
       type: 'push-messages';
       agentId: string;
       messages: Message[];
+      timestamps?: (number | null)[];
       mode: 'append' | 'tail';
       /** 应用增量前，Viewer 中应有的消息数量。 */
       baseCount: number;
@@ -1161,6 +1167,13 @@ export interface MessageMeta {
   source?: string;
   /** 消息语义标签（透传到 EnrichedMessage） */
   tag?: string;
+  /**
+   * 外部权威时刻（毫秒）：消息语义上的发生时刻，而非写入 Context 的时刻。
+   *
+   * 典型来源：排队输入的入队时刻（busy 插话等待消费时，Date.now() 会偏晚）、
+   * handoff seed 携带的源会话原始时间戳。缺省时按写入时刻盖戳。
+   */
+  timestamp?: number;
 }
 
 /**
@@ -1174,8 +1187,8 @@ export interface EnrichedMessage extends Message {
 
   /** 唯一标识（用于索引关联） */
   id: string;
-  /** 消息产生时间戳（毫秒） */
-  timestamp: number;
+  /** 消息产生时间戳（毫秒）；null = 无时间锚（结构失配旧快照的对齐补建条目） */
+  timestamp: number | null;
   /** 所属 ReAct 循环轮次（从 0 开始） */
   turn: number;
   /** 全局消息序号（从 0 开始递增） */

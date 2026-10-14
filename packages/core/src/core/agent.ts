@@ -524,7 +524,7 @@ class AgentBase {
       } else {
         context.addUserMessage(finalInput, this._callIndex, images);
       }
-      this.pushToDebug(context.getAll());
+      this.pushToDebug(context.getAll(), context.getTimestamps());
 
       // 提前提交 rollback checkpoint：确保在 ReAct 循环中的 step auto-save
       // 持久化时，当前 call 的 checkpoint 已存在。这消除了"消息已持久化但
@@ -813,7 +813,7 @@ class AgentBase {
         }
       }
       if (this.persistentContext) {
-        this.pushToDebug(this.persistentContext.getAll());
+        this.pushToDebug(this.persistentContext.getAll(), this.persistentContext.getTimestamps());
       }
     } catch (error) {
       if (!wasRegistered) {
@@ -1092,7 +1092,7 @@ class AgentBase {
     }
 
     this._callCheckpoints = this._callCheckpoints.filter(entry => entry.callIndex < callIndex);
-    this.pushToDebug(this.getContext().getAll());
+    this.pushToDebug(this.getContext().getAll(), this.getContext().getTimestamps());
     this.pushInspectorSnapshot();
 
     return { draftInput: checkpoint.draftInput };
@@ -1194,7 +1194,7 @@ class AgentBase {
     // 剪除该 checkpoint 之后创建的所有命名检查点（基于位置，避免时间戳精度问题）
     this._namedCheckpoints = this._namedCheckpoints.slice(0, targetIndex + 1);
 
-    this.pushToDebug(this.getContext().getAll());
+    this.pushToDebug(this.getContext().getAll(), this.getContext().getTimestamps());
     this.pushInspectorSnapshot();
     this.logger.info('Rolled back to named checkpoint', { id, callIndex: checkpoint.sourceCallIndex });
   }
@@ -2351,9 +2351,9 @@ class AgentBase {
 
     // Debug 推送接口
     const debugPusher: DebugPusher = {
-      pushMessages: (agentId: string, messages: Message[], push?: { forceFull?: boolean }) => {
+      pushMessages: (agentId: string, messages: Message[], push?: { forceFull?: boolean }, timestamps?: (number | null)[]) => {
         if (this.debugHub) {
-          this.debugHub.pushMessages(agentId, messages, push);
+          this.debugHub.pushMessages(agentId, messages, push, timestamps);
         }
       },
     };
@@ -2409,9 +2409,9 @@ class AgentBase {
   /**
    * 推送到 DebugHub
    */
-  private pushToDebug(messages: Message[]): void {
+  private pushToDebug(messages: Message[], timestamps?: (number | null)[]): void {
     if (this.debugEnabled && this.agentId && this.debugHub) {
-      this.debugHub.pushMessages(this.agentId, messages);
+      this.debugHub.pushMessages(this.agentId, messages, undefined, timestamps);
       this.debugHub.updateAgentOverview(this.agentId, this.buildOverviewSnapshot());
     }
   }

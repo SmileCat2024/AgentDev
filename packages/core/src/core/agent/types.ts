@@ -89,6 +89,7 @@ export interface DebugPusher {
     agentId: string,
     messages: Message[],
     push?: { mode?: 'full' | 'append' | 'tail'; baseCount?: number; generation?: number; forceFull?: boolean },
+    timestamps?: (number | null)[],
   ): void;
 }
 

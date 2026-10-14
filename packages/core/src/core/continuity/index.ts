@@ -176,6 +176,13 @@ export interface SessionSeedMessage {
   }>;
   /** 消息语义标签（如折叠活动、handoff-seed 等）。 */
   tag?: string;
+  /**
+   * 源会话原始消息时刻（毫秒，enriched 侧投影）。
+   *
+   * trim 类变换从源快照 enrichedMessages 透传；缺省（含 summary 等无骨架
+   * 产物）时消费方按注入时刻盖戳。
+   */
+  timestamp?: number;
 }
 
 /**

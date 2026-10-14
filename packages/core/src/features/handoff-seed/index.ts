@@ -95,11 +95,16 @@ function injectSeedMessage(
   const content = typeof message.content === 'string' ? message.content : '';
   const role = message.role;
   const tag = typeof message.tag === 'string' ? message.tag : undefined;
+  // 源会话原始时刻：seed 携带时透传盖戳（保留历史时间线）；缺省（旧 handoff
+  // 包 / summary 等无时间产物）按注入时刻。
+  const timestamp = typeof message.timestamp === 'number' && Number.isFinite(message.timestamp)
+    ? message.timestamp
+    : undefined;
 
   if (role === 'system') {
-    context.addSystemMessage(content, turn, 'handoff-seed', tag);
+    context.addSystemMessage(content, turn, 'handoff-seed', tag, timestamp);
   } else if (role === 'user') {
-    context.addUserMessage(content, turn, message.images as any);
+    context.addUserMessage(content, turn, message.images as any, timestamp);
   } else if (role === 'assistant') {
     context.addAssistantMessage(
       {
@@ -109,9 +114,10 @@ function injectSeedMessage(
         thinkingBlocks: message.thinkingBlocks as any,
       },
       turn,
+      timestamp,
     );
   } else if (role === 'tool' && message.toolCallId) {
-    context.addSerializedToolMessage(message.toolCallId, content, turn, message.images as any);
+    context.addSerializedToolMessage(message.toolCallId, content, turn, message.images as any, undefined, timestamp);
   } else {
     context.add({ role, content, turn, toolCallId: message.toolCallId, images: message.images, ...(tag ? { tag } : {}) } as any);
   }

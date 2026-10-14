@@ -78,7 +78,8 @@ export class ContextQuery {
    * 按时间起点过滤
    */
   since(timestamp: number): this {
-    this.result = this.result.filter(m => m.timestamp >= timestamp);
+    // null（无时间锚补建条目）不参与时间过滤
+    this.result = this.result.filter(m => m.timestamp !== null && m.timestamp >= timestamp);
     return this;
   }
 
@@ -148,8 +149,13 @@ export class ContextQuery {
     if (this.result.length === 0) {
       return { start: 0, end: 0, duration: 0 };
     }
-    const start = this.result[0].timestamp;
-    const end = this.result[this.result.length - 1].timestamp;
+    // 无时间锚条目（null）不参与跨度计算
+    const stamps = this.result.map(m => m.timestamp).filter((t): t is number => t !== null);
+    if (stamps.length === 0) {
+      return { start: 0, end: 0, duration: 0 };
+    }
+    const start = Math.min(...stamps);
+    const end = Math.max(...stamps);
     return { start, end, duration: end - start };
   }
 

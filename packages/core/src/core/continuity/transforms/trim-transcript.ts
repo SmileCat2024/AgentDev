@@ -322,7 +322,7 @@ function getSkillInvokeProtectedMessages(rawMessages: any[], policy: TrimExportP
   return protectedIndices.size > 0 ? protectedIndices : null;
 }
 
-function createSeedMessage(role: string, content: string, turn: number, tag?: string): SessionSeedMessage | null {
+function createSeedMessage(role: string, content: string, turn: number, tag?: string, timestamp?: number): SessionSeedMessage | null {
   const text = cleanMultilineText(content);
   if (!text) return null;
   return {
@@ -330,6 +330,7 @@ function createSeedMessage(role: string, content: string, turn: number, tag?: st
     content: text,
     turn: Number.isFinite(turn) ? turn : null,
     ...(tag ? { tag } : {}),
+    ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}),
   } as SessionSeedMessage;
 }
 
@@ -389,7 +390,13 @@ export interface TrimmedSeedResult {
   stats: TrimStats;
 }
 
-export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportPolicy): TrimmedSeedResult {
+export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportPolicy, timestamps?: (number | null)[]): TrimmedSeedResult {
+  // 源消息时间投影（毫秒）：与 rawMessages 等长对齐；缺省/非法条目按无时间锚
+  // 处理（seed 产物不带 timestamp 字段，消费方回退注入时刻）。
+  const msgTimestamp = (index: number): number | undefined => {
+    const ts = Array.isArray(timestamps) ? timestamps[index] : undefined;
+    return typeof ts === 'number' && Number.isFinite(ts) ? ts : undefined;
+  };
   const retainedTurns = getRetainedTurnSet(rawMessages, policy);
   const foldedToolTurns = getFoldedToolTurnSet(rawMessages, retainedTurns, policy);
   const skillProtectedIndices = getSkillInvokeProtectedMessages(rawMessages, policy);
@@ -489,7 +496,8 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
     if (inPreserveZone) {
       flushIfNeeded();
       if (role === 'tool' || shouldKeepDialogueMessage(role, policy, message?.tag)) {
-        seedMessages.push({ ...message, turn } as SessionSeedMessage);
+        const ts = msgTimestamp(index);
+        seedMessages.push({ ...message, turn, ...(ts !== undefined ? { timestamp: ts } : {}) } as SessionSeedMessage);
         stats.keptSeedMessageCount += 1;
         if (role !== 'tool') {
           stats.keptDialogueMessageCount += 1;
@@ -507,7 +515,8 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
       : [];
     if (protectedCalls.length > 0 && shouldKeepDialogueMessage(role, policy, message?.tag)) {
       flushIfNeeded();
-      seedMessages.push({ ...message, toolCalls: protectedCalls, turn } as SessionSeedMessage);
+      const tsProtected = msgTimestamp(index);
+      seedMessages.push({ ...message, toolCalls: protectedCalls, turn, ...(tsProtected !== undefined ? { timestamp: tsProtected } : {}) } as SessionSeedMessage);
       stats.keptSeedMessageCount += 1;
       stats.keptDialogueMessageCount += 1;
       stats.keptProtectedToolCallCount += protectedCalls.length;
@@ -520,7 +529,8 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
     }
 
     if (role === 'tool' && protectedToolCallIds.has(cleanInlineText(message?.toolCallId))) {
-      seedMessages.push({ ...message, turn } as SessionSeedMessage);
+      const tsTool = msgTimestamp(index);
+      seedMessages.push({ ...message, turn, ...(tsTool !== undefined ? { timestamp: tsTool } : {}) } as SessionSeedMessage);
       stats.keptSeedMessageCount += 1;
       stats.keptProtectedToolMessageCount += 1;
       return;
@@ -538,7 +548,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
         : shouldHandleToolActivity(turn, foldedToolTurns, policy);
       if (policy.toolMessageMode === 'keep' || !shouldHandle) {
         flushIfNeeded();
-        const seedMessage = createSeedMessage('tool', message.content, turn, message?.tag);
+        const seedMessage = createSeedMessage('tool', message.content, turn, message?.tag, msgTimestamp(index));
         if (seedMessage) {
           seedMessages.push(seedMessage);
           stats.keptSeedMessageCount += 1;
@@ -598,7 +608,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
       if (role === 'assistant' && toolCalls.length > 0 && policy.assistantToolCallMode === 'keep' && toolCallSummaries.length > 0 && shouldHandleToolCalls) {
         assistantContent = `${assistantContent}\n[tool calls kept inline] ${toolCallSummaries.join('; ')}`.trim();
       }
-      const seedMessage = createSeedMessage(role, assistantContent, turn, message?.tag);
+      const seedMessage = createSeedMessage(role, assistantContent, turn, message?.tag, msgTimestamp(index));
       if (seedMessage) {
         seedMessages.push(seedMessage);
         stats.keptSeedMessageCount += 1;
@@ -663,9 +673,15 @@ export class TrimTranscriptTransformation implements SessionTransformation {
     const rawMessages = Array.isArray(snapshot?.runtime?.context?.messages)
       ? snapshot.runtime.context.messages
       : [];
+    // 时间投影：与 messages 平行对齐的 enriched 侧 timestamp 表；长度失配
+    // （结构异常的旧快照）按无时间锚降级，不阻断变换。
+    const enriched = snapshot?.runtime?.context?.enrichedMessages;
+    const timestamps = Array.isArray(enriched) && enriched.length === rawMessages.length
+      ? enriched.map((e: any) => (typeof e?.timestamp === 'number' && Number.isFinite(e.timestamp) ? e.timestamp : null))
+      : undefined;
 
     const policy = normalizeExportPolicy({ ...this.defaultPolicy, ...(input.policy ?? {}) });
-    const { seedMessages, stats } = buildTrimmedSeedMessages(rawMessages, policy);
+    const { seedMessages, stats } = buildTrimmedSeedMessages(rawMessages, policy, timestamps);
     // seed 边界账目（ADR-0024 PR-3）：全部产物为保留素材 + 折叠注（折叠注的
     // 投影由 stats / keepSystemTags 规则覆盖），变换自身不追加注入项。
     const seedBoundary: SeedBoundary = {

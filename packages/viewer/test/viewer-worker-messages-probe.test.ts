@@ -551,3 +551,53 @@ describe('_messagesProbe on overview response', () => {
     expect(probe.fakeFullBytes).toBe(bytesOf(session.messages));
   });
 });
+
+describe('timestamps table (push-time parallel projection)', () => {
+  function pushTs(worker: any, agentId: string, messages: any[], timestamps?: (number | null)[]) {
+    worker.handlePushMessages({ agentId, messages, ...(timestamps ? { timestamps } : {}) });
+  }
+
+  it('stores and serves the table with the full snapshot; omitted on legacy pushes', () => {
+    const { worker, agentId } = createWorker();
+    pushTs(worker, agentId, [makeMsg('user', 'a'), makeMsg('assistant', 'b')], [111, 222]);
+
+    expect(readMessages(worker, agentId).json.timestamps).toEqual([111, 222]);
+
+    // 旧版推送（无表）重写会话 → 字段随消息同生命周期丢弃
+    pushTs(worker, agentId, [makeMsg('user', 'only')]);
+    expect(readMessages(worker, agentId).json.timestamps).toBeUndefined();
+  });
+
+  it('serves aligned slices on since and tail queries', () => {
+    const { worker, agentId } = createWorker();
+    pushTs(worker, agentId, [makeMsg('user', 'a'), makeMsg('assistant', 'b'), makeMsg('user', 'c')], [111, 222, 333]);
+
+    expect(readMessages(worker, agentId, 'since=1').json.timestamps).toEqual([222, 333]);
+    expect(readMessages(worker, agentId, 'tail=1').json.timestamps).toEqual([333]);
+  });
+
+  it('merges append deltas onto the stored table and nulls unknown entries', () => {
+    const { worker, agentId } = createWorker();
+    pushTs(worker, agentId, [makeMsg('user', 'a')], [111]);
+
+    // append：增量表随行拼接（baseCount 由 Viewer 校验，这里 base=1 命中）
+    pushTs(worker, agentId, [makeMsg('user', 'a'), makeMsg('assistant', 'b')], [111, 222]);
+    expect(readMessages(worker, agentId).json.timestamps).toEqual([111, 222]);
+
+    // 非法条目归 null（缺位/NaN 由 alignTimestamps 归一）
+    pushTs(worker, agentId, [makeMsg('user', 'a'), makeMsg('assistant', 'b'), makeMsg('user', 'c')], [111, 222, Number.NaN]);
+    expect(readMessages(worker, agentId).json.timestamps).toEqual([111, 222, null]);
+  });
+
+  it('keeps the table aligned when the byte limit trims the head', () => {
+    const { worker, agentId } = createWorker();
+    worker.MAX_BYTES = 10;
+    pushTs(worker, agentId, [
+      makeMsg('user', 'x'.repeat(50)),
+      makeMsg('assistant', 'kept'),
+    ], [111, 222]);
+
+    // 首条被剪：时间表同步 shift，切片保持索引对齐
+    expect(readMessages(worker, agentId).json.timestamps).toEqual([222]);
+  });
+});

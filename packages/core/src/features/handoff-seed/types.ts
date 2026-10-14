@@ -12,6 +12,8 @@ export interface HandoffSeedMessage {
   thinkingBlocks?: Array<{ thinking: string; signature: string }>;
   images?: Array<{ path?: string; base64?: string; mediaType?: string; source?: string }>;
   tag?: string;
+  /** 源会话原始消息时刻（毫秒）；缺省按注入时刻盖戳。 */
+  timestamp?: number;
 }
 
 export interface HandoffSeedPayload {

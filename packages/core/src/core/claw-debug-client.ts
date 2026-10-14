@@ -123,13 +123,14 @@ export class ClawDebugClient {
   async pushMessages(
     agentId: string,
     messages: Message[],
-    push?: { mode?: MessagePushMode; baseCount?: number; generation?: number },
+    push?: { mode?: MessagePushMode; baseCount?: number; generation?: number; timestamps?: (number | null)[] },
   ): Promise<void> {
     await this.pushEvent(agentId, 'message', {
       messages,
       ...(push?.mode ? { mode: push.mode } : {}),
       ...(push?.baseCount !== undefined ? { baseCount: push.baseCount } : {}),
       ...(push?.generation !== undefined ? { generation: push.generation } : {}),
+      ...(Array.isArray(push?.timestamps) ? { timestamps: push.timestamps } : {}),
     });
   }
 

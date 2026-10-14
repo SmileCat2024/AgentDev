@@ -422,9 +422,13 @@ export class TrimTranscriptWithSummaryTransformation implements SessionTransform
     const snapshot: AgentSessionSnapshot = input.sourceSnapshot;
     const rawMessages = extractMessages(snapshot);
 
-    // 1) trim 裁剪
+    // 1) trim 裁剪（时间投影与 trim-transcript 同源：enriched 侧透传）
     const trimPolicy = normalizeExportPolicy({ ...DEFAULT_EXPORT_POLICY, ...(this.options.trimPolicy ?? {}), ...(input.policy ?? {}) });
-    const { seedMessages, stats } = buildTrimmedSeedMessages(rawMessages, trimPolicy);
+    const enrichedForTrim = snapshot?.runtime?.context?.enrichedMessages;
+    const trimTimestamps = Array.isArray(enrichedForTrim) && enrichedForTrim.length === rawMessages.length
+      ? enrichedForTrim.map((e: any) => (typeof e?.timestamp === 'number' && Number.isFinite(e.timestamp) ? e.timestamp : null))
+      : undefined;
+    const { seedMessages, stats } = buildTrimmedSeedMessages(rawMessages, trimPolicy, trimTimestamps);
 
     // 2) 摘要生成（trimAppended 提示词）
     const prompt = buildSummaryPrompt({

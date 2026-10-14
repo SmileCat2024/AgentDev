@@ -493,9 +493,11 @@ describe('Context', () => {
 
     it('should truncate when messages and enriched have different lengths', () => {
       const ctx = new Context();
-      // add() only pushes to messages[], not enrichedMessages[]
+      // add() 现已同步写 enriched；失配只能来自结构失配的旧快照恢复，
+      // 手工构造该形态验证 truncate 的韧性。
       ctx.add({ role: 'user', content: 'legacy', turn: 0 });
       ctx.addUserMessage('typed', 1);
+      (ctx as any).enrichedMessages.shift();
 
       // messages: [legacy, typed], enriched: [typed]
       expect(ctx.length).toBe(2);
@@ -558,16 +560,16 @@ describe('Context', () => {
       ctx.add({ role: 'user', content: 'legacy1', turn: 0 });
       ctx.addUserMessage('typed1', 1);
       ctx.add({ role: 'user', content: 'legacy2', turn: 0 });
-      // messages: [legacy1, typed1, legacy2], enriched: [typed1]
+      // add() 同步写 enriched：两侧对齐 [legacy1, typed1, legacy2]
+      expect(ctx.length).toBe(3);
       const boundary = ctx.captureBoundary();
 
       ctx.addUserMessage('typed2', 2);
       ctx.add({ role: 'user', content: 'legacy3', turn: 0 });
-      // messages: [legacy1, typed1, legacy2, typed2, legacy3], enriched: [typed1, typed2]
 
       ctx.truncateToBoundary(boundary);
       expect(ctx.length).toBe(3);
-      expect(ctx.getAllEnriched()).toHaveLength(1);
+      expect(ctx.getAllEnriched()).toHaveLength(3);
     });
   });
 

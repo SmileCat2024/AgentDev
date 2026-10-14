@@ -133,7 +133,7 @@ export class ReActLoopRunner {
           }
 
           // 推送消息到 DebugHub
-          this.pushToDebug(context.getAll());
+          this.pushToDebug(context.getAll(), false, context.getTimestamps());
 
           // ========== Step Start ==========
           await this.executeHookFn(
@@ -199,7 +199,7 @@ export class ReActLoopRunner {
                 this.pushToDebug([
                   ...context.getAll(),
                   { role: 'assistant', content: '[Info: LLM returned empty response with end_turn]', turn: callIndex },
-                ], true);
+                ], true, [...context.getTimestamps(), Date.now()]);
                 break; // 跳出重试循环，进入正常完成流程
               }
 
@@ -213,7 +213,7 @@ export class ReActLoopRunner {
                 this.pushToDebug([
                   ...context.getAll(),
                   { role: 'assistant', content: '[Warning: LLM output was truncated by max_tokens — thinking consumed the entire token budget and no content was produced]', turn: callIndex },
-                ], true);
+                ], true, [...context.getTimestamps(), Date.now()]);
                 break; // 不重试，直接结束本轮
               }
 
@@ -230,7 +230,7 @@ export class ReActLoopRunner {
                 this.pushToDebug([
                   ...context.getAll(),
                   { role: 'assistant', content: `[Info: LLM returned empty response (attempt ${emptyAttempt + 1}/${MAX_EMPTY_RETRIES}), retrying...]`, turn: callIndex },
-                ], true);
+                ], true, [...context.getTimestamps(), Date.now()]);
                 // 检查中断信号
                 if (signal?.aborted) {
                   logger.info('Empty response retry skipped due to interrupt', { step });
@@ -250,7 +250,7 @@ export class ReActLoopRunner {
               this.pushToDebug([
                 ...context.getAll(),
                 { role: 'assistant', content: '[Error: LLM returned empty response]', turn: callIndex },
-              ], true);
+              ], true, [...context.getTimestamps(), Date.now()]);
             } else {
               // 正常响应（有 content 或有 toolCalls），添加到 context
 
@@ -283,13 +283,13 @@ export class ReActLoopRunner {
                       },
                     }, callIndex);
                   }
-                  this.pushToDebug(context.getAll());
+                  this.pushToDebug(context.getAll(), false, context.getTimestamps());
                   return 'next'; // 跳过正常工具执行（防止重复 tool_result），直接进入下一轮 LLM 调用
                 }
               }
 
               context.addAssistantMessage(response, callIndex);
-              this.pushToDebug(context.getAll());
+              this.pushToDebug(context.getAll(), false, context.getTimestamps());
             }
             break; // 正常响应或重试结束，跳出重试循环
           }
@@ -385,7 +385,7 @@ export class ReActLoopRunner {
                 };
                 context.addToolMessage(call, failResult, callIndex);
               }
-              this.pushToDebug(context.getAll());
+              this.pushToDebug(context.getAll(), false, context.getTimestamps());
               logger.info('Exclusive batch violation, all tools rejected', { step, exclusiveNames, batchSize: toolCalls.length });
             }
           }
@@ -515,7 +515,7 @@ export class ReActLoopRunner {
         // timeout 终止（interrupted.reason === 'timeout'）不在此列：结果已带元数据
         // 写入 context，循环继续，由模型决定下一步。
         if (interrupted || signal?.aborted || userTerminated) {
-            this.pushToDebug(context.getAll());
+            this.pushToDebug(context.getAll(), false, context.getTimestamps());
             const lastContent = context.getAll().filter(m => m.role === 'assistant' && m.content).pop();
             finalResponse = lastContent?.content ?? response.content ?? '';
             completed = false;
@@ -530,7 +530,7 @@ export class ReActLoopRunner {
           // 宿主将在 onCall 返回后通过 consumeContinuationRequest() 获取请求。
           const continuationRequest = this.agent.peekContinuationRequest?.();
           if (continuationRequest) {
-            this.pushToDebug(context.getAll());
+            this.pushToDebug(context.getAll(), false, context.getTimestamps());
             const lastContent = context.getAll().filter(m => m.role === 'assistant' && m.content).pop();
             finalResponse = lastContent?.content ?? response.content ?? '';
             completed = false;
@@ -539,7 +539,7 @@ export class ReActLoopRunner {
           }
 
           // 推送消息到 DebugHub
-          this.pushToDebug(context.getAll());
+          this.pushToDebug(context.getAll(), false, context.getTimestamps());
 
         // ========== Step Finished（有工具调用）==========
           const stepFinishResult = await this.executeHookFn(
@@ -634,7 +634,7 @@ export class ReActLoopRunner {
             content: errorMsg,
             execution: { status: 'failed', reason: 'error', error },
           }, callIndex);
-          this.pushToDebug(context.getAll());
+          this.pushToDebug(context.getAll(), false, context.getTimestamps());
           logger.warn('Step rolled back after failure', { step, errorType: error.category, error: errorMsg });
 
           // 返回错误消息而非抛出，确保前端能在对话中看到错误说明。
@@ -732,7 +732,7 @@ export class ReActLoopRunner {
    * @param agentId Agent ID
    * @returns 排队消息（文本 + 图片 + 能力激活通知 + 自由元数据 + 输入身份），如果没有则返回 null
    */
-  private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string } | null> {
+  private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; timestamp?: number } | null> {
     // 从环境变量获取 ViewerWorker 端口
     const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
     const viewerUrl = `http://127.0.0.1:${viewerPort}`;
@@ -762,6 +762,9 @@ export class ReActLoopRunner {
             ? { metadata: data.input.metadata as Record<string, unknown> }
             : {}),
           ...(typeof data.input.source === 'string' && data.input.source ? { source: data.input.source } : {}),
+          ...(typeof data.input.timestamp === 'number' && Number.isFinite(data.input.timestamp)
+            ? { timestamp: data.input.timestamp }
+            : {}),
         };
       }
       return null;
@@ -784,7 +787,7 @@ export class ReActLoopRunner {
   ): Promise<boolean> {
     if (!this.agent.agentId) return false;
     try {
-      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string }> = [];
+      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; timestamp?: number }> = [];
       while (true) {
         const qi = await this.fetchQueuedInput(this.agent.agentId);
         if (!qi) break;
@@ -811,13 +814,15 @@ export class ReActLoopRunner {
           // reminder（机器通报）注入为带 source 的 system 消息，
           // 与 tool result 合流到下一个 wire 级 user turn
           if (qi.kind === 'reminder') {
-            context.addSystemMessage(qi.text, callIndex, qi.source);
+            context.addSystemMessage(qi.text, callIndex, qi.source, undefined, qi.timestamp);
           } else {
-            context.addUserMessage(qi.text, callIndex, qi.images);
+            // 用户消息盖入队时刻（真实发送时刻）：busy 排队等待消费期间的
+            // Date.now() 偏晚，不能作为"输入发生时间"。
+            context.addUserMessage(qi.text, callIndex, qi.images, qi.timestamp);
           }
           injected = true;
         }
-        this.pushToDebug(context.getAll());
+        this.pushToDebug(context.getAll(), false, context.getTimestamps());
         return injected;
       }
     } catch (e) {
@@ -854,10 +859,13 @@ export class ReActLoopRunner {
 
   /**
    * 推送到 DebugHub
+   *
+   * timestamps 与 messages 等长对齐（毫秒；null = 无时间锚），来自
+   * Context.getTimestamps()；手工拼接的合成尾部消息以 Date.now() 补齐。
    */
-  private pushToDebug(messages: Message[], forceFull = false): void {
+  private pushToDebug(messages: Message[], forceFull = false, timestamps?: (number | null)[]): void {
     if (this.agent.debugEnabled && this.agent.agentId && this.agent.debugPusher) {
-      this.agent.debugPusher.pushMessages(this.agent.agentId, messages, { forceFull });
+      this.agent.debugPusher.pushMessages(this.agent.agentId, messages, { forceFull }, timestamps);
     }
   }
 }

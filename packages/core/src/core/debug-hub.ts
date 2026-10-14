@@ -108,13 +108,13 @@ export class DebugHub {
 
   // Agent → Viewer 的消息发送基线。仅用于决定是否安全发送 delta；Viewer
   // 仍以 baseCount/generation 做最终校验，所有失配都会在下一次推送退回 full。
-  private agentMessagePushState = new Map<string, { messages: Message[]; generation: number }>();
+  private agentMessagePushState = new Map<string, { messages: Message[]; generation: number; timestamps?: (number | null)[] }>();
   // Claw HTTP 每个 Agent 只保留一个在途请求和一个最新待发送快照，
   // 避免慢 runtime 下按推送次数积累闭包和完整消息数组。
   private agentMessagePushQueues = new Map<string, {
     active: boolean;
     epoch: number;
-    pending?: { messages: Message[]; generation: number; forceFull?: boolean };
+    pending?: { messages: Message[]; generation: number; forceFull?: boolean; timestamps?: (number | null)[] };
   }>();
   private agentMessageDeltaCounts = new Map<string, number>();
   private agentMessagePushEpochs = new Map<string, number>();
@@ -498,14 +498,15 @@ export class DebugHub {
    * 推送 Agent 消息
    * @param agentId Agent ID
    * @param messages 消息数组
+   * @param timestamps 与 messages 等长的时间元表（毫秒；null = 无时间锚）
    */
-  pushMessages(agentId: string, messages: Message[], push?: { forceFull?: boolean }): void {
+  pushMessages(agentId: string, messages: Message[], push?: { forceFull?: boolean }, timestamps?: (number | null)[]): void {
     const generation = this.resolveAgentMessageGeneration(agentId);
 
     if (this.transportMode === 'claw') {
       const epoch = this.agentMessagePushEpochs.get(agentId) ?? 0;
       const queue = this.agentMessagePushQueues.get(agentId) ?? { active: false, epoch };
-      queue.pending = { messages, generation, forceFull: push?.forceFull };
+      queue.pending = { messages, generation, forceFull: push?.forceFull, timestamps };
       this.agentMessagePushQueues.set(agentId, queue);
       if (!queue.active) {
         queue.active = true;
@@ -518,25 +519,26 @@ export class DebugHub {
     const deltaCount = this.agentMessageDeltaCounts.get(agentId) ?? 0;
     const forceFull = push?.forceFull === true || deltaCount >= DebugHub.MESSAGE_FULL_RESYNC_INTERVAL;
     const plan = forceFull
-      ? { mode: 'full' as const, messages, generation }
+      ? { mode: 'full' as const, messages, timestamps: timestamps ?? new Array(messages.length).fill(null) as (number | null)[], generation }
       : planMessagePush(
         previous?.messages,
         messages,
         generation,
         previous?.generation ?? generation,
+        timestamps,
       );
     if (!plan) return;
 
     const sent = this.sendToWorker(asMessagePush(agentId, plan));
     if (sent) {
-      this.agentMessagePushState.set(agentId, { messages, generation });
+      this.agentMessagePushState.set(agentId, { messages, generation, ...(timestamps ? { timestamps } : {}) });
       this.agentMessageDeltaCounts.set(agentId, plan.mode === 'full' ? 0 : deltaCount + 1);
     }
   }
 
   private async drainClawMessageQueue(
     agentId: string,
-    queue: { active: boolean; epoch: number; pending?: { messages: Message[]; generation: number; forceFull?: boolean } },
+    queue: { active: boolean; epoch: number; pending?: { messages: Message[]; generation: number; forceFull?: boolean; timestamps?: (number | null)[] } },
     epoch: number,
   ): Promise<void> {
     try {
@@ -548,12 +550,13 @@ export class DebugHub {
         const deltaCount = this.agentMessageDeltaCounts.get(agentId) ?? 0;
         const forceFull = item.forceFull === true || deltaCount >= DebugHub.MESSAGE_FULL_RESYNC_INTERVAL;
         const plan = forceFull
-          ? { mode: 'full' as const, messages: item.messages, generation: item.generation }
+          ? { mode: 'full' as const, messages: item.messages, timestamps: item.timestamps ?? new Array(item.messages.length).fill(null) as (number | null)[], generation: item.generation }
           : planMessagePush(
             previous?.messages,
             item.messages,
             item.generation,
             previous?.generation ?? item.generation,
+            item.timestamps,
           );
         if (!plan) continue;
 
@@ -562,9 +565,10 @@ export class DebugHub {
           mode: push.mode,
           baseCount: 'baseCount' in push ? push.baseCount : undefined,
           generation: push.generation,
+          timestamps: push.timestamps,
         });
         if (epoch !== (this.agentMessagePushEpochs.get(agentId) ?? 0)) return;
-        this.agentMessagePushState.set(agentId, { messages: item.messages, generation: item.generation });
+        this.agentMessagePushState.set(agentId, { messages: item.messages, generation: item.generation, timestamps: item.timestamps });
         this.agentMessageDeltaCounts.set(agentId, push.mode === 'full' ? 0 : deltaCount + 1);
       }
     } catch (error) {
@@ -991,9 +995,11 @@ export class DebugHub {
           if (context && typeof context.getAll === 'function') {
             const messages = context.getAll();
             if (messages.length > 0) {
+              const timestamps = typeof context.getTimestamps === 'function' ? context.getTimestamps() : undefined;
               await this.clawClient?.pushMessages(id, messages, {
                 mode: 'full',
                 generation: this.resolveAgentMessageGeneration(id),
+                timestamps,
               });
             }
           }
@@ -1059,13 +1065,15 @@ export class DebugHub {
         const messages = context.getAll();
         if (messages.length > 0) {
           const generation = this.resolveAgentMessageGeneration(id);
+          const timestamps = typeof context.getTimestamps === 'function' ? context.getTimestamps() : undefined;
           const sent = this.sendToWorker(asMessagePush(id, {
             mode: 'full',
             messages,
+            timestamps: timestamps ?? new Array(messages.length).fill(null) as (number | null)[],
             generation,
           }));
           if (sent) {
-            this.agentMessagePushState.set(id, { messages, generation });
+            this.agentMessagePushState.set(id, { messages, generation, ...(timestamps ? { timestamps } : {}) });
             this.agentMessageDeltaCounts.set(id, 0);
           }
           console.log(`[DebugHub] 恢复 Agent ${id} 的 ${messages.length} 条消息`);

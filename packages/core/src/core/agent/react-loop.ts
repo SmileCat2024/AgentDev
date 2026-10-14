@@ -53,6 +53,7 @@ export class ReActLoopRunner {
       endCallUsage(callIndex: number): void;
       dispatchTurnActivations(refs: string[], context: Context): Promise<void>;
       dispatchTurnMetadata(metadata: Record<string, unknown>, context: Context): Promise<void>;
+      captureInterjectionCheckpoint(draftInput: string, context: Context): Promise<number>;
       stepSaveFn?: () => Promise<void>;
       peekContinuationRequest?: () => CallContinuationRequest | null;
       collectPendingWakeups(): PendingWakeup[];
@@ -816,9 +817,14 @@ export class ReActLoopRunner {
           if (qi.kind === 'reminder') {
             context.addSystemMessage(qi.text, callIndex, qi.source, undefined, qi.timestamp);
           } else {
+            // 插话锚点：同轮内排队消息注入前建 checkpoint（callIndex 取
+            // N+1-2^-k 二分序列），否则「回退到插话」只能落到轮边界 =
+            // 整轮从头回退。消息 turn 用锚点 callIndex，与 lease 的
+            // availableCallIndices 同源，前端可直接寻址。
+            const interjectionTurn = await this.agent.captureInterjectionCheckpoint(qi.text, context);
             // 用户消息盖入队时刻（真实发送时刻）：busy 排队等待消费期间的
             // Date.now() 偏晚，不能作为"输入发生时间"。
-            context.addUserMessage(qi.text, callIndex, qi.images, qi.timestamp);
+            context.addUserMessage(qi.text, interjectionTurn, qi.images, qi.timestamp);
           }
           injected = true;
         }

@@ -1074,6 +1074,44 @@ class AgentBase {
     });
   }
 
+  /**
+   * 插话点回退锚点（busy 排队消息的 call 内注入点专用）。
+   *
+   * 同一 call 内的插话消息与轮首用户消息共享 callIndex；若注入点不建
+   * checkpoint，「回退到插话」只能匹配轮首锚点，表现为整轮从头回退。
+   * 此方法在插话消息写入 Context 之前捕获边界，callIndex 取当前 call N
+   * 与下一 call N+1 之间的二分序列（N+1-2^-k：N.5、N.75、…），保证：
+   * - 与轮首（N）及后续轮（N+1）的 checkpoint 严格可序——rollbackToCall
+   *   的 find 精确匹配与 filter(<) 清理语义对分数值无需任何改动
+   * - 同轮多次插话各得唯一锚点，且回退到较早插话会连带清掉较晚插话
+   *
+   * 消息的 turn 字段使用返回值，与 lease 广播的 availableCallIndices
+   * 同源，前端「编辑此轮」即可直接寻址到插话点。
+   *
+   * @param draftInput 插话文本（回退时回填输入框）
+   * @param context 当前 call 的 Context（注入点现场引用，非 persistentContext）
+   * @returns 分配的锚点 callIndex
+   */
+  async captureInterjectionCheckpoint(draftInput: string, context: Context): Promise<number> {
+    await this.ensureFeatureTools();
+    const base = this._callIndex;
+    const interjections = this._callCheckpoints
+      .filter(entry => entry.callIndex > base && entry.callIndex < base + 1).length;
+    const callIndex = base + 1 - Math.pow(0.5, interjections + 1);
+    // runtimeState.callIndex 记 base：插话点的世界里当前 call 已在进行
+    //（与轮首 checkpoint 记 N-1 的「call 尚未开始」相对），回退到插话点
+    // 后下一次 onCall 递增到 base+1，与轮首回退后的推进序一致。
+    const runtimeState = await this.captureRuntimeStateWithoutContext(base);
+    this.commitCallCheckpoint({
+      kind: 'context-boundary',
+      callIndex,
+      draftInput,
+      contextBoundary: context.captureBoundary(),
+      runtimeState,
+    });
+    return callIndex;
+  }
+
   async rollbackToCall(callIndex: number): Promise<{ draftInput: string }> {
     await this.ensureFeatureTools();
     const checkpoint = this._callCheckpoints.find(entry => entry.callIndex === callIndex);
@@ -2387,6 +2425,7 @@ class AgentBase {
         endCallUsage: (callIndex: number) => this.endCallUsage(callIndex),
         dispatchTurnActivations: (refs: string[], context: Context) => this.dispatchTurnActivations(refs, context),
         dispatchTurnMetadata: (metadata: Record<string, unknown>, context: Context) => this.dispatchTurnMetadata(metadata, context),
+        captureInterjectionCheckpoint: (draftInput: string, context: Context) => this.captureInterjectionCheckpoint(draftInput, context),
         stepSaveFn: this._createStepSaveFn(),
         peekContinuationRequest: () => this._continuationRequest,
         // ADR-0019：StepFinish 决策上下文据此感知待唤醒后台工作

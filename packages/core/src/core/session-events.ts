@@ -89,7 +89,8 @@ export interface TurnFailure {
   message: string;
   /** 框架级终止原因（ExecutionReason） */
   reason?: string;
-  /** 分类错误类型（APIErrorType / runtime_error / exception） */
+  /** 分类错误类型（APIErrorType / auth_required / runtime_error / exception）；
+   *  auth_required 表示运行中凭证恢复不可行（ADR-0028），消费端应引导重新登录 */
   category?: string;
   statusCode?: number;
   retryable?: boolean;

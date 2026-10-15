@@ -23,6 +23,8 @@ export { createLLMRetry, emitNotification, createLLMCharCount, createLLMComplete
 // LLM 重试与错误分类契约（ReAct 循环与 @agentdevjs/llm 共同消费）
 export {
   ClassifiedAPIError,
+  AuthRequiredError,
+  AUTH_REQUIRED_CATEGORY,
   classifyAPIError,
   classifyAndWrapError,
   extractConnectionErrorDetails,

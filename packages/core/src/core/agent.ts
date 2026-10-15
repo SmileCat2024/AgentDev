@@ -1028,6 +1028,16 @@ class AgentBase {
   }
 
   /**
+   * 是否已注入 modelResolver
+   *
+   * 只读访问器：恢复编排（ADR-0028）等调用方在触发 setModel 前据此判断
+   * "已注入 modelResolver"这一恢复条件，而非捕获 setModel 的装配缺失异常。
+   */
+  hasModelResolver(): boolean {
+    return this._modelResolver !== null;
+  }
+
+  /**
    * 按 preset 名一键切换模型
    *
    * 编排：resolver.resolve → setLLM（换实例 / 贴 meta 标 / 通知 Feature / 推 Overview）。
@@ -2436,6 +2446,8 @@ class AgentBase {
         setThinkingEffort: (effort: string | null, opts?: { source?: string }) => this.setThinkingEffort(effort, opts),
         setLLM: (llm: AgentConfig['llm'], meta?: LLMMeta) => this.setLLM(llm, meta),
         getLLMMeta: () => this.getLLMMeta(),
+        // ADR-0028：恢复编排据此判断 setModel 是否可用，不靠捕获装配异常
+        hasModelResolver: () => this.hasModelResolver(),
       },
       (hookName, hookFn, options) => executeHook(this, hookFn, { hookName, ...options }),
       (call, input, context, step, callIndex) => this.toolExecutor!.execute(call, input, context, step, callIndex),

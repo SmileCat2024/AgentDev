@@ -26,6 +26,30 @@ export type APIErrorType =
 // ========== 自定义异常类 ==========
 
 /**
+ * 凭证恢复不可行标记（ADR-0028）
+ *
+ * react-loop 捕获 auth 错误并完成一轮 setModel 恢复编排后：
+ * - 重 resolve 失败（setModel 返回 false，凭证可能已被清理）
+ * - 或用新 LLM 实例重试后仍是 auth 错误
+ * 两者都包装为本异常，本轮以 category 'auth_required' 终止，
+ * 前端据此弹"请重新登录"而非展示晦涩 401。
+ */
+export class AuthRequiredError extends Error {
+  /** 触发恢复的原始分类错误（取 userMessage / statusCode 供终止事实） */
+  readonly originalError: ClassifiedAPIError;
+
+  constructor(originalError: ClassifiedAPIError) {
+    super(originalError.userMessage);
+    this.name = 'AuthRequiredError';
+    this.originalError = originalError;
+    this.cause = originalError;
+  }
+}
+
+/** 轮失败事件中凭证恢复失败专用的机器分类（TurnFailure.category 取值域） */
+export const AUTH_REQUIRED_CATEGORY = 'auth_required';
+
+/**
  * 分类后的 API 错误
  *
  * 携带标准化的 errorType 和用户友好的 userMessage，

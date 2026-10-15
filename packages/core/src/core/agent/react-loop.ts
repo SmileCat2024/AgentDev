@@ -11,7 +11,7 @@
 import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
-import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta, TurnKind } from '../types.js';
+import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta, TurnKind, Tool } from '../types.js';
 import type { HookResult, StepFinishDecisionContext, PendingWakeup } from '../lifecycle.js';
 import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
 import type { ReActResult, DebugPusher } from './types.js';
@@ -22,7 +22,7 @@ import type { ModelUsageKey } from '../usage.js';
 import { CoreLifecycle, Decision, normalizeDecision } from '../lifecycle.js';
 import { createStepCheckpoint, rollbackToStepCheckpoint } from '../checkpoint.js';
 import { createLogger, runWithLogScope } from '../logging.js';
-import { ClassifiedAPIError } from '../api-errors.js';
+import { ClassifiedAPIError, AuthRequiredError, AUTH_REQUIRED_CATEGORY } from '../api-errors.js';
 import { getRetryDelay, sleep } from '../retry.js';
 
 const logger = createLogger('agent.react');
@@ -63,6 +63,8 @@ export class ReActLoopRunner {
       setThinkingEffort(effort: string | null, opts?: { source?: string }): boolean;
       setLLM(llm: any, meta?: LLMMeta): void;
       getLLMMeta(): LLMMeta;
+      // ADR-0028：恢复编排据此判断 setModel 是否可用，不靠捕获装配异常
+      hasModelResolver(): boolean;
     },
     private executeHookFn: (
       hookName: string,
@@ -90,6 +92,65 @@ export class ReActLoopRunner {
    */
   swapLLM(llm: any): void {
     this.agent.llm = llm;
+  }
+
+  /**
+   * LLM 调用 + 运行中凭证失效恢复（ADR-0028）
+   *
+   * auth 错误（HTTP 401/403 → errorType 'auth_error'）表示请求已到达服务端
+   * 但被拒绝——凭证以字符串快照焊死在 LLM 实例里，运行中失效后无自愈路径。
+   * 恢复编排：setModel 以当前 preset 重 resolve 换新实例（凭证轮换 = 实例轮换），
+   * 然后用新实例把当前失败的那次调用重试一次。
+   *
+   * 边界：
+   * - 每次 auth 错误只做一轮恢复；重试仍 auth 错误则以 auth_required 终止，无冷却自动循环
+   * - 仅覆盖请求被拒形态；流中途连接断开走 connection_error 既有语义
+   * - 恢复条件：已注入 modelResolver 且 getLLMMeta().presetName 存在；不满足时按原错误路径终止
+   * - setModel 必须透传当前 thinkingEffort：省略该 opts 时按 preset 默认档位重 resolve，
+   *   会静默重置用户运行档位
+   */
+  private async chatWithAuthRecovery(
+    messages: Message[],
+    tools: Tool[],
+    signal: AbortSignal | undefined,
+  ): Promise<LLMResponse> {
+    try {
+      return await this.agent.llm.chat(messages, tools, signal ? { signal } : undefined);
+    } catch (caughtError) {
+      const isAuthError = caughtError instanceof ClassifiedAPIError && caughtError.errorType === 'auth_error';
+      if (!isAuthError) throw caughtError;
+      const authError = caughtError;
+
+      const meta = this.agent.getLLMMeta();
+      if (!this.agent.hasModelResolver() || !meta?.presetName) throw caughtError;
+
+      // 档位透传：meta 带 thinkingEffort 键（含显式 null 清档）则原样透传，保持用户运行档位；
+      // 键不存在（从未设置）时不传，按 preset 默认档位重造。
+      const swapOpts: { thinkingEffort?: string | null; source: string } = { source: 'auth-recovery' };
+      if (meta.thinkingEffort !== undefined) swapOpts.thinkingEffort = meta.thinkingEffort;
+
+      logger.info('Auth error from LLM, attempting credential recovery via setModel', {
+        presetName: meta.presetName,
+        statusCode: authError.statusCode,
+      });
+      const swapped = this.agent.setModel(meta.presetName, swapOpts);
+      if (!swapped) {
+        // resolver 解析失败（名字不存在 / 凭证可能已被清理）→ 恢复不可行
+        logger.warn('Auth recovery aborted: model preset could not be resolved', { presetName: meta.presetName });
+        throw new AuthRequiredError(authError);
+      }
+
+      // 用新 LLM 实例重试当前失败的那次调用（setLLM 已同步本 runner 的 llm 引用）
+      try {
+        return await this.agent.llm.chat(messages, tools, signal ? { signal } : undefined);
+      } catch (retryError) {
+        if (retryError instanceof ClassifiedAPIError && retryError.errorType === 'auth_error') {
+          logger.warn('Auth recovery retry still rejected as auth error', { presetName: meta.presetName });
+          throw new AuthRequiredError(retryError);
+        }
+        throw retryError;
+      }
+    }
   }
 
   /**
@@ -159,10 +220,10 @@ export class ReActLoopRunner {
               lifecycle: 'LLM',
               namespace: 'agent.llm',
               tags: ['llm'],
-            }, async () => await this.agent.llm.chat(
+            }, async () => await this.chatWithAuthRecovery(
               context.getAll(),
               this.agent.tools.getAll(),
-              signal ? { signal } : undefined
+              signal
             ));
             const llmDuration = Date.now() - llmStartTime;
 
@@ -612,9 +673,12 @@ export class ReActLoopRunner {
           // 将展示文案与机器语义拆开：错误类型、状态码和可重试性进入 outcome，
           // 对话消息只保留用户可读内容，消费端不再解析人为前缀。
           const isApiError = caughtError instanceof ClassifiedAPIError;
+          const isAuthRequired = caughtError instanceof AuthRequiredError;
           const errorMsg = isApiError
             ? caughtError.userMessage
-            : (caughtError instanceof Error ? caughtError.message : String(caughtError));
+            : isAuthRequired
+              ? caughtError.originalError.userMessage
+              : (caughtError instanceof Error ? caughtError.message : String(caughtError));
           error = isApiError
             ? {
                 category: caughtError.errorType,
@@ -626,7 +690,18 @@ export class ReActLoopRunner {
                   || caughtError.errorType === 'server_overload'
                   || caughtError.errorType === 'server_error',
               }
-            : { category: 'runtime_error', message: errorMsg };
+            : isAuthRequired
+              ? {
+                  // ADR-0028：凭证恢复不可行（重试仍被拒 / resolver 解析失败），
+                  // 前端据此弹"请重新登录"；不可自动重试，重试节奏由人驱动。
+                  category: AUTH_REQUIRED_CATEGORY,
+                  message: errorMsg,
+                  ...(typeof caughtError.originalError.statusCode === 'number'
+                    ? { statusCode: caughtError.originalError.statusCode }
+                    : {}),
+                  retryable: false,
+                }
+              : { category: 'runtime_error', message: errorMsg };
 
           // 错误消息进入 context，保持 context/viewer 一致性。
           // execution 元数据盖戳到消息上：展示端据此渲染终态样式，

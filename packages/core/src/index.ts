@@ -35,6 +35,7 @@ export {
   DEFAULT_MAX_RETRIES,
   DEFAULT_MODEL_MAX_RETRIES,
   DEFAULT_MODEL_TIMEOUT_MS,
+  TRANSFORM_MODEL_TIMEOUT_MS,
   parseRetryAfter,
   getRetryDelay,
   shouldRetry,

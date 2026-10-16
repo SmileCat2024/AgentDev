@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_MODEL_TIMEOUT_MS } from '@agentdevjs/core';
+import { TRANSFORM_MODEL_TIMEOUT_MS } from '@agentdevjs/core';
 import {
   HTTP_BODY_TIMEOUT_MS,
   HTTP_CONNECT_TIMEOUT_MS,
@@ -29,12 +29,13 @@ describe('llm http client ownership and timeouts', () => {
   });
 
   it('aligns transport timeouts with the model-call idle deadline semantics', () => {
-    // 非流式：响应头要等服务端生成完整个结果才发出，headersTimeout 事实上是
-    // "非流式总等待预算"，必须与框架模型调用空闲时限（core）相等，否则较短的
-    // 一侧会先掐断等待，另一侧的语义形同虚设。
-    expect(HTTP_HEADERS_TIMEOUT_MS).toBe(DEFAULT_MODEL_TIMEOUT_MS);
+    // 非流式（transform 摘要）：响应头要等服务端生成完整个结果才发出，
+    // headersTimeout 事实上是"非流式总等待预算"，必须 ≥ 场景最大 idle deadline
+    // （TRANSFORM_MODEL_TIMEOUT_MS），否则较短的一侧会先掐断等待，另一侧的
+    // 语义形同虚设。对话默认 idle（DEFAULT_MODEL_TIMEOUT_MS=60s）必先于该值。
+    expect(HTTP_HEADERS_TIMEOUT_MS).toBe(TRANSFORM_MODEL_TIMEOUT_MS);
     expect(HTTP_HEADERS_TIMEOUT_MS).toBe(600_000);
-    // 流式：chunk 间持续 60s 无数据即判定断流（远严于 idle deadline，可重试）。
+    // 流式：chunk 间持续 60s 无数据即判定断流（与对话默认 idle 同值，可重试）。
     expect(HTTP_BODY_TIMEOUT_MS).toBe(60_000);
   });
 });

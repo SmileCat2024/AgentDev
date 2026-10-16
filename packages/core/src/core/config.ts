@@ -77,9 +77,10 @@ export interface ModelConfig {
    */
   maxRetries?: number;
   /**
-   * 单次模型调用的整体时限（毫秒，覆盖建连、排队与流式传输全程）。
-   * 超时以 AbortError 中止本次调用，交由上层按中断处理（不重试）。
-   * 缺省时由 LLM 工厂自动填充 DEFAULT_MODEL_TIMEOUT_MS。
+   * 单次模型调用的空闲时限（毫秒）：持续该时长收不到任何远端活动（响应头、
+   * 流式数据）即以 TimeoutError 中止本次调用，交由上层按中断处理（不重试）。
+   * 缺省时由 LLM 工厂自动填充 DEFAULT_MODEL_TIMEOUT_MS（60s）；transform
+   * 场景（非流式摘要）由装配层显式设置 TRANSFORM_MODEL_TIMEOUT_MS。
    */
   timeoutMs?: number;
   // 未来可扩展

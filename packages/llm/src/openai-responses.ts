@@ -83,8 +83,10 @@ export class OpenAIResponsesLLM implements LLMClient {
   private visionEnabled: boolean;
   private responsesProfile: OpenAIResponsesProfile;
   private initPromise: Promise<void>;
-  private maxRetries: number;
-  private deadlineMs: number | undefined;
+  /** 装配层可调优（transform 场景实例覆盖；与 tuneMirrorLLM 调优其余实例字段同模式） */
+  maxRetries: number;
+  /** 装配层可调优：空闲时限毫秒数；持续无远端活动达此值即中止（不重试） */
+  deadlineMs: number | undefined;
 
   /** 返回当前 LLM 实例使用的模型名 */
   get modelName(): string { return this._modelName; }

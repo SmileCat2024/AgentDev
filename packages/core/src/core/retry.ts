@@ -16,14 +16,23 @@ export const DEFAULT_MAX_RETRIES = 10;
 /**
  * 模型调用默认最大重试次数（ModelConfig.maxRetries 缺省时由 LLM 工厂填充）
  */
-export const DEFAULT_MODEL_MAX_RETRIES = 10;
+export const DEFAULT_MODEL_MAX_RETRIES = 5;
 
 /**
- * 模型调用默认空闲时限：10 分钟（ModelConfig.timeoutMs 缺省时由 LLM 工厂填充）。
+ * 模型调用默认空闲时限：60 秒（ModelConfig.timeoutMs 缺省时由 LLM 工厂填充）。
  * 空闲语义：仅当持续该时长收不到任何远端活动（响应头、流式数据）才判定连接
- * 断开；流式输出持续到达的调用（如长时间思考）不受总时长限制。
+ * 断开；流式输出持续到达的调用（如思考期间持续流出 reasoning delta）不受总
+ * 时长限制。空闲超时以 TimeoutError 中止，按中断处理不重试。
  */
-export const DEFAULT_MODEL_TIMEOUT_MS = 600_000;
+export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
+
+/**
+ * transform 场景（summary / trim+summary 等连续性变换）的模型调用预算。
+ * 非流式摘要在整个结果生成完之前收不到响应头，需要远宽于对话默认的空闲
+ * 时限；装配层为摘要类实例显式设置此值（LLM 实例=参数快照，场景差异用
+ * 不同实例表达），llm 层 headersTimeout 亦锚定此值。
+ */
+export const TRANSFORM_MODEL_TIMEOUT_MS = 600_000;
 
 /**
  * 基础退避延迟 500ms（与 Claude Code 一致）

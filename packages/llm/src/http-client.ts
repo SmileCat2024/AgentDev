@@ -11,7 +11,7 @@
  * 2. OpenAI SDK 的 node-fetch → 自带 agentkeepalive，无需额外处理
  */
 
-import { createLogger } from '@agentdevjs/core';
+import { createLogger, TRANSFORM_MODEL_TIMEOUT_MS } from '@agentdevjs/core';
 
 const logger = createLogger('llm.http-client');
 
@@ -21,11 +21,12 @@ let undiciLoadPromise: Promise<any> | null = null;
 let initialGlobalDispatcher: any = null;
 
 export const HTTP_CONNECT_TIMEOUT_MS = 10_000;
-// 非流式请求的响应头要等服务端把整个结果生成完才发出，headersTimeout 事实上
-// 就是"非流式总等待预算"，必须与框架模型调用 idle deadline（默认 600s）及
-// OpenAI SDK 内部到响应头超时（默认 600s）对齐。流式请求的响应头在服务端受理
-// 后即刻到达，不受该值影响；流式"chunk 间无数据"由 bodyTimeout（60s）约束。
-export const HTTP_HEADERS_TIMEOUT_MS = 600_000;
+// 非流式请求（transform 摘要走 noStream）的响应头要等服务端把整个结果生成完
+// 才发出，headersTimeout 事实上就是"非流式总等待预算"，必须 ≥ 场景最大 idle
+// deadline（TRANSFORM_MODEL_TIMEOUT_MS）。对话默认 idle（60s）必先于该值触发，
+// 600s 在这里是为 transform 实例与显式长预算覆盖兜底。流式请求的响应头在服务
+// 端受理后即刻到达，不受该值影响；流式"chunk 间无数据"由 bodyTimeout（60s）约束。
+export const HTTP_HEADERS_TIMEOUT_MS = TRANSFORM_MODEL_TIMEOUT_MS;
 export const HTTP_BODY_TIMEOUT_MS = 60_000;
 
 export function buildHttpDispatcherOptions(noProxy?: string): Record<string, unknown> {

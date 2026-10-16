@@ -12,7 +12,7 @@ import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
 import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta, TurnKind, Tool } from '../types.js';
-import type { HookResult, StepFinishDecisionContext, PendingWakeup } from '../lifecycle.js';
+import type { HookResult, StepFinishDecisionContext, PendingWakeup, ExecutionError } from '../lifecycle.js';
 import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
 import type { ReActResult, DebugPusher } from './types.js';
 import type { AgentFeature } from '../feature.js';
@@ -289,10 +289,7 @@ export class ReActLoopRunner {
                   delayMs,
                   stopReason,
                 });
-                this.pushToDebug([
-                  ...context.getAll(),
-                  { role: 'assistant', content: `[Info: LLM returned empty response (attempt ${emptyAttempt + 1}/${MAX_EMPTY_RETRIES}), retrying...]`, turn: callIndex },
-                ], true, [...context.getTimestamps(), Date.now()]);
+                // 重试过程不进消息流：退避总等待仅数秒，保持对话区干净
                 // 检查中断信号
                 if (signal?.aborted) {
                   logger.info('Empty response retry skipped due to interrupt', { step });
@@ -302,17 +299,33 @@ export class ReActLoopRunner {
                 continue; // 重试 LLM 调用
               }
 
-              // 重试耗尽
+              // 重试耗尽：按失败终态落正式消息（execution 盖戳随会话快照持久化），
+              // 渲染与 API 错误同构。此前是 viewer-only 幽灵消息，runtime 重启后消失。
               logger.warn('LLM returned empty response after retries', {
                 step,
                 callIndex,
                 attempts: MAX_EMPTY_RETRIES + 1,
                 stopReason,
               });
-              this.pushToDebug([
-                ...context.getAll(),
-                { role: 'assistant', content: '[Error: LLM returned empty response]', turn: callIndex },
-              ], true, [...context.getTimestamps(), Date.now()]);
+              const errorMsg = `模型连续返回空响应（已重试 ${MAX_EMPTY_RETRIES} 次），请检查模型配置或稍后重试`;
+              const emptyError: ExecutionError = {
+                category: 'runtime_error',
+                message: errorMsg,
+                retryable: true,
+              };
+              context.addAssistantMessage({
+                content: errorMsg,
+                execution: { status: 'failed', reason: 'error', error: emptyError },
+              }, callIndex);
+              this.pushToDebug(context.getAll(), false, context.getTimestamps());
+              return {
+                completed: false,
+                finalResponse: errorMsg,
+                turns: step + 1,
+                finishReason: 'error' as const,
+                error: emptyError,
+                ...(providerStopReason !== undefined ? { model: { providerStopReason } } : {}),
+              };
             } else {
               // 正常响应（有 content 或有 toolCalls），添加到 context
 

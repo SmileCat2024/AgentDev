@@ -165,9 +165,18 @@ export const VIEWER_JS_MESSAGES = `    // 工具调用改写标注（ADR-0023）
                 </div>
               </div>
           \`;
-        } else if (msg.content.startsWith('[Error:') || msg.content.startsWith('[API Error:')) {
-          // 错误消息使用红色样式
-          innerContent += \`<div class="tool-error">\${escapeHtml(msg.content)}</div>\`;
+        } else if (msg.execution?.status === 'failed'
+          || msg.content.startsWith('[Error:') || msg.content.startsWith('[API Error:')) {
+          // 错误消息使用红色样式。判定与 Claw 前端同构：execution 结构化字段
+          // 优先（随会话快照持久化、刷新稳定），文本前缀仅作旧会话回退。
+          // 机器事实（category / HTTP 码）收进 hover title，不占画面。
+          var errFacts = [];
+          if (msg.execution && msg.execution.error) {
+            if (msg.execution.error.category) errFacts.push(String(msg.execution.error.category));
+            if (typeof msg.execution.error.statusCode === 'number') errFacts.push('HTTP ' + msg.execution.error.statusCode);
+          }
+          var errTitleAttr = errFacts.length ? \` title="\${escapeHtml(errFacts.join(' · '))}"\` : '';
+          innerContent += \`<div class="tool-error"\${errTitleAttr}>\${escapeHtml(msg.content)}</div>\`;
         } else {
           innerContent += \`<div class="markdown-body">\${marked.parse(msg.content)}</div>\`;
         }

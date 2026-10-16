@@ -80,7 +80,7 @@ function registerShellProvider(agent: Agent, items: PendingWakeup[] = WAKEUPS): 
 
 // ========== 测试用 Feature ==========
 
-/** StepFinish guard（advisor）：Deny 结束当前回合（bg_wait 的既有语义路径）。 */
+/** StepFinish guard（advisor）：Deny 结束当前回合（bg_tune standby / bg_watch 的既有语义路径）。 */
 class DenyStepFinishFeature implements AgentFeature {
   readonly name = 'deny-step-finish';
   readonly dependencies: string[] = [];
@@ -145,7 +145,7 @@ describe('suspended 判定与 status 映射', () => {
     expect(outcome.pendingWakeups).toBeUndefined();
   });
 
-  it('StepFinish guard Deny 结束的回合（bg_wait 语义路径）+ pending → suspended', async () => {
+  it('StepFinish guard Deny 结束的回合（standby/watch 语义路径）+ pending → suspended', async () => {
     const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 3 });
     agent.use(new DenyStepFinishFeature() as any);
     registerShellProvider(agent);

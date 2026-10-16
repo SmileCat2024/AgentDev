@@ -1,5 +1,5 @@
 /**
- * 后台任务小操作渲染模板 — bg_wait / bg_tune / bg_write / bg_kill 共用
+ * 后台任务小操作渲染模板 — bg_tune / bg_write / bg_kill 共用
  *
  * 这些工具的结果是一两句确认文本：正文用普通字体（非等宽）呈现，
  * 调用参数（任务号 + 节奏摘要）用 chips 呈现。

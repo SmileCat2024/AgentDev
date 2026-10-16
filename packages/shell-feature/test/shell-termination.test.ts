@@ -179,7 +179,7 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
     expect(outcome.status).toBe('completed');
     expect(llm.observedToolResults).toHaveLength(1);
     expect(llm.observedToolResults[0]).toContain('已转为后台任务');
-    expect(llm.observedToolResults[0]).toContain('不要轮询');
+    expect(llm.observedToolResults[0]).toContain('完整结果会立即送达');
     const running = registry.list().filter((t) => t.status === 'running');
     expect(running).toHaveLength(1);
     expect(running[0]!.inheritedPace).toBe(true);

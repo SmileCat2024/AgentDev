@@ -1,16 +1,17 @@
 /**
- * 后台 Bash 工具族 — bash_bg / bg_list / bg_status / bg_wait / bg_watch / bg_tune / bg_write / bg_kill
+ * 后台 Bash 工具族 — bash_bg / bg_list / bg_status / bg_watch / bg_tune / bg_write / bg_kill
  *
  * 工具面契约（与 .agentdev/prompts/tool-bash-bg.md 一致；description 兜底内联
  * 完整教学文案——resourceRoot 缺省环境下 prompts 文件读不到，防轮询协议声明
  * 不能依赖文件存在）：
  * - bash_bg 启动观察 2s：窗口内退出直接带回结果（预判错了，白捡前台体验）；
  * - 节奏参数单位为秒，模型侧声明 clamp（interval ≥ 60s / quietAfter ≥ 30s）；
- * - bg_wait 不占用工具调用：登记 afterSec 后的到点检查即返回，本回合随即
- *   结束（StepFinish guard），等待由通知推送承载（无人为时长上限；期间
- *   任务的周期/静默汇报先到达时，订阅被自然吸收取消）；
+ * - 不提供主动等待原语：等待 = 结束回合，由任务自身的汇报/静默/终态通知
+ *   唤醒。bg_tune 的 then="standby" 是唯一显式的"调完即待命"出口（登记
+ *   一次性请求即返回，本回合由 StepFinish guard 结束，同 guard 也服务
+ *   bg_watch 的订阅即停）；
  * - bg_watch 关键词监控订阅（一次性，≤ 20 字符）：只匹配订阅之后的新输出，
- *   命中即通知（本回合随即结束，同 guard）；节拍汇报不消耗它；
+ *   命中即通知；节拍汇报不消耗它；
  * - 观察与进程干预分面：bg_tune 调汇报节奏（统一 clamp，转后台任务的 20s
  *   继承节奏因此只能调宽）、bg_write 写 stdin、bg_kill 停止。
  */
@@ -37,31 +38,29 @@ export interface BgToolOptions extends BgSpawnOptions {
 // 内联兜底描述（prompts 文件缺失时的完整教学文案）
 // ---------------------------------------------------------------------------
 
-export const BASH_BG_INLINE_DESCRIPTION = `在后台启动一条 bash 命令，适合构建、测试、开发服务器等长时间运行或无需立即等待结果的任务。短任务或需要立即拿到结果的命令请用前台 bash。
+export const BASH_BG_INLINE_DESCRIPTION = `在后台启动一条 bash 命令，适合构建、测试、训练、批量数据处理等长时间运行或无需立即等待结果的任务。短任务或需要立即获取结果的命令请使用前台 bash。
 
 参数说明：
 - command：要执行的 bash 命令
-- intervalSec（可选，默认 90）：任务正常运行时，最坏每隔这么多秒收到一条进度消息。最小 60，填小按 60 算
-- quietAfterSec（可选，默认 60）：进程多少秒没有任何输出后，开始收到"无新输出"提醒。最小 30，填小按 30 算
-- readyPattern（可选）：输出中出现这段文字时，立即收到一次“已就绪”通知，适合 dev server
+- intervalSec（可选，默认 90）：任务运行期间两条进度汇报之间的最大间隔（秒）。最小 60，小于按 60 计
+- quietAfterSec（可选，默认 60）：任务连续无输出达到该秒数后发送静默提醒。最小 30，小于按 30 计
+- readyPattern（可选）：输出中出现该文字时立即发送一次"已就绪"通知，适用于 dev server
 
-启动后观察 2 秒：窗口内结束的命令直接返回结果（失败时包含退出码）；仍在运行则返回任务号，后续进度与最终结果会自动送达。
+任务运行期间会自动汇报：进度按节奏送达并附新增输出；长时间无输出会收到静默提醒（往往意味着任务停滞，需判断处置）；任务结束时完整结果立即送达。因此启动后可继续处理其他工作，或直接结束当前回合等待汇报，无需主动等待。
 
-较长任务可按需放宽汇报间隔，例如：
-- 构建 / 测试：intervalSec=300, quietAfterSec=30（有输出说明正常；突然安静大概率是卡了）
-- dev server：intervalSec=600, quietAfterSec=600（安静是健康状态，别打扰），配 readyPattern 如 "listening on"
+较长任务建议放宽节奏：构建 / 测试类可设 intervalSec=300, quietAfterSec=30（有输出说明在推进，突然安静往往意味着卡住）；dev server 类可设 intervalSec=600, quietAfterSec=600（安静属正常状态），并配合 readyPattern（如 "listening on"）。
 
-重要：不要轮询、不要 sleep 等待。完成与汇报会作为消息自动送达，你继续做别的事，或者直接结束回合即可——消息到达会自动唤醒你。需要主动查看时用 bg_status。`;
+建议长任务的命令周期性输出一行进度（处理序号、百分比或预计剩余时间），使每条汇报都能反映任务在正常推进还是已经停滞。不要在命令中用 sleep 实现延时或定时。`;
 
 const BG_LIST_INLINE_DESCRIPTION = '列出全部后台任务的全景：任务号、命令、状态、运行时长、安静时长、当前汇报间隔、下次汇报倒计时。收到任何后台任务消息后，可用它掌握全局。';
 
-const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出（超长增量只显示首尾，完整内容按提示的日志路径用 read 工具读取）。如果有因投递失败滞留的通知，会在这里补发。';
+const BG_STATUS_INLINE_DESCRIPTION = '查看一个后台任务的当前状态，并取回自上次查看以来的新增输出（超长增量只显示首尾，完整内容按提示的日志路径用 read 工具读取）。尚未送达的通知会随本次查看一并返回。适用于诊断性查看；例行跟踪依靠自动汇报即可，无需反复调用。';
 
-const BG_WAIT_INLINE_DESCRIPTION = '安排一次到点检查并立即进入等待：调用后本回合随即结束，afterSec 秒后任务仍在运行则自动收到一条运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。这是一次性订阅——期间任务自身的周期汇报/静默提醒先到达时，订阅被自然吸收取消（你会提前收到那条汇报，到点不再重复检查）；之后的进展交给任务的自动汇报（频率不合适用 bg_tune 调整），想立即看一眼用 bg_status。对已结束的任务调用会直接返回终态。';
+const BG_WATCH_INLINE_DESCRIPTION = '订阅一次关键词监控（≤ 20 字符）：只匹配订阅之后的新输出，出现该关键词时立即收到一条通知（含当时的新增输出）。一次性订阅——命中即消耗，要继续盯同一关键词就再订阅一次；重复订阅覆盖旧关键词。调用后本回合随即结束，由通知唤醒：关键词命中、任务的自动汇报或任务结束都会唤醒你。查看历史输出用 bg_status；需要更密的例行信息用 bg_tune 调整汇报节奏。对已结束的任务调用会直接返回终态。';
 
-const BG_WATCH_INLINE_DESCRIPTION = '订阅一次关键词监控（≤ 20 字符）：只匹配订阅之后的新输出，出现该关键词时立即收到一条通知（含当时的新增输出）。一次性订阅——命中即消耗，要继续盯同一关键词就再订阅一次；重复订阅覆盖旧关键词。调用后本回合随即结束，由通知唤醒：关键词命中、任务的自动汇报或任务结束都会唤醒你。查历史输出用 bg_status；要"过 N 秒看一眼"用 bg_wait。对已结束的任务调用会直接返回终态。';
+const BG_TUNE_INLINE_DESCRIPTION = `调整一个后台任务的自动汇报节奏，立即生效并重新计时：intervalSec = 两条运行汇报之间的最大间隔（秒，最小 60）；quietAfterSec = 连续静默多少秒后开始提醒（秒，最小 30）。任务比预期跑得久、汇报过于频繁时放宽（如构建类任务 intervalSec=300）；需要更密的信息流时收紧。调整一次长期生效，无需重复调用。
 
-const BG_TUNE_INLINE_DESCRIPTION = '调整一个后台任务的自动汇报节奏，立即生效并重新计时：intervalSec = 最多每隔这么多秒收到一条运行汇报（最小 60）；quietAfterSec = 连续静默多少秒后开始收到提醒（最小 30）。任务比预期跑得久、汇报太吵时放宽（如构建类任务 intervalSec=300）；想盯得更密也用它。调整一次长期生效，无需反复调用。';
+then="standby"（可选）：调整后立即结束当前回合、进入待命，后续由任务的进度汇报、静默提醒或完成通知自动唤醒。适用于调整完成后暂无其他工作、只等任务结果的场合。`;
 
 const BG_WRITE_INLINE_DESCRIPTION = '向一个运行中的后台任务写入 stdin（如回答安装程序的 y/n 确认）。文本通常以 \\n 结尾；任务不在运行或 stdin 不可用时返回写入失败。';
 
@@ -171,9 +170,9 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
       const startedText = [
           `后台任务已启动：${task.id}（已运行 ${fmtDur(s.durationMs)}）`,
           `命令: ${runCommand}`,
-          `汇报：每 ${Math.round(task.pace.intervalMs / 1000)}s 推送一次运行情况；连续 ${Math.round(task.pace.quietAfterMs / 1000)}s 无输出时会推送"无新输出"提醒${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
-          '任务一结束会立刻收到完整结果。不要轮询或 sleep 等待——继续做别的事，或直接结束回合；消息会自动送达并唤醒你。',
-          '查看详情用 bg_status；调节奏用 bg_tune；向任务输入用 bg_write；停止任务用 bg_kill。',
+          `汇报：每 ${Math.round(task.pace.intervalMs / 1000)}s 一条进度汇报；连续 ${Math.round(task.pace.quietAfterMs / 1000)}s 无输出时发送静默提醒${task.readyPattern ? '；输出匹配即报"已就绪"' : ''}`,
+          '任务结束时完整结果会立即送达。期间可继续处理其他工作，或直接结束当前回合——汇报与结果将自动送达。',
+          '查看详情用 bg_status；调整汇报节奏用 bg_tune；向任务输入用 bg_write；停止任务用 bg_kill。',
         ].join('\n');
       const startedDisplay = {
           kind: 'bg-started',
@@ -191,7 +190,7 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
 }
 
 // ---------------------------------------------------------------------------
-// bg_list / bg_status / bg_wait / bg_watch / bg_tune / bg_write / bg_kill
+// bg_list / bg_status / bg_watch / bg_tune / bg_write / bg_kill
 // ---------------------------------------------------------------------------
 
 export function createBgListTool(registry: BgRegistry): Tool {
@@ -278,7 +277,7 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
         ? `\n\n新增输出:\n${body}`
         : '\n\n（自上次查看以来无新增输出）';
       return withDisplay(
-        head + bodyText + clampedNote + logNote + (catchUp.length > 0 ? `\n\n[滞留通知补发]\n${catchUp.join('\n---\n')}` : ''),
+        head + bodyText + clampedNote + logNote + (catchUp.length > 0 ? `\n\n[未送达通知]\n${catchUp.join('\n---\n')}` : ''),
         {
           kind: 'bg-status',
           taskId: s.id,
@@ -295,36 +294,6 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
           ...(catchUp.length > 0 ? { catchUp } : {}),
         },
       );
-    },
-  });
-}
-
-export function createBgWaitTool(registry: BgRegistry): Tool {
-  return createTool({
-    name: 'bg_wait',
-    description: BG_WAIT_INLINE_DESCRIPTION,
-    parameters: {
-      type: 'object',
-      properties: {
-        taskId: { type: 'string', description: '任务号，如 bg-1' },
-        afterSec: { type: 'number', description: '多少秒后自动检查并汇报一次，默认 30，无上限。期间任务自身的汇报先到达时，本次订阅自然取消（提前达成）' },
-      },
-      required: ['taskId'],
-    },
-    render: { call: 'bg', result: 'bg' },
-    execute: async (args) => {
-      const { taskId, afterSec } = args as { taskId: string; afterSec?: number };
-      const afterMs = Math.round((afterSec ?? 30) * 1000);
-      const r = registry.scheduleWaitCheck(taskId, afterMs);
-      if (!r.scheduled) {
-        const s = r.snapshot;
-        return `${taskId} 已结束（${terminalLabel(s.status, s.exitCode)}），运行 ${fmtDur(s.durationMs)}。`;
-      }
-      const s = r.snapshot;
-      return [
-        `已安排 ${r.waitSec}s 后检查 ${taskId}，立即进入等待——本回合到此结束，到点自动收到运行汇报（含新增输出）；任务提前完成则完成通知更早唤醒你。若任务自身的自动汇报先到点，本次订阅会被它自然吸收取消（你提前收到那条汇报，到点不再重复检查）。`,
-        `${taskId} 自身的自动汇报：每 ${Math.round(s.pace.intervalMs / 1000)}s 一条。之后无需再订阅等待——等自动汇报就好；觉得太密或太疏，用 bg_tune 调一次节奏，之后交给它。`,
-      ].join('\n');
     },
   });
 }
@@ -365,25 +334,37 @@ export function createBgTuneTool(registry: BgRegistry): Tool {
       type: 'object',
       properties: {
         taskId: { type: 'string', description: '任务号，如 bg-1' },
-        intervalSec: { type: 'number', description: '汇报间隔（秒）：最多每隔这么久收到一条运行汇报。最小 60，填小按 60 算' },
-        quietAfterSec: { type: 'number', description: '静默提醒阈值（秒）：连续静默这么久后开始收到提醒。最小 30，填小按 30 算' },
+        intervalSec: { type: 'number', description: '汇报间隔（秒）：两条运行汇报之间的最大间隔。最小 60，填小按 60 算' },
+        quietAfterSec: { type: 'number', description: '静默提醒阈值（秒）：连续静默这么久后开始提醒。最小 30，填小按 30 算' },
+        then: { type: 'string', description: '填 "standby"：调整后立即结束当前回合、进入待命，由后续汇报/提醒/完成通知自动唤醒' },
       },
       required: ['taskId'],
     },
     render: { call: 'bg', result: 'bg' },
     execute: async (args) => {
-      const { taskId, intervalSec, quietAfterSec } = args as {
-        taskId: string; intervalSec?: number; quietAfterSec?: number;
+      const { taskId, intervalSec, quietAfterSec, then } = args as {
+        taskId: string; intervalSec?: number; quietAfterSec?: number; then?: string;
       };
+      const standby = then === 'standby';
+      if (intervalSec === undefined && quietAfterSec === undefined && !standby) {
+        return '未指定调整项。可用：intervalSec（汇报间隔）/ quietAfterSec（静默提醒阈值）/ then="standby"（调整后进入待命），至少传一项。';
+      }
+      const standbyNote = '已进入待命，本回合到此结束；任务有新进展会自动汇报，静默超时会提醒，结束时完整结果立即送达。';
       if (intervalSec === undefined && quietAfterSec === undefined) {
-        return '未指定调整项。可用：intervalSec（汇报间隔）/ quietAfterSec（静默提醒阈值），至少传一个。';
+        // 仅 standby：节奏不动，作为显式待命收尾（幂等仪式）。
+        registry.requestStandby();
+        return `节奏未调整（未指定 intervalSec / quietAfterSec）。${standbyNote}`;
       }
       const pace = registry.tune(taskId, {
         ...(intervalSec !== undefined ? { intervalMs: Math.round(intervalSec * 1000) } : {}),
         ...(quietAfterSec !== undefined ? { quietAfterMs: Math.round(quietAfterSec * 1000) } : {}),
       });
       if (!pace) return `未找到运行中的后台任务 ${taskId}。用 bg_list 查看现有任务。`;
-      return `汇报节奏已调整：每 ${Math.round(pace.intervalMs / 1000)}s 一条运行汇报 / 静默 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）。之后交给自动汇报，无需反复调用。`;
+      if (standby) {
+        registry.requestStandby();
+        return `汇报节奏已调整：每 ${Math.round(pace.intervalMs / 1000)}s 一条运行汇报 / 静默 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）。${standbyNote}`;
+      }
+      return `汇报节奏已调整：每 ${Math.round(pace.intervalMs / 1000)}s 一条运行汇报 / 静默 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）。此后由自动汇报驱动，无需重复调用。`;
     },
   });
 }

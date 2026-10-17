@@ -79,8 +79,10 @@ export interface ModelConfig {
   /**
    * 单次模型调用的空闲时限（毫秒）：持续该时长收不到任何远端活动（响应头、
    * 流式数据）即以 TimeoutError 中止本次调用，交由上层按中断处理（不重试）。
-   * 缺省时由 LLM 工厂自动填充 DEFAULT_MODEL_TIMEOUT_MS（60s）；transform
-   * 场景（非流式摘要）由装配层显式设置 TRANSFORM_MODEL_TIMEOUT_MS。
+   * 显式配置时同时约束首段（请求发出 → 第一个数据）与 chunk 间隔两段；缺省时
+   * 间隔由 DEFAULT_MODEL_TIMEOUT_MS（60s）、首段由 DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS
+   * （120s）分别填充；transform 场景（非流式摘要）由装配层显式设置
+   * TRANSFORM_MODEL_TIMEOUT_MS（两段同值）。
    */
   timeoutMs?: number;
   // 未来可扩展

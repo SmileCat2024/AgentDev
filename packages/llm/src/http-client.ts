@@ -8,7 +8,8 @@
  *
  * 两种 fetch 的集成方式：
  * 1. 原生 fetch()（Anthropic 适配器） → setGlobalDispatcher 全局生效
- * 2. OpenAI SDK 的 node-fetch → 自带 agentkeepalive，无需额外处理
+ * 2. OpenAI 系适配器（openai / openai-responses）→ 把 globalThis.fetch 包装成
+ *    自定义 fetch 传给 SDK，同样走全局 dispatcher，超时/代理配置对三条协议路径生效
  */
 
 import { createLogger, TRANSFORM_MODEL_TIMEOUT_MS } from '@agentdevjs/core';
@@ -23,11 +24,15 @@ let initialGlobalDispatcher: any = null;
 export const HTTP_CONNECT_TIMEOUT_MS = 10_000;
 // 非流式请求（transform 摘要走 noStream）的响应头要等服务端把整个结果生成完
 // 才发出，headersTimeout 事实上就是"非流式总等待预算"，必须 ≥ 场景最大 idle
-// deadline（TRANSFORM_MODEL_TIMEOUT_MS）。对话默认 idle（60s）必先于该值触发，
-// 600s 在这里是为 transform 实例与显式长预算覆盖兜底。流式请求的响应头在服务
-// 端受理后即刻到达，不受该值影响；流式"chunk 间无数据"由 bodyTimeout（60s）约束。
+// deadline（TRANSFORM_MODEL_TIMEOUT_MS）。流式请求的响应头在服务端受理后即刻
+// 到达，不受该值影响。
 export const HTTP_HEADERS_TIMEOUT_MS = TRANSFORM_MODEL_TIMEOUT_MS;
-export const HTTP_BODY_TIMEOUT_MS = 60_000;
+// bodyTimeout 是 undici 层流式 chunk 间隔的兜底：从响应头到达起计，每段 body
+// 数据重置。锚定 TRANSFORM_MODEL_TIMEOUT_MS 与 headersTimeout 同理——保底层
+// 必须垫在最大可配 idle 预算（preset timeoutMs / 实例 deadlineMs 覆盖）之下，
+// 否则 preset 把预算调大后流式静默仍会被这一层提前掐断（错误还会被误分类为可
+// 重试网络错误）。框架 idle（首段 120s / 间隔 60s 默认）必先于该值触发。
+export const HTTP_BODY_TIMEOUT_MS = TRANSFORM_MODEL_TIMEOUT_MS;
 
 export function buildHttpDispatcherOptions(noProxy?: string): Record<string, unknown> {
   return {

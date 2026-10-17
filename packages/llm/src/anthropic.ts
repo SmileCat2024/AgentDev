@@ -132,6 +132,8 @@ export class AnthropicLLM implements LLMClient {
   maxRetries: number;
   /** 装配层可调优：空闲时限毫秒数；持续无远端活动达此值即中止（不重试） */
   deadlineMs: number | undefined;
+  /** 装配层可调优：首段预算毫秒数（请求发出 → 第一个数据）；缺省独立于 deadlineMs */
+  firstTokenDeadlineMs: number | undefined;
 
   /** 返回当前 LLM 实例使用的模型名 */
   get modelName(): string { return this._modelName; }
@@ -151,14 +153,16 @@ export class AnthropicLLM implements LLMClient {
     const resolved = resolveModelCallPolicy(callPolicy);
     this.maxRetries = resolved.maxRetries;
     this.deadlineMs = resolved.timeoutMs;
+    this.firstTokenDeadlineMs = resolved.firstTokenTimeoutMs;
     this.initPromise = ensureHttpClientInitialized();
   }
 
   async chat(messages: Message[], tools: Tool[], options?: LLMChatOptions): Promise<LLMResponse> {
     // 确保 HTTP 客户端已初始化
     await this.initPromise;
-    // 空闲时限：持续 timeoutMs 收不到数据才中止，不进入重试
-    const deadline = withIdleDeadline(options?.signal, this.deadlineMs);
+    // 空闲时限：首段（发出请求 → 第一个数据）用首段预算，之后用间隔预算；
+    // 持续无数据达预算才中止，不进入重试
+    const deadline = withIdleDeadline(options?.signal, this.deadlineMs, this.firstTokenDeadlineMs);
     const signal = deadline.signal;
     const compiled = compileContextForAnthropic(messages, tools, this.visionEnabled);
     const noStream = options?.noStream === true;
@@ -672,8 +676,9 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, deadline: I
         throw new DOMException('Aborted', 'AbortError');
       }
       if (done) break;
-      // 每读到一段流数据重置空闲计时：数据在流动就不算断连
-      deadline.touch();
+      // 每读到一段流数据重置空闲计时：数据在流动就不算断连；首个数据把
+      // 计时从首段预算切换到间隔预算
+      deadline.touchData();
 
       buffer += decoder.decode(value, { stream: true });
 

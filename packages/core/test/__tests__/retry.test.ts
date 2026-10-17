@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_RETRIES,
   DEFAULT_MODEL_MAX_RETRIES,
   DEFAULT_MODEL_TIMEOUT_MS,
+  DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS,
   resolveModelCallPolicy,
   withIdleDeadline,
 } from '../../src/core/retry.js';
@@ -232,10 +233,12 @@ describe('retry', () => {
       expect(resolveModelCallPolicy()).toEqual({
         maxRetries: DEFAULT_MODEL_MAX_RETRIES,
         timeoutMs: DEFAULT_MODEL_TIMEOUT_MS,
+        firstTokenTimeoutMs: DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS,
       });
       expect(resolveModelCallPolicy(undefined)).toEqual({
         maxRetries: DEFAULT_MODEL_MAX_RETRIES,
         timeoutMs: DEFAULT_MODEL_TIMEOUT_MS,
+        firstTokenTimeoutMs: DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS,
       });
     });
 
@@ -243,10 +246,13 @@ describe('retry', () => {
       const resolved = resolveModelCallPolicy({ maxRetries: 2 });
       expect(resolved.maxRetries).toBe(2);
       expect(resolved.timeoutMs).toBe(DEFAULT_MODEL_TIMEOUT_MS);
+      expect(resolved.firstTokenTimeoutMs).toBe(DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS);
 
       const resolved2 = resolveModelCallPolicy({ timeoutMs: 60000 });
       expect(resolved2.maxRetries).toBe(DEFAULT_MODEL_MAX_RETRIES);
       expect(resolved2.timeoutMs).toBe(60000);
+      // 显式 timeoutMs 管两段：首段预算与间隔预算同值
+      expect(resolved2.firstTokenTimeoutMs).toBe(60000);
     });
 
     it('should floor fractional maxRetries', () => {
@@ -266,7 +272,10 @@ describe('retry', () => {
 
     it('should disable deadline when timeoutMs is invalid', () => {
       for (const invalid of [0, -1000, NaN, Infinity] as number[]) {
-        expect(resolveModelCallPolicy({ timeoutMs: invalid }).timeoutMs).toBeUndefined();
+        const resolved = resolveModelCallPolicy({ timeoutMs: invalid });
+        expect(resolved.timeoutMs).toBeUndefined();
+        // 单值管两段：间隔关闭时首段一并关闭
+        expect(resolved.firstTokenTimeoutMs).toBeUndefined();
       }
     });
   });
@@ -336,6 +345,61 @@ describe('retry', () => {
       const { signal } = withIdleDeadline(controller.signal, 60000);
       expect(signal!.aborted).toBe(true);
       expect(signal!.reason).toBe(reason);
+    });
+
+    it('should pass through touchData as noop when no timeout configured', () => {
+      const controller = new AbortController();
+      const handle = withIdleDeadline(controller.signal, undefined);
+      expect(typeof handle.touchData).toBe('function');
+      expect(() => handle.touchData()).not.toThrow();
+    });
+
+    it('should run the first-token budget until first data arrives', async () => {
+      // 首段预算 60ms < 间隔预算 300ms：无数据时按首段预算中止
+      const { signal } = withIdleDeadline(undefined, 300, 60);
+      const event = await new Promise<AbortSignal>((resolve) => {
+        signal!.addEventListener('abort', () => resolve(signal!), { once: true });
+      });
+      expect(event.aborted).toBe(true);
+      expect((event.reason as Error).name).toBe('TimeoutError');
+    });
+
+    it('should fall back to single-budget behavior when firstTokenMs is invalid', async () => {
+      // firstTokenMs 非法 → 两段同用 timeoutMs（80ms 中止，而非 300ms）
+      const { signal } = withIdleDeadline(undefined, 80, 0);
+      const event = await new Promise<AbortSignal>((resolve) => {
+        signal!.addEventListener('abort', () => resolve(signal!), { once: true });
+      });
+      expect(event.aborted).toBe(true);
+      expect((event.reason as Error).name).toBe('TimeoutError');
+    });
+
+    it('should switch to interval budget after first touchData', async () => {
+      // 首段预算 300ms、间隔预算 50ms：100ms 处仍处于首段未中止；touchData
+      // 切换后按间隔预算 50ms 中止
+      const { signal, touchData } = withIdleDeadline(undefined, 50, 300);
+      await sleep(100);
+      expect(signal!.aborted).toBe(false);
+      setTimeout(touchData, 20);
+      const event = await new Promise<AbortSignal>((resolve) => {
+        signal!.addEventListener('abort', () => resolve(signal!), { once: true });
+      });
+      expect(event.aborted).toBe(true);
+      expect((event.reason as Error).name).toBe('TimeoutError');
+    });
+
+    it('should not switch budget on non-data touch (headers / attempt start)', async () => {
+      // 首段预算 150ms、间隔预算 30ms：15ms 处 touch（响应头到达）只重置首段
+      // 计时、不切换到间隔预算，60ms 处不应中止（若误切换会在 45ms 处中止）
+      const { signal, touch } = withIdleDeadline(undefined, 30, 150);
+      setTimeout(touch, 15);
+      await sleep(60);
+      expect(signal!.aborted).toBe(false);
+      const event = await new Promise<AbortSignal>((resolve) => {
+        signal!.addEventListener('abort', () => resolve(signal!), { once: true });
+      });
+      expect(event.aborted).toBe(true);
+      expect((event.reason as Error).name).toBe('TimeoutError');
     });
   });
 });

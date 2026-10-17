@@ -27,6 +27,14 @@ export const DEFAULT_MODEL_MAX_RETRIES = 5;
 export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
 
 /**
+ * 模型调用首段默认预算：120 秒（请求发出 → 第一个流式数据 / 非流式响应体）。
+ * 大上下文 + 高思考档位下首 token 静默经常超过 60s，首段独立放宽；响应头不算
+ * 首 token（部分端点秒回 headers 后静默思考）。后续 chunk 间隔仍由
+ * DEFAULT_MODEL_TIMEOUT_MS 约束。显式配置 timeoutMs 时两段同值。
+ */
+export const DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS = 120_000;
+
+/**
  * transform 场景（summary / trim+summary 等连续性变换）的模型调用预算。
  * 非流式摘要在整个结果生成完之前收不到响应头，需要远宽于对话默认的空闲
  * 时限；装配层为摘要类实例显式设置此值（LLM 实例=参数快照，场景差异用
@@ -222,36 +230,61 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 /** 空闲时限句柄：signal 供请求与流读取使用，touch 在每次远端活动时调用 */
 export interface IdleDeadlineHandle {
   signal: AbortSignal | undefined;
-  /** 收到远端活动（响应头、流式数据）时调用，重置空闲计时 */
+  /** 收到远端活动（响应头、新 attempt 开始）时调用，重置当前段的空闲计时 */
   touch: () => void;
+  /**
+   * 收到流式数据 / 响应体数据时调用：首次调用把计时从首段预算
+   * （firstTokenMs）切换到间隔预算（timeoutMs），之后等同 touch
+   */
+  touchData: () => void;
 }
 
 /**
  * 合并外部中断信号与空闲时限为单一 AbortSignal。
  *
- * - 空闲语义：计时从创建时刻起算，每次 touch() 重置；持续 timeoutMs 无任何
- *   touch 才判定连接断开并以 TimeoutError DOMException 中止，上游按
- *   AbortError 处理（不重试、直接传播）。
+ * - 空闲语义（两段预算）：计时从创建时刻起算按首段预算（firstTokenMs，缺省
+ *   等于 timeoutMs）执行，首个数据 touchData() 后切换为间隔预算；每次 touch() /
+ *   touchData() 重置计时；持续对应预算无任何重置才判定连接断开并以 TimeoutError
+ *   DOMException 中止，上游按 AbortError 处理（不重试、直接传播）。
  * - timeoutMs 为 undefined / Infinity 时仅透传外部信号（不额外建 controller）。
+ * - firstTokenMs 为 undefined / 非法时退化为单值行为（两段同用 timeoutMs）。
  */
-export function withIdleDeadline(signal: AbortSignal | undefined, timeoutMs?: number): IdleDeadlineHandle {
+export function withIdleDeadline(
+  signal: AbortSignal | undefined,
+  timeoutMs?: number,
+  firstTokenMs?: number,
+): IdleDeadlineHandle {
   if (!timeoutMs || timeoutMs === Infinity || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return { signal, touch: () => {} };
+    return { signal, touch: () => {}, touchData: () => {} };
   }
+  const intervalMs = timeoutMs;
+  const initialMs =
+    firstTokenMs !== undefined && Number.isFinite(firstTokenMs) && firstTokenMs > 0
+      ? firstTokenMs
+      : intervalMs;
   const merged = new AbortController();
+  let currentMs = initialMs;
   const onTimeout = () =>
-    merged.abort(new DOMException(`Model call deadline exceeded: no data received for ${timeoutMs}ms`, 'TimeoutError'));
-  let timer = setTimeout(onTimeout, timeoutMs);
+    merged.abort(new DOMException(`Model call deadline exceeded: no data received for ${currentMs}ms`, 'TimeoutError'));
+  let timer = setTimeout(onTimeout, currentMs);
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(onTimeout, currentMs);
+  };
   const touch = () => {
     if (merged.signal.aborted) return;
-    clearTimeout(timer);
-    timer = setTimeout(onTimeout, timeoutMs);
+    arm();
+  };
+  const touchData = () => {
+    if (merged.signal.aborted) return;
+    currentMs = intervalMs;
+    arm();
   };
   if (signal) {
     if (signal.aborted) {
       clearTimeout(timer);
       merged.abort(signal.reason);
-      return { signal: merged.signal, touch };
+      return { signal: merged.signal, touch, touchData };
     }
     const onExternalAbort = () => merged.abort(signal.reason);
     signal.addEventListener('abort', onExternalAbort, { once: true });
@@ -264,15 +297,20 @@ export function withIdleDeadline(signal: AbortSignal | undefined, timeoutMs?: nu
       signal.removeEventListener('abort', onExternalAbort);
     }, { once: true });
   }
-  return { signal: merged.signal, touch };
+  return { signal: merged.signal, touch, touchData };
 }
 
 /**
  * 从 ModelConfig 解析生效的重试上限与空闲时限，缺省时填充框架默认值。
+ *
+ * timeoutMs 显式配置时管两段（首段预算 = 间隔预算）；缺省时首段独立取
+ * DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS、间隔取 DEFAULT_MODEL_TIMEOUT_MS。
+ * 显式非法值不透传（两段一并关闭，落回框架行为见调用方），不放大成无超时保护。
  */
 export function resolveModelCallPolicy(config?: { maxRetries?: number; timeoutMs?: number }): {
   maxRetries: number;
   timeoutMs: number | undefined;
+  firstTokenTimeoutMs: number | undefined;
 } {
   let maxRetries = DEFAULT_MODEL_MAX_RETRIES;
   if (typeof config?.maxRetries === 'number' && Number.isFinite(config.maxRetries) && config.maxRetries >= 0) {
@@ -283,5 +321,7 @@ export function resolveModelCallPolicy(config?: { maxRetries?: number; timeoutMs
     const v = config.timeoutMs;
     timeoutMs = typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
   }
-  return { maxRetries, timeoutMs };
+  const firstTokenTimeoutMs =
+    config?.timeoutMs !== undefined ? timeoutMs : DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS;
+  return { maxRetries, timeoutMs, firstTokenTimeoutMs };
 }

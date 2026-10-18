@@ -1444,6 +1444,7 @@ function unescapeLiteralEscapes(s: string): string {
 export function createBatchReplaceTool(workspaceDir: string = DEFAULT_WORKSPACE_DIR) {
   return createTool({
   name: 'batch_replace',
+  render: 'batch_replace',
   description:
     'Replace a literal string or regex across multiple files matched by glob patterns. Use this for mechanical bulk edits (import path renames, API renames, repeated wording fixes) instead of sed/perl or throwaway scripts. Literal match by default; set regex: true to treat find as a regular expression. Returns per-file replacement counts and a diff summary. In literal mode, \\n \\r\\n \\t in find/replace are interpreted as newline/tab when the literal text does not match. Files keep their original line endings; a multi-line find given with LF still matches CRLF files automatically.',
   parameters: {

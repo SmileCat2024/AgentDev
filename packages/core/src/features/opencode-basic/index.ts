@@ -85,6 +85,7 @@ export class OpencodeBasicFeature implements AgentFeature {
       'read',
       'write',
       'edit',
+      'batch_replace',
       'ls',
       'glob',
       'grep',

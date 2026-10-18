@@ -354,6 +354,77 @@ describe('trim-compact fixes (golden, ported from Claw)', () => {
     });
   });
 
+  describe('keepRecentToolCalls protects the last N tool call pairs', () => {
+    it('protects the last N tool calls (any tool) and folds older ones', () => {
+      const messages = [
+        { role: 'user', content: 'task', turn: 0 },
+        { role: 'assistant', content: '', turn: 0, toolCalls: [{ id: 'tc_old', name: 'read', arguments: '{"filePath":"old.js"}' }] },
+        { role: 'tool', toolCallId: 'tc_old', content: 'old file content', turn: 0 },
+        { role: 'assistant', content: '', turn: 0, toolCalls: [{ id: 'tc_mid', name: 'read', arguments: '{"filePath":"mid.js"}' }] },
+        { role: 'tool', toolCallId: 'tc_mid', content: 'mid file content', turn: 0 },
+        { role: 'assistant', content: '', turn: 1, toolCalls: [{ id: 'tc_new', name: 'edit', arguments: '{"filePath":"new.js"}' }] },
+        { role: 'tool', toolCallId: 'tc_new', content: 'edited ok', turn: 1 },
+        { role: 'assistant', content: 'done', turn: 1 },
+      ];
+
+      const policy = normalizeExportPolicy({ keepRecentToolCalls: 2 });
+      const { seedMessages, stats } = buildTrimmedSeedMessages(messages, policy);
+
+      assert.ok(seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc_mid'), '2nd-most-recent tool result should be protected');
+      assert.ok(seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc_new'), 'most recent tool result should be protected');
+      assert.ok(!seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc_old'), 'older tool result should be folded');
+      assert.ok(stats.keptProtectedToolCallCount >= 2, 'protected calls should be counted');
+      assert.ok(seedMessages.some(m => m.content.includes('[Folded tool activity]') && m.content.includes('read(old.js)')),
+        'unprotected call should only appear in the folded note');
+      assertReplayedToolCallsArePaired(seedMessages);
+    });
+
+    it('counts per call, not per message: a mixed batch replays only the protected calls', () => {
+      const messages = [
+        { role: 'user', content: 'batch', turn: 0 },
+        { role: 'assistant', content: '', turn: 0, toolCalls: [
+          { id: 'tc_a', name: 'read', arguments: '{"filePath":"a.js"}' },
+          { id: 'tc_b', name: 'read', arguments: '{"filePath":"b.js"}' },
+          { id: 'tc_c', name: 'read', arguments: '{"filePath":"c.js"}' },
+        ] },
+        { role: 'tool', toolCallId: 'tc_a', content: 'a content', turn: 0 },
+        { role: 'tool', toolCallId: 'tc_b', content: 'b content', turn: 0 },
+        { role: 'tool', toolCallId: 'tc_c', content: 'c content', turn: 0 },
+        { role: 'assistant', content: 'batch done', turn: 0 },
+      ];
+
+      const policy = normalizeExportPolicy({ keepRecentToolCalls: 1 });
+      const { seedMessages } = buildTrimmedSeedMessages(messages, policy);
+
+      const replayedCalls = seedMessages
+        .filter(m => m.role === 'assistant' && Array.isArray(m.toolCalls))
+        .flatMap(m => m.toolCalls.map((tc: any) => tc.id));
+      assert.deepEqual(replayedCalls, ['tc_c'], 'only the most recent call should be replayed');
+      assert.ok(seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc_c'), 'protected result kept');
+      assert.ok(!seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc_a'), 'unprotected result folded');
+      assert.ok(!seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc_b'), 'unprotected result folded');
+      assert.ok(seedMessages.some(m => m.content.includes('[Folded tool activity]') && m.content.includes('read(a.js)') && m.content.includes('read(b.js)')),
+        'unprotected calls from the mixed batch should appear in the fold note');
+      assertReplayedToolCallsArePaired(seedMessages);
+    });
+
+    it('does NOT protect tool calls when keepRecentToolCalls is disabled', () => {
+      const messages = [
+        { role: 'user', content: 'task', turn: 0 },
+        { role: 'assistant', content: '', turn: 0, toolCalls: [{ id: 'tc_x', name: 'read', arguments: '{"filePath":"x.js"}' }] },
+        { role: 'tool', toolCallId: 'tc_x', content: 'x content', turn: 0 },
+        { role: 'assistant', content: 'done', turn: 0 },
+      ];
+
+      const policy = normalizeExportPolicy({ keepRecentToolCalls: null });
+      const { seedMessages } = buildTrimmedSeedMessages(messages, policy);
+
+      assert.ok(!seedMessages.find(m => m.role === 'tool' && m.toolCallId === 'tc_x'),
+        'tool result should NOT be preserved when keepRecentToolCalls is null');
+      assert.ok(seedMessages.some(m => m.content.includes('[Folded tool activity]')), 'call should be folded');
+    });
+  });
+
   describe('Fix 1: seed feature turn collision verification (logic)', () => {
     it('computes correct _callIndex = maxTurn + 1 for non-colliding user turn', () => {
       const seedMessages = [

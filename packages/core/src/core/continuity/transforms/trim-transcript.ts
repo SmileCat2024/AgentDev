@@ -103,7 +103,7 @@ function normalizeNullableTurnIndex(value: unknown): number | null {
   return clampInteger(value, 0, 0, 2000);
 }
 
-function normalizeKeepRecentSkillInvokes(value: unknown): number | null | typeof Infinity {
+function normalizeKeepRecentCount(value: unknown): number | null | typeof Infinity {
   if (value === null || value === undefined || value === '' || value === false) return null;
   if (value === Infinity || value === 'Infinity') return Infinity;
   return clampInteger(value as number, 1, 1, 2000);
@@ -146,6 +146,13 @@ export interface TrimExportPolicy {
   foldToolResultSummary: boolean;
   maxFoldedToolChars: number;
   keepRecentSkillInvokes?: number | null | typeof Infinity;
+  /**
+   * 保护最近 N 次工具调用对（任意工具名；assistant 调用 + 按 toolCallId
+   * 配对的 tool 结果原样保留，其余照常按 fold/drop 处理）。与
+   * keepRecentSkillInvokes（按轮保护技能调用）和 preserveToolNames（按名
+   * 全量保护）取并集。null = 不启用（默认）。
+   */
+  keepRecentToolCalls?: number | null | typeof Infinity;
   preserveToolNames: string[];
 }
 
@@ -175,7 +182,8 @@ export function normalizeExportPolicy(rawPolicy: Record<string, unknown> = {}): 
     foldToolCallArgs: rawPolicy?.foldToolCallArgs === true,
     foldToolResultSummary: rawPolicy?.foldToolResultSummary === true,
     maxFoldedToolChars: clampInteger(rawPolicy?.maxFoldedToolChars as unknown, DEFAULT_EXPORT_POLICY.maxFoldedToolChars, 80, 4000),
-    keepRecentSkillInvokes: normalizeKeepRecentSkillInvokes(rawPolicy?.keepRecentSkillInvokes),
+    keepRecentSkillInvokes: normalizeKeepRecentCount(rawPolicy?.keepRecentSkillInvokes as unknown),
+    keepRecentToolCalls: normalizeKeepRecentCount(rawPolicy?.keepRecentToolCalls as unknown),
     preserveToolNames: normalizeToolNameList(rawPolicy?.preserveToolNames),
   };
 }
@@ -415,7 +423,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
   if (skillProtectedIndices) {
     rawMessages.forEach((message, index) => {
       if (!skillProtectedIndices.has(index) || message?.role !== 'assistant') return;
-      const toolCalls = Array.isArray(message?.toolCalls) ? message.toolCalls : [];
+      const toolCalls = Array.isArray(message.toolCalls) ? message.toolCalls : [];
       for (const call of toolCalls) {
         const id = cleanInlineText(call?.id);
         if (id && cleanInlineText(call?.name) === 'invoke_skill') {
@@ -423,6 +431,26 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
         }
       }
     });
+  }
+  // keepRecentToolCalls：自链尾倒数 N 次工具调用（按调用计数，不按轮），
+  // 与按名保护 / 技能保护取并集；配对结果的重放由 protectedCalls 分支与
+  // tool 结果匹配分支统一承接（混合批次只重放被保护的调用，其余照常折叠）。
+  if (policy.keepRecentToolCalls) {
+    let budget: number = policy.keepRecentToolCalls === Infinity
+      ? Number.POSITIVE_INFINITY
+      : Number(policy.keepRecentToolCalls);
+    for (let i = rawMessages.length - 1; i >= 0 && budget > 0; i--) {
+      const message = rawMessages[i];
+      if (message?.role !== 'assistant') continue;
+      const toolCalls = Array.isArray(message.toolCalls) ? message.toolCalls : [];
+      for (let j = toolCalls.length - 1; j >= 0 && budget > 0; j--) {
+        const id = cleanInlineText(toolCalls[j]?.id);
+        if (id) {
+          protectedToolCallIds.add(id);
+          budget -= 1;
+        }
+      }
+    }
   }
   const fullPreserveFrom = policy.fullPreserveFromTurn;
   const preservedTurnSet = Array.isArray(policy.preservedTurns) && policy.preservedTurns.length > 0

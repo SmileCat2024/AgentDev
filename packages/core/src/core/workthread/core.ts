@@ -805,6 +805,24 @@ export class WorkThread {
         continue;
       }
 
+      // R3 唤醒指令的措辞前提是「上下文已精简接续」——只有 head 已推进（≠
+      // 播种时的 from 会话）才成立。接续失败后挡板收敛、head 未动：向从未
+      // 精简的旧 head 宣读精简前提是假前提指令（wt-58471cd9 事故链），作废。
+      // 幂等键只认 PENDING/DELIVERED，重试接续（同 from 再 begin）会重新播种。
+      const successionKeyPrefix = `succession:${tid}:`;
+      if (freshCommand.kind === WorkThreadCommandKind.SYSTEM_CONTINUATION
+        && typeof freshCommand.idempotencyKey === 'string'
+        && freshCommand.idempotencyKey.startsWith(successionKeyPrefix)
+        && fresh.headSessionId === freshCommand.idempotencyKey.slice(successionKeyPrefix.length)) {
+        results.push({
+          commandId: command.commandId,
+          accepted: false,
+          retryable: false,
+          reason: 'succession_precondition_violated',
+        });
+        continue;
+      }
+
       const outcome = await this._bridge.deliver({ thread: fresh, command: freshCommand });
       results.push({ commandId: command.commandId, ...outcome });
 

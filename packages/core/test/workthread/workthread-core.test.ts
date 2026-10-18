@@ -701,6 +701,49 @@ describe('WorkThread delivery gating (anchor layer only)', () => {
     expect(record!.commands[1].status).toBe(WorkThreadCommandStatus.DELIVERED);
   });
 
+  it('voids the seeded succession instruction when handoff failed and head never advanced', async () => {
+    // 事故链（wt-58471cd9）：接续失败 → 挡板收敛 → R3 恢复指令仍 PENDING →
+    // 投给从未精简的旧 head（「上下文已精简接续」前提为假）。R3 指令的措辞
+    // 前提是 head 已推进：head 仍等于播种 from = 前提不成立，作废；幂等键只认
+    // PENDING/DELIVERED，重试接续（同 from 再 begin）会重新播种。
+    const turns: Array<Record<string, unknown>> = [];
+    const { thread } = makeThread(
+      root,
+      new WorkThreadRuntimeBridge({
+        enabled: true,
+        resolveRuntimeViewerId: (_agentId, sessionId) => (sessionId === 'sf-s1' ? 'viewer-s1' : null),
+        submitTurn: async (params) => { turns.push(params); return { success: true }; },
+      }),
+    );
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'sf-s1' } });
+    await thread.appendCommand({ threadId: wt.threadId, text: 'later work' });
+
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sf-s1', reason: 'trim' });
+    await thread.failSessionHandoff(wt.threadId, { stage: 'persistence', error: 'boom' });
+    // 宿主失败收敛清挡板（Claw failSuccession 路径）：head 未推进
+    await thread.store.update(wt.threadId, (draft) => {
+      draft.pendingSuccession = null;
+      return draft;
+    });
+
+    const result = await thread.deliverPendingCommands(wt.threadId);
+    expect(result.delivered).toBe(1); // 普通指令照常投递
+    expect(turns).toHaveLength(1); // R3 指令不得进入旧 head
+    const record = await thread.getThread(wt.threadId);
+    const seeded = record!.commands.find((c) => typeof c.idempotencyKey === 'string' && c.idempotencyKey.startsWith('succession:'));
+    expect(seeded!.status).toBe(WorkThreadCommandStatus.FAILED);
+    expect(seeded!.lastReason).toBe('succession_precondition_violated');
+    const normal = record!.commands.find((c) => c.text === 'later work');
+    expect(normal!.status).toBe(WorkThreadCommandStatus.DELIVERED);
+
+    // 补种：FAILED 不占幂等键，重试接续重新播种唤醒指令
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sf-s1', reason: 'trim' });
+    const reseen = await thread.getThread(wt.threadId);
+    const reseeded = reseen!.commands.filter((c) => typeof c.idempotencyKey === 'string' && c.idempotencyKey.startsWith('succession:'));
+    expect(reseeded).toHaveLength(2);
+    expect(reseeded[1].status).toBe(WorkThreadCommandStatus.PENDING);
+  });
+
   it('advanceHead lands on open with pendingSuccession cleared atomically', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'ah-s1' } });

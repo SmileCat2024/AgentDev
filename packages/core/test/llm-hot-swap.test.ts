@@ -150,7 +150,7 @@ describe('LLM Hot Swap (setLLM)', () => {
     const agent = new TestAgent({ llm: llmA, name: 'MetaAgent', maxTurns: 1 });
 
     // Before swap, meta is empty
-    expect(agent.getLLMMeta()).toEqual({});
+    expect(agent.getLLMMeta()).toEqual({ modelName: 'model-a', modelRevision: 0 });
 
     agent.setLLM(llmB, {
       modelName: 'model-b',
@@ -159,6 +159,7 @@ describe('LLM Hot Swap (setLLM)', () => {
     });
 
     expect(agent.getLLMMeta()).toEqual({
+      modelRevision: 1,
       modelName: 'model-b',
       contextLength: 128000,
       compressRatio: 75,
@@ -289,7 +290,7 @@ describe('LLM Hot Swap (setLLM)', () => {
     expect(sysCtx.SYSTEM_CURRENT_MODEL).toBe('model-b');
   });
 
-  it('should allow swapping without meta (meta stays unchanged)', async () => {
+  it('should replace model state without retaining previous model metadata', async () => {
     const llmA = new MockLLM('model-a');
     const llmB = new MockLLM('model-b');
 
@@ -298,10 +299,10 @@ describe('LLM Hot Swap (setLLM)', () => {
     // First swap with meta
     agent.setLLM(llmB, { modelName: 'model-b', contextLength: 100000 });
 
-    // Second swap without meta — meta should remain from first swap
+    // New client without metadata must not retain the previous model's window.
     const llmC = new MockLLM('model-c');
     agent.setLLM(llmC);
 
-    expect(agent.getLLMMeta()).toEqual({ modelName: 'model-b', contextLength: 100000 });
+    expect(agent.getLLMMeta()).toEqual({ modelName: 'model-c', modelRevision: 2 });
   });
 });

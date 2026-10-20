@@ -91,6 +91,31 @@ describe('Model preset swap (setModel / setThinkingEffort)', () => {
     });
   });
 
+  it('versions model state in the same order for receipts and overview, including repeated values', () => {
+    const agent = new TestAgent({ llm: new MockLLM('boot'), modelResolver: new MockResolver() });
+    const overview = () => (agent as any).buildOverviewSnapshot();
+    expect((agent.getLLMMeta() as any).modelRevision).toBe(0);
+    agent.setModel('a');
+    const first = agent.getLLMMeta() as any;
+    expect(first.modelRevision).toBe(1);
+    expect(overview().modelRevision).toBe(first.modelRevision);
+    agent.setThinkingEffort(null);
+    expect((agent.getLLMMeta() as any).modelRevision).toBe(2);
+    agent.setModel('b');
+    agent.setModel('a');
+    expect((agent.getLLMMeta() as any).modelRevision).toBe(4);
+    expect(overview().modelRevision).toBe(4);
+    agent.setModel('missing-preset');
+    expect((agent.getLLMMeta() as any).modelRevision).toBe(4);
+  });
+
+  it('returns one model name in receipts and overview even when setLLM has no metadata', () => {
+    const agent = new TestAgent({ llm: new MockLLM('boot') });
+    agent.setLLM(new MockLLM('next'));
+    expect(agent.getLLMMeta().modelName).toBe('next');
+    expect((agent as any).buildOverviewSnapshot().modelName).toBe('next');
+  });
+
   it('should return false and keep the current llm when preset resolution fails', () => {
     const initialLLM = new MockLLM('boot-model');
     const resolver = new MockResolver();

@@ -472,6 +472,8 @@ export interface LLMChatOptions {
  * 供 Feature（如 ContextGuard）根据新模型的 contextLength 调整行为。
  */
 export interface LLMMeta {
+  /** Agent 生成的运行时版本；resolver / setLLM 输入不能指定生效版本。 */
+  readonly modelRevision?: number;
   modelName?: string;
   contextLength?: number | null;
   compressRatio?: number;
@@ -655,14 +657,18 @@ export interface AgentOverviewSnapshot {
   context: AgentContextMetrics;
   usageStats: UsageStatsSnapshot;
   runtime?: AgentRuntimeStateSnapshot;
+  /** 同一运行时内的模型状态版本，每次 setLLM 生效递增。 */
+  modelRevision?: number;
+  /** 当前模型协议，由模型元数据提供。 */
+  provider?: string;
   /** 可选：当前使用的模型名（由 agent 实例注入） */
   modelName?: string;
   /** 可选：当前使用的预设名（由 agent 实例注入，用于 UI dropdown 高亮） */
   presetName?: string;
   /** 可选：当前 LLM 实例的思考强度（由 agent 实例注入，用于 UI 状态同步） */
   thinkingEffort?: string | null;
-  /** 可选：当前模型的上下文窗口长度（由 agent 实例注入，用于 UI 用量条实时同步） */
-  contextLength?: number;
+  /** 可选：当前模型的上下文窗口长度（null 表示未提供窗口） */
+  contextLength?: number | null;
   /** 可选：当前模型的压缩阈值百分比（由 agent 实例注入，用于 UI 用量条实时同步） */
   compressRatio?: number;
 }

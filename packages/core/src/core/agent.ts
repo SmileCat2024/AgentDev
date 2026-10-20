@@ -191,6 +191,8 @@ class AgentBase {
   // ========== LLM 热切换 ==========
   /** 与 LLMClient 实例解耦的模型元数据 */
   private _llmMeta: LLMMeta = {};
+  /** 同一 Agent 实例内每次 setLLM 生效递增；回执与 Overview 共用。 */
+  private _modelRevision = 0;
   /** 外部消费者通过 onLLMSwap() 注册的回调 */
   private _llmSwapCallbacks: Array<(newLLM: AgentConfig['llm'], oldLLM: AgentConfig['llm']) => void> = [];
   /** 应用层注入的 preset 解析服务（构造时注入；资产留在注入方） */
@@ -964,9 +966,8 @@ class AgentBase {
     const oldLLM = this.llm;
     this.llm = llm;
 
-    if (meta) {
-      this._llmMeta = { ...meta };
-    }
+    this._llmMeta = { ...meta, modelName: meta?.modelName ?? llm.modelName };
+    this._modelRevision += 1;
 
     // 更新 SystemContext 中的模型名（为将来可能的模板重解析做准备）
     if (meta?.modelName) {
@@ -1024,7 +1025,7 @@ class AgentBase {
    * 获取当前模型元数据（不可变副本）
    */
   getLLMMeta(): LLMMeta {
-    return { ...this._llmMeta };
+    return { ...this._llmMeta, modelName: this._llmMeta.modelName ?? this.llm.modelName, modelRevision: this._modelRevision };
   }
 
   /**
@@ -2697,24 +2698,7 @@ class AgentBase {
         turnCount,
       },
       usageStats: this.usageStats.toSnapshot(),
-      ...(typeof (this.llm as any)?.modelName === 'string'
-        ? { modelName: (this.llm as any).modelName }
-        : {}),
-      ...(typeof this._llmMeta.presetName === 'string' && this._llmMeta.presetName
-        ? { presetName: this._llmMeta.presetName }
-        : {}),
-      ...(this._llmMeta.thinkingEffort != null
-        ? { thinkingEffort: this._llmMeta.thinkingEffort }
-        : {}),
-      ...(typeof this._llmMeta.provider === 'string' && this._llmMeta.provider
-        ? { provider: this._llmMeta.provider }
-        : {}),
-      ...(typeof this._llmMeta.contextLength === 'number' && this._llmMeta.contextLength > 0
-        ? { contextLength: this._llmMeta.contextLength }
-        : {}),
-      ...(typeof this._llmMeta.compressRatio === 'number' && this._llmMeta.compressRatio > 0
-        ? { compressRatio: this._llmMeta.compressRatio }
-        : {}),
+      ...this.getLLMMeta(),
     };
   }
 

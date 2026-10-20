@@ -43,6 +43,7 @@ export {
   extractErrorCode,
   sleep,
   withIdleDeadline,
+  throwIfAborted,
   resolveModelCallPolicy,
 } from './core/retry.js';
 export type { IdleDeadlineHandle } from './core/retry.js';

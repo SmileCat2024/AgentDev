@@ -55,6 +55,9 @@ function expectIdleTimeoutRejection(error: any, timeoutMs: number): void {
   expect(error.name).toBe('ClassifiedAPIError');
   expect(error.originalError?.name).toBe('TimeoutError');
   expect(error.originalError?.message).toContain(`no data received for ${timeoutMs}ms`);
+  // 超时必须归类为 connection_timeout（retryable），冒泡后由宿主续段策略
+  // 接管；落 unknown 会导致 force-continuation 等恢复机制不触发
+  expect(error.errorType).toBe('connection_timeout');
 }
 
 // —— OpenAI chat.completions ——
@@ -301,6 +304,24 @@ describe('AnthropicLLM idle deadline', () => {
     const error = await settled;
 
     expectIdleTimeoutRejection(error, TIMEOUT_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates AbortError as-is when the caller aborts (user interrupt, never classified)', async () => {
+    const llm = createAnthropicUnderTest(60_000, 2);
+    const controller = new AbortController();
+    const fetchMock = stubAnthropicFetch([
+      { delayMs: 50, event: { type: 'message_start', message: { usage: { input_tokens: 3, output_tokens: 0 } } } },
+      { delayMs: 60_000, event: { type: 'message_stop' } },
+    ]);
+
+    const settled = captureError(llm.chat([{ role: 'user', content: 'hi' }], [], { signal: controller.signal }));
+    await vi.advanceTimersByTimeAsync(20);
+    controller.abort();
+    const error = await settled;
+
+    // 用户取消：AbortError 原样传播（不包装、不分类），宿主按中断处理
+    expect(error.name).toBe('AbortError');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

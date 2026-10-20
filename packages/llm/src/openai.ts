@@ -11,7 +11,7 @@ import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
 import OpenAI from 'openai';
-import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline, throwIfAborted } from '@agentdevjs/core';
 import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
@@ -279,10 +279,8 @@ export class OpenAILLM implements LLMClient {
 
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
       try {
-        // 检查中断信号
-        if (signal?.aborted) {
-          throw new DOMException('Aborted', 'AbortError');
-        }
+        // 检查中断信号（deadline 超时 → TimeoutError，外部取消 → AbortError）
+        throwIfAborted(signal);
         // 新 attempt 开始视为活动：重试退避不占用空闲预算
         deadline.touch();
 
@@ -319,9 +317,7 @@ export class OpenAILLM implements LLMClient {
           // 计时从首段预算切换到间隔预算
           deadline.touchData();
           // 在流式读取中检查中断信号
-          if (signal?.aborted) {
-            throw new DOMException('Aborted', 'AbortError');
-          }
+          throwIfAborted(signal);
 
           if (chunk.usage) {
             const u = chunk.usage;

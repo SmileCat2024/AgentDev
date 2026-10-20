@@ -2,7 +2,7 @@ import type { AgentConfigFile, ModelConfig, CustomHeaderEntry, ThinkingEffort } 
 import { resolveCustomHeaders } from './custom-headers.js';
 import type { LLMClient, LLMResponse, LLMChatOptions, Message, ThinkingBlock, Tool, ToolCall, UsageInfo } from '@agentdevjs/core';
 import type { LLMPhase } from '@agentdevjs/core';
-import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline, type IdleDeadlineHandle } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline, throwIfAborted, type IdleDeadlineHandle } from '@agentdevjs/core';
 import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { resolveImageBase64 } from './image-resolver.js';
@@ -170,10 +170,8 @@ export class AnthropicLLM implements LLMClient {
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
       let response: Response | undefined;
       try {
-        // 检查中断信号
-        if (signal?.aborted) {
-          throw new DOMException('Aborted', 'AbortError');
-        }
+        // 检查中断信号（deadline 超时 → TimeoutError，外部取消 → AbortError）
+        throwIfAborted(signal);
         // 新 attempt 开始视为活动：重试退避不占用空闲预算
         deadline.touch();
 
@@ -666,15 +664,11 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, deadline: I
 
   try {
     while (true) {
-      // signal 已中断则立即抛出
-      if (signal?.aborted) {
-        throw new DOMException('Aborted', 'AbortError');
-      }
+      // signal 已中止则抛出对应错误（deadline 超时 → TimeoutError，外部取消 → AbortError）
+      throwIfAborted(signal);
       const { value, done } = await reader.read();
       // reader.read() 可能被 abort 中断后返回，检查是否需要提前退出
-      if (signal?.aborted) {
-        throw new DOMException('Aborted', 'AbortError');
-      }
+      throwIfAborted(signal);
       if (done) break;
       // 每读到一段流数据重置空闲计时：数据在流动就不算断连；首个数据把
       // 计时从首段预算切换到间隔预算

@@ -231,6 +231,14 @@ export function classifyAPIError(error: unknown, status?: number): APIErrorType 
   }
 
   // --- 3. 连接错误详情 ---
+
+  // 空闲超时（withIdleDeadline 以 TimeoutError DOMException 中止）：deadline
+  // 消息不含 timeout 关键字、DOMException 无字符串 code 属性，下面两个既有
+  // 判据都不命中，需按 name 显式归类，避免落 unknown 兜底导致不可续段
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    return 'connection_timeout';
+  }
+
   const connDetails = extractConnectionErrorDetails(error);
   if (connDetails) {
     if (connDetails.isSSLError) return 'ssl_cert_error';

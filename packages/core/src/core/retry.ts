@@ -245,7 +245,8 @@ export interface IdleDeadlineHandle {
  * - 空闲语义（两段预算）：计时从创建时刻起算按首段预算（firstTokenMs，缺省
  *   等于 timeoutMs）执行，首个数据 touchData() 后切换为间隔预算；每次 touch() /
  *   touchData() 重置计时；持续对应预算无任何重置才判定连接断开并以 TimeoutError
- *   DOMException 中止，上游按 AbortError 处理（不重试、直接传播）。
+ *   DOMException 中止，上游经 throwIfAborted 按 TimeoutError 传播（不参与客户端
+ *   重试；classifyAPIError 归入 connection_timeout，冒泡后由宿主续段策略接管）。
  * - timeoutMs 为 undefined / Infinity 时仅透传外部信号（不额外建 controller）。
  * - firstTokenMs 为 undefined / 非法时退化为单值行为（两段同用 timeoutMs）。
  */
@@ -298,6 +299,25 @@ export function withIdleDeadline(
     }, { once: true });
   }
   return { signal: merged.signal, touch, touchData };
+}
+
+/**
+ * signal 已中止时抛出对应错误，未中止则静默返回。
+ *
+ * 区分两种中止来源：
+ * - deadline 空闲超时（reason 为 withIdleDeadline 产出的 TimeoutError
+ *   DOMException）→ 抛出 reason 本身：不参与客户端重试（shouldRetry 不认），
+ *   但 classifyAPIError 归入 connection_timeout（retryable），冒泡到 Call
+ *   终态后由宿主续段策略（force-continuation 等）接管；
+ * - 外部中止（用户取消等）→ 抛 AbortError，按中断处理直接传播、永不续段。
+ */
+export function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error && reason.name === 'TimeoutError') {
+    throw reason;
+  }
+  throw new DOMException('Aborted', 'AbortError');
 }
 
 /**

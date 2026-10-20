@@ -64,6 +64,39 @@ describe('api-errors', () => {
     });
   });
 
+  // ========== classifyAPIError: idle deadline TimeoutError ==========
+
+  describe('classifyAPIError - TimeoutError DOMException', () => {
+    it('should classify deadline TimeoutError as connection_timeout even without timeout keyword', () => {
+      // withIdleDeadline 的真实产出：消息不含 timeout 字样、无字符串 code，
+      // 只能靠 name 判定，避免落 unknown 兜底导致不可续段
+      const err = new DOMException(
+        'Model call deadline exceeded: no data received for 120000ms',
+        'TimeoutError',
+      );
+      expect(classifyAPIError(err)).toBe('connection_timeout');
+    });
+
+    it('should classify plain Error named TimeoutError as connection_timeout', () => {
+      const err = new Error('connect ETIMEDOUT');
+      err.name = 'TimeoutError';
+      expect(classifyAPIError(err)).toBe('connection_timeout');
+    });
+
+    it('should not classify AbortError as connection_timeout via name check', () => {
+      // 用户取消（AbortError）不得因 name 判定误入超时类，保持原有归宿
+      const err = new DOMException('Aborted', 'AbortError');
+      expect(classifyAPIError(err)).toBe('unknown');
+    });
+
+    it('should wrap deadline TimeoutError into ClassifiedAPIError with connection_timeout', () => {
+      const err = new DOMException('Model call deadline exceeded: no data received for 60000ms', 'TimeoutError');
+      const wrapped = classifyAndWrapError(err);
+      expect(wrapped).toBeInstanceOf(ClassifiedAPIError);
+      expect(wrapped.errorType).toBe('connection_timeout');
+    });
+  });
+
   // ========== classifyAPIError: connection details ==========
 
   describe('classifyAPIError - SSL errors', () => {

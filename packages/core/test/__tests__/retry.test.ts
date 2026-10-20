@@ -11,6 +11,7 @@ import {
   DEFAULT_MODEL_FIRST_TOKEN_TIMEOUT_MS,
   resolveModelCallPolicy,
   withIdleDeadline,
+  throwIfAborted,
 } from '../../src/core/retry.js';
 
 describe('retry', () => {
@@ -400,6 +401,54 @@ describe('retry', () => {
       });
       expect(event.aborted).toBe(true);
       expect((event.reason as Error).name).toBe('TimeoutError');
+    });
+  });
+
+  // ========== throwIfAborted ==========
+
+  describe('throwIfAborted', () => {
+    it('should not throw when signal is undefined or not aborted', () => {
+      expect(() => throwIfAborted(undefined)).not.toThrow();
+      const controller = new AbortController();
+      expect(() => throwIfAborted(controller.signal)).not.toThrow();
+    });
+
+    it('should throw the TimeoutError reason itself on deadline expiry', async () => {
+      // deadline 超时 → 保留 TimeoutError 形态抛出（可分类、可续段）
+      const { signal } = withIdleDeadline(undefined, 10);
+      await new Promise<void>((resolve) => {
+        signal!.addEventListener('abort', () => resolve(), { once: true });
+      });
+      try {
+        throwIfAborted(signal);
+        expect.unreachable('should have thrown');
+      } catch (error) {
+        expect(error).toBe(signal!.reason);
+        expect((error as Error).name).toBe('TimeoutError');
+      }
+    });
+
+    it('should throw AbortError on external abort with AbortError reason', () => {
+      const controller = new AbortController();
+      controller.abort(new DOMException('Aborted', 'AbortError'));
+      try {
+        throwIfAborted(controller.signal);
+        expect.unreachable('should have thrown');
+      } catch (error) {
+        expect((error as Error).name).toBe('AbortError');
+        expect(error).not.toBe(controller.signal.reason);
+      }
+    });
+
+    it('should throw AbortError when aborted without explicit reason', () => {
+      const controller = new AbortController();
+      controller.abort();
+      try {
+        throwIfAborted(controller.signal);
+        expect.unreachable('should have thrown');
+      } catch (error) {
+        expect((error as Error).name).toBe('AbortError');
+      }
     });
   });
 });

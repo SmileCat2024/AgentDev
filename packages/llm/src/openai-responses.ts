@@ -12,7 +12,7 @@ import type { LLMClient, LLMResponse, LLMPhase, Message, Tool, ToolCall, UsageIn
 import { resolveCustomHeaders } from './custom-headers.js';
 import { resolveImageDataUri } from './image-resolver.js';
 import { sanitizeToolSchema } from './schema-sanitizer.js';
-import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline } from '@agentdevjs/core';
+import { getRetryDelay, parseRetryAfter, shouldRetry, resolveModelCallPolicy, withIdleDeadline, throwIfAborted } from '@agentdevjs/core';
 import { classifyAndWrapError } from '@agentdevjs/core';
 import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
@@ -166,9 +166,8 @@ export class OpenAIResponsesLLM implements LLMClient {
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
       let sawAnyStreamEvent = false;
       try {
-        if (signal?.aborted) {
-          throw new DOMException('Aborted', 'AbortError');
-        }
+        // 检查中断信号（deadline 超时 → TimeoutError，外部取消 → AbortError）
+        throwIfAborted(signal);
         // 新 attempt 开始视为活动：重试退避不占用空闲预算
         deadline.touch();
 
@@ -200,9 +199,7 @@ export class OpenAIResponsesLLM implements LLMClient {
           // 计时从首段预算切换到间隔预算
           deadline.touchData();
           sawAnyStreamEvent = true;
-          if (signal?.aborted) {
-            throw new DOMException('Aborted', 'AbortError');
-          }
+          throwIfAborted(signal);
 
           switch (event.type) {
             case 'response.output_text.delta': {

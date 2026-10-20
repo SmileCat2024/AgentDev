@@ -244,17 +244,34 @@ export class ReActLoopRunner {
               });
             }
 
+            // A truncated response cannot authorize tools: even valid-looking
+            // arguments may be only part of the intended batch. Keep text and
+            // thinking only, before writing history or consulting policy hooks.
+            const outputTruncated = response.stopReason === 'max_tokens' || response.stopReason === 'length';
+            if (outputTruncated) {
+              response = { ...response, toolCalls: undefined };
+              if (!response.content?.trim()) {
+                const message = '模型输出达到长度上限，但尚未产生正文。请调整输出或思考预算后重试。';
+                const truncationError: ExecutionError = { category: 'output_truncated', message, retryable: false };
+                context.addAssistantMessage({
+                  content: message,
+                  usage: response.usage,
+                  execution: { status: 'failed', reason: 'error', error: truncationError },
+                }, callIndex);
+                this.pushToDebug(context.getAll(), false, context.getTimestamps());
+                return {
+                  completed: false, finalResponse: message, turns: step + 1,
+                  finishReason: 'error' as const, error: truncationError,
+                  model: { providerStopReason },
+                };
+              }
+            }
             hasToolCalls = !!(response.toolCalls && response.toolCalls.length > 0);
 
             // 空响应重试逻辑：无 content 且无 toolCalls
             if (!response.content && !hasToolCalls) {
               const stopReason = response.stopReason;
               const isLegitimateEmpty = stopReason === 'end_turn' || stopReason === 'stop';
-
-              // stop_reason=max_tokens: 模型输出被 max_tokens 截断（通常是思考内容耗尽了全部预算）。
-              // 重试不会改善结果，直接作为截断事件处理。
-              // (参考 Claude Code claude.ts:2266 的 max_tokens 显式处理)
-              const isMaxTokensTruncation = stopReason === 'max_tokens';
 
               if (isLegitimateEmpty) {
                 // 合法空响应（模型主动结束但无内容），不重试
@@ -263,20 +280,6 @@ export class ReActLoopRunner {
                   { role: 'assistant', content: '[Info: LLM returned empty response with end_turn]', turn: callIndex },
                 ], true, [...context.getTimestamps(), Date.now()]);
                 break; // 跳出重试循环，进入正常完成流程
-              }
-
-              if (isMaxTokensTruncation) {
-                logger.warn('LLM response truncated by max_tokens (empty content)', {
-                  step,
-                  callIndex,
-                  stopReason,
-                  hasReasoning: !!response.reasoning,
-                });
-                this.pushToDebug([
-                  ...context.getAll(),
-                  { role: 'assistant', content: '[Warning: LLM output was truncated by max_tokens — thinking consumed the entire token budget and no content was produced]', turn: callIndex },
-                ], true, [...context.getTimestamps(), Date.now()]);
-                break; // 不重试，直接结束本轮
               }
 
               // 异常空响应，尝试重试
@@ -328,40 +331,6 @@ export class ReActLoopRunner {
               };
             } else {
               // 正常响应（有 content 或有 toolCalls），添加到 context
-
-              // ========== max_tokens 截断防御 ==========
-              // 当 stopReason 指示输出被 token 上限截断（max_tokens / length），
-              // 且模型返回了 toolCalls 但参数为空对象 {} 时，
-              // 说明模型在生成工具参数内容时被强制截断，JSON 不完整。
-              // 此时不应执行这些空参数工具，而是注入明确的错误消息，
-              // 避免模型陷入"截断→空参数→报错→重试→再截断"的死循环。
-              const isTruncated = response.stopReason === 'max_tokens' || response.stopReason === 'length';
-              if (isTruncated && hasToolCalls) {
-                const hasEmptyArgs = response.toolCalls!.some(
-                  call => !call.arguments || Object.keys(call.arguments).length === 0
-                );
-                if (hasEmptyArgs) {
-                  logger.warn('LLM output truncated by max_tokens with empty tool arguments', {
-                    step,
-                    callIndex,
-                    stopReason: response.stopReason,
-                    toolCount: response.toolCalls!.length,
-                  });
-                  // 仍然添加 assistant 消息（保持协议完整）
-                  context.addAssistantMessage(response, callIndex);
-                  // 为该响应中的所有工具调用注入截断错误（整个响应被截断，所有工具参数都不可信）
-                  for (const call of response.toolCalls!) {
-                    context.addToolMessage(call, {
-                      success: false,
-                      result: {
-                        error: `[Output truncated by max_tokens] The model output was cut off while generating arguments for tool "${call.name}". This usually means maxTokens is too small for the content being generated. Consider increasing maxTokens in the model preset configuration.`,
-                      },
-                    }, callIndex);
-                  }
-                  this.pushToDebug(context.getAll(), false, context.getTimestamps());
-                  return 'next'; // 跳过正常工具执行（防止重复 tool_result），直接进入下一轮 LLM 调用
-                }
-              }
 
               context.addAssistantMessage(response, callIndex);
               this.pushToDebug(context.getAll(), false, context.getTimestamps());
@@ -424,6 +393,23 @@ export class ReActLoopRunner {
             if (stepFinishDecision === Decision.Approve || stepFinishResult?.action === 'continue') {
               logger.debug('Step requested continuation without tools', { step });
               return 'continue';
+            }
+
+            // No policy accepted the partial output (disabled or budget spent).
+            // Preserve the body, but never report a truncated response as success.
+            if (response.stopReason === 'max_tokens' || response.stopReason === 'length') {
+              const message = '模型正文输出达到长度上限，未自动继续。';
+              const truncationError: ExecutionError = { category: 'output_truncated', message, retryable: false };
+              context.addAssistantMessage({
+                content: message,
+                execution: { status: 'failed', reason: 'error', error: truncationError },
+              }, callIndex);
+              this.pushToDebug(context.getAll(), false, context.getTimestamps());
+              return {
+                completed: false, finalResponse: message, turns: step + 1,
+                finishReason: 'error' as const, error: truncationError,
+                model: { providerStopReason },
+              };
             }
 
           // 真正结束

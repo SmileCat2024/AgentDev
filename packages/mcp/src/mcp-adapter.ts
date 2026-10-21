@@ -4,7 +4,20 @@
  * 将 MCP 工具适配为现有 Tool 接口，保持架构一致性
  */
 
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
+import { join, resolve } from 'path';
+import { withImages } from '@agentdevjs/core';
 import type { Tool, ToolExecutionContext, ToolResultValue } from '@agentdevjs/core';
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+};
 
 /**
  * 注册工具的简化接口
@@ -28,6 +41,8 @@ export interface MCPToolAdapterConfig {
   serverName: string;
   /** 是否为只读工具 */
   readOnly?: boolean;
+  /** 图片快照目录，默认 ~/.agentdev/images；由宿主覆盖。 */
+  storageDir?: string;
   /** 渲染模板覆盖 */
   render?: { call?: string; result?: string };
 }
@@ -80,7 +95,7 @@ export class MCPToolAdapter implements Tool {
   /**
    * 格式化 MCP 工具结果
    */
-  private formatResult(result: any, duration: number): Record<string, unknown> {
+  private formatResult(result: any, duration: number): ToolResultValue {
     // 处理错误结果
     if (result && result.isError) {
       return {
@@ -109,15 +124,6 @@ export class MCPToolAdapter implements Tool {
       formatted.structuredContent = (result as any).structuredContent;
     }
 
-    // 处理图像内容
-    const images = result.content.filter((c: any) => c.type === 'image');
-    if (images.length > 0) {
-      formatted.images = images.map((c: any) => ({
-        data: c.data,
-        mimeType: c.mimeType,
-      }));
-    }
-
     // 处理资源内容
     const resources = result.content.filter((c: any) => c.type === 'resource');
     if (resources.length > 0) {
@@ -126,6 +132,31 @@ export class MCPToolAdapter implements Tool {
         mimeType: c.mimeType,
         text: c.text,
       }));
+    }
+
+    // 图片作为消息附件传递，不进入普通结果的 JSON 文本。
+    const images = result.content.filter((c: any) => c.type === 'image');
+    if (images.length > 0) {
+      const storageDir = resolve(this.config.storageDir || join(homedir(), '.agentdev', 'images'));
+      const attachments = images.map((c: any, index: number) => {
+        const ext = IMAGE_EXTENSIONS[c.mimeType];
+        if (!Object.hasOwn(IMAGE_EXTENSIONS, c.mimeType)) {
+          throw new Error(`Unsupported MCP image MIME type: ${c.mimeType}`);
+        }
+        const data = Buffer.from(c.data, 'base64');
+        const hash = createHash('sha256').update(c.data).digest('hex').slice(0, 32);
+        const snapshotPath = join(storageDir, `${hash}.${ext}`);
+        mkdirSync(storageDir, { recursive: true });
+        if (!existsSync(snapshotPath) || !readFileSync(snapshotPath).equals(data)) {
+          writeFileSync(snapshotPath, data);
+        }
+        return {
+          path: snapshotPath,
+          mediaType: c.mimeType,
+          source: `${this.config.serverName}/${this.name} image ${index + 1}`,
+        };
+      });
+      return { ...withImages(JSON.stringify(formatted), attachments) };
     }
 
     return formatted;

@@ -19,6 +19,8 @@ export interface MCPToolPatch {
 }
 
 export interface MCPToolManagementOptions {
+  /** Host-managed image snapshot directory. */
+  storageDir?: string;
   include?: string[];
   exclude?: string[];
   disable?: string[];
@@ -117,6 +119,7 @@ export async function createManagedMCPToolsFromClient(
         name: finalPatch.name ?? createDefaultMCPToolName(client.serverId, tool.name),
         description: finalPatch.description,
         render: finalPatch.render,
+        storageDir: options.storageDir,
         transformArgs: finalPatch.transformArgs,
       }
     );

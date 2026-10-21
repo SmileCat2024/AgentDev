@@ -10,6 +10,8 @@ export interface MCPDiscoveredTool {
 }
 
 export interface MCPToolCreationOptions {
+  /** Host-managed image snapshot directory. */
+  storageDir?: string;
   name?: string;
   description?: string;
   render?: MCPToolAdapterConfig['render'];
@@ -17,6 +19,7 @@ export interface MCPToolCreationOptions {
 }
 
 export interface MCPToolDiscoveryOptions {
+  storageDir?: string;
   filter?: (tool: MCPDiscoveredTool) => boolean;
   mapName?: (tool: MCPDiscoveredTool) => string;
   render?: MCPToolAdapterConfig['render'];
@@ -91,6 +94,7 @@ export function createMCPTool(
     {
       serverName: client.serverId,
       render: options.render,
+      storageDir: options.storageDir,
     }
   );
 }
@@ -107,6 +111,7 @@ export async function createMCPToolsFromClient(
       name: options.mapName?.(tool),
       description: tool.description,
       render: options.render,
+      storageDir: options.storageDir,
       transformArgs: options.transformArgs,
     }));
 }

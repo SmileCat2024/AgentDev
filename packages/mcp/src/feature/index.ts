@@ -47,6 +47,8 @@ export type MCPFeatureInput = MCPConfig | string;
 
 export interface MCPFeatureOptions {
   excludeServers?: string[];
+  /** Image snapshot directory; defaults to ~/.agentdev/images outside managed hosts. */
+  storageDir?: string;
 }
 
 export interface MCPFeatureConfig {
@@ -220,6 +222,7 @@ export class MCPFeature implements AgentFeature {
     const result = await mountMCPToolsFromConfig(mergedConfig, {
       manager: this.manager,
       clients: this.clients,
+      getServerOptions: () => ({ storageDir: this.options.storageDir }),
       onError: (serverId, error) => {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.warn(`[MCPFeature] Failed to load tools from "${serverId}": ${errorMsg}`);

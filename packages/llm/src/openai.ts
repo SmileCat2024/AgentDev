@@ -414,6 +414,9 @@ export class OpenAILLM implements LLMClient {
           }
         }
 
+        // The SDK can swallow AbortError and end iteration without throwing.
+        throwIfAborted(signal);
+
         // 构建最终的 tool_calls 数组
         let toolCalls: ToolCall[] | undefined;
         if (accumulatedToolCalls.size > 0) {
@@ -448,6 +451,11 @@ export class OpenAILLM implements LLMClient {
           stopReason: finishReason,
         };
       } catch (error) {
+        // SDK may replace the abort reason; the request signal owns its origin.
+        if (signal?.aborted) {
+          if (options?.signal?.aborted) throwIfAborted(options.signal);
+          throw classifyAndWrapError(signal.reason);
+        }
         // 中断错误不重试，直接传播
         if (error instanceof DOMException && error.name === 'AbortError') {
           throw error;

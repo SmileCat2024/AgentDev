@@ -7,9 +7,11 @@
  * - 流静默超过 timeoutMs 才判定断连：以超时错误拒绝，且不进入重试。
  *
  * 三个客户端（openai / openai-responses / anthropic）都按此契约验证。
- * stub 均遵循真实传输层行为：signal abort 时，挂起的等待以 signal.reason 拒绝。
+ * 基础 stub 验证 signal.reason 传播；SDK 集成用例保留真实 OpenAI SDK，
+ * 额外覆盖 SDK 改写中止错误、吞掉流中 AbortError 的行为。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import OpenAI from 'openai';
 import {
   createAnthropicLLM,
   createOpenAILLM,
@@ -191,6 +193,56 @@ describe('OpenAIResponsesLLM idle deadline', () => {
   });
 });
 
+// 保留真实 SDK，只替换网络传输；不能用直接转抛 signal.reason 的迭代器替代 SDK。
+describe('OpenAI SDK abort translation', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  for (const [name, factory] of [
+    ['chat.completions', createOpenAILLM],
+    ['responses', createOpenAIResponsesLLM],
+  ] as const) {
+    for (const phase of ['headers', 'stream'] as const) {
+      for (const abortSource of ['deadline', 'caller'] as const) {
+        it(`${name}: ${abortSource} during ${phase} preserves the framework outcome`, async () => {
+          const timeoutMs = 500;
+          const llm = factory({ apiKey: 'k', model: 'm', timeoutMs, maxRetries: 3 });
+          disableHttpInit(llm);
+          const controller = new AbortController();
+          const fetchMock = vi.fn(async (_url: unknown, init: RequestInit | undefined) => {
+            const signal = init?.signal ?? undefined;
+            if (phase === 'headers') {
+              await abortableDelay(60_000, signal);
+              throw new Error('unreachable');
+            }
+            const body = new ReadableStream<Uint8Array>({
+              start(streamController) {
+                // Fetch implementations can reject a body read with AbortError,
+                // even though the request signal carries a TimeoutError reason.
+                signal?.addEventListener('abort', () => {
+                  streamController.error(new DOMException('The operation was aborted', 'AbortError'));
+                }, { once: true });
+              },
+            });
+            return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+          });
+          (llm as any).client = new OpenAI({ apiKey: 'k', fetch: fetchMock as any });
+          const settled = llm.chat([{ role: 'user', content: 'hi' }], [], { signal: controller.signal }).catch(error => error);
+          await vi.advanceTimersByTimeAsync(abortSource === 'deadline' ? 600 : 20);
+          if (abortSource === 'caller') controller.abort();
+          const error = await settled;
+          if (abortSource === 'deadline') {
+            expectIdleTimeoutRejection(error, timeoutMs);
+          } else {
+            expect(error.name).toBe('AbortError');
+          }
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+        });
+      }
+    }
+  }
+});
+
 // —— Anthropic（原生 fetch + SSE） ——
 
 function sseFrame(event: Record<string, unknown>): string {
@@ -210,7 +262,7 @@ function anthropicSuccessScript(segments: string[]): Array<{ delayMs: number; ev
   ];
 }
 
-function stubAnthropicFetch(script: Array<{ delayMs: number; event?: Record<string, unknown> }>) {
+function stubAnthropicFetch(script: Array<{ delayMs: number; event?: Record<string, unknown> }>, maskAbortReason = false) {
   const encoder = new TextEncoder();
   const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
     const signal = init.signal as AbortSignal | undefined;
@@ -226,7 +278,8 @@ function stubAnthropicFetch(script: Array<{ delayMs: number; event?: Record<stri
             // 流已被关闭/报错
           }
         };
-        signal?.addEventListener('abort', () => fail(signal.reason), { once: true });
+        signal?.addEventListener('abort', () => fail(maskAbortReason
+          ? new DOMException('The operation was aborted', 'AbortError') : signal.reason), { once: true });
         (async () => {
           for (const step of script) {
             try {
@@ -304,6 +357,15 @@ describe('AnthropicLLM idle deadline', () => {
     const error = await settled;
 
     expectIdleTimeoutRejection(error, TIMEOUT_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores the timeout reason when fetch rejects a body read with AbortError', async () => {
+    const llm = createAnthropicUnderTest(500, 3);
+    const fetchMock = stubAnthropicFetch([{ delayMs: 60_000 }], true);
+    const settled = captureError(llm.chat([{ role: 'user', content: 'hi' }], []));
+    await vi.advanceTimersByTimeAsync(600);
+    expectIdleTimeoutRejection(await settled, 500);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

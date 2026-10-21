@@ -341,6 +341,8 @@ export class OpenAIResponsesLLM implements LLMClient {
           }
         }
 
+        // The SDK can end iteration after aborting its internal stream.
+        throwIfAborted(signal);
         const parsedSnapshot = completedSnapshot ? parseOpenAIResponsesSnapshot(completedSnapshot) : null;
         if (parsedSnapshot?.usage) {
           usageInfo = parsedSnapshot.usage;
@@ -368,6 +370,11 @@ export class OpenAIResponsesLLM implements LLMClient {
           stopReason: finalStopReason,
         };
       } catch (error) {
+        // SDK may replace the abort reason; the request signal owns its origin.
+        if (signal?.aborted) {
+          if (options?.signal?.aborted) throwIfAborted(options.signal);
+          throw classifyAndWrapError(signal.reason);
+        }
         if (error instanceof DOMException && error.name === 'AbortError') {
           throw error;
         }

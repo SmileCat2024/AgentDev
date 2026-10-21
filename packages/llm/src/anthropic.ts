@@ -250,6 +250,11 @@ export class AnthropicLLM implements LLMClient {
 
         return await readAnthropicStream(response.body, deadline);
       } catch (error) {
+        // Fetch may replace the abort reason; the request signal owns its origin.
+        if (signal?.aborted) {
+          if (options?.signal?.aborted) throwIfAborted(options.signal);
+          throw classifyAndWrapError(signal.reason);
+        }
         // 中断错误不重试，直接传播
         if (error instanceof DOMException && error.name === 'AbortError') {
           throw error;

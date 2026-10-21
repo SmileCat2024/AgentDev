@@ -21,15 +21,15 @@ import type { Tool } from '@agentdevjs/core';
 import type {
   CallStartContext,
   HookDeclarations,
-  PendingWakeup,
   StepFinishDecisionContext,
   DecisionResult,
+  PendingWorkHost,
 } from '@agentdevjs/core';
-import { CoreLifecycle, Decision, getPackageInfoFromSource } from '@agentdevjs/core';
+import { BackgroundAccess, CoreLifecycle, Decision, getPackageInfoFromSource } from '@agentdevjs/core';
 import { createShellCommandTool, findGitBashPath } from './tools.js';
 import { createPowerShellTool, findPowerShellPath } from './powershell.js';
 import { createSafeTrashDeleteTool, createSafeTrashListTool, createSafeTrashRestoreTool } from './tools-trash.js';
-import { BgRegistry, FOREGROUND_BUDGET_DEFAULT_MS } from './bg-core.js';
+import { BgRegistry, BG_AGGREGATION_WINDOW_MS, FOREGROUND_BUDGET_DEFAULT_MS, createViewerUserTurnDeliver } from './bg-core.js';
 import type { BgObserver, BgTask } from './bg-core.js';
 import {
   BASH_BG_INLINE_DESCRIPTION,
@@ -85,10 +85,10 @@ export class ShellFeature implements AgentFeature {
   readonly description = '提供 Bash/PowerShell 命令执行能力，以及安全删除、恢复和查看垃圾桶工具。';
 
   /**
-   * bg_tune(then="standby") / bg_watch 结束当前回合：待命与订阅不占工具
-   * 调用，由通知推送（节拍/静默/终态同一管线）唤醒。关键词命中或任务终态
-   * 后订阅清除，此后不再干预流程（Continue）。standby 为一次性请求，读即
-   * 消费；CallStart 清理残留，防止极端路径误伤后续回合。
+   * bg_tune(then="standby") / bg_watch 在消费当轮登记一次性待命请求，读即
+   * 消费后结束回合：待命与订阅不占工具调用，由通知推送（节拍/静默/终态
+   * 同一管线）唤醒。旧的关键词订阅持续产生通知但不驱动流程决策；待命为
+   * 一次性请求，CallStart 清理残留，防止极端路径误伤后续回合。
    */
   static hooks: HookDeclarations = {
     endTurnOnStandby: { lifecycle: CoreLifecycle.StepFinish, kind: 'guard' as const, role: 'advisor' as const },
@@ -104,8 +104,10 @@ export class ShellFeature implements AgentFeature {
   private readonly resourceRoot: string;
   private readonly bgObserver?: BgObserver;
   private readonly sessionId?: string;
-  /** 后台任务登记表（首次 getAsyncTools 时按 agentId 惰性创建）。 */
+  /** 后台任务登记表（首次 getAsyncTools 时按 agentId::workdir 惰性创建/收养）。 */
   private _registry: BgRegistry | null = null;
+  /** 通用后台接入（core，ADR-0031）：每实例一份，pending 申报/待命/通知衔接。 */
+  private _access: BackgroundAccess | null = null;
 
   constructor(config: ShellFeatureConfig = {}) {
     this.workspaceDir = config.workspaceDir || process.cwd();
@@ -120,49 +122,54 @@ export class ShellFeature implements AgentFeature {
     return this._registry;
   }
 
+  /** 通用后台接入（惰性创建前为 null）。宿主集成面：测试与高级装配检查。 */
+  getBackgroundAccess(): BackgroundAccess | null {
+    return this._access;
+  }
+
   async onDestroy(): Promise<void> {
     if (this._registry && this.bgObserver) this._registry.removeObserver(this.bgObserver);
+    // 只释放观察资源：agent 申报回调失效 + 待命意图清除。共享任务表上的
+    // 任务仍持有各自归属的 access（未送达事实与补取路径保留），业务进程
+    // 不 kill——后台 bash 是 OS 级资源，独立于会话活着。
+    this._access?.dispose();
+    this._access = null;
     this._registry = null;
   }
 
   /**
-   * StepFinish guard（advisor）：本回合登记过 bg_tune 待命请求或 bg_watch
-   * 关键词订阅时结束当前 call（Decision.Deny 在 react-loop 的既有语义），
-   * 把等待交给通知推送——任务终态则终态通知先行，否则节拍/静默/命中唤醒。
-   * 无待触发项时一律 Continue，不干预正常流程。
+   * StepFinish guard（advisor）：消费本回合显式登记的一次性待命请求
+   * （bg_tune then="standby" / bg_watch 订阅即停，经任务归属的
+   * BackgroundAccess）时结束当前 call（Decision.Deny 在 react-loop 的
+   * 既有语义），把等待交给通知推送——任务终态则终态通知先行，否则节拍/
+   * 静默/命中唤醒。待命意图读即消费，CallStart 已清残留；旧的关键词
+   * 订阅持续产生通知但不再驱动流程决策——用户插话的新轮次不会被
+   * 未命中的旧 watch 误停。无待命意图时一律 Continue。
    */
   async endTurnOnStandby(_ctx: StepFinishDecisionContext): Promise<DecisionResult> {
-    if (!this._registry) return Decision.Continue;
-    const standby = this._registry.consumeStandbyRequest();
-    if (!standby && !this._registry.hasActiveWatch()) return Decision.Continue;
-    return Decision.Deny;
+    return this._access?.consumeStandbyRequest() ? Decision.Deny : Decision.Continue;
   }
 
   /**
-   * CallStart（observe）：向 agent 申报 pending-work provider（ADR-0019）。
+   * CallStart（observe）：清理上一回合可能残留的待命请求（guard 未被咨询
+   * 的极端路径），并向 agent 申报 pending-work provider（ADR-0019）。
    *
-   * 首个能拿到 agent 引用的时机注册；从共享 BgRegistry 取 running 任务映射
-   * 为 PendingWakeup 快照。registry 尚未惰性创建（本实例还没起过后台任务）
-   * 时申报空表——同进程其他会话实例建表后，共享表对其可见。每次 CallStart
-   * 重复注册幂等（同 source 覆盖）。peer 版本 core 无此 API 时静默降级
-   * （回合结束仍判 completed，现状行为）。
+   * 申报经任务归属的 BackgroundAccess（core 通用后台接入，注册 key 实例
+   * 唯一，与其他接入互不覆盖）：本实例登记的未释放工作映射为
+   * PendingWakeup（source 恒为 'shell'）。access 尚未创建（本实例还没装配
+   * 过 bash 工具）时无事可申报，不注册。已有接入时要求宿主具备
+   * pending-work 注册契约，不能静默漏报挂起事实。
    */
   registerPendingWorkOnCallStart(ctx: CallStartContext): void {
     // 清理上一回合可能残留的待命请求（guard 未被咨询的极端路径），防止
     // 误伤本回合。
-    this._registry?.consumeStandbyRequest();
-    const agent = ctx.agent as
-      | { registerPendingWorkProvider?: (source: string, provider: () => PendingWakeup[]) => void }
-      | undefined;
-    if (typeof agent?.registerPendingWorkProvider !== 'function') return;
-    agent.registerPendingWorkProvider('shell', () => {
-      const registry = this._registry;
-      if (!registry) return [];
-      return registry
-        .list()
-        .filter(snap => snap.status === 'running')
-        .map(snap => ({ source: 'shell', id: snap.id, summary: snap.command }));
-    });
+    this._access?.consumeStandbyRequest();
+    if (!this._access) return;
+    const agent = ctx.agent as PendingWorkHost | undefined;
+    if (typeof agent?.registerPendingWorkProvider !== 'function') {
+      throw new Error('[shell] 后台接入要求宿主提供 registerPendingWorkProvider');
+    }
+    this._access.attachAgent(agent);
   }
 
   /**
@@ -244,7 +251,10 @@ export class ShellFeature implements AgentFeature {
    * 实例会拿到一张空表，面板与 bg_status 都看不到仍在跑的任务。同进程
    * 的多会话实例复用同一张表，并把自己的 bgObserver 追加进去（各会话
    * 通道都能收到实时事件）。workdir 参与 key，不同测试的 tmpdir 天然隔离。
-   * 通知投递邮箱仍归属首个建表的 agent 实例（既有行为，不变）。
+   *
+   * 任务归属会话不再由表级锚点决定（可被收养实例改写）：登记时经各实例
+   * 自己的 BackgroundAccess 盖戳捕获（ADR-0031 修复 5），pending 申报、
+   * 待命意图与通知分组全部按归属实例隔离，互不串扰。
    */
   private static readonly sharedRegistries = new Map<string, BgRegistry>();
 
@@ -254,16 +264,32 @@ export class ShellFeature implements AgentFeature {
       const shared = ShellFeature.sharedRegistries.get(key);
       if (shared) {
         this._registry = shared;
-        // 收养即更新归属锚点：后续登记的任务盖戳本实例会话；
-        // 已登记任务保持登记时刻的归属事实不变。
-        shared.setSessionId(this.sessionId);
         if (this.bgObserver) shared.addObserver(this.bgObserver);
       } else {
-        this._registry = new BgRegistry({ agentId, ...(this.sessionId ? { sessionId: this.sessionId } : {}), ...(this.bgObserver ? { observer: this.bgObserver } : {}) });
+        this._registry = new BgRegistry(this.bgObserver ? { observer: this.bgObserver } : {});
         ShellFeature.sharedRegistries.set(key, this._registry);
       }
     }
     return this._registry;
+  }
+
+  /**
+   * 通用后台接入惰性初始化（与登记表同刻创建）：HTTP 投递适配器锚定本
+   * agentId；聚合窗口沿用 Bash 策略值。通知事件身份（eventId，网关幂等键）
+   * 与工作身份（workIds）在 core 通用层生成/分组，适配器只做映射。
+   * 工作释放联动共享表的终态裁剪（通知送达前裁剪条件不成立，见 trimDone）。
+   */
+  private ensureAccess(agentId: string, registry: BgRegistry): BackgroundAccess {
+    if (!this._access) {
+      this._access = new BackgroundAccess({
+        source: 'shell',
+        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+        deliver: createViewerUserTurnDeliver(agentId),
+        aggregationWindowMs: BG_AGGREGATION_WINDOW_MS,
+        onWorkRelease: () => registry.trimDone(),
+      });
+    }
+    return this._access;
   }
 
   /**
@@ -286,6 +312,7 @@ export class ShellFeature implements AgentFeature {
           }
         }
         const registry = this.ensureRegistry(ctx.agentId);
+        const access = this.ensureAccess(ctx.agentId, registry);
         tools.push(createShellCommandTool(this.bashDescription, {
           workspaceDir: this.workspaceDir,
           workdir: this.workdir,
@@ -293,6 +320,7 @@ export class ShellFeature implements AgentFeature {
           bashPath,
           timeoutMs: config.defaultTimeoutMs,
           registry,
+          access,
         }));
         // 后台工具族：描述文件优先，缺失时回退内联完整教学文案（防轮询协议
         // 声明不能依赖 resourceRoot 恰好可解析）。
@@ -309,12 +337,13 @@ export class ShellFeature implements AgentFeature {
           bashPath,
           resourceRoot: this.resourceRoot,
           registry,
+          access,
         };
         tools.push(createBashBgTool(this.bashBgDescription, spawnOpts));
         tools.push(createBgListTool(registry));
         tools.push(createBgStatusTool(registry));
-        tools.push(createBgWatchTool(registry));
-        tools.push(createBgTuneTool(registry));
+        tools.push(createBgWatchTool(registry, access));
+        tools.push(createBgTuneTool(registry, access));
         tools.push(createBgWriteTool(registry));
         tools.push(createBgKillTool(registry));
       } else {
@@ -381,6 +410,7 @@ export type { ShellCommandToolOptions, ShellExecutionResult } from './tools.js';
 // 导出后台任务核心与工具族（供高级用户与测试使用）
 export {
   BgRegistry,
+  BG_AGGREGATION_WINDOW_MS,
   FOREGROUND_BUDGET_DEFAULT_MS,
   BG_MIN_INTERVAL_MS,
   BG_MIN_QUIET_MS,
@@ -388,6 +418,7 @@ export {
   BG_WATCH_MAX_CHARS,
   buildBashInvocation,
   cleanBashStderr,
+  createViewerUserTurnDeliver,
   fmtDur,
   formatForegroundOutput,
   runForegroundWithBudget,

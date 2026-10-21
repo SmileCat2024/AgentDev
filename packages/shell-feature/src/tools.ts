@@ -20,6 +20,7 @@ import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import type { Tool } from '@agentdevjs/core';
+import type { BackgroundAccess } from '@agentdevjs/core';
 import { createTool, withDisplay, withRewrite } from '@agentdevjs/core';
 import {
   quoteShellCommand,
@@ -57,6 +58,8 @@ export interface ShellCommandToolOptions {
   timeoutMs?: number;
   /** 转后台收养目标（缺省不注册——进程保持运行但无句柄，仅供不需要兜底的高级用法）。 */
   registry?: BgRegistry;
+  /** 任务归属接入实例（registry 转后台时必配：登记 / 通知衔接的事实源）。 */
+  access?: BackgroundAccess;
 }
 
 export interface ShellExecutionResult {
@@ -252,12 +255,13 @@ export function createShellCommandTool(
           ...(context?.terminationDeadline ? { terminationDeadline: context.terminationDeadline as () => number | null } : {}),
         },
         (child, pre) => {
-          if (!registry) {
-            throw new Error('shell: 前台预算超时且未配置转后台 registry（装配错误）');
+          if (!registry || !options.access) {
+            throw new Error('shell: 前台预算超时且未配置转后台 registry/access（装配错误）');
           }
           return registry.register(child, {
             command: runCommand,
             workdir,
+            access: options.access,
             intervalMs: effectiveBudgetMs,
             quietAfterMs: effectiveBudgetMs,
             inherited: true,

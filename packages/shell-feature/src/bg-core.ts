@@ -1,5 +1,5 @@
 /**
- * 后台 Bash 核心 — 任务登记表 + 双节奏汇报引擎 + 通知投递管线
+ * 后台 Bash 核心 — 任务登记表 + 双节奏汇报引擎
  *
  * 设计契约（bg 心智模型，与 tool-bash-bg.md 保持一致）：
  * - 前台/后台是模型的预期表达，误判由 harness 兜底：
@@ -8,22 +8,24 @@
  * - 双节奏（interval=活跃节奏，纯墙钟；quietAfter=静默节奏，输出重置计时）：
  *   任一触发即汇报并互重置计时；exit 为最高优先级事件，与 pending 定时器
  *   同时到达时 exit 赢（丢弃节拍汇报，不发鬼魂消息）。
- * - bg_tune 的 then="standby"：一次性"调完即待命"请求——登记后由
- *   ShellFeature 的 StepFinish guard 结束当前 call（consumeStandbyRequest
- *   触发 Decision.Deny，读即消费）。等待不占工具调用，由通知推送承载。
- * - 关键词订阅（bg_watch）：不阻塞工具调用，订阅登记后本回合由同一
- *   StepFinish guard 结束（hasActiveWatch）；命中走统一汇报出口
- *   （reason='watch'）；任务终态时随 _clearTimers 清除，终态通知先行
- *   （exit 赢语义不变）。watch 目的是"特定内容出现才通知"，不被未命中的
- *   运行中推送吸收（节拍汇报不消耗它）。
+ * - bg_tune 的 then="standby"：一次性"调完即待命"请求——登记到任务归属的
+ *   BackgroundAccess（core 通用后台接入），由 ShellFeature 的 StepFinish
+ *   guard 消费（读即消费触发 Decision.Deny）。等待不占工具调用，由通知
+ *   推送承载。
+ * - 关键词订阅（bg_watch）：不阻塞工具调用；订阅当轮通过 requestStandby
+ *   显式让出（一次性），此后订阅持续产生通知但不再干预流程决策——用户
+ *   插话的新轮次不会被旧 watch 误停。命中走统一汇报出口（reason='watch'）；
+ *   任务终态时随 _clearTimers 清除，终态通知先行（exit 赢语义不变）。
  * - reportNow（宿主面板手动触发器）：立即走与节拍/静默完全相同的汇报出口
  *   （通知增量 + 双节奏互重置），只是把触发源从定时器换成用户点击。
  * - readyPattern：输出首次匹配即发一次性"已就绪"，此后任务按节奏继续汇报。
  * - 完整输出流式落盘：登记时在 workdir/.agentdev/temp/ 创建追加写日志
  *   （bg-output-*，命名与前台截断落盘同约定），ring buffer 退化为预览；
  *   落盘失败只降级标注（logFailed），绝不阻塞管道或终止任务。
- * - 通知经 ViewerWorker user-turn 邮箱投递（与 react-loop 相同的端口约定，
- *   框架内已先例使用内置 fetch）；投递失败保留在任务上，bg_status 补发。
+ * - 通知衔接走 core 的 BackgroundAccess（ADR-0031）：排队/聚合/按接收者
+ *   分组/投递/未送达保留/补取都是通用时序；HTTP 投递在本包的
+ *   createViewerUserTurnDeliver 适配器（core 不做网络）。任务归属会话在
+ *   登记时经 access 盖戳捕获，通知分组不回退"当前会话"。
  * - 任务生命周期 = 宿主进程生命周期（process exit 时尽力终止全部任务）。
  *
  * 本模块不设内部 sleep/轮询：所有定时器均 setTimeout 链 + unref。
@@ -32,6 +34,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { createWriteStream, mkdirSync, type WriteStream } from 'fs';
 import * as path from 'path';
+import type { BackgroundAccess, BackgroundWorkHandle, WakeupDeliver } from '@agentdevjs/core';
 import {
   quoteShellCommand,
   rewriteWindowsNullRedirect,
@@ -56,7 +59,10 @@ export const BG_CAPTURE_WINDOW_MS = 2_000;
 export const BG_RING_BUFFER_MAX_BYTES = 256 * 1024;
 export const BG_MAX_RUNNING = 8;
 export const BG_KEEP_DONE = 5;
-/** 多任务通知聚合窗口：窗口内的通知合并为一条 user-turn。 */
+/**
+ * 多任务通知聚合窗口（毫秒）：由装配方传给 BackgroundAccess，窗口内同
+ * 接收者的通知合并为一次投递事件（通用衔接在 core，策略值归 shell）。
+ */
 export const BG_AGGREGATION_WINDOW_MS = 250;
 /** 通知文本中携带的尾部输出长度（字符）。 */
 export const BG_NOTIFY_TAIL_CHARS = 2_000;
@@ -66,7 +72,7 @@ export const BG_STATUS_MAX_CHARS = 10_000;
 export const BG_WATCH_MAX_CHARS = 20;
 /** 前台命令固定预算（毫秒）；宿主可经 manifest 配置覆盖。 */
 export const FOREGROUND_BUDGET_DEFAULT_MS = 20_000;
-/** 投递 HTTP 超时。 */
+/** 投递 HTTP 超时（createViewerUserTurnDeliver 适配器用）。 */
 const DELIVER_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
@@ -130,8 +136,12 @@ export interface BgTask {
   id: string;
   command: string;
   workdir: string;
-  /** 建表会话归属（登记时盖戳；null = 装配方未声明，见 BgRegistryOptions.sessionId）。 */
+  /** 登记归属会话（登记时经 access 盖戳捕获；null = 未声明，单 runtime 现状）。 */
   sessionId: string | null;
+  /** 任务归属接入实例（申报 / 待命 / 通知衔接 / 终态释放的事实源）。 */
+  access: BackgroundAccess;
+  /** 对应的工作登记句柄（终态释放用）。 */
+  work: BackgroundWorkHandle;
   child: ChildProcess | null;
   startedAt: number;
   status: BgTaskStatus;
@@ -176,8 +186,6 @@ export interface BgTask {
   watchSinceBytes: number;
   /** 已扫描到的绝对字节游标：每次只扫新增（起点回退一个关键词长度防跨界漏配）。 */
   watchScanBytes: number;
-  /** 投递失败滞留的通知文本（bg_status 时补发）。 */
-  unsent: string[];
   pendingOutput: string;
   /** 完整输出日志（追加流）；ring buffer 只是预览，内存外的真相在这里。 */
   logPath: string | null;
@@ -190,6 +198,12 @@ export interface BgTask {
 export interface BgRegisterOptions extends BgTaskPace {
   command: string;
   workdir: string;
+  /**
+   * 任务归属接入实例（core BackgroundAccess）：pending-work 申报、待命意图、
+   * 通知衔接与终态释放的事实源。登记归属会话经它盖戳捕获，不被其他实例
+   * 收养改写（ADR-0031 修复 5）。
+   */
+  access: BackgroundAccess;
   readyPattern?: string | null;
   /** 前台转后台：转后台前已积累的输出（进 ring buffer，静默计时起点相应后移）。 */
   preOutput?: string;
@@ -253,19 +267,8 @@ export function spawnBackgroundProcess(
 // ---------------------------------------------------------------------------
 
 export interface BgRegistryOptions {
-  agentId: string;
-  /**
-   * 建表会话归属（ADR-0019 决策 8）：宿主多会话拓扑下由装配方声明，
-   * 随任务登记盖戳、随通知投递（user-turn body）。框架不解释其语义；
-   * 缺省不携带，投递行为与现状一致。
-   */
-  sessionId?: string;
-  /** 投递目标 ViewerWorker 基址（缺省 127.0.0.1:AGENTDEV_VIEWER_PORT||2026）。 */
-  viewerUrl?: string;
   /** 测试禁用 process exit 兜底。 */
   enableExitGuard?: boolean;
-  /** 测试注入投递函数。 */
-  deliverImpl?: (text: string, sourceRef: string) => Promise<void>;
   /** 测试注入时钟。 */
   now?: () => number;
   /** 宿主集成观察者（状态镜像用；见 BgObserver）。 */
@@ -290,25 +293,11 @@ function openTaskLog(workdir: string): { filePath: string; stream: WriteStream }
 export class BgRegistry {
   private readonly _tasks = new Map<string, BgTask>();
   private _nextId = 1;
-  private readonly _agentId: string;
-  /** 建表会话归属（随任务登记盖戳、随通知投递；null = 未声明）。 */
-  private _sessionId: string | null;
-  private readonly _viewerUrl: string;
-  private readonly _deliverImpl: (text: string, sourceRef: string) => Promise<void>;
   private readonly _now: () => number;
   private readonly _observers: BgObserver[] = [];
   private readonly _exitGuard: (() => void) | null;
-  private _pendingNotify: Array<{ taskId: string; text: string }> = [];
-  private _flushTimer: ReturnType<typeof setTimeout> | null = null;
-  /** bg_tune then="standby" 的一次性待命请求（读即消费，见 requestStandby）。 */
-  private _standbyOnce = false;
 
   constructor(opts: BgRegistryOptions) {
-    this._agentId = opts.agentId;
-    this._sessionId = typeof opts.sessionId === 'string' && opts.sessionId ? opts.sessionId : null;
-    const port = process.env.AGENTDEV_VIEWER_PORT || '2026';
-    this._viewerUrl = opts.viewerUrl ?? `http://127.0.0.1:${port}`;
-    this._deliverImpl = opts.deliverImpl ?? ((text, sourceRef) => this._httpDeliver(text, sourceRef));
     this._now = opts.now ?? Date.now;
     if (typeof opts.observer === 'function') this._observers.push(opts.observer);
     this._exitGuard = opts.enableExitGuard === false
@@ -317,14 +306,6 @@ export class BgRegistry {
     if (this._exitGuard) {
       process.on('exit', this._exitGuard);
     }
-  }
-
-  /**
-   * 更新建表会话归属：共享登记表被同 agentId 的新实例收养时，后续登记的
-   * 任务盖戳新会话；已登记任务的归属保持登记时刻的事实不变。
-   */
-  setSessionId(sessionId: string | undefined): void {
-    this._sessionId = typeof sessionId === 'string' && sessionId ? sessionId : null;
   }
 
   /**
@@ -422,7 +403,7 @@ export class BgRegistry {
     return `完整输出日志: ${task.logPath}（需要更多上下文时用 read 工具读取）`;
   }
 
-  /** bg_status 视角的完整读取：状态 + 增量 + 滞留通知补发。 */
+  /** bg_status 视角的完整读取：状态 + 增量 + 滞留通知补发（经 access 补取）。 */
   statusView(task: BgTask): {
     snapshot: BgTaskSnapshot;
     newOutput: string;
@@ -431,8 +412,7 @@ export class BgRegistry {
   } {
     const read = this.readSince(task, task.readOffset);
     task.readOffset = read.nextOffset;
-    const unsentCatchUp = task.unsent;
-    task.unsent = [];
+    const unsentCatchUp = task.access.consumeUndelivered(task.id);
     return {
       snapshot: this.snapshot(task),
       newOutput: read.text,
@@ -462,11 +442,16 @@ export class BgRegistry {
     const quietAfterMs = opts.inherited === true ? opts.quietAfterMs : mustFinite(opts.quietAfterMs, 'quietAfterMs');
     const id = `bg-${this._nextId++}`;
     const now = this._now();
+    // 登记即向归属 access 申报工作：归属会话在此盖戳捕获（多会话共享表时
+    // 不被收养实例改写），终态通知成功投递 / 补取完成后自动释放。
+    const work = opts.access.registerWork({ id, summary: opts.command });
     const task: BgTask = {
       id,
       command: opts.command,
       workdir: opts.workdir,
-      sessionId: this._sessionId,
+      sessionId: work.sessionId,
+      access: opts.access,
+      work,
       child,
       startedAt: now,
       status: 'running',
@@ -494,7 +479,6 @@ export class BgRegistry {
       watchKeyword: null,
       watchSinceBytes: 0,
       watchScanBytes: 0,
-      unsent: [],
       pendingOutput: '',
       logPath: null,
       logStream: null,
@@ -703,7 +687,12 @@ export class BgRegistry {
 
   // -- 终态 -----------------------------------------------------------------
 
-  private _finalize(task: BgTask, status: BgTaskStatus, exitCode: number | null): void {
+  private _finalize(
+    task: BgTask,
+    status: BgTaskStatus,
+    exitCode: number | null,
+    opts: { manualNotice?: boolean } = {},
+  ): void {
     if (task.status !== 'running') return; // 幂等 + exit 赢（kill 预置 killed）
     task.status = status;
     task.exitCode = exitCode;
@@ -715,13 +704,19 @@ export class BgRegistry {
       try { task.logStream.end(); } catch { /* 尽力而为（进程退出兜底路径） */ }
       task.logStream = null;
     }
+    // 终态通知必须先于 trimDone 入队：若裁剪在前，已有 BG_KEEP_DONE 条
+    // done（且都带未送达事实受保护）时，本任务可能作为唯一可裁项被裁掉，
+    // 随后的 manual 通知失败将无从补取。
     // killed 只来自主动 kill 指令（exit 事件一律走 done）：工具路径的发起方
     // （模型）已从工具结果收到终止回执，再通报是纯冗余。done / 失败是任务
     // 自身的结果，通知保留（退出码 + 尾部输出 + 完整日志入口有信息量）。
-    // 用户手动打断（面板路径 kill manual）另在 kill() 内补发通知。
+    // 用户手动打断（面板路径 kill manual）由发起方差异补发通知。
     if (status !== 'killed') {
       const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
       const label = exitCode === 0 ? '已完成' : '已失败';
+      // 终态通知（terminal）：入队时替换同工作待发的周期通知（exit 赢）；
+      // 成功投递后由 access 自动释放工作登记，投递排队中/失败则登记保留
+      // ——不提前判真完成，bg_status 补取完成后才释放。
       this._notify(task, [
         `[后台任务 ${task.id} ${label}]`,
         `命令: ${task.command}`,
@@ -729,16 +724,39 @@ export class BgRegistry {
         this.logHint(task),
         ...(tail ? [`尾部输出:\n${tail}`] : []),
       ].join('\n'));
+    } else if (opts.manualNotice === true) {
+      // 面板用户打断：发起方是用户而非模型，模型需要知情——补发终态通知
+      // （terminal，先于 trim 入队）：成功投递后由 access 释放工作登记，
+      // 失败滞留由 bg_status 补取。
+      const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
+      this._notify(task, [
+        `[后台任务 ${task.id} 已被用户手动打断]`,
+        `命令: ${task.command}`,
+        `运行时长 ${fmtDur(task.endedAt - task.startedAt)}`,
+        this.logHint(task),
+        ...(tail ? [`尾部输出:\n${tail}`] : []),
+      ].join('\n'));
     }
-    this._trimDone();
+    this.trimDone();
     this._emit('finalized', task);
   }
 
-  private _trimDone(): void {
+  /**
+   * 按保留上限裁剪终态任务（终态时与"工作释放"联动时都会执行）。有未送达
+   * 事实的任务跳过——结果还没交到模型手里，裁掉就断了 bg_status 补取路径。
+   * 终态通知尚在聚合窗口/投递中时同样跳过：等通知送达释放工作登记后，
+   * onWorkRelease 会再次驱动裁剪。
+   */
+  trimDone(): void {
     const done = [...this._tasks.values()].filter((t) => t.status !== 'running');
-    while (done.length > BG_KEEP_DONE) {
-      const oldest = done.shift();
-      if (oldest) this._tasks.delete(oldest.id);
+    let excess = done.length - BG_KEEP_DONE;
+    for (const t of done) {
+      if (excess <= 0) break;
+      // 有未送达事实的终态任务不淘汰：结果还没交到模型手里，trim 掉
+      // 就断了 bg_status 的补取路径（不被 done 保留上限裁掉）。
+      if (t.access.hasUndelivered(t.id)) continue;
+      this._tasks.delete(t.id);
+      excess--;
     }
   }
 
@@ -763,23 +781,20 @@ export class BgRegistry {
    * 没有机会补刀。
    *
    * manual（宿主面板路径）：发起方是用户而非模型，模型不知道任务被打断——
-   * 终止后补发一条"用户手动打断"通知（命令 / 时长 / 尾部输出 / 日志入口，
-   * 结构同 done 通知），让模型不会继续等待一个已死的任务。
+   * 终止时补发一条"用户手动打断"通知（命令 / 时长 / 尾部输出 / 日志入口，
+   * 结构同 done 通知），在 _finalize 内、trimDone 之前入队，让模型不会
+   * 继续等待一个已死的任务，且通知滞留时任务不会先被裁掉。
    */
   kill(taskId: string, opts: { graceful?: boolean; manual?: boolean } = {}): boolean {
     const task = this._tasks.get(taskId);
     if (!task || task.status !== 'running') return false;
     const child = task.child;
-    this._finalize(task, 'killed', null); // 先置终态：close 事件不再重复 finalize
-    if (opts.manual) {
-      const tail = this.tail(task, BG_NOTIFY_TAIL_CHARS);
-      this._notify(task, [
-        `[后台任务 ${task.id} 已被用户手动打断]`,
-        `命令: ${task.command}`,
-        `运行时长 ${fmtDur(task.endedAt! - task.startedAt)}`,
-        this.logHint(task),
-        ...(tail ? [`尾部输出:\n${tail}`] : []),
-      ].join('\n'));
+    this._finalize(task, 'killed', null, { manualNotice: opts.manual === true }); // 先置终态：close 事件不再重复 finalize
+    if (!opts.manual) {
+      // 工具路径发起方（模型）已从工具结果收到回执：主动取消等待——释放
+      // 工作登记，不再申报 pending；既有未送达事实（旧 queued/inflight/
+      // unsent）仍保留，任务受保护可经 bg_status 补取。
+      task.work.release();
     }
     if (child) {
       try {
@@ -832,34 +847,25 @@ export class BgRegistry {
 
   dispose(): void {
     this.killAll();
-    if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
-    // 聚合窗口内未投递的通知摊还给各任务（unsent）：bg_status 仍可补发，
-    // 不随 dispose 静默消失。
-    for (const n of this._pendingNotify) {
-      this._tasks.get(n.taskId)?.unsent.push(n.text);
-    }
-    this._pendingNotify = [];
     if (this._exitGuard) process.removeListener('exit', this._exitGuard);
   }
 
-  // -- 待命请求（bg_tune then="standby"） --------------------------------------
+  // -- 通知出口（衔接 core BackgroundAccess） ----------------------------------
 
   /**
-   * 登记"调完即待命"的一次性请求（bg_tune then="standby"）：不设定时器、
-   * 不产生额外消息——唯一作用是让 ShellFeature 的 StepFinish guard 在本
-   * 步结束时结束当前 call，等待由任务自身的汇报/静默/终态通知承载。
-   * 请求读即消费（consumeStandbyRequest）；CallStart 时清理残留请求，
-   * 防止极端路径（guard 未被咨询）误伤后续回合。
+   * 通知统一出口：提交给任务归属的 BackgroundAccess（排队 / 同接收者聚合 /
+   * 按接收者分组 / 注入投递 / 未送达保留与补取都在通用层）。terminal 标记
+   * 取任务当前状态；replacesPending 一并声明——Bash 的终态文本携带全量
+   * 尾部输出，自含被替换周期通知的信息（替换语义由领域声明，见通用层）。
+   * 终态通知成功投递且无其余滞留事实后由 access 释放工作登记。
    */
-  requestStandby(): void {
-    this._standbyOnce = true;
-  }
-
-  /** 消费待命请求：存在则返回 true 并清除（一次性）。 */
-  consumeStandbyRequest(): boolean {
-    const v = this._standbyOnce;
-    this._standbyOnce = false;
-    return v;
+  private _notify(task: BgTask, text: string): void {
+    const terminal = task.status !== 'running';
+    task.access.submitNotice({
+      workId: task.id,
+      text,
+      ...(terminal ? { terminal, replacesPending: true } : {}),
+    });
   }
 
   // -- 关键词监控（bg_watch） -------------------------------------------------
@@ -869,6 +875,9 @@ export class BgRegistry {
    * 统一汇报出口（reason='watch'）。重复订阅覆盖重置（最新意图为准）；
    * 已终态任务不安排（scheduled=false），调用方直接渲染终态快照。
    * 关键词按码点计最长 BG_WATCH_MAX_CHARS，空/超长拒绝。
+   *
+   * 订阅本身不驱动流程决策：订阅当轮的让出由调用方经 access.requestStandby
+   * 显式登记（一次性），旧订阅持续产生通知但不会误停后续轮次。
    */
   subscribeKeywordWatch(taskId: string, keyword: string): {
     snapshot: BgTaskSnapshot;
@@ -891,60 +900,54 @@ export class BgRegistry {
     task.watchScanBytes = task.totalBytes;
     return { snapshot: this.snapshot(task), keyword: kw, scheduled: true };
   }
+}
 
-  /** 是否存在待触发的关键词订阅（StepFinish guard 据此结束当前回合）。 */
-  hasActiveWatch(): boolean {
-    for (const task of this._tasks.values()) {
-      if (task.status === 'running' && task.watchKeyword) return true;
-    }
-    return false;
-  }
+// ---------------------------------------------------------------------------
+// 投递适配器（HTTP 留在 shell 适配层，core 不做网络）
+// ---------------------------------------------------------------------------
 
-  // -- 通知管线（聚合 + 投递 + 滞留补发） ------------------------------------
-
-  private _notify(task: BgTask, text: string): void {
-    this._pendingNotify.push({ taskId: task.id, text });
-    if (!this._flushTimer) {
-      this._flushTimer = setTimeout(() => {
-        this._flushTimer = null;
-        void this._flushPending();
-      }, BG_AGGREGATION_WINDOW_MS);
-      this._flushTimer.unref?.();
-    }
-  }
-
-  private async _flushPending(): Promise<void> {
-    const batch = this._pendingNotify;
-    this._pendingNotify = [];
-    if (batch.length === 0) return;
-    const text = batch.map((n) => n.text).join('\n\n---\n\n');
-    const lastTaskId = batch[batch.length - 1].taskId;
-    try {
-      await this._deliverImpl(text, lastTaskId);
-    } catch {
-      // 投递失败：滞留到各任务，bg_status 时补发（通知契约的信任底线）。
-      for (const n of batch) {
-        this._tasks.get(n.taskId)?.unsent.push(n.text);
-      }
-    }
-  }
-
-  private async _httpDeliver(text: string, sourceRef: string): Promise<void> {
-    // 聚合批次的归属取末任务（与 sourceRef 同源）；任务已清理时回退当前值。
-    const sessionId = this._tasks.get(sourceRef)?.sessionId ?? this._sessionId;
+/**
+ * ViewerWorker user-turn 投递适配器：把 BackgroundAccess 的通知事件 POST 到
+ * 宿主 user-turn 邮箱（与 react-loop 相同的端口约定，框架内已先例使用内置
+ * fetch）。
+ *
+ * 事件身份与工作身份分离（修复网关幂等吞通知缺陷）：Claw 线程域以
+ * sourceRef 作幂等键（gw-${sourceRef}），若沿用 taskId 会让同任务的后续
+ * 周期/终态提醒全部被判重复吞掉。这里：
+ * - sourceRef = event.eventId（通知事件身份，稳定唯一，幂等键语义正确）；
+ * - metadata.shell.taskId = 批内末个工作 id（保留旧显示契约），
+ *   metadata.shell.taskIds = 批内全部相关任务 id（聚合不丢关联）。
+ * 会话归属取事件捕获的接收者（创建时固定，不回退当前会话）。
+ *
+ * 送达判定（HTTP 2xx 中 payload 失败不可当成功）——按真实响应契约核验：
+ * - 非 2xx → 失败（ViewerWorker 4xx 携带 {success:false,code,error}）；
+ * - 响应体必须可解析为 JSON 对象（损坏 / 截断 / 非 JSON → 失败）；
+ * - payload 明确声明失败（ViewerWorker/Claw 网关线程域的 success:false，
+ *   或 Claw 本地失败形状 ok:false）→ 失败。
+ * 任一失败都由接入层保留未送达事实（bg_status 补取），不伪装成已通知。
+ */
+export function createViewerUserTurnDeliver(agentId: string, viewerUrl?: string): WakeupDeliver {
+  const port = process.env.AGENTDEV_VIEWER_PORT || '2026';
+  const base = viewerUrl ?? `http://127.0.0.1:${port}`;
+  return async (event) => {
     const res = await fetch(
-      `${this._viewerUrl}/api/agents/${encodeURIComponent(this._agentId)}/user-turn`,
+      `${base}/api/agents/${encodeURIComponent(agentId)}/user-turn`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text,
+          text: event.text,
           kind: 'reminder',
           source: 'shell',
-          sourceRef,
-          // 建表会话归属（ADR-0019 决策 8）：宿主按会话路由唤醒的事实字段。
-          ...(sessionId ? { sessionId } : {}),
-          metadata: { shell: { taskId: sourceRef } },
+          sourceRef: event.eventId,
+          // 接收者会话（事件创建时捕获；未声明时不携带，单 runtime 现状）。
+          ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+          metadata: {
+            shell: {
+              taskId: event.workIds[event.workIds.length - 1]!,
+              taskIds: [...event.workIds],
+            },
+          },
         }),
         signal: AbortSignal.timeout(DELIVER_TIMEOUT_MS),
       },
@@ -952,7 +955,26 @@ export class BgRegistry {
     if (!res.ok) {
       throw new Error(`viewer user-turn delivery failed: HTTP ${res.status}`);
     }
-  }
+    // 2xx 也必须完成 payload 校验：损坏响应与显式拒绝都算投递失败。
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new Error(`viewer user-turn delivery failed: unparseable response body (HTTP ${res.status})`);
+    }
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error(`viewer user-turn delivery failed: unexpected response payload (HTTP ${res.status})`);
+    }
+    const rejection = payload as { success?: unknown; ok?: unknown; code?: unknown; error?: unknown };
+    if (rejection.success === false || rejection.ok === false) {
+      // code 是稳定机器分类，error 是人读消息——两者都带便于诊断与断言。
+      const detail = [
+        typeof rejection.code === 'string' && rejection.code ? rejection.code : null,
+        typeof rejection.error === 'string' && rejection.error ? rejection.error : null,
+      ].filter(Boolean).join(': ') || 'rejected by host';
+      throw new Error(`viewer user-turn delivery rejected: ${detail} (HTTP ${res.status})`);
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------

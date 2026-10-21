@@ -159,11 +159,13 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
 
   it('经 Agent executor：超时 + registry → 转后台文案，进程存活（新契约主路径）', async () => {
     const { BgRegistry } = await import('../src/bg-core.js');
-    const deliveries: string[] = [];
-    const registry = new BgRegistry({
-      agentId: 'ShellBgAdoptAgent',
-      enableExitGuard: false,
-      deliverImpl: async (text) => { deliveries.push(text); },
+    const { BackgroundAccess } = await import('@agentdevjs/core');
+    const deliveries: WakeupDeliveryEvent[] = [];
+    const registry = new BgRegistry({ enableExitGuard: false });
+    const access = new BackgroundAccess({
+      source: 'shell',
+      deliver: async (event) => { deliveries.push(event); },
+      aggregationWindowMs: 250,
     });
     const llm = new ShellIntegrationLLM();
     const bash = createShellCommandTool('test bash', {
@@ -171,6 +173,7 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
       bashPath,
       timeoutMs: 300,
       registry,
+      access,
     });
     const agent = new Agent({ llm, maxTurns: 3, name: 'ShellBgAdoptAgent', tools: [bash] });
 

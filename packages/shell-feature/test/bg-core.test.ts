@@ -17,6 +17,8 @@ import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { BackgroundAccess } from '@agentdevjs/core';
+import type { WakeupDeliver, WakeupDeliveryEvent } from '@agentdevjs/core';
 import {
   BgRegistry,
   BG_MIN_INTERVAL_MS,
@@ -69,19 +71,27 @@ function makeFakeChild(): FakeChild {
 
 interface Harness {
   registry: BgRegistry;
-  deliveries: Array<{ text: string; sourceRef: string }>;
+  /** 任务归属接入实例（登记 / 待命 / 通知补取的测试操作面）。 */
+  access: BackgroundAccess;
+  /** 已投递的通知事件（core 通用层捕获）。 */
+  deliveries: WakeupDeliveryEvent[];
   spawn: (opts?: Partial<BgRegisterOptions>) => { child: FakeChild; id: string };
 }
 
-function makeHarness(deliverImpl?: (text: string, ref: string) => Promise<void>): Harness {
-  const deliveries: Array<{ text: string; sourceRef: string }> = [];
-  const defaultDeliver = async (text: string, sourceRef: string) => {
-    deliveries.push({ text, sourceRef });
+function makeHarness(deliver?: WakeupDeliver): Harness {
+  const deliveries: WakeupDeliveryEvent[] = [];
+  const defaultDeliver: WakeupDeliver = async (event) => {
+    deliveries.push(event);
   };
   const registry = new BgRegistry({
-    agentId: 'agent-bg-test',
     enableExitGuard: false,
-    deliverImpl: deliverImpl ?? defaultDeliver,
+  });
+  // 与 ShellFeature.ensureAccess 同款接线：工作释放联动终态裁剪。
+  const access = new BackgroundAccess({
+    source: 'shell',
+    deliver: deliver ?? defaultDeliver,
+    aggregationWindowMs: 250,
+    onWorkRelease: () => registry.trimDone(),
   });
   let seq = 0;
   const spawn = (opts: Partial<BgRegisterOptions> = {}) => {
@@ -90,13 +100,14 @@ function makeHarness(deliverImpl?: (text: string, ref: string) => Promise<void>)
     const task = registry.register(child, {
       command: `cmd-${seq}`,
       workdir,
+      access,
       intervalMs: 60_000,
       quietAfterMs: 30_000,
       ...opts,
     });
     return { child, id: task.id };
   };
-  return { registry, deliveries, spawn };
+  return { registry, access, deliveries, spawn };
 }
 
 async function flushAggregation() {
@@ -363,33 +374,35 @@ describe('通知管线', () => {
 
   it('投递失败滞留，bg_status 补发后清空', async () => {
     let fail = true;
-    const h = makeHarness({ deliverImpl: async () => {
+    const h = makeHarness(async () => {
       if (fail) throw new Error('viewer down');
-    } });
+    });
     const { child, id } = h.spawn({ intervalMs: 60_000, quietAfterMs: 30_000 });
 
     await vi.advanceTimersByTimeAsync(60_000);
     await flushAggregation();
     expect(h.deliveries.length).toBe(0);
-
-    const task = h.registry.get(id)!;
-    expect(task.unsent.length).toBeGreaterThan(0);
+    expect(h.access.hasUndelivered(id)).toBe(true);
 
     fail = false;
+    const task = h.registry.get(id)!;
     const view = h.registry.statusView(task);
     expect(view.unsentCatchUp.length).toBeGreaterThan(0);
+    expect(h.access.hasUndelivered(id)).toBe(false);
     expect(h.registry.statusView(task).unsentCatchUp.length).toBe(0);
     child.emit('close', 0);
   });
 
-  it('exit 通知带尾部输出', async () => {
+  it('exit 通知带尾部输出，事件身份与工作身份分离', async () => {
     const h = makeHarness();
     const { child, id } = h.spawn({});
     child.stdout.emit('data', 'build step 1 done\n');
     child.emit('close', 0);
     await flushAggregation();
     expect(h.deliveries[0].text).toContain('build step 1 done');
-    expect(h.deliveries[0].sourceRef).toBe(id);
+    // 事件身份（幂等键）不再复用 taskId：同任务后续通知不会被网关判重吞掉。
+    expect(h.deliveries[0].eventId).toBeTruthy();
+    expect(h.deliveries[0].workIds).toEqual([id]);
   });
 
   it('节拍汇报不推进增量游标（通知摘要与 bg_status 游标解耦）', async () => {
@@ -431,14 +444,13 @@ describe('通知管线', () => {
     const h = makeHarness();
     h.spawn({});
     h.spawn({});
-    // killAll 是进程退出兜底：kill 回执语义（不通报），pending 通知为空、
-    // unsent 亦为空——没有静默丢失，因为根本不该有通知
+    // killAll 是进程退出兜底：kill 回执语义（不通报，工具路径直接释放
+    // 工作登记）——无未送达事实残留。
     h.registry.dispose();
     const list = h.registry.list();
     expect(list.every((t) => t.status !== 'running')).toBe(true);
     for (const s of list) {
-      const task = h.registry.get(s.id)!;
-      expect(task.unsent.length).toBe(0);
+      expect(h.access.hasUndelivered(s.id)).toBe(false);
     }
   });
 
@@ -447,7 +459,7 @@ describe('通知管线', () => {
     for (let i = 0; i < 8; i++) h.spawn();
     const child = makeFakeChild();
     expect(() => h.registry.register(child, {
-      command: 'overflow', workdir, intervalMs: 60_000, quietAfterMs: 30_000,
+      command: 'overflow', workdir, access: h.access, intervalMs: 60_000, quietAfterMs: 30_000,
     })).toThrow(/上限/);
   });
 });
@@ -690,36 +702,39 @@ describe('汇报间隔锚点', () => {
 });
 
 describe('bg_tune then=standby 待命请求', () => {
-  it('requestStandby 登记一次性请求，consumeStandbyRequest 读即消费', () => {
+  it('requestStandby 登记一次性请求，consumeStandbyRequest 读即消费（需真实可等工作）', () => {
     const h = makeHarness();
-    expect(h.registry.consumeStandbyRequest()).toBe(false); // 初始无请求
-    h.registry.requestStandby();
-    expect(h.registry.consumeStandbyRequest()).toBe(true); // 读即消费
-    expect(h.registry.consumeStandbyRequest()).toBe(false); // 一次性
+    expect(h.access.consumeStandbyRequest()).toBe(false); // 初始无请求
+    h.access.requestStandby();
+    expect(h.access.consumeStandbyRequest()).toBe(false); // 无登记工作：空待命不生效
+    h.spawn({}); // 登记真实工作
+    h.access.requestStandby();
+    expect(h.access.consumeStandbyRequest()).toBe(true); // 读即消费
+    expect(h.access.consumeStandbyRequest()).toBe(false); // 一次性
   });
 
   it('then=standby 且带节奏参数：调整 + 待命回执', async () => {
     const h = makeHarness();
     const { id } = h.spawn({});
-    const tool = createBgTuneTool(h.registry);
+    const tool = createBgTuneTool(h.registry, h.access);
 
     const out = await tool.execute!({ taskId: id, intervalSec: 300, then: 'standby' } as never, {} as never) as string;
     expect(out).toContain('每 300s 一条运行汇报');
     expect(out).toContain('已进入待命');
     expect(out).toContain('本回合到此结束');
     expect(out).toContain('完整结果立即送达');
-    expect(h.registry.consumeStandbyRequest()).toBe(true);
+    expect(h.access.consumeStandbyRequest()).toBe(true);
   });
 
   it('仅 then=standby（无节奏参数）：节奏不动，作为显式待命收尾', async () => {
     const h = makeHarness();
     const { id } = h.spawn({ intervalMs: 120_000, quietAfterMs: 60_000 });
-    const tool = createBgTuneTool(h.registry);
+    const tool = createBgTuneTool(h.registry, h.access);
 
     const out = await tool.execute!({ taskId: id, then: 'standby' } as never, {} as never) as string;
     expect(out).toContain('节奏未调整');
     expect(out).toContain('已进入待命');
-    expect(h.registry.consumeStandbyRequest()).toBe(true);
+    expect(h.access.consumeStandbyRequest()).toBe(true);
     const task = h.registry.get(id)!;
     expect(h.registry.snapshot(task).pace.intervalMs).toBe(120_000); // 节奏未被改动
   });
@@ -727,12 +742,12 @@ describe('bg_tune then=standby 待命请求', () => {
   it('then=standby 之外的取值忽略（不待命）', async () => {
     const h = makeHarness();
     const { id } = h.spawn({});
-    const tool = createBgTuneTool(h.registry);
+    const tool = createBgTuneTool(h.registry, h.access);
 
     const out = await tool.execute!({ taskId: id, intervalSec: 300, then: 'continue' } as never, {} as never) as string;
     expect(out).toContain('每 300s 一条运行汇报');
     expect(out).not.toContain('已进入待命');
-    expect(h.registry.consumeStandbyRequest()).toBe(false);
+    expect(h.access.consumeStandbyRequest()).toBe(false);
   });
 });
 
@@ -743,7 +758,6 @@ describe('bg_watch 关键词监控', () => {
 
     const r = h.registry.subscribeKeywordWatch(id, 'ERROR');
     expect(r.scheduled).toBe(true);
-    expect(h.registry.hasActiveWatch()).toBe(true);
 
     child.stdout.emit('data', 'build step 1 ok\n');
     child.stdout.emit('data', 'FATAL ERROR: link failed\n');
@@ -755,7 +769,6 @@ describe('bg_watch 关键词监控', () => {
     expect(h.deliveries[0].text).toContain('距启动'); // 首条锚点
     expect(h.deliveries[0].text).toContain('link failed'); // 增量携带命中上下文
     expect(h.deliveries[0].text).toContain('下次自动汇报'); // 节奏预告照常
-    expect(h.registry.hasActiveWatch()).toBe(false);
 
     // 一次性：再次出现同一关键词不再通知
     child.stdout.emit('data', 'another ERROR here\n');
@@ -809,7 +822,6 @@ describe('bg_watch 关键词监控', () => {
 
     h.registry.subscribeKeywordWatch(id, 'ok');
     child.emit('close', 0);
-    expect(h.registry.hasActiveWatch()).toBe(false); // 终态清除订阅
     const r = h.registry.subscribeKeywordWatch(id, ''); // 终态优先：不抛参数错
     expect(r.scheduled).toBe(false);
     expect(r.snapshot.status).toBe('done');
@@ -842,7 +854,6 @@ describe('bg_watch 关键词监控', () => {
     await flushAggregation();
     expect(h.deliveries.length).toBe(1);
     expect(h.deliveries[0].text).toContain('周期汇报');
-    expect(h.registry.hasActiveWatch()).toBe(true); // 订阅仍在挂
 
     child.stdout.emit('data', 'test FAIL\n'); // 命中
     await flushAggregation();
@@ -850,10 +861,10 @@ describe('bg_watch 关键词监控', () => {
     expect(h.deliveries[1].text).toContain('关键词命中');
   });
 
-  it('工具面：running 任务返回订阅回执，终态任务返回终态', async () => {
+  it('工具面：订阅即登记一次性待命（旧订阅不驱动后续轮次），running/终态回执正确', async () => {
     const h = makeHarness();
     const { child, id } = h.spawn({ intervalMs: 300_000, quietAfterMs: 300_000 });
-    const tool = createBgWatchTool(h.registry);
+    const tool = createBgWatchTool(h.registry, h.access);
 
     const out = await tool.execute!({ taskId: id, keyword: 'FAIL' } as never, {} as never) as string;
     expect(out).toContain('已订阅关键词监控');
@@ -861,12 +872,17 @@ describe('bg_watch 关键词监控', () => {
     expect(out).toContain('一次性订阅');
     expect(out).toContain('本回合到此结束');
     expect(out).toContain('照常送达');
-    expect(h.registry.hasActiveWatch()).toBe(true);
+    // 订阅当轮显式登记待命（读即消费）；消费后旧订阅仍挂（持续通知），但
+    // 不再驱动流程决策——后续轮次不被未命中的旧 watch 误停。
+    expect(h.access.consumeStandbyRequest()).toBe(true);
+    expect(h.registry.get(id)!.watchKeyword).toBe('FAIL');
 
     child.emit('close', 0);
     const out2 = await tool.execute!({ taskId: id, keyword: 'FAIL' } as never, {} as never) as string;
     expect(out2).toContain('已结束');
     expect(out2).toContain('已完成');
+    // 终态回执不登记待命。
+    expect(h.access.consumeStandbyRequest()).toBe(false);
   });
 });
 
@@ -892,6 +908,7 @@ describe('前台语义（真实子进程）', () => {
       (child, pre) => h.registry.register(child, {
         command: 'sleep 5; echo late',
         workdir,
+        access: h.access,
         intervalMs: 500,
         quietAfterMs: 500,
         inherited: true,
@@ -949,6 +966,7 @@ describe('工具集成（真实子进程）', () => {
       bashPath: findGitBashPath()!,
       resourceRoot: process.cwd(),
       registry: h.registry,
+      access: h.access,
     });
     const out = await tool.execute!({ command: 'echo fast-done' } as never, {} as never) as string;
     expect(out).toContain('fast-done');
@@ -964,6 +982,7 @@ describe('工具集成（真实子进程）', () => {
       bashPath: findGitBashPath()!,
       resourceRoot: process.cwd(),
       registry: h.registry,
+      access: h.access,
     });
     const r = expectWithText(await tool.execute!({ command: 'sleep 5' } as never, {} as never));
     const task = h.registry.get('bg-1')!;
@@ -983,6 +1002,7 @@ describe('工具集成（真实子进程）', () => {
       bashPath: findGitBashPath()!,
       resourceRoot: process.cwd(),
       registry: h.registry,
+      access: h.access,
     });
     await expect(tool.execute!({ command: 'exit 7' } as never, {} as never))
       .rejects.toThrow('退出码 7');
@@ -998,6 +1018,7 @@ describe('工具集成（真实子进程）', () => {
       resourceRoot: process.cwd(),
       timeoutMs: 400,
       registry: h.registry,
+      access: h.access,
     });
     const controller = new AbortController();
     // 直调 execute 没有 executor 计时：模拟 executor 400ms 后超时 abort。

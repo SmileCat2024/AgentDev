@@ -14,9 +14,11 @@ import { EventEmitter } from 'node:events';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { BackgroundAccess } from '@agentdevjs/core';
 import {
   BgRegistry,
   type BgObserverEvent,
+  type BgRegisterOptions,
 } from '../src/bg-core.js';
 import { ShellFeature, findGitBashPath } from '../src/index.js';
 
@@ -49,13 +51,16 @@ interface ObservedHarness {
 function makeObservedHarness(onEvent?: (event: BgObserverEvent) => void): ObservedHarness {
   const events: BgObserverEvent[] = [];
   const registry = new BgRegistry({
-    agentId: 'agent-obs-test',
     enableExitGuard: false,
-    deliverImpl: async () => {},
     observer: (event) => {
       events.push(event);
       onEvent?.(event);
     },
+  });
+  const access = new BackgroundAccess({
+    source: 'shell',
+    deliver: async () => {},
+    aggregationWindowMs: 250,
   });
   let seq = 0;
   const spawn = (opts: { readyPattern?: string | null } = {}) => {
@@ -64,10 +69,11 @@ function makeObservedHarness(onEvent?: (event: BgObserverEvent) => void): Observ
     const task = registry.register(child, {
       command: `cmd-${seq}`,
       workdir,
+      access,
       intervalMs: 60_000,
       quietAfterMs: 30_000,
       readyPattern: opts.readyPattern ?? null,
-    });
+    } satisfies Partial<BgRegisterOptions> as BgRegisterOptions);
     return { child, id: task.id };
   };
   return { registry, events, spawn };
@@ -165,18 +171,18 @@ describe('健壮性', () => {
   it('观察者抛错被吞，引擎与后续事件不受影响', async () => {
     const events: BgObserverEvent[] = [];
     const registry = new BgRegistry({
-      agentId: 'agent-obs-throw',
       enableExitGuard: false,
-      deliverImpl: async () => {},
       observer: (event) => {
         if (event.kind === 'registered') throw new Error('observer boom');
         events.push(event);
       },
     });
+    const access = new BackgroundAccess({ source: 'shell', deliver: async () => {} });
     const child = makeFakeChild();
     const task = registry.register(child, {
       command: 'cmd-throw',
       workdir,
+      access,
       intervalMs: 60_000,
       quietAfterMs: 30_000,
     });
@@ -189,15 +195,13 @@ describe('健壮性', () => {
   });
 
   it('未注册观察者时 register/输出/终态照常', () => {
-    const registry = new BgRegistry({
-      agentId: 'agent-no-obs',
-      enableExitGuard: false,
-      deliverImpl: async () => {},
-    });
+    const registry = new BgRegistry({ enableExitGuard: false });
+    const access = new BackgroundAccess({ source: 'shell', deliver: async () => {} });
     const child = makeFakeChild();
     const task = registry.register(child, {
       command: 'cmd-no-obs',
       workdir,
+      access,
       intervalMs: 60_000,
       quietAfterMs: 30_000,
     });
@@ -237,6 +241,7 @@ describe('ShellFeature 集成面', () => {
     registry.register(child, {
       command: 'cmd-feature',
       workdir,
+      access: feature.getBackgroundAccess()!,
       intervalMs: 60_000,
       quietAfterMs: 30_000,
     });
@@ -276,6 +281,7 @@ describe('ShellFeature 集成面', () => {
     registryA.register(child, {
       command: 'cmd-shared',
       workdir,
+      access: featureA.getBackgroundAccess()!,
       intervalMs: 60_000,
       quietAfterMs: 30_000,
     });

@@ -14,6 +14,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { BackgroundAccess } from '@agentdevjs/core';
 import { BgRegistry } from '../src/bg-core.js';
 import { createBashBgTool, createShellCommandTool } from '../src/index.js';
 import { findGitBashPath } from '../src/tools.js';
@@ -21,12 +22,10 @@ import { isWithRewriteResult } from '@agentdevjs/core';
 
 const workdir = mkdtempSync(join(tmpdir(), 'agentdev-nul-rewrite-'));
 
-function makeRegistry(): BgRegistry {
-  return new BgRegistry({
-    agentId: 'agent-nul-rewrite-test',
-    enableExitGuard: false,
-    deliverImpl: async () => {},
-  });
+function makeRegistry(): { registry: BgRegistry; access: BackgroundAccess } {
+  const registry = new BgRegistry({ enableExitGuard: false });
+  const access = new BackgroundAccess({ source: 'shell', deliver: async () => {} });
+  return { registry, access };
 }
 
 describe('bash >nul rewrite recording (ADR-0023)', () => {
@@ -72,12 +71,13 @@ describe('bash >nul rewrite recording (ADR-0023)', () => {
   }, 10_000);
 
   it('bash_bg: 捕获窗内完成的含 >nul 命令 → 同样记录生效命令', async () => {
-    const registry = makeRegistry();
+    const { registry, access } = makeRegistry();
     const tool = createBashBgTool('test bg', {
       workdir,
       bashPath: findGitBashPath()!,
       resourceRoot: process.cwd(),
       registry,
+      access,
     });
     const result = await tool.execute!(
       { command: 'echo bg-out >nul && echo bg-done' } as never,

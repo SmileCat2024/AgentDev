@@ -7,9 +7,10 @@
  * - bash_bg 启动观察 2s：窗口内退出直接带回结果（预判错了，白捡前台体验）；
  * - 节奏参数单位为秒，模型侧声明 clamp（interval ≥ 60s / quietAfter ≥ 30s）；
  * - 不提供主动等待原语：等待 = 结束回合，由任务自身的汇报/静默/终态通知
- *   唤醒。bg_tune 的 then="standby" 是唯一显式的"调完即待命"出口（登记
- *   一次性请求即返回，本回合由 StepFinish guard 结束，同 guard 也服务
- *   bg_watch 的订阅即停）；
+ *   唤醒。bg_tune 的 then="standby" 是唯一显式的"调完即待命"出口（向任务
+ *   归属的 BackgroundAccess 登记一次性待命请求即返回，本回合由 StepFinish
+ *   guard 消费后结束；bg_watch 的"订阅即停"同走该通道——旧订阅不误停
+ *   后续轮次）；
  * - bg_watch 关键词监控订阅（一次性，≤ 20 字符）：只匹配订阅之后的新输出，
  *   命中即通知；节拍汇报不消耗它；
  * - 观察与进程干预分面：bg_tune 调汇报节奏（统一 clamp，转后台任务的 20s
@@ -18,6 +19,7 @@
 
 import type { Tool } from '@agentdevjs/core';
 import { createTool, withDisplay, withRewrite } from '@agentdevjs/core';
+import type { BackgroundAccess } from '@agentdevjs/core';
 import type { BgRegistry, BgSpawnOptions } from './bg-core.js';
 import {
   BG_CAPTURE_WINDOW_MS,
@@ -32,6 +34,8 @@ import { makeKillChild } from './shell-core.js';
 
 export interface BgToolOptions extends BgSpawnOptions {
   registry: BgRegistry;
+  /** 任务归属接入实例（登记 / 待命意图 / 通知衔接的事实源，见 BgRegisterOptions）。 */
+  access: BackgroundAccess;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +157,7 @@ export function createBashBgTool(description: string, opts: BgToolOptions): Tool
         task = registry.register(child, {
           command: runCommand,
           workdir: opts.workdir,
+          access: opts.access,
           intervalMs: Math.round(intervalSec * 1000),
           quietAfterMs: Math.round(quietAfterSec * 1000),
           ...(readyPattern ? { readyPattern } : {}),
@@ -298,7 +303,7 @@ export function createBgStatusTool(registry: BgRegistry): Tool {
   });
 }
 
-export function createBgWatchTool(registry: BgRegistry): Tool {
+export function createBgWatchTool(registry: BgRegistry, access: BackgroundAccess): Tool {
   return createTool({
     name: 'bg_watch',
     description: BG_WATCH_INLINE_DESCRIPTION,
@@ -318,6 +323,9 @@ export function createBgWatchTool(registry: BgRegistry): Tool {
         const s = r.snapshot;
         return `${taskId} 已结束（${terminalLabel(s.status, s.exitCode)}），运行 ${fmtDur(s.durationMs)}。`;
       }
+      // 订阅当轮显式让出（一次性待命）：旧订阅此后只产生通知，不再干预
+      // 流程决策——后续轮次不会被未命中的旧 watch 误停。
+      access.requestStandby();
       return [
         `已订阅关键词监控 ${taskId}："${r.keyword}"——只匹配订阅之后的新输出，命中立即通知（含当时新增输出）；本回合到此结束，交由推送唤醒。`,
         `这是一次性订阅：命中即消耗，要继续盯同一关键词就再订阅一次。任务自身的自动汇报不受影响，照常送达。`,
@@ -326,7 +334,7 @@ export function createBgWatchTool(registry: BgRegistry): Tool {
   });
 }
 
-export function createBgTuneTool(registry: BgRegistry): Tool {
+export function createBgTuneTool(registry: BgRegistry, access: BackgroundAccess): Tool {
   return createTool({
     name: 'bg_tune',
     description: BG_TUNE_INLINE_DESCRIPTION,
@@ -351,8 +359,15 @@ export function createBgTuneTool(registry: BgRegistry): Tool {
       }
       const standbyNote = '已进入待命，本回合到此结束；任务有新进展会自动汇报，静默超时会提醒，结束时完整结果立即送达。';
       if (intervalSec === undefined && quietAfterSec === undefined) {
-        // 仅 standby：节奏不动，作为显式待命收尾（幂等仪式）。
-        registry.requestStandby();
+        // 仅 standby：先核实现状——目标不存在或已终态时返回现状，不盲登记
+        // 待命（通用层消费空待命也不生效）。
+        const task = registry.get(taskId);
+        if (!task) return `未找到后台任务 ${taskId}。用 bg_list 查看现有任务。`;
+        if (task.status !== 'running') {
+          const s = registry.snapshot(task);
+          return `${taskId} 已结束（${terminalLabel(s.status, s.exitCode)}），运行 ${fmtDur(s.durationMs)}。`;
+        }
+        access.requestStandby();
         return `节奏未调整（未指定 intervalSec / quietAfterSec）。${standbyNote}`;
       }
       const pace = registry.tune(taskId, {
@@ -361,7 +376,7 @@ export function createBgTuneTool(registry: BgRegistry): Tool {
       });
       if (!pace) return `未找到运行中的后台任务 ${taskId}。用 bg_list 查看现有任务。`;
       if (standby) {
-        registry.requestStandby();
+        access.requestStandby();
         return `汇报节奏已调整：每 ${Math.round(pace.intervalMs / 1000)}s 一条运行汇报 / 静默 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）。${standbyNote}`;
       }
       return `汇报节奏已调整：每 ${Math.round(pace.intervalMs / 1000)}s 一条运行汇报 / 静默 ${Math.round(pace.quietAfterMs / 1000)}s 起提醒（已重新计时，下次汇报最坏 ${Math.round(pace.intervalMs / 1000)}s 后）。此后由自动汇报驱动，无需重复调用。`;

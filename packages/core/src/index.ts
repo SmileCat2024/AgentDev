@@ -390,6 +390,18 @@ export type {
   PendingWakeup,
   CallOutcome,
 } from './core/lifecycle.js';
+
+// 通用后台接入（ADR-0031）：待唤醒工作登记 / 一次性待命 / 唤醒通知衔接
+export { BackgroundAccess } from './core/background-access.js';
+export type {
+  WakeupDeliver,
+  WakeupDeliveryEvent,
+  PendingWorkHost,
+  BackgroundWorkSpec,
+  BackgroundWorkHandle,
+  BackgroundNoticeSpec,
+  BackgroundAccessOptions,
+} from './core/background-access.js';
 export type { MessageExecutionMeta } from './core/types.js';
 
 export type { ModelConfig, AgentConfigFile, ThinkingEffort } from './core/config.js';

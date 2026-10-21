@@ -316,9 +316,18 @@ class AgentBase {
    * Feature 在拿到 agent 引用后申报：provider 返回当前仍待唤醒的后台工作
    * 列表。同一 source 重复注册时后者覆盖前者（feature 在 CallStart 重注册
    * 幂等）。未注册 = 降级现状（回合结束仍判 completed）。
+   *
+   * @returns 注销句柄：从注册表移除本 provider。仅在 map 当前值仍是本
+   * provider 时才删除——旧句柄在 source 被替换后调用是安全 no-op，不会
+   * 误删后继注册者。忽略返回值的既有调用方行为不变。
    */
-  registerPendingWorkProvider(source: string, provider: () => PendingWakeup[]): void {
+  registerPendingWorkProvider(source: string, provider: () => PendingWakeup[]): () => void {
     this._pendingWorkProviders.set(source, provider);
+    return () => {
+      if (this._pendingWorkProviders.get(source) === provider) {
+        this._pendingWorkProviders.delete(source);
+      }
+    };
   }
 
   /**
@@ -454,6 +463,9 @@ class AgentBase {
       let preCallBoundary: ContextBoundaryV2 | undefined;
       let preCallRuntimeState: RuntimeStateWithoutContext | undefined;
       let finalInput: string | undefined;
+      // ReAct 循环结果提级：catch 路径（钩子抛错等）仍需读取已消费的
+      // busy 排队输入身份，保证异常回退时关联不丢（ADR-0031 步骤一）
+      let reactResult: ReActResult | undefined;
       try {
       // ========== Agent Initiate（仅首次）==========
       if (!this._initialized) {
@@ -509,7 +521,14 @@ class AgentBase {
       // 会话事件流：turn.started
       try {
         const { emitSessionEvent } = await import('./session-events.js');
-        emitSessionEvent({ type: 'turn.started', turn: this._callIndex });
+        // 输入身份随事件透传（ADR-0031 步骤一）：观察器据此把本回合关联回
+        // 触发它的那次提交（如 WorkThread 指令的 commandId）；缺省不加字段。
+        emitSessionEvent({
+          type: 'turn.started',
+          turn: this._callIndex,
+          ...(options?.source ? { source: options.source } : {}),
+          ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
+        });
       } catch { /* session-events 模块不可用 */ }
 
       // 添加用户输入（使用可能被 Feature 修改过的缓存）。
@@ -544,6 +563,7 @@ class AgentBase {
 
       // ========== ReAct 循环 ==========
       const result = await this.reactRunner!.run(input, context, { isFirstCall, callIndex: this._callIndex, signal: this._abortController?.signal });
+      reactResult = result;
 
       // 保存上下文
       this.persistentContext = context;
@@ -560,7 +580,7 @@ class AgentBase {
         result.completed = false;
       }
 
-      const outcome = this.createCallOutcome(result, callStartTime, pendingWakeups);
+      const outcome = this.createCallOutcome(result, callStartTime, pendingWakeups, options);
       this._lastCallOutcome = outcome;
 
       // ========== Call Finish（成功）==========
@@ -663,6 +683,14 @@ class AgentBase {
         startedAt: callStartTime,
         finishedAt: Date.now(),
         error: { category: 'exception', message: errorMsg },
+        // 异常路径同样携带触发输入身份（ADR-0031 步骤一）：观察器据
+        // turn.failed 的 sourceRef 仍能把失败关联回触发它的提交；
+        // ReAct 循环已消费的 busy 排队输入身份同样不丢
+        ...(options?.source ? { source: options.source } : {}),
+        ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
+        ...(reactResult?.consumedSourceRefs && reactResult.consumedSourceRefs.length > 0
+          ? { consumedSourceRefs: reactResult.consumedSourceRefs }
+          : {}),
       };
       this._lastCallOutcome = outcome;
 
@@ -2478,6 +2506,7 @@ class AgentBase {
     result: ReActResult,
     startedAt: number,
     pendingWakeups?: PendingWakeup[],
+    options?: CallTurnOptions,
   ): CallOutcome {
     const status = result.completed
       ? 'completed'
@@ -2499,6 +2528,13 @@ class AgentBase {
       ...(result.error ? { error: result.error } : {}),
       ...(result.model ? { model: result.model } : {}),
       ...(pendingWakeups && pendingWakeups.length > 0 ? { pendingWakeups } : {}),
+      // 输入身份（ADR-0031 步骤一）：触发输入的身份 + 本回合 busy 排队消费
+      // 的输入身份列表，供观察器把执行结果关联回触发它的提交。
+      ...(options?.source ? { source: options.source } : {}),
+      ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
+      ...(result.consumedSourceRefs && result.consumedSourceRefs.length > 0
+        ? { consumedSourceRefs: result.consumedSourceRefs }
+        : {}),
     };
   }
 

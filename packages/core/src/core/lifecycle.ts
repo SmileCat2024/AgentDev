@@ -222,6 +222,21 @@ export interface CallOutcome {
    * 其余 reason 下也可能携带（如 cancelled 时仍有任务在跑）。
    */
   pendingWakeups?: PendingWakeup[];
+  /**
+   * 本回合触发输入的来源身份（随 CallTurnOptions 流入；ADR-0031 步骤一）。
+   * 供观察器把本回合的执行结果关联回触发它的那次提交；缺省表示输入身份
+   * 未知（如直接调用 onCall 未携带）。
+   */
+  source?: string;
+  /** 触发输入的来源侧事件/请求标识（如 WorkThread 指令的 commandId） */
+  sourceRef?: string;
+  /**
+   * 本回合内经 step 边界注入（busy 排队消费）的输入 sourceRef 列表，按注入
+   * 顺序排列。这些输入不产生独立 turn，其执行随本回合的终态落定；观察器
+   * 据此把"排队追加的指令"关联到消费它的那个回合。缺省表示本回合没有
+   * 消费带身份的排队输入。
+   */
+  consumedSourceRefs?: string[];
 }
 
 /** @deprecated 使用 CallOutcome.reason。保留旧 hook/API 的类型兼容。 */

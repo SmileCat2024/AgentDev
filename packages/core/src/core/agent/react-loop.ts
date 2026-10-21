@@ -175,6 +175,8 @@ export class ReActLoopRunner {
     let finishReason: CallFinishReason = 'limit_reached';
     let error: CallOutcome['error'];
     let providerStopReason: string | null | undefined;
+    // 本回合内经 step 边界注入的排队输入身份（按注入顺序累积；ADR-0031 步骤一）
+    const consumedSourceRefs: string[] = [];
 
     outerLoop:
     for (let step = 0; step < this.agent.maxTurns; step++) {
@@ -735,7 +737,13 @@ export class ReActLoopRunner {
 
       if (stepResult === 'break') {
         // Hook 触发的完成：检查是否有排队消息，如果有则注入并继续循环
-        if (await this._drainAndInjectQueuedInputs(context, callIndex, 'Hook 结束后队列检查')) {
+        const drained = await this._drainAndInjectQueuedInputs(context, callIndex, 'Hook 结束后队列检查');
+        if (drained.injected) {
+          consumedSourceRefs.push(...drained.sourceRefs);
+          // hook end 置位的 completed 必须撤销：新输入只是注入，尚未被模型
+          // 处理——若本次 continue 后预算耗尽，终态必须落 limit_reached，
+          // 不得带着 completed=true 误报完成（ADR-0031 步骤一）。
+          completed = false;
           continue outerLoop;
         }
         break;
@@ -750,15 +758,22 @@ export class ReActLoopRunner {
       if (typeof stepResult === 'object') {
         // 自然完成：检查是否有排队消息，如果有则注入并继续循环
         // 否则这些消息会永远卡在队列里（因为 return 后不会再有 step 边界检查）
-        if (await this._drainAndInjectQueuedInputs(context, callIndex, 'Call 完成后队列检查')) {
+        const drained = await this._drainAndInjectQueuedInputs(context, callIndex, 'Call 完成后队列检查');
+        if (drained.injected) {
+          consumedSourceRefs.push(...drained.sourceRefs);
           continue outerLoop;
+        }
+        if (consumedSourceRefs.length > 0) {
+          return { ...stepResult, consumedSourceRefs: [...consumedSourceRefs] };
         }
         return stepResult;
       }
 
       // ========== Step 级别队列检查 ==========
       // 在每个 step 结束后检查是否有排队消息，如果有则全部注入并继续循环
-      if (await this._drainAndInjectQueuedInputs(context, callIndex, 'Step 级别队列')) {
+      const stepDrained = await this._drainAndInjectQueuedInputs(context, callIndex, 'Step 级别队列');
+      if (stepDrained.injected) {
+        consumedSourceRefs.push(...stepDrained.sourceRefs);
         continue outerLoop;
       }
     }
@@ -798,6 +813,7 @@ export class ReActLoopRunner {
       finishReason,
       ...(error ? { error } : {}),
       ...(providerStopReason !== undefined ? { model: { providerStopReason } } : {}),
+      ...(consumedSourceRefs.length > 0 ? { consumedSourceRefs: [...consumedSourceRefs] } : {}),
     };
   }
 
@@ -807,7 +823,7 @@ export class ReActLoopRunner {
    * @param agentId Agent ID
    * @returns 排队消息（文本 + 图片 + 能力激活通知 + 自由元数据 + 输入身份），如果没有则返回 null
    */
-  private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; timestamp?: number } | null> {
+  private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number } | null> {
     // 从环境变量获取 ViewerWorker 端口
     const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
     const viewerUrl = `http://127.0.0.1:${viewerPort}`;
@@ -823,10 +839,17 @@ export class ReActLoopRunner {
       }
 
       const data = await res.json();
-      if (data.input && data.input.text) {
+      // 空文本项：resume 唤醒的合法形态（text 允许为空）。不能按"无项"返回——
+      // 否则 drain pass 在此提前终止，堵住其后排队项的消费与身份关联。
+      // resume 项由注入循环消费即弃（不注入、不进 consumedSourceRefs）。
+      if (data.input && (data.input.text || data.input.kind === 'resume')) {
         return {
           text: data.input.text,
-          ...(data.input.kind === 'reminder' ? { kind: 'reminder' as const } : {}),
+          // kind 随项返回：reminder 落 system 消息，resume 由注入循环
+          // 消费即弃（busy 排队中续作目的已被当前回合满足）
+          ...((data.input.kind === 'reminder' || data.input.kind === 'resume')
+            ? { kind: data.input.kind as TurnKind }
+            : {}),
           ...(Array.isArray(data.input.images) && data.input.images.length > 0
             ? { images: data.input.images }
             : {}),
@@ -837,6 +860,9 @@ export class ReActLoopRunner {
             ? { metadata: data.input.metadata as Record<string, unknown> }
             : {}),
           ...(typeof data.input.source === 'string' && data.input.source ? { source: data.input.source } : {}),
+          // 输入身份（ADR-0031 步骤一）：busy 排队消费时随项返回，由注入端
+          // 聚合为 consumedSourceRefs 挂到本回合终态，观察器据此关联执行
+          ...(typeof data.input.sourceRef === 'string' && data.input.sourceRef ? { sourceRef: data.input.sourceRef } : {}),
           ...(typeof data.input.timestamp === 'number' && Number.isFinite(data.input.timestamp)
             ? { timestamp: data.input.timestamp }
             : {}),
@@ -853,16 +879,20 @@ export class ReActLoopRunner {
    * 排空所有排队消息并注入到 context。
    * 在 step 边界和 call 完成时调用，确保用户在 agent 忙时排队的消息不会丢失。
    *
-   * @returns true 如果有消息被注入（调用方应 continue 循环）
+   * @returns {{ injected, sourceRefs }} injected = 本批是否有消息被注入
+   * （调用方应 continue 循环——与消息是否携带身份无关）；sourceRefs = 被注入
+   * 消息的 sourceRef 列表（按注入顺序；不带身份的项不进列表，ADR-0031 步骤
+   * 一）。resume 项在 busy 排队中被消费即弃，不注入也不进列表。
    */
   private async _drainAndInjectQueuedInputs(
     context: Context,
     callIndex: number,
     logLabel: string,
-  ): Promise<boolean> {
-    if (!this.agent.agentId) return false;
+  ): Promise<{ injected: boolean; sourceRefs: string[] }> {
+    if (!this.agent.agentId) return { injected: false, sourceRefs: [] };
+    const consumedSourceRefs: string[] = [];
     try {
-      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; timestamp?: number }> = [];
+      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number }> = [];
       while (true) {
         const qi = await this.fetchQueuedInput(this.agent.agentId);
         if (!qi) break;
@@ -900,15 +930,18 @@ export class ReActLoopRunner {
             // Date.now() 偏晚，不能作为"输入发生时间"。
             context.addUserMessage(qi.text, interjectionTurn, qi.images, qi.timestamp);
           }
+          if (qi.sourceRef) {
+            consumedSourceRefs.push(qi.sourceRef);
+          }
           injected = true;
         }
         this.pushToDebug(context.getAll(), false, context.getTimestamps());
-        return injected;
+        if (injected) return { injected: true, sourceRefs: consumedSourceRefs };
       }
     } catch (e) {
       logger.debug(`${logLabel}：队列查询失败，忽略`, { error: e instanceof Error ? e.message : String(e) });
     }
-    return false;
+    return { injected: false, sourceRefs: [] };
   }
 
   /**

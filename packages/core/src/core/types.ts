@@ -859,6 +859,12 @@ export interface CallTurnOptions {
   kind?: TurnKind;
   /** reminder 落地为 system 消息时的 Message.source（如 'shell'） */
   source?: string;
+  /**
+   * 输入身份（ADR-0031 步骤一）：来源侧事件/请求标识（如 WorkThread 指令的
+   * commandId）。随本条输入流动到 turn 事件，供观察器把执行结果关联回触发
+   * 它的那次提交；不承担全局幂等语义（与 QueuedInput.sourceRef 同义）。
+   */
+  sourceRef?: string;
 }
 
 /**

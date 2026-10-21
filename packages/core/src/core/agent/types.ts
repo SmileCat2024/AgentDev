@@ -49,6 +49,11 @@ export interface ReActResult {
   error?: CallOutcome['error'];
   /** 最近一次模型响应的来源信息 */
   model?: CallOutcome['model'];
+  /**
+   * 本回合内经 step 边界注入（busy 排队消费）的输入 sourceRef 列表（按注入
+   * 顺序），由 agent 层透传到 CallOutcome / turn.completed（ADR-0031 步骤一）。
+   */
+  consumedSourceRefs?: string[];
 }
 
 /**

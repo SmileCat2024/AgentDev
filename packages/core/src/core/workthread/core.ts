@@ -618,6 +618,8 @@ export class WorkThread {
     capabilityActivations?: string[];
     images?: string[];
     metadata?: Record<string, unknown>;
+    /** 来源侧引用（ADR-0031 步骤一）：由 sourceRef 携带进入线程域的输入随行记录，框架只透传不解释 */
+    originSourceRef?: string;
   }): Promise<{ command: WorkThreadCommand; duplicate: boolean; threadRevision: number }> {
     const threadId = validateId(opts.threadId, 'threadId');
     // kind 为官方封闭词表：未传按 user_message；显式传入未知值直接拒绝——
@@ -682,6 +684,9 @@ export class WorkThread {
       ...(normalizedImages.length > 0 ? { images: normalizedImages } : {}),
       ...(opts.metadata && typeof opts.metadata === 'object' && !Array.isArray(opts.metadata)
         && Object.keys(opts.metadata).length > 0 ? { metadata: opts.metadata } : {}),
+      ...(typeof opts.originSourceRef === 'string' && opts.originSourceRef.trim()
+        ? { originSourceRef: opts.originSourceRef.trim() }
+        : {}),
     });
 
     let appendOutcome = { command, duplicate: false };

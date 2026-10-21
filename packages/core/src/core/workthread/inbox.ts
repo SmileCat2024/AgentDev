@@ -74,6 +74,13 @@ export interface WorkThreadCommand {
   images?: string[];
   /** 随指令流动的 user-turn 自由元数据（框架只透传不解释，key 由消费方命名空间化） */
   metadata?: Record<string, unknown>;
+  /**
+   * 来源侧引用（ADR-0031 步骤一）：本指令由携带 sourceRef 的输入进入线程域
+   * 时随行记录该原始事件引用（如唤醒 reminder 的事件 ID）。框架只透传不解释；
+   * 宿主观察器据此把"线程域内换得新 commandId 的指令"关联回它进入前的
+   * 来源侧事件/工作标识。缺省表示指令不经引用携带进入（如直接派发）。
+   */
+  originSourceRef?: string;
 }
 
 /**
@@ -88,6 +95,7 @@ export function createCommandRecord(opts: {
   capabilityActivations?: string[];
   images?: string[];
   metadata?: Record<string, unknown>;
+  originSourceRef?: string;
 }): WorkThreadCommand {
   const now = Date.now();
   return {
@@ -113,6 +121,9 @@ export function createCommandRecord(opts: {
     ...(opts.metadata && typeof opts.metadata === 'object' && !Array.isArray(opts.metadata)
       && Object.keys(opts.metadata).length > 0
       ? { metadata: opts.metadata }
+      : {}),
+    ...(typeof opts.originSourceRef === 'string' && opts.originSourceRef
+      ? { originSourceRef: opts.originSourceRef }
       : {}),
   };
 }

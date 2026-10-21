@@ -366,6 +366,50 @@ describe('pending-work 申报通道（registerPendingWorkProvider / collectPendi
     const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 });
     expect(agent.collectPendingWakeups()).toEqual([]);
   });
+
+  it('注销句柄只移除自己的 provider，多 source 并存互不影响', () => {
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 });
+    const disposeA = agent.registerPendingWorkProvider('a', () => [
+      { source: 'a', id: 'a-1', summary: 'one' },
+    ]);
+    agent.registerPendingWorkProvider('b', () => [
+      { source: 'b', id: 'b-1', summary: 'two' },
+    ]);
+
+    disposeA();
+    expect(agent.collectPendingWakeups()).toEqual([
+      { source: 'b', id: 'b-1', summary: 'two' },
+    ]);
+  });
+
+  it('替换后旧 disposer 是安全 no-op，不误删后继注册者', () => {
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 });
+    const disposeOld = agent.registerPendingWorkProvider('shell', () => [
+      { source: 'shell', id: 'old', summary: 'old' },
+    ]);
+    agent.registerPendingWorkProvider('shell', () => [
+      { source: 'shell', id: 'new', summary: 'new' },
+    ]);
+
+    // 旧句柄在 source 已被替换后调用：map 当前值不再是旧 provider，不得删除
+    disposeOld();
+    expect(agent.collectPendingWakeups()).toEqual([
+      { source: 'shell', id: 'new', summary: 'new' },
+    ]);
+  });
+
+  it('注销后不再残留回调（collect 恢复空，销毁语义干净）', () => {
+    let calls = 0;
+    const agent = new Agent({ llm: new ImmediateLLM(), maxTurns: 1 });
+    const dispose = agent.registerPendingWorkProvider('shell', () => {
+      calls += 1;
+      return [{ source: 'shell', id: 'x', summary: 'x' }];
+    });
+    expect(agent.collectPendingWakeups()).toHaveLength(1);
+    dispose();
+    expect(agent.collectPendingWakeups()).toEqual([]);
+    expect(calls).toBe(1);
+  });
 });
 
 // ========== 决策上下文事实位 ==========

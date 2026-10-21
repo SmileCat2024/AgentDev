@@ -97,8 +97,18 @@ export interface TurnFailure {
 }
 
 export type SessionEvent =
-  | { type: 'thread.started'; threadId: string }
-  | { type: 'turn.started'; turn: number }
+  | {
+      type: 'thread.started';
+      threadId: string;
+    }
+  | {
+      type: 'turn.started';
+      turn: number;
+      /** 触发输入的来源身份（ADR-0031 步骤一；缺省 = 输入身份未知） */
+      source?: string;
+      /** 触发输入的来源侧事件/请求标识（如 WorkThread 指令的 commandId） */
+      sourceRef?: string;
+    }
   | { type: 'item.started'; item: SessionItem }
   | { type: 'item.completed'; item: SessionItem }
   | {
@@ -112,9 +122,43 @@ export type SessionEvent =
       suspended?: boolean;
       /** 回合结束时刻的待唤醒工作快照（与 CallOutcome.pendingWakeups 同源） */
       pendingWakeups?: PendingWakeup[];
+      /** 触发输入的来源身份（与 CallOutcome.source 同源） */
+      source?: string;
+      /** 触发输入的来源侧标识（与 CallOutcome.sourceRef 同源） */
+      sourceRef?: string;
+      /**
+       * 本回合内经 step 边界注入（busy 排队消费）的输入 sourceRef 列表
+       * （与 CallOutcome.consumedSourceRefs 同源，按注入顺序）。
+       */
+      consumedSourceRefs?: string[];
     }
-  | { type: 'turn.cancelled'; turn: number; error?: TurnFailure }
-  | { type: 'turn.failed'; turn: number; error: TurnFailure };
+  | {
+      type: 'turn.cancelled';
+      turn: number;
+      error?: TurnFailure;
+      /** 触发输入的来源身份（与 CallOutcome.source 同源） */
+      source?: string;
+      /** 触发输入的来源侧标识（与 CallOutcome.sourceRef 同源） */
+      sourceRef?: string;
+      /**
+       * 本回合内经 step 边界注入（busy 排队消费）的输入 sourceRef 列表
+       * （与 CallOutcome.consumedSourceRefs 同源）。取消/失败同样携带：
+       * 已消费的身份不因回合终态形态而丢失，观察器据此判定这些输入
+       * 的执行未完成（limit_reached / cancelled 下不得当作已处理）。
+       */
+      consumedSourceRefs?: string[];
+    }
+  | {
+      type: 'turn.failed';
+      turn: number;
+      error: TurnFailure;
+      /** 触发输入的来源身份（与 CallOutcome.source 同源） */
+      source?: string;
+      /** 触发输入的来源侧标识（与 CallOutcome.sourceRef 同源） */
+      sourceRef?: string;
+      /** 同 turn.cancelled.consumedSourceRefs：已消费身份不因失败丢失 */
+      consumedSourceRefs?: string[];
+    };
 
 export type SessionEventListener = (event: SessionEvent) => void;
 
@@ -222,6 +266,8 @@ export function emitToolResultEvents(call: ToolCall, result: ToolExecResult, tur
  *
  * outcome 透传挂起事实（ADR-0019）：reason 为 suspended 时带 suspended 标志
  * 与 pendingWakeups 快照；其余 reason 不加字段，事件形状向后兼容。
+ * 输入身份（source/sourceRef/consumedSourceRefs，ADR-0031 步骤一）同样从
+ * outcome 透传；缺省时不加字段。
  */
 export function emitTurnCompleted(turn: number, usage?: TurnUsage, outcome?: CallOutcome): void {
   emitSessionEvent({
@@ -231,6 +277,11 @@ export function emitTurnCompleted(turn: number, usage?: TurnUsage, outcome?: Cal
     ...(outcome?.reason === 'suspended' ? { suspended: true } : {}),
     ...(outcome?.pendingWakeups && outcome.pendingWakeups.length > 0
       ? { pendingWakeups: outcome.pendingWakeups }
+      : {}),
+    ...(outcome?.source ? { source: outcome.source } : {}),
+    ...(outcome?.sourceRef ? { sourceRef: outcome.sourceRef } : {}),
+    ...(outcome?.consumedSourceRefs && outcome.consumedSourceRefs.length > 0
+      ? { consumedSourceRefs: outcome.consumedSourceRefs }
       : {}),
   });
 }
@@ -261,6 +312,13 @@ export function emitTurnFailed(turn: number, source: string | CallOutcome): void
         ...(typeof source.error.retryable === 'boolean' ? { retryable: source.error.retryable } : {}),
       } : {}),
     },
+    ...(source.source ? { source: source.source } : {}),
+    ...(source.sourceRef ? { sourceRef: source.sourceRef } : {}),
+    // 已消费身份不因失败丢失（ADR-0031 步骤一）：limit_reached / error 下
+    // 观察器据此判定这些 busy 排队输入的执行未完成，不得当作已处理
+    ...(source.consumedSourceRefs && source.consumedSourceRefs.length > 0
+      ? { consumedSourceRefs: source.consumedSourceRefs }
+      : {}),
   });
 }
 
@@ -281,5 +339,12 @@ export function emitTurnCancelled(turn: number, source?: CallOutcome): void {
       message: source.error?.message ?? source.response ?? source.reason,
       ...(source.reason ? { reason: source.reason } : {}),
     },
+    ...(source.source ? { source: source.source } : {}),
+    ...(source.sourceRef ? { sourceRef: source.sourceRef } : {}),
+    // 已消费身份不因取消丢失（ADR-0031 步骤一）：取消的回合里已注入的
+    // busy 排队输入同样未完成，观察器据此保持等待或提示重发
+    ...(source.consumedSourceRefs && source.consumedSourceRefs.length > 0
+      ? { consumedSourceRefs: source.consumedSourceRefs }
+      : {}),
   });
 }

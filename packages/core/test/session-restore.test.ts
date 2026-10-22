@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, readdir } from 'fs/promises';
+import { mkdtemp, readdir, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Agent } from '../src/core/agent.js';
@@ -108,6 +108,60 @@ describe('Session restore', () => {
 });
 
 describe('FileSessionStore atomic write', () => {
+  it('saves concurrent snapshots of one session in submission order across store instances', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'agentdev-session-concurrent-'));
+    try {
+      const stores = [new FileSessionStore(sessionDir), new FileSessionStore(sessionDir)];
+      const snapshots = Array.from({ length: 32 }, (_, callIndex) => ({
+        version: 3,
+        sessionId: 'concurrent-demo',
+        savedAt: callIndex,
+        agentType: 'TestAgent',
+        runtime: { initialized: true, callIndex, featureStates: [] },
+        rollbackHistory: [],
+      }));
+      const results = await Promise.allSettled(snapshots.map((snapshot, index) =>
+        stores[index % stores.length].save(snapshot.sessionId, snapshot)
+      ));
+
+      expect(results.map(result => result.status)).toEqual(snapshots.map(() => 'fulfilled'));
+      expect(await stores[0].load('concurrent-demo')).toEqual(snapshots.at(-1));
+      expect(await readdir(sessionDir)).toEqual(['concurrent-demo.json']);
+    } finally {
+      await rm(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a failed save without blocking the next snapshot of the same session', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'agentdev-session-failed-save-'));
+    try {
+      const store = new FileSessionStore(sessionDir);
+      const snapshot = {
+        version: 3,
+        sessionId: 'recover-demo',
+        savedAt: 1,
+        agentType: 'TestAgent',
+        runtime: { initialized: true, callIndex: 1, featureStates: [] },
+        rollbackHistory: [],
+      };
+      const failure = new Error('snapshot serialization failed');
+      const invalid = { ...snapshot, toJSON: () => { throw failure; } };
+      const results = await Promise.allSettled([
+        store.save(snapshot.sessionId, invalid),
+        store.save(snapshot.sessionId, snapshot),
+      ]);
+
+      expect(results[0]).toEqual({ status: 'rejected', reason: failure });
+      expect(results[1].status).toBe('fulfilled');
+      expect(await store.load(snapshot.sessionId)).toEqual(snapshot);
+      await store.save(snapshot.sessionId, { ...snapshot, savedAt: 2 });
+      expect((await store.load(snapshot.sessionId)).savedAt).toBe(2);
+      expect(await readdir(sessionDir)).toEqual(['recover-demo.json']);
+    } finally {
+      await rm(sessionDir, { recursive: true, force: true });
+    }
+  });
+
   it('persists via tmp + rename and leaves no .tmp residue', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'agentdev-session-'));
     const store = new FileSessionStore(sessionDir);

@@ -118,15 +118,28 @@ export interface SessionStore {
 }
 
 const DEFAULT_SESSION_DIR = resolve(cwd(), '.agentdev', 'sessions');
+// 同一进程内多个 store 也可能指向同一文件；按路径串行，避免自动保存与关闭保存争用临时文件。
+const pendingSessionWrites = new Map<string, Promise<string>>();
 
 export class FileSessionStore implements SessionStore {
   constructor(private readonly baseDir: string = DEFAULT_SESSION_DIR) {}
 
   async save(sessionId: string, snapshot: AgentSessionSnapshot): Promise<string> {
-    await mkdir(this.baseDir, { recursive: true });
     const filePath = this.resolvePath(sessionId);
-    await this.atomicWriteJson(filePath, snapshot);
-    return filePath;
+    const key = process.platform === 'win32' ? filePath.toLowerCase() : filePath;
+    const previous = pendingSessionWrites.get(key) ?? Promise.resolve();
+    // 前次错误仍由其调用方接收；后续保存必须能够继续，不继承前次失败。
+    const write = previous.catch(() => {}).then(async () => {
+      await mkdir(this.baseDir, { recursive: true });
+      await this.atomicWriteJson(filePath, snapshot);
+      return filePath;
+    });
+    pendingSessionWrites.set(key, write);
+    try {
+      return await write;
+    } finally {
+      if (pendingSessionWrites.get(key) === write) pendingSessionWrites.delete(key);
+    }
   }
 
   /**

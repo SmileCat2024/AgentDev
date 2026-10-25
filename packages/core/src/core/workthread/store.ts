@@ -20,7 +20,7 @@
  * 目录时未定义，当前单宿主前提下接受（ADR-0002 后果项）。
  */
 
-import { copyFile, mkdir, readFile, rename, unlink, writeFile } from 'fs/promises';
+import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import type { WorkThreadCommand } from './inbox.js';
@@ -155,6 +155,16 @@ export class WorkThreadStore {
   readonly indexPath: string;
   private _threadLocks = new Map<string, Promise<void>>();
   private _indexLock: Promise<void> = Promise.resolve();
+  /**
+   * index 读缓存（mtime+size 失效，对齐宿主 readSessionIndexShared 模式）：
+   * 列表读路径高频 readIndex，逐次读文件+解析的成本随线程数线性放大。
+   *
+   * 契约：缓存值（含 threads 数组及其条目）作为共享只读对象返回；本类
+   * 内部变更路径（updateIndexEntry / remove 及子类同构逻辑）先深拷贝再
+   * 改写，写后不主动刷缓存——原子写必然改变 mtime/size，下一次读自然
+   * 失效重读，自愈。文件缺失 / 解析失败时清缓存并返回空索引（原语义）。
+   */
+  private _indexCache: { mtimeMs: number; size: number; value: { revision: number; threads: unknown[] } } | null = null;
 
   constructor({ rootDir }: WorkThreadStoreOptions) {
     if (!rootDir || typeof rootDir !== 'string') {
@@ -195,20 +205,37 @@ export class WorkThreadStore {
   // ── index（列表摘要）─────────────────────────────────────────────
 
   private async readIndex(): Promise<{ revision: number; threads: unknown[] }> {
+    let fileStat: Awaited<ReturnType<typeof stat>> | null = null;
+    try {
+      fileStat = await stat(this.indexPath);
+    } catch {
+      this._indexCache = null;
+      return { revision: 0, threads: [] };
+    }
+    if (
+      this._indexCache
+      && this._indexCache.mtimeMs === fileStat.mtimeMs
+      && this._indexCache.size === fileStat.size
+    ) {
+      return this._indexCache.value;
+    }
     try {
       const raw = JSON.parse(await readFile(this.indexPath, 'utf8')) as {
         revision?: number;
         threads?: unknown[];
       };
       const threads = Array.isArray(raw.threads) ? raw.threads : [];
-      return {
+      const value = {
         revision:
           Number.isSafeInteger(Number(raw.revision)) && Number(raw.revision) >= 0
             ? Number(raw.revision)
             : 0,
         threads,
       };
+      this._indexCache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, value };
+      return value;
     } catch {
+      this._indexCache = null;
       return { revision: 0, threads: [] };
     }
   }
@@ -225,7 +252,8 @@ export class WorkThreadStore {
     this._indexLock = next;
     await prev.catch(() => {});
     try {
-      const index = await this.readIndex();
+      // readIndex 命中缓存时返回共享只读对象；读-改-写先深拷贝，改写不污染缓存。
+      const index = structuredClone(await this.readIndex()) as { revision: number; threads: unknown[] };
       const entry = {
         threadId: record.threadId,
         agentId: record.agentId,
@@ -395,7 +423,8 @@ export class WorkThreadStore {
       this._indexLock = indexNext;
       try {
         await indexPrev.catch(() => {});
-        const index = await this.readIndex();
+        // 同 updateIndexEntry：深拷贝后再改写，缓存对象保持只读契约。
+        const index = structuredClone(await this.readIndex()) as { revision: number; threads: unknown[] };
         if (index.threads.some((t) => (t as { threadId?: string })?.threadId === threadId)) {
           index.threads = index.threads.filter(
             (t) => (t as { threadId?: string })?.threadId !== threadId,

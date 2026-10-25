@@ -19,7 +19,7 @@
  * runtime 事件（thread_closed）；宿主在锚点关闭时经 closeBoard 将看板置为终态。
  */
 
-import { copyFile, mkdir, readFile, rename, unlink, writeFile } from 'fs/promises';
+import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises';
 import { join } from 'path';
 import type { WorkThread } from './core.js';
 import { sanitizeWorkThreadFragment } from './store.js';
@@ -117,6 +117,16 @@ export class WorkThreadBoard {
   readonly core: WorkThread;
   readonly boardsDir: string;
   private _locks = new Map<string, Promise<void>>();
+  /**
+   * 看板状态读缓存（mtime+size 失效，对齐宿主 readSessionIndexShared 模式）：
+   * 列表类读路径（如宿主线程列表逐线程合成生命状态）会对全部线程的看板
+   * 高频 getState，逐次读文件+解析的 IO 与分配成本随线程数线性放大。
+   *
+   * 契约：缓存值作为共享只读对象返回，调用方不得就地修改；本类内部
+   * 变更路径（mutate）先 structuredClone 再改写，写后不主动刷缓存——
+   * 原子写（tmp+rename）必然改变 mtime/size，下一次读自然失效重读，自愈。
+   */
+  private _stateCache = new Map<string, { mtimeMs: number; size: number; value: WorkThreadBoardState }>();
 
   constructor({ core, rootDir }: WorkThreadBoardOptions) {
     if (!rootDir || typeof rootDir !== 'string') {
@@ -137,11 +147,26 @@ export class WorkThreadBoard {
   }
 
   async getState(workThreadId: string): Promise<WorkThreadBoardState | null> {
+    const filePath = this.boardFilePath(workThreadId);
+    let fileStat: Awaited<ReturnType<typeof stat>> | null = null;
     try {
-      return JSON.parse(
-        await readFile(this.boardFilePath(workThreadId), 'utf8'),
-      ) as WorkThreadBoardState;
+      fileStat = await stat(filePath);
     } catch {
+      this._stateCache.delete(filePath);
+      return null;
+    }
+    const cached = this._stateCache.get(filePath);
+    if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+      return cached.value;
+    }
+    try {
+      const value = JSON.parse(
+        await readFile(filePath, 'utf8'),
+      ) as WorkThreadBoardState;
+      this._stateCache.set(filePath, { mtimeMs: fileStat.mtimeMs, size: fileStat.size, value });
+      return value;
+    } catch {
+      this._stateCache.delete(filePath);
       return null;
     }
   }
@@ -197,7 +222,10 @@ export class WorkThreadBoard {
     this._locks.set(workThreadId, next);
     await prev.catch(() => {});
     try {
-      const state = (await this.getState(workThreadId)) || (await this.ensureInit(workThreadId, mode));
+      const loaded = (await this.getState(workThreadId)) || (await this.ensureInit(workThreadId, mode));
+      // getState 命中读缓存时返回共享只读对象；变更路径先深拷贝，保证
+      // mutFn 的就地改写永不污染缓存（含写盘失败的中途态）。
+      const state = structuredClone(loaded);
       const before = JSON.stringify(state);
       const proposed = mutFn(state);
       if (!proposed) return { state, changed: false };

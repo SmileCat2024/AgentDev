@@ -265,6 +265,28 @@ describe('SkillFeature', () => {
       expect(caps).toHaveLength(1);
       expect(caps[0]).toMatchObject({ name: 'grill', kind: 'prompt', entryPoints: ['slash', 'feature'] });
     });
+
+    it('技能名不满足命令名约束时跳过注册并 warn，合法技能照常注册（不抛错）', async () => {
+      const f = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
+      const ws = join(tempDir, 'ws-invalid-name');
+      const skillDir = join(ws, 'skills');
+      mkdirSync(join(skillDir, 'bad-name'), { recursive: true });
+      writeFileSync(join(skillDir, 'bad-name', 'SKILL.md'), '---\nname: has space\ndescription: invalid\n---\nbody');
+      mkdirSync(join(skillDir, 'good-name'), { recursive: true });
+      writeFileSync(join(skillDir, 'good-name', 'SKILL.md'), '---\nname: good-skill\ndescription: valid\n---\nbody');
+      const warns: string[] = [];
+      await f.onInitiate({
+        agentId: 't', config: { workspaceDir: ws } as any,
+        logger: { warn: (m: string) => warns.push(m) } as any,
+        getFeature: () => undefined, registerTool: () => {}, dataSourceRegistry: new DataSourceRegistry(),
+      });
+
+      // 技能本体仍被发现（invoke_skill 可用），仅 slash 命令注册被跳过
+      expect(f.getSkills().map((s) => s.name).sort()).toEqual(['good-skill', 'has space']);
+      const caps = f.getCapabilities();
+      expect(caps.map((c) => c.name)).toEqual(['good-skill']);
+      expect(warns.some((m) => m.includes('has space'))).toBe(true);
+    });
   });
 
   describe('onCapabilityActivations() turn activation injection', () => {

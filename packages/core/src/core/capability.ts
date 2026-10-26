@@ -109,7 +109,13 @@ export interface CapabilitySnapshot {
   currentValues?: Record<string, unknown>;
 }
 
-const NAME_PATTERN = /^[a-zA-Z][\w-]*$/;
+/**
+ * 命令名约束。导出供上游名字生成方（如 skills 去重改名）对齐同一事实源：
+ * 生成的名字若作为命令注册，必须先满足本约束，否则 register 抛错。
+ */
+export const CAPABILITY_NAME_PATTERN = /^[a-zA-Z][\w-]*$/;
+
+const NAME_PATTERN = CAPABILITY_NAME_PATTERN;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 function normalizeEntryPoints(entryPoints?: CapabilityEntryPoint[]): CapabilityEntryPoint[] {

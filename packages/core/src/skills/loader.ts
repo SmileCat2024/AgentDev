@@ -3,7 +3,7 @@
  * 扫描目录，解析 SKILL.md 文件
  */
 
-import { readdir, readFile } from 'fs/promises';
+import { readdir, readFile, realpath } from 'fs/promises';
 import { resolve, isAbsolute, join, normalize } from 'path';
 import { existsSync } from 'fs';
 import type { SkillMetadata, SkillsOptions } from './types.js';
@@ -249,15 +249,28 @@ function resolveSkillsDir(dir?: string, baseDir?: string): string {
 }
 
 /**
- * 对同名 skill 添加序号后缀：第一个保持原名，后续加 (1)、(2)...
+ * 对同名 skill 添加序号后缀：第一个保持原名，后续加 -1、-2...
+ *
+ * 后缀格式必须满足 capability 命令名约束（CAPABILITY_NAME_PATTERN，
+ * `[a-zA-Z][\w-]*`）：skill.name 会被 SkillFeature 原样注册为 slash 命令名，
+ * 含空格/括号的后缀（如历史上的 `name (1)`）会在 register 时抛错并炸掉
+ * runtime 启动。改名产物若与既有技能名撞车则继续递增序号，保证结果唯一。
  */
 function deduplicateSkills(skills: SkillMetadata[]): SkillMetadata[] {
-  const nameCount = new Map<string, number>();
+  const used = new Set<string>();
   return skills.map(skill => {
-    const count = nameCount.get(skill.name) || 0;
-    nameCount.set(skill.name, count + 1);
-    if (count === 0) return skill;
-    return { ...skill, name: `${skill.name} (${count})` };
+    if (!used.has(skill.name)) {
+      used.add(skill.name);
+      return skill;
+    }
+    let count = 1;
+    let candidate = `${skill.name}-${count}`;
+    while (used.has(candidate)) {
+      count += 1;
+      candidate = `${skill.name}-${count}`;
+    }
+    used.add(candidate);
+    return { ...skill, name: candidate };
   });
 }
 
@@ -304,10 +317,32 @@ export async function discoverMulti(options: SkillsOptions = {}): Promise<SkillM
   });
 
   const allSkills: SkillMetadata[] = [];
+  // 按真实路径去重：多个扫描目录可能经符号链接指向同一技能实体
+  // （如 .agentdev/skills/xxx -> ../../.codex/skills/xxx 且 .codex/skills
+  // 也在 extraDirs 中）。同一 SKILL.md 文件只保留首个发现的入口，避免
+  // 同一技能被重复注册成两条命令。
+  const seenRealPaths = new Set<string>();
   for (const dir of uniqueDirs) {
     const skills = await discover({ dir });
-    allSkills.push(...skills);
+    for (const skill of skills) {
+      const realPath = await realpathOrFallback(skill.path);
+      if (seenRealPaths.has(realPath)) continue;
+      seenRealPaths.add(realPath);
+      allSkills.push(skill);
+    }
   }
 
   return deduplicateSkills(allSkills);
+}
+
+/**
+ * 解析真实路径（穿透符号链接）。失败时退回原字符串——去重键仅要求
+ * 稳定可比，不要求绝对精确，刚成功读取过的文件解析失败属异常场景。
+ */
+async function realpathOrFallback(p: string): Promise<string> {
+  try {
+    return await realpath(p);
+  } catch {
+    return p;
+  }
 }

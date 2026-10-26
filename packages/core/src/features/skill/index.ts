@@ -29,6 +29,7 @@ import type {
 import { getPackageInfoFromSource } from '../../core/feature.js';
 import type { Tool } from '../../core/types.js';
 import type { CapabilityDefinition } from '../../core/capability.js';
+import { CAPABILITY_NAME_PATTERN } from '../../core/capability.js';
 import type { Logger } from '../../core/logging.js';
 import { invokeSkillTool } from './tools.js';
 import { discoverMulti, splitFrontmatter } from '../../skills/loader.js';
@@ -142,24 +143,36 @@ export class SkillFeature implements AgentFeature {
    * onCapabilityActivations）——invoke 只做选中校验与审计，不承载激活态：
    * 排队投递、线程交接、后继会话等"消息晚到 / 换进程"场景下，激活通知
    * 始终作为消息本体的元数据到达，不依赖进程内暂存或输入文本解析。
+   *
+   * 技能名来自用户编写的 SKILL.md frontmatter，不保证满足命令名约束
+   * （如含空格或非 ASCII）；此类技能跳过命令注册并记 warn，不阻断
+   * runtime 启动，技能本身仍可经 invoke_skill 工具按名激活。
    */
   getCapabilities(): CapabilityDefinition[] {
-    return this.skills.map((skill) => ({
-      name: skill.name,
-      kind: 'prompt' as const,
-      title: `技能：${skill.name}`,
-      description: skill.description,
-      entryPoints: ['slash', 'feature'],
-      execute: () => {
-        if (!this.skills.some((s) => s.name === skill.name)) {
-          return Promise.reject(new Error(`skill "${skill.name}" no longer exists`));
-        }
-        return Promise.resolve({
-          activated: skill.name,
-          note: `技能「${skill.name}」已激活，随下一条消息自动加载`,
-        });
-      },
-    }));
+    return this.skills
+      .filter((skill) => {
+        if (CAPABILITY_NAME_PATTERN.test(skill.name)) return true;
+        this.logger?.warn(
+          `[skill] "${skill.name}" 不满足命令名约束，未注册 slash 命令（invoke_skill 仍可按名激活）`
+        );
+        return false;
+      })
+      .map((skill) => ({
+        name: skill.name,
+        kind: 'prompt' as const,
+        title: `技能：${skill.name}`,
+        description: skill.description,
+        entryPoints: ['slash', 'feature'],
+        execute: () => {
+          if (!this.skills.some((s) => s.name === skill.name)) {
+            return Promise.reject(new Error(`skill "${skill.name}" no longer exists`));
+          }
+          return Promise.resolve({
+            activated: skill.name,
+            note: `技能「${skill.name}」已激活，随下一条消息自动加载`,
+          });
+        },
+      }));
   }
 
   /**

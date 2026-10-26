@@ -167,6 +167,12 @@ type AnchorEvent = {
   stage?: string;
   error?: string | null;
   endKind?: string;
+  /**
+   * R3 per-call 免播开关：缺省 / true 播种恢复指令；显式 false 只立挡板
+   * 不播种。手动接续（用户发起的上下文变换）免播——新 head 停住等真实
+   * 输入；自动接续（context guard 等无人值守接力）不传，维持播种。
+   */
+  seedContinuation?: boolean;
 };
 
 /** 构建锚点转换表（闭包捕获 R3 接续策略；每个 WorkThread 实例定义期校验一次）。 */
@@ -213,22 +219,27 @@ function createWorkThreadAnchorMachine(
           };
           // R3：恢复指令随挡板同笔原子写入。策略抛错 = 整个 begin 失败，
           // 不留半套挡板（显式失败优于静默缺指令）。
-          const instructionText = continuationPolicy.composeSuccessionInstruction({
-            threadId: record.threadId,
-            fromSessionId: event.fromSessionId!,
-            reason: event.reason!,
-          });
-          if (typeof instructionText === 'string' && instructionText.trim()) {
-            const instruction = createCommandRecord({
+          // seedContinuation=false：调用方显式免播（宿主手动接续——变换完成、
+          // head 推进后停在产物上等下一条真实输入；自动接续不传，维持
+          // 播种）。免播时策略彻底不参与：不调用，也不因策略故障失败 begin。
+          if (event.seedContinuation !== false) {
+            const instructionText = continuationPolicy.composeSuccessionInstruction({
               threadId: record.threadId,
-              kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
-              text: instructionText,
-              source: 'thread-succession',
-              idempotencyKey: `succession:${record.threadId}:${event.fromSessionId}`,
+              fromSessionId: event.fromSessionId!,
+              reason: event.reason!,
             });
-            instruction.createdAt = now;
-            appendCommandToRecord(record, instruction);
-            pruneCommands(record);
+            if (typeof instructionText === 'string' && instructionText.trim()) {
+              const instruction = createCommandRecord({
+                threadId: record.threadId,
+                kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
+                text: instructionText,
+                source: 'thread-succession',
+                idempotencyKey: `succession:${record.threadId}:${event.fromSessionId}`,
+              });
+              instruction.createdAt = now;
+              appendCommandToRecord(record, instruction);
+              pruneCommands(record);
+            }
           }
         },
       },
@@ -402,9 +413,27 @@ export class WorkThread {
     const normalizedAgentId = cleanText(agentId);
     const normalizedSessionId = cleanText(sessionId);
     if (!normalizedAgentId || !normalizedSessionId) return null;
-    const threads = await this.listThreads({ agentId: normalizedAgentId });
-    for (const summary of threads as Array<{ threadId?: string }>) {
-      if (!summary?.threadId) continue;
+    const threads = await this.listThreads({ agentId: normalizedAgentId }) as Array<{
+      threadId?: string;
+      sessionIds?: string[];
+    }>;
+    const indexedMatch = threads.find((summary) =>
+      summary?.threadId
+      && Array.isArray(summary.sessionIds)
+      && summary.sessionIds.includes(normalizedSessionId),
+    );
+    if (indexedMatch?.threadId) {
+      const record = await this.store.get(indexedMatch.threadId);
+      if (Array.isArray(record?.sessionChain)
+        && record.sessionChain.some((entry) => entry?.sessionId === normalizedSessionId)) {
+        return record;
+      }
+    }
+
+    // Older indexes may not contain sessionIds, and a stale index must not make
+    // a real member undiscoverable. Preserve the authoritative record scan on miss.
+    for (const summary of threads) {
+      if (!summary?.threadId || summary.threadId === indexedMatch?.threadId) continue;
       const record = await this.store.get(summary.threadId);
       if (Array.isArray(record?.sessionChain)
         && record.sessionChain.some((entry) => entry?.sessionId === normalizedSessionId)) {
@@ -494,6 +523,11 @@ export class WorkThread {
    * 一笔事务内播种接续恢复指令（R3：createdAt 与挡板同拍，早于一切交接期
    * 积压；幂等键绑移交易 (threadId, fromSessionId)，失败恢复重走不会重复）。
    *
+   * seedContinuation 显式 false 时免播：只立挡板不播种恢复指令——手动接续
+   * （用户发起的上下文变换）变换完成后新 head 停住，不自动启动新一轮；
+   * 自动接续（无人值守接力）缺省播种，新 head 以恢复指令「睁眼第一句」
+   * 续跑。免播时 continuationPolicy 不参与（不调用、不因策略故障失败）。
+   *
    * 门禁（按序）：
    *   - closed → thread_closed（硬终态）
    *   - hold → thread_held（归档/行政冻结期不开新交接，K9）
@@ -505,6 +539,7 @@ export class WorkThread {
     threadId: string;
     fromSessionId: string;
     reason?: string;
+    seedContinuation?: boolean;
   }): Promise<WorkThreadRecord> {
     const threadId = validateId(opts.threadId, 'threadId');
     const normalizedFrom = validateId(opts.fromSessionId, 'fromSessionId');
@@ -513,7 +548,12 @@ export class WorkThread {
       const result = reduce(
         this._anchorMachine,
         draft,
-        { type: 'handoff_started', fromSessionId: normalizedFrom, reason: normalizedReason },
+        {
+          type: 'handoff_started',
+          fromSessionId: normalizedFrom,
+          reason: normalizedReason,
+          seedContinuation: opts.seedContinuation,
+        },
         { now: () => Date.now() },
       );
       if (result.type === 'transitioned') {

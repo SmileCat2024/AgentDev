@@ -565,6 +565,39 @@ describe('WorkThread (anchor layer)', () => {
     expect(ok.command.metadata).toBeDefined();
   });
 
+  it('findThreadBySession resolves indexed members without loading unrelated thread records', async () => {
+    const { store, thread } = makeThread(root);
+    await thread.start({ sessionRef: { agentId: 'a', sessionId: 'member-1' } });
+    await thread.start({ sessionRef: { agentId: 'a', sessionId: 'member-2' } });
+    const target = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'member-3' } });
+
+    let recordReads = 0;
+    const originalGet = store.get.bind(store);
+    store.get = async (threadId: string) => {
+      recordReads += 1;
+      return originalGet(threadId);
+    };
+
+    const found = await thread.findThreadBySession('a', 'member-3');
+    expect(found?.threadId).toBe(target.threadId);
+    expect(recordReads).toBe(1);
+  });
+
+  it('findThreadBySession keeps finding members when the index lacks member ids', async () => {
+    const { store, thread } = makeThread(root);
+    const target = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'member-target' } });
+    const index = await store.list() as Array<Record<string, unknown>>;
+    const targetEntry = index.find((entry) => entry.threadId === target.threadId)!;
+    delete targetEntry.sessionIds;
+    await writeFile(join(root, 'index.json'), JSON.stringify({ revision: 99, threads: index }));
+
+    // A fresh store instance reads the modified on-disk index rather than its prior cache.
+    const reloadedThread = new WorkThread({ store: new WorkThreadStore({ rootDir: root }) });
+    const found = await reloadedThread.findThreadBySession('a', 'member-target');
+    expect(found?.threadId).toBe(target.threadId);
+    expect(found?.sessionChain.some((entry) => entry.sessionId === 'member-target')).toBe(true);
+  });
+
   it('findThreadByHeadSession returns full record for current head only', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'h1' } });
@@ -889,6 +922,39 @@ describe('WorkThread succession gates (K3 / K9 / R8 / R3)', () => {
 
     const record = await thread.getThread(wt.threadId);
     expect(record!.commands.find((c) => c.kind === 'system_continuation')!.text).toBe('resume sg-policy (trim)');
+  });
+
+  it('beginSessionHandoff with seedContinuation=false plants the barrier without seeding the instruction', async () => {
+    let policyCalls = 0;
+    const { thread } = makeThread(root, new WorkThreadRuntimeBridge(), {
+      continuationPolicy: {
+        composeSuccessionInstruction: () => {
+          policyCalls += 1;
+          return DEFAULT_SUCCESSION_INSTRUCTION;
+        },
+      },
+    });
+    const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'sg-manual' } });
+
+    // 手动接续免播：挡板照立（交接窗口 / Inbox 暂存语义不变），恢复指令
+    // 不播种——新 head 变换完成后停住，等下一条真实输入。
+    const begun = await thread.beginSessionHandoff({
+      threadId: wt.threadId,
+      fromSessionId: 'sg-manual',
+      reason: 'trim',
+      seedContinuation: false,
+    });
+    expect(begun.status).toBe('rotating');
+    expect(begun.pendingSuccession!.fromSessionId).toBe('sg-manual');
+    expect(begun.commands.filter((c) => c.kind === 'system_continuation')).toHaveLength(0);
+    expect(policyCalls, '免播时策略彻底不参与').toBe(0);
+
+    // 同线程后续自动接续（缺省）：播种语义恢复。
+    await thread.advanceHead({ threadId: wt.threadId, fromSessionId: 'sg-manual', toSessionId: 'sg-manual-2', endKind: 'trim' });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'sg-manual-2', reason: 'trim' });
+    const after = await thread.getThread(wt.threadId);
+    expect(after!.commands.filter((c) => c.kind === 'system_continuation')).toHaveLength(1);
+    expect(policyCalls).toBe(1);
   });
 
   it('a throwing continuation policy fails begin without persisting a barrier', async () => {

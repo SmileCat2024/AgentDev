@@ -72,7 +72,7 @@ export class ExplorerAgent extends Agent {
       SYSTEM_PLATFORM: platform,
       SYSTEM_SHELL_ENV: platform === 'win32' ? 'Git bash' : (platform === 'darwin' ? 'Bash (macOS)' : 'Bash'),
       SYSTEM_DATE: new Date().toISOString().split('T')[0], // YYYY-MM-DD
-      SYSTEM_CURRENT_MODEL: config.llm.modelName ?? 'unknown',
+      SYSTEM_CURRENT_MODEL: config.llm?.modelName ?? 'unknown',
     };
 
     // 构建完整的 Agent 配置

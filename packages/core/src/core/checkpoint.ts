@@ -1,5 +1,5 @@
 import type { Context, ContextSnapshot } from './context.js';
-import type { AgentFeature, FeatureStateSnapshot } from './feature.js';
+import type { AgentFeature, FeatureStateSnapshot, RestoreOrigin } from './feature.js';
 
 export interface FeatureCheckpoint {
   featureName: string;
@@ -40,7 +40,7 @@ export async function rollbackToStepCheckpoint(
     afterEach: async (feature, snapshot) => {
       await feature.afterRollback?.(snapshot);
     },
-  });
+  }, { kind: 'rollback' });
   context.restore(checkpoint.context);
 }
 
@@ -51,6 +51,7 @@ export async function restoreFeatureSnapshots(
     beforeEach?: (feature: AgentFeature, snapshot: FeatureStateSnapshot) => Promise<void>;
     afterEach?: (feature: AgentFeature, snapshot: FeatureStateSnapshot) => Promise<void>;
   },
+  origin?: RestoreOrigin,
 ): Promise<void> {
   const featureMap = features ?? new Map<string, AgentFeature>();
 
@@ -59,7 +60,7 @@ export async function restoreFeatureSnapshots(
     if (!feature || !feature.restoreState) continue;
     const snapshot = cloneFeatureSnapshot(entry.snapshot);
     await hooks?.beforeEach?.(feature, snapshot);
-    await feature.restoreState(snapshot);
+    await feature.restoreState(snapshot, origin ? { origin } : undefined);
     await hooks?.afterEach?.(feature, snapshot);
   }
 }

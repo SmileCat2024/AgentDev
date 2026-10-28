@@ -8,6 +8,7 @@
 import type { Tool } from './types.js';
 import type { ToolCall } from './types.js';
 import type { LLMClient } from './types.js';
+import type { LLMMeta } from './types.js';
 import type { AgentConfig } from './types.js';
 import type { Logger } from './logging.js';
 import type { DataSourceRegistry } from '../template/data-source.js';
@@ -46,6 +47,51 @@ export interface FeatureInitContext {
   registerTool(tool: Tool): void;
   /** Agent 级数据源注册表（per-Agent 实例，非进程全局） */
   dataSourceRegistry: DataSourceRegistry;
+  /**
+   * 模型控制面（ADR-0034 决策 4）。
+   *
+   * 与 hook ctx facade 的模型族同构（agent.ts 构造处的 setModel /
+   * setThinkingEffort / getLLMMeta / hasModelResolver 直转），刻意不含
+   * setLLM——Feature 不直接注入客户端实例，凭证与 preset 表留在应用层
+   * resolver。生命周期内稳定可用：restoreSessionSnapshot 先跑各 Feature
+   * 的 onInitiate（拿到本控制面）再恢复状态，恢复现场可直接 setModel。
+   */
+  modelControl: FeatureModelControl;
+}
+
+/**
+ * Feature 侧模型控制窄接口（ADR-0034 决策 4）。
+ *
+ * 语义与 Agent 同名方法完全一致（转发实现），此处只为接口收敛。
+ */
+export interface FeatureModelControl {
+  /** 按 preset 名切换模型；false = preset 解析失败，模型未变 */
+  setModel(presetName: string, opts?: { thinkingEffort?: string | null; source?: string }): boolean;
+  /** 仅调整思考档位（null = 清除为厂商默认）；false = 无 presetName 可锚定或解析失败 */
+  setThinkingEffort(effort: string | null, opts?: { source?: string }): boolean;
+  /** 当前模型元数据（未绑定模型时返回空 meta，不抛错） */
+  getLLMMeta(): LLMMeta;
+  /** 是否已注入 modelResolver（setModel 可用性判据） */
+  hasModelResolver(): boolean;
+}
+
+/**
+ * restoreState 的恢复来源（ADR-0034 决策 4）。
+ *
+ * Feature 按 origin 区分"链级当前状态"与"历史快照值"——如模型选择对
+ * rollback 忽略快照中的选择、对 session-revive / continuity-import /
+ * branch-import 应用快照选择。
+ */
+export type RestoreOrigin =
+  | { kind: 'session-revive' }                                  // loadSession 快照恢复
+  | { kind: 'continuity-import'; sourceSessionId?: string }     // 接续 / trim / summary 导入
+  | { kind: 'branch-import'; sourceSessionId: string }          // 分支继承（源当前值）
+  | { kind: 'rollback' }                                        // call / step / named checkpoint 回滚
+  | { kind: 'hot-reload' };                                     // reloadFeature 状态迁移
+
+/** restoreState 的上下文（第二参，可选消费） */
+export interface RestoreContext {
+  origin: RestoreOrigin;
 }
 
 /**
@@ -291,8 +337,9 @@ export interface AgentFeature {
    *
    * Feature 可在此重新绑定对 LLM 的引用、更新阈值等。
    * 该钩子在 Agent.setLLM() 中被同步调用，且仅在 onCall 间隙执行。
+   * oldLLM 在延迟绑定（构造时未传 llm）后的首次绑定为 undefined。
    */
-  onLLMSwap?(newLLM: LLMClient, oldLLM: LLMClient): void;
+  onLLMSwap?(newLLM: LLMClient, oldLLM: LLMClient | undefined): void;
 
   /**
    * 捕获可回滚的 Feature 状态
@@ -304,8 +351,13 @@ export interface AgentFeature {
 
   /**
    * 从快照恢复 Feature 状态
+   *
+   * @param ctx 恢复上下文：声明本次恢复的来源（session-revive / continuity
+   *   import / rollback 等，见 RestoreOrigin）。框架内五类恢复入口都会
+   *   传入；旧 Feature 不消费第二参，行为不变。宿主导入（接续/分支）由
+   *   宿主显式传 origin。
    */
-  restoreState?(snapshot: FeatureStateSnapshot): void | Promise<void>;
+  restoreState?(snapshot: FeatureStateSnapshot, ctx?: RestoreContext): void | Promise<void>;
 
   /**
    * rollback 前钩子
@@ -321,6 +373,16 @@ export interface AgentFeature {
    * 可选：为调试器提供 hook 的人类可读说明
    */
   getHookDescription?(lifecycle: string, methodName: string): string | undefined;
+
+  /**
+   * 宿主定向请求入口（可选，ADR-0018 反向通道 / ADR-0034 契约化）。
+   *
+   * 宿主（Claw run-prebuilt-agent 等）经 feature-comms 通道转发前端请求
+   * 时按本方法存在性调用（原 duck-typing 沉淀为契约）。requestType 与
+   * payload 形状由 Feature 自行约定与校验；抛错或返回 rejected promise
+   * 由宿主转译为通道错误回执，不中断 Agent 运行。
+   */
+  onHostRequest?(requestType: string, payload: unknown, ctx: { channelId: string; sessionId?: string }): Promise<unknown>;
 
   // ========== 反向钩子通过 static hooks 静态声明注册，无需接口声明 ==========
   // 见 hook-declarations.ts：static hooks = { methodName: { lifecycle, kind, role? } }

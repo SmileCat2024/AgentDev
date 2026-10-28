@@ -521,7 +521,14 @@ export type { UsageInfo, ModelUsageKey, ModelUsageSegment, CallUsageSummary };
 
 // Agent 配置
 export interface AgentConfig {
-  llm: LLMClient;
+  /**
+   * LLM 客户端（可选，ADR-0034 延迟绑定）。
+   *
+   * 省略时 Agent 可构造、可恢复 Feature 状态（快照恢复路径在 READY 前由
+   * 装配层经 setLLM / setModel 完成绑定），但不可执行 call——executeCall
+   * 入口对未绑定状态显式抛错。
+   */
+  llm?: LLMClient;
   tools?: Tool[];
   maxTurns?: number;
   systemMessage?: string | TemplateSource;

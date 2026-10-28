@@ -16,7 +16,7 @@
  *   无需回框架中心登记。
  */
 
-import type { AgentFeature, FeatureStateSnapshot } from '../feature.js';
+import type { AgentFeature, FeatureStateSnapshot, RestoreContext } from '../feature.js';
 
 /**
  * 快照中携带 continuity descriptor 的保留字段名。
@@ -119,6 +119,13 @@ export function declareContinuity<T extends AnyFeatureConstructor>(
      */
     private _continuityStateRestored = false;
 
+    /**
+     * 最近一次 restoreState 收到的恢复来源。
+     * onInitiate 缓冲区重放（保护已恢复状态不被基类初始化清空）沿用同一来源，
+     * 保证 Feature 按 origin 区分的行为（如 rollback 忽略选择）在重放中保持一致。
+     */
+    private _continuityRestoreCtx?: RestoreContext;
+
     getContinuityDescriptor(): AgentdevContinuityDescriptor {
       return { ...normalizedDescriptor };
     }
@@ -139,7 +146,7 @@ export function declareContinuity<T extends AnyFeatureConstructor>(
       }
 
       if (wasRestored && beforeBuffer && typeof beforeBuffer === 'object') {
-        await super.restoreState!(beforeBuffer as FeatureStateSnapshot);
+        await super.restoreState!(beforeBuffer as FeatureStateSnapshot, this._continuityRestoreCtx);
       }
     }
 
@@ -151,14 +158,15 @@ export function declareContinuity<T extends AnyFeatureConstructor>(
       return { [CONTINUITY_FIELD_KEY]: normalizedDescriptor } as FeatureStateSnapshot;
     }
 
-    async restoreState(snapshot: FeatureStateSnapshot): Promise<void> {
+    async restoreState(snapshot: FeatureStateSnapshot, ctx?: RestoreContext): Promise<void> {
       this._continuityStateRestored = true;
+      this._continuityRestoreCtx = ctx;
       if (snapshot && typeof snapshot === 'object' && CONTINUITY_FIELD_KEY in (snapshot as Record<string, unknown>)) {
         const stripped = stripContinuityField(snapshot);
-        await super.restoreState!(stripped as FeatureStateSnapshot);
+        await super.restoreState!(stripped as FeatureStateSnapshot, ctx);
         return;
       }
-      await super.restoreState!(snapshot);
+      await super.restoreState!(snapshot, ctx);
     }
   };
 }

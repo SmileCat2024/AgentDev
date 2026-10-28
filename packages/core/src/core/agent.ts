@@ -11,7 +11,7 @@
  */
 
 import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver, CallTurnOptions } from './types.js';
-import type { AgentFeature, FeatureInitContext, ContextInjector } from './feature.js';
+import type { AgentFeature, FeatureInitContext, ContextInjector, RestoreOrigin } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, type ContextSnapshot } from './context.js';
@@ -194,7 +194,7 @@ class AgentBase {
   /** 同一 Agent 实例内每次 setLLM 生效递增；回执与 Overview 共用。 */
   private _modelRevision = 0;
   /** 外部消费者通过 onLLMSwap() 注册的回调 */
-  private _llmSwapCallbacks: Array<(newLLM: AgentConfig['llm'], oldLLM: AgentConfig['llm']) => void> = [];
+  private _llmSwapCallbacks: Array<(newLLM: NonNullable<AgentConfig['llm']>, oldLLM: AgentConfig['llm']) => void> = [];
   /** 应用层注入的 preset 解析服务（构造时注入；资产留在注入方） */
   private _modelResolver: ModelPresetResolver | null = null;
 
@@ -413,6 +413,14 @@ class AgentBase {
     await this.ensureFeatureTools();
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
+    }
+    // 延迟绑定门禁（ADR-0034）：未绑定的 Agent 可构造、可恢复状态、不可执行。
+    // 提示装配层在 READY 前完成绑定（构造注入 / setModel 恢复 / 回退默认）。
+    if (this.llm == null) {
+      throw new Error(
+        'model not bound: Agent was constructed without llm and no model was bound before execution. ' +
+        'Bind via config.llm at construction, or via setModel/setLLM (restore orchestration) before the first call.',
+      );
     }
 
     // 清理上次 onCall 遗留的 continuation request
@@ -906,7 +914,7 @@ class AgentBase {
   async restoreSessionSnapshot(snapshot: AgentSessionSnapshot): Promise<this> {
     await this.ensureFeatureTools();
     const normalized = this.normalizeSessionSnapshot(snapshot as AgentSessionSnapshot & Record<string, unknown>);
-    await this.restoreRuntimeSnapshot(normalized.runtime);
+    await this.restoreRuntimeSnapshot(normalized.runtime, { kind: 'session-revive' });
 
     // 恢复 rollback history，处理 v1/v2 混合格式
     const rawHistory = normalized.rollbackHistory as unknown as Array<Record<string, unknown>>;
@@ -990,7 +998,7 @@ class AgentBase {
    * 允许在 onCall 运行期间调用（mid-turn swap）。在途的 LLM 请求由旧实例的
    * Promise 持有，不受引用替换影响；下一个 ReAct step 会同步读取新引用。
    */
-  setLLM(llm: AgentConfig['llm'], meta?: LLMMeta): void {
+  setLLM(llm: NonNullable<AgentConfig['llm']>, meta?: LLMMeta): void {
     const oldLLM = this.llm;
     this.llm = llm;
 
@@ -1045,15 +1053,18 @@ class AgentBase {
    * 外部消费者（如 Claw 的 run-prebuilt-agent.js）可在 setLLM 时收到通知。
    * 回调在 Feature.onLLMSwap 之后同步执行。
    */
-  onLLMSwap(callback: (newLLM: AgentConfig['llm'], oldLLM: AgentConfig['llm']) => void): void {
+  onLLMSwap(callback: (newLLM: NonNullable<AgentConfig['llm']>, oldLLM: AgentConfig['llm']) => void): void {
     this._llmSwapCallbacks.push(callback);
   }
 
   /**
    * 获取当前模型元数据（不可变副本）
+   *
+   * 延迟绑定（ADR-0034）：未绑定 llm 时不抛错，返回仅含 modelRevision 的
+   * 空 meta——恢复编排与 Feature 在 READY 前可安全探测。
    */
   getLLMMeta(): LLMMeta {
-    return { ...this._llmMeta, modelName: this._llmMeta.modelName ?? this.llm.modelName, modelRevision: this._modelRevision };
+    return { ...this._llmMeta, modelName: this._llmMeta.modelName ?? this.llm?.modelName, modelRevision: this._modelRevision };
   }
 
   /**
@@ -1162,10 +1173,10 @@ class AgentBase {
       // v2 增量 rollback：截断 Context + 恢复运行态
       const context = this.getContext();
       context.truncateToBoundary(checkpoint.contextBoundary);
-      await this.restoreRuntimeStateWithoutContext(checkpoint.runtimeState);
+      await this.restoreRuntimeStateWithoutContext(checkpoint.runtimeState, { kind: 'rollback' });
     } else {
       // v1 legacy rollback：完整 runtime 恢复
-      await this.restoreRuntimeSnapshot(checkpoint.runtime);
+      await this.restoreRuntimeSnapshot(checkpoint.runtime, { kind: 'rollback' });
     }
 
     this._callCheckpoints = this._callCheckpoints.filter(entry => entry.callIndex < callIndex);
@@ -1266,7 +1277,7 @@ class AgentBase {
     }
 
     const checkpoint = this._namedCheckpoints[targetIndex];
-    await this.restoreRuntimeSnapshot(checkpoint.runtime);
+    await this.restoreRuntimeSnapshot(checkpoint.runtime, { kind: 'rollback' });
 
     // 剪除该 checkpoint 之后创建的所有命名检查点（基于位置，避免时间戳精度问题）
     this._namedCheckpoints = this._namedCheckpoints.slice(0, targetIndex + 1);
@@ -1456,7 +1467,14 @@ class AgentBase {
     const factory = this._agentTypeRegistry.get(type);
     if (factory) return factory();
 
-    // fallback: 内置类型（向后兼容）
+    // fallback: 内置类型（向后兼容）。内置系统 Agent 构造即需 LLM——
+    // 延迟绑定（ADR-0034）下若仍未绑定，显式失败而非传 undefined 进构造。
+    if (this.llm == null) {
+      throw new Error(
+        'model not bound: built-in sub-agent types require a bound LLM ' +
+        '(bind via config.llm at construction or setLLM/setModel before spawning sub-agents)',
+      );
+    }
     switch (type) {
       case 'ExplorerAgent': {
         const { ExplorerAgent } = await import('../agents/system/ExplorerAgent.js');
@@ -2030,6 +2048,14 @@ class AgentBase {
       },
       registerTool: (tool) => this.tools.register(tool, name),
       dataSourceRegistry: this._dataSourceRegistry,
+      // 模型控制面（ADR-0034 决策 4）：与 hook ctx facade 同构直转。
+      // 不含 setLLM——Feature 不直接注入客户端实例。
+      modelControl: {
+        setModel: (presetName: string, opts?: { thinkingEffort?: string | null; source?: string }) => this.setModel(presetName, opts),
+        setThinkingEffort: (effort: string | null, opts?: { source?: string }) => this.setThinkingEffort(effort, opts),
+        getLLMMeta: () => this.getLLMMeta(),
+        hasModelResolver: () => this.hasModelResolver(),
+      },
     };
 
     if (feature.getTools) {
@@ -2274,7 +2300,7 @@ class AgentBase {
     let stateTransferred = false;
     if (newStateCapable && canTransferState && capturedState !== undefined) {
       try {
-        await newFeature!.restoreState!(capturedState);
+        await newFeature!.restoreState!(capturedState, { origin: { kind: 'hot-reload' } });
         stateTransferred = true;
       } catch (error) {
         rollback('state-transfer', error);
@@ -2473,7 +2499,7 @@ class AgentBase {
         // 保证 ctx.agent.setModel / setLLM / getLLMMeta 与直调行为一致。
         setModel: (presetName: string, opts?: { thinkingEffort?: string | null; source?: string }) => this.setModel(presetName, opts),
         setThinkingEffort: (effort: string | null, opts?: { source?: string }) => this.setThinkingEffort(effort, opts),
-        setLLM: (llm: AgentConfig['llm'], meta?: LLMMeta) => this.setLLM(llm, meta),
+        setLLM: (llm: NonNullable<AgentConfig['llm']>, meta?: LLMMeta) => this.setLLM(llm, meta),
         getLLMMeta: () => this.getLLMMeta(),
         // ADR-0028：恢复编排据此判断 setModel 是否可用，不靠捕获装配异常
         hasModelResolver: () => this.hasModelResolver(),
@@ -2550,13 +2576,13 @@ class AgentBase {
     };
   }
 
-  private async restoreRuntimeSnapshot(snapshot: AgentRuntimeSnapshot): Promise<void> {
+  private async restoreRuntimeSnapshot(snapshot: AgentRuntimeSnapshot, origin?: RestoreOrigin): Promise<void> {
     if (snapshot.context) {
       this.persistentContext = Context.fromJSON(snapshot.context);
     } else {
       this.persistentContext = undefined;
     }
-    await restoreFeatureSnapshots(snapshot.featureStates, this.features);
+    await restoreFeatureSnapshots(snapshot.featureStates, this.features, undefined, origin);
     this._initialized = snapshot.initialized;
     this._callIndex = snapshot.callIndex;
     this._currentStep = 0;
@@ -2662,8 +2688,8 @@ class AgentBase {
    * 恢复不含 Context 的运行态（用于增量 rollback）。
    * 调用前应已通过 truncateToBoundary 截断 Context。
    */
-  private async restoreRuntimeStateWithoutContext(state: RuntimeStateWithoutContext): Promise<void> {
-    await restoreFeatureSnapshots(state.featureStates, this.features);
+  private async restoreRuntimeStateWithoutContext(state: RuntimeStateWithoutContext, origin?: RestoreOrigin): Promise<void> {
+    await restoreFeatureSnapshots(state.featureStates, this.features, undefined, origin);
     this._initialized = state.initialized;
     this._callIndex = state.callIndex;
     this._currentStep = 0;

@@ -327,6 +327,9 @@ export type {
   ContextInjector,
   ToolContextValue,
   FeatureStateSnapshot,
+  FeatureModelControl,
+  RestoreOrigin,
+  RestoreContext,
   PackageInfo,
 } from './core/feature.js';
 

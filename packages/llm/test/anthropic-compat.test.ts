@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
-import { compileContextForAnthropic } from '../src/anthropic.js';
+import { compileContextForAnthropic, createAnthropicLLM } from '../src/anthropic.js';
 import type { Message, Tool } from '@agentdevjs/core';
 
 const tools: Tool[] = [
@@ -18,6 +18,26 @@ const tools: Tool[] = [
     },
   },
 ];
+
+describe('Anthropic provider extensions', () => {
+  it('passes provider options from model configuration to the HTTP request body', async () => {
+    const originalFetch = globalThis.fetch;
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+    };
+    try {
+      const llm = createAnthropicLLM({ provider: 'anthropic', model: 'claude-test', apiKey: 'test', baseUrl: 'https://example.com', providerOptions: { service_tier: 'auto', metadata: { user_id: 'fixture' } } });
+      await llm.chat([{ role: 'user', content: 'Hello' }], [], { noStream: true });
+      expect(body).toMatchObject({ model: 'claude-test', service_tier: 'auto', metadata: { user_id: 'fixture' } });
+      expect(body.messages).toHaveLength(1);
+      expect(body).not.toHaveProperty('providerOptions');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
 
 describe('Anthropic context compilation', () => {
   it('should compile prefix system messages to top-level system array', () => {

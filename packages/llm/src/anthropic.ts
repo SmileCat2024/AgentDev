@@ -149,6 +149,7 @@ export class AnthropicLLM implements LLMClient {
     private readonly customHeaders?: CustomHeaderEntry[],
     private readonly visionEnabled: boolean = false,
     callPolicy?: { maxRetries?: number; timeoutMs?: number },
+    private readonly providerOptions?: Record<string, unknown>,
   ) {
     const resolved = resolveModelCallPolicy(callPolicy);
     this.maxRetries = resolved.maxRetries;
@@ -210,6 +211,7 @@ export class AnthropicLLM implements LLMClient {
             ...(compiled.system ? { system: compiled.system } : {}),
             messages: compiled.messages,
             ...(compiled.tools && compiled.tools.length > 0 ? { tools: compiled.tools } : {}),
+            ...(this.providerOptions ?? {}),
           }),
           signal,
         });
@@ -1005,6 +1007,7 @@ export function createAnthropicLLM(
       configOrApiKey.defaultModel.customHeaders,
       configOrApiKey.defaultModel.vision ?? false,
       { maxRetries: configOrApiKey.defaultModel.maxRetries, timeoutMs: configOrApiKey.defaultModel.timeoutMs },
+      configOrApiKey.defaultModel.providerOptions,
     );
   }
 
@@ -1020,6 +1023,7 @@ export function createAnthropicLLM(
       configOrApiKey.customHeaders,
       configOrApiKey.vision ?? false,
       { maxRetries: configOrApiKey.maxRetries, timeoutMs: configOrApiKey.timeoutMs },
+      configOrApiKey.providerOptions,
     );
   }
 

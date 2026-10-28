@@ -27,6 +27,29 @@ function ensureHttpClientInitialized() {
   return httpClientInitPromise;
 }
 
+function buildCodexRoutingHint(model: unknown, serviceTier: unknown): string {
+  const tier = serviceTier === 'fast' ? 'priority' : serviceTier;
+  return `model=${String(model || '')}${tier ? `;tier=${String(tier)}` : ''}`;
+}
+
+function resolveCustomRequestHeaders(headers: CustomHeaderEntry[] | undefined, profile: OpenAIResponsesProfile): CustomHeaderEntry[] {
+  const entries = Array.isArray(headers) ? headers : [];
+  return profile === 'codex'
+    ? entries.filter((header) => header?.key?.trim().toLowerCase() !== 'x-codex-routing-hint')
+    : entries;
+}
+
+function readCodexRoutingHint(body: unknown): string | null {
+  if (typeof body !== 'string') return null;
+  try {
+    const request = JSON.parse(body);
+    if (!request || typeof request !== 'object' || typeof request.model !== 'string') return null;
+    return buildCodexRoutingHint(request.model, request.service_tier);
+  } catch {
+    return null;
+  }
+}
+
 type ResponsesRequest = {
   model: string;
   instructions?: string;
@@ -110,17 +133,22 @@ export class OpenAIResponsesLLM implements LLMClient {
     this.maxRetries = resolved.maxRetries;
     this.deadlineMs = resolved.timeoutMs;
     this.firstTokenDeadlineMs = resolved.firstTokenTimeoutMs;
+    const resolvedCustomHeaders = resolveCustomRequestHeaders(customHeaders, responsesProfile);
     this.client = new OpenAI({
       apiKey,
       baseURL: normalizeApiBaseUrl(baseUrl),
-      ...(customHeaders && customHeaders.length > 0
+      ...(resolvedCustomHeaders.length > 0 || responsesProfile === 'codex'
         ? {
             fetch: (input: any, init: any) => {
               init = init || {};
               const headers = new Headers(init.headers);
-              for (const [k, v] of Object.entries(resolveCustomHeaders(customHeaders))) {
+              for (const [k, v] of Object.entries(resolveCustomHeaders(resolvedCustomHeaders))) {
                 headers.set(k, v);
               }
+              const routingHint = this.responsesProfile === 'codex'
+                ? readCodexRoutingHint(init.body)
+                : null;
+              if (routingHint) headers.set('x-codex-routing-hint', routingHint);
               // The OpenAI SDK has already serialized the body and sets its
               // own Content-Length.  Once a custom fetch forwards that header
               // through Undici's ProxyAgent, Undici 7 rejects it before the

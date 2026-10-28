@@ -92,6 +92,7 @@ describe('OpenAI Responses compilation', () => {
         instructions: 'must not override runtime instructions',
         store: true,
         input: [],
+        service_tier: 'priority',
       },
     });
 
@@ -104,6 +105,23 @@ describe('OpenAI Responses compilation', () => {
     expect(compiled.input[1].role).toBe('user');
     expect(compiled.tool_choice).toBe('auto');
     expect(compiled.parallel_tool_calls).toBe(true);
+    expect(compiled.service_tier).toBe('priority');
+  });
+
+  it('preserves Codex service tier only when explicitly selected', () => {
+    const fast = compileContextForOpenAIResponses(
+      [{ role: 'user', content: 'Hello' }],
+      [],
+      { modelName: 'gpt-6-luna', responsesProfile: 'codex', providerOptions: { service_tier: 'priority' } },
+    );
+    expect(fast.service_tier).toBe('priority');
+
+    const standard = compileContextForOpenAIResponses(
+      [{ role: 'user', content: 'Hello' }],
+      [],
+      { modelName: 'gpt-6-luna', responsesProfile: 'codex' },
+    );
+    expect(standard.service_tier).toBeUndefined();
   });
 
   it('should provide non-empty Codex instructions when no system message exists', () => {
@@ -241,6 +259,43 @@ describe('OpenAIResponsesLLM fallback', () => {
       expect(forwardedHeaders?.get('content-length')).toBeNull();
       expect(forwardedHeaders?.get('chatgpt-account-id')).toBe('acct-test');
       expect(forwardedHeaders?.get('content-type')).toBe('application/json');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('sends Codex routing hint as a header derived from the final wire request', async () => {
+    const originalFetch = globalThis.fetch;
+    const seen: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+    globalThis.fetch = async (_input, init) => {
+      seen.push({ headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
+      return new Response(
+        'data: {"type":"response.created","response":{"id":"resp_test","object":"response","created_at":0,"status":"in_progress","model":"gpt-6-luna","output":[]}}\n\n'
+          + 'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+          + 'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    };
+
+    try {
+      const llm = new OpenAIResponsesLLM(
+        'test-api-key',
+        'gpt-6-luna',
+        'https://example.com/backend-api/codex',
+        undefined,
+        undefined,
+        undefined,
+        { service_tier: 'priority' },
+        [{ key: 'X-Codex-Routing-Hint', value: 'model=stale;tier=fast', valueMode: 'static' }],
+        false,
+        'codex',
+      );
+      await llm.chat([{ role: 'user', content: 'Reply OK' }], []);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0].headers.get('x-codex-routing-hint')).toBe('model=gpt-6-luna;tier=priority');
+      expect(seen[0].body).toMatchObject({ model: 'gpt-6-luna', service_tier: 'priority' });
+      expect(seen[0].body).not.toHaveProperty('metadata');
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -10,6 +10,8 @@ export interface AgentRuntimeSnapshot {
   initialized: boolean;
   callIndex: number;
   context?: ContextSnapshot;
+  /** Whether this snapshot was captured within an unfinished call. */
+  callState?: 'running' | 'idle';
   featureStates: FeatureCheckpoint[];
   usageStats?: UsageStatsSnapshot;
   /** 最近一次已结束 Call 的结构化终态。旧会话缺省为 undefined。 */

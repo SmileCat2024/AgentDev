@@ -146,8 +146,10 @@ class AgentBase {
   // 队列始终被错误吸收，避免一次失败阻塞后续调用。
   private _callQueue: Promise<void> = Promise.resolve();
   private _activeCallPromise?: Promise<void>;
-  private _lifecycleState: 'active' | 'disposing' | 'disposed' = 'active';
+  private _lifecycleState: 'active' | 'quiescing' | 'quiesced' | 'disposing' | 'disposed' = 'active';
+  private _quiescePromise?: Promise<void>;
   private _disposePromise?: Promise<void>;
+  private _sessionSaveQueue: Promise<void> = Promise.resolve();
 
   // 反向钩子注册表
   private hooksRegistry = new HooksRegistry();
@@ -1307,8 +1309,17 @@ class AgentBase {
    * 保存会话到持久化存储
    */
   async saveSession(sessionId: string, store: SessionStore = getDefaultSessionStore()): Promise<string> {
-    const snapshot = await this.createSessionSnapshot(sessionId);
-    return store.save(sessionId, snapshot);
+    if (this._lifecycleState === 'disposing' || this._lifecycleState === 'disposed') {
+      throw new Error('Cannot save a disposing or disposed Agent');
+    }
+    // Serialize capture as well as IO: an earlier asynchronous capture must not
+    // overwrite a later final snapshot. Each caller still receives its own error.
+    const save = this._sessionSaveQueue.then(async () => {
+      const snapshot = await this.createSessionSnapshot(sessionId);
+      return store.save(sessionId, snapshot);
+    });
+    this._sessionSaveQueue = save.then(() => undefined, () => undefined);
+    return save;
   }
 
   /**
@@ -1496,6 +1507,26 @@ class AgentBase {
   // ========== 清理 ==========
 
   /**
+   * Permanently close call admission and settle execution without destroying
+   * Context or Features. Hosts may then persist the final session before dispose.
+   * Call only from outside an active call (awaiting oneself would deadlock).
+   */
+  quiesce(): Promise<void> {
+    if (this._quiescePromise) return this._quiescePromise;
+    if (this._lifecycleState === 'disposed') return Promise.resolve();
+    this._lifecycleState = 'quiescing';
+    this.disableStepAutoSave();
+    this.interrupt();
+    this._quiescePromise = (async () => {
+      await this._activeCallPromise;
+      await this._callQueue;
+      await this._sessionSaveQueue;
+      this._lifecycleState = 'quiesced';
+    })();
+    return this._quiescePromise;
+  }
+
+  /**
    * 清理资源
    */
   async dispose(): Promise<void> {
@@ -1503,17 +1534,15 @@ class AgentBase {
       return this._disposePromise;
     }
 
-    this._lifecycleState = 'disposing';
     this._disposePromise = this.disposeInternal();
     return this._disposePromise;
   }
 
   private async disposeInternal(): Promise<void> {
-    // 已开始的 call 先中断，再等待活动调用和已排队调用收敛。
-    // 排队调用会在开始前观察到 disposing 状态并明确失败。
-    this.interrupt();
-    await this._activeCallPromise;
-    await this._callQueue;
+    await this.quiesce();
+    // Seal saves before releasing state; writes admitted before disposal drain.
+    this._lifecycleState = 'disposing';
+    await this._sessionSaveQueue;
 
     // 触发 onDestroy 钩子（SubAgentFeature 的清理会在 Feature.onDestroy 中处理）
     const context = this.persistentContext ?? new Context();
@@ -2570,6 +2599,7 @@ class AgentBase {
       initialized: this._initialized,
       callIndex: callIndexOverride ?? this._callIndex,
       context: context?.toJSON(),
+      callState: this.isRunning() ? 'running' : 'idle',
       featureStates: captureFeatureSnapshots(this.features),
       usageStats: this.usageStats.toSnapshot(),
       ...(this._lastCallOutcome ? { lastCallOutcome: this._lastCallOutcome } : {}),

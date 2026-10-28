@@ -28,6 +28,65 @@ class ImmediateLLM implements LLMClient {
 }
 
 describe('Agent call and lifecycle concurrency', () => {
+  it('quiesces execution without destroying the state needed for final persistence', async () => {
+    const started = deferred<void>();
+    const finish = deferred<LLMResponse>();
+    let destroyed = false;
+    const agent = new Agent({ llm: { async chat(_messages, _tools, options) {
+      started.resolve();
+      options?.signal?.addEventListener('abort', () => finish.resolve({ content: 'interrupted' }), { once: true });
+      return finish.promise;
+    } }, maxTurns: 1 }).use({ name: 'resource', onDestroy: async () => { destroyed = true; } });
+    const call = agent.onCall('active');
+    await started.promise;
+    const queued = agent.onCall('queued').catch(error => error);
+    const closing = agent.quiesce();
+    expect(agent.quiesce()).toBe(closing);
+    await closing;
+    await call;
+    expect(await queued).toBeInstanceOf(Error);
+    await expect(agent.onCall('late')).rejects.toThrow();
+    expect(destroyed).toBe(false);
+    const snapshot = await agent.createSessionSnapshot('final');
+    expect(snapshot.runtime.context?.messages.some(message => message.content === 'active')).toBe(true);
+    await agent.dispose();
+    expect(destroyed).toBe(true);
+    await expect(agent.saveSession('late')).rejects.toThrow('Cannot save');
+  });
+
+  it('serializes captures and IO, drains writes before disposal, and reports save errors', async () => {
+    const agent = new Agent({ llm: new ImmediateLLM() });
+    await agent.onCall('before');
+    const writing = deferred<void>();
+    const release = deferred<void>();
+    const saved: string[] = [];
+    let count = 0;
+    const store = {
+      async save(id: string) {
+        count++;
+        if (count === 1) { writing.resolve(); await release.promise; throw new Error('disk full'); }
+        saved.push(id);
+        return id;
+      },
+      load: async () => { throw new Error('unused'); },
+      list: async () => [],
+      delete: async () => {},
+    };
+    const first = agent.saveSession('first', store).catch(error => error);
+    await writing.promise;
+    const final = agent.saveSession('final', store);
+    let disposed = false;
+    const disposal = agent.dispose().then(() => { disposed = true; });
+    await Promise.resolve();
+    expect(count).toBe(1);
+    expect(disposed).toBe(false);
+    release.resolve();
+    expect(await first).toHaveProperty('message', 'disk full');
+    expect(await final).toBe('final');
+    await disposal;
+    expect(saved).toEqual(['final']);
+  });
+
   it('serializes concurrent calls for one Agent instance', async () => {
     const firstResponse = deferred<LLMResponse>();
     const startedInputs: string[] = [];

@@ -6,7 +6,7 @@
 
 import type { ToolCall, ToolExecutionContext, ToolTerminationReason } from '../types.js';
 import type { ToolRegistry } from '../tool.js';
-import type { Context } from '../context.js';
+import { withMessageSource, type Context } from '../context.js';
 import type { AgentFeature, ContextInjector } from '../feature.js';
 import type { ToolContext, ToolResult, HookResult, ToolFinishedDecisionContext, ToolResultTransformContext } from '../lifecycle.js';
 import type { ToolExecResult } from '../context.js';
@@ -159,12 +159,14 @@ export class ToolExecutor {
       const tool = this.tools.get(call.name);
       const startTime = Date.now();
 
+      const toolSource = this.tools.getSource(call.name);
+      const toolContext = toolSource ? withMessageSource(context, toolSource) : context;
       const toolCtx: ToolContext = {
         call,
         tool: tool!,
         step,
         input,
-        context,
+        context: toolContext,
         getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
           return this.parentAgent.getFeature(featureName) as T | undefined;
         },
@@ -186,7 +188,7 @@ export class ToolExecutor {
           tool,
           step,
           input,
-          context,
+          context: toolContext,
           getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
             return this.parentAgent.getFeature(featureName) as T | undefined;
           },
@@ -259,7 +261,7 @@ export class ToolExecutor {
         tool: tool!,
         step,
         input,
-        context,
+        context: toolContext,
         getFeature: <T extends AgentFeature>(featureName: string): T | undefined => {
           return this.parentAgent.getFeature(featureName) as T | undefined;
         },

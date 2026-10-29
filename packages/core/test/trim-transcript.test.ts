@@ -525,6 +525,21 @@ describe('trim-compact fixes (golden, ported from Claw)', () => {
         'fold note with tag folded-tool-activity must survive second trim');
     });
 
+    it('applies source/tag rules to preserve matching injected system messages and drops non-matches', () => {
+      const messages = [
+        { role: 'system', content: 'keep reference reminder', turn: 0, source: 'session-reference', tag: { kind: 'session-reference' } },
+        { role: 'system', content: 'other feature', turn: 0, source: 'time-awareness', tag: { kind: 'session-reference' } },
+        { role: 'system', content: 'legacy tag only', turn: 0, tag: 'folded-tool-activity' },
+      ];
+      const { seedMessages } = buildTrimmedSeedMessages(messages, normalizeExportPolicy({
+        messageRules: [{ role: 'system', source: 'session-reference', tag: { kind: 'session-reference' }, action: 'keep' }],
+      }));
+
+      assert.deepEqual(seedMessages.map(message => message.content), ['keep reference reminder', 'legacy tag only']);
+      assert.equal(seedMessages[0].source, 'session-reference');
+      assert.deepEqual(seedMessages[0].tag, { kind: 'session-reference' });
+    });
+
     it('untagged system messages are still dropped by default', () => {
       const messages = [
         { role: 'user', content: 'first', turn: 0 },

@@ -22,7 +22,7 @@
  */
 
 import type { AgentSessionSnapshot } from '../session-store.js';
-import type { LLMClient } from '../types.js';
+import type { JsonValue, LLMClient } from '../types.js';
 
 /**
  * 变换输入 — 源会话快照 + 变换自定义策略面。
@@ -174,8 +174,10 @@ export interface SessionSeedMessage {
     mediaType?: string;
     source?: string;
   }>;
-  /** 消息语义标签（如折叠活动、handoff-seed 等）。 */
-  tag?: string;
+  /** 来源 Feature；接续回放保留原始来源，而非回放器身份。 */
+  source?: string;
+  /** 注入方定义的自由 JSON 语义标签。 */
+  tag?: JsonValue;
   /**
    * 源会话原始消息时刻（毫秒，enriched 侧投影）。
    *

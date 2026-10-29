@@ -5,6 +5,7 @@
  */
 
 import type { AgentFeature } from './feature.js';
+import { withMessageSource } from './context.js';
 import { CoreLifecycle, Decision, type DecisionResult, normalizeDecision } from './lifecycle.js';
 import {
   readHookDeclarations,
@@ -282,8 +283,11 @@ export class HooksRegistry {
           ],
         }, async () => {
           const startedAt = Date.now();
+          const featureContext = context && typeof context === 'object' && 'context' in context
+            ? { ...context, context: withMessageSource((context as any).context, feature.name) }
+            : context;
           try {
-            return await method.call(feature, context);
+            return await method.call(feature, featureContext);
           } finally {
             // feature 事件流（C 项）：hook.invoked 事件，context 由本 scope 提供
             logger.info(`${feature.name}.${methodName} invoked (${lifecycle})`, {

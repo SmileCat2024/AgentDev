@@ -94,7 +94,7 @@ function injectSeedMessage(
 ): void {
   const content = typeof message.content === 'string' ? message.content : '';
   const role = message.role;
-  const tag = typeof message.tag === 'string' ? message.tag : undefined;
+  const tag = message.tag;
   // 源会话原始时刻：seed 携带时透传盖戳（保留历史时间线）；缺省（旧 handoff
   // 包 / summary 等无时间产物）按注入时刻。
   const timestamp = typeof message.timestamp === 'number' && Number.isFinite(message.timestamp)
@@ -102,9 +102,9 @@ function injectSeedMessage(
     : undefined;
 
   if (role === 'system') {
-    context.addSystemMessage(content, turn, 'handoff-seed', tag, timestamp);
+    context.addSystemMessage(content, turn, message.source || 'handoff-seed', tag, timestamp);
   } else if (role === 'user') {
-    context.addUserMessage(content, turn, message.images as any, timestamp);
+    context.addUserMessage(content, turn, message.images as any, timestamp, message.source, tag);
   } else if (role === 'assistant') {
     context.addAssistantMessage(
       {
@@ -112,14 +112,16 @@ function injectSeedMessage(
         toolCalls: message.toolCalls as any,
         reasoning: message.reasoning as any,
         thinkingBlocks: message.thinkingBlocks as any,
+        source: message.source,
+        tag: message.tag,
       },
       turn,
       timestamp,
     );
   } else if (role === 'tool' && message.toolCallId) {
-    context.addSerializedToolMessage(message.toolCallId, content, turn, message.images as any, undefined, timestamp);
+    context.addSerializedToolMessage(message.toolCallId, content, turn, message.images as any, undefined, timestamp, message.source);
   } else {
-    context.add({ role, content, turn, toolCallId: message.toolCallId, images: message.images, ...(tag ? { tag } : {}) } as any);
+    context.add({ role, content, turn, toolCallId: message.toolCallId, images: message.images, ...(message.source ? { source: message.source } : {}), ...(tag !== undefined ? { tag } : {}) } as any);
   }
 }
 

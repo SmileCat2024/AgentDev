@@ -10,6 +10,7 @@
 
 import type {
   Message,
+  JsonValue,
   ToolCall,
   LLMResponse,
   EnrichedMessage,
@@ -132,6 +133,29 @@ export interface ContextTombstoneEntry extends ContextTombstoneSummary {
   removedEnrichedMessages: EnrichedMessage[];
 }
 
+/**
+ * 为 Feature 提供带来源绑定的 Context 视图。所有消息入口都由框架盖戳，
+ * 调用方传入的 source 不参与归属判定。
+ */
+export function withMessageSource(context: Context, source: string): Context {
+  const owner = source.trim();
+  let view: Context;
+  view = new Proxy(context, {
+    get(target, property) {
+      if (property === 'add') return (message: Message) => { target.add({ ...message, source: owner }); return view; };
+      if (property === 'addAll') return (messages: Message[]) => { for (const message of messages) target.add({ ...message, source: owner }); return view; };
+      if (property === 'addAssistantMessage') return (response: LLMResponse, turn: number, timestamp?: number) => target.addAssistantMessage({ ...response, source: owner }, turn, timestamp);
+      if (property === 'addSystemMessage') return (content: string, turn: number, _source?: string, tag?: JsonValue, timestamp?: number) => target.addSystemMessage(content, turn, owner, tag, timestamp);
+      if (property === 'addUserMessage') return (content: string, turn: number, images?: ImageInput[], timestamp?: number, _source?: string, tag?: JsonValue) => target.addUserMessage(content, turn, images, timestamp, owner, tag);
+      if (property === 'addSerializedToolMessage') return (id: string, content: string, turn: number, images?: ImageInput[], display?: unknown, timestamp?: number) => target.addSerializedToolMessage(id, content, turn, images, display, timestamp, owner);
+      if (property === 'addToolMessage') return (call: ToolCall, result: ToolExecResult, turn: number) => target.addToolMessage(call, result, turn, owner);
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return view;
+}
+
 export class Context {
   // ========== 字段 ==========
 
@@ -166,7 +190,11 @@ export class Context {
     // enriched 侧同步落一条（时间锚 = 注入时刻）：add 是 feature 注入的公共
     // API，只写 messages 会造成 enrichedMessages 失配，getTimestamps() 的
     // 索引投影随之错位（增量推送的时间元表整体漂移为 null）。
-    this.addMessage(message, { turn: message.turn ?? 0 });
+    this.addMessage(message, {
+      turn: message.turn ?? 0,
+      source: message.source,
+      tag: message.tag,
+    });
     this.messages.push({ ...message });
     return this;
   }
@@ -403,13 +431,13 @@ export class Context {
   /**
    * 添加用户消息
    */
-  addUserMessage(content: string, turn: number, images?: ImageInput[], timestamp?: number): void {
+  addUserMessage(content: string, turn: number, images?: ImageInput[], timestamp?: number, source?: string, tag?: JsonValue): void {
     this.addMessage(
-      { role: 'user', content, turn, images },
-      { turn, ...(typeof timestamp === 'number' ? { timestamp } : {}) }
+      { role: 'user', content, turn, images, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}) },
+      { turn, source, ...(tag !== undefined ? { tag } : {}), ...(typeof timestamp === 'number' ? { timestamp } : {}) }
     );
     // 同步到 messages 数组（保持向后兼容）
-    this.messages.push({ role: 'user', content, turn, images });
+    this.messages.push({ role: 'user', content, turn, images, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}) });
   }
 
   /**
@@ -438,8 +466,10 @@ export class Context {
         thinkingBlocks: response.thinkingBlocks,
         usage,
         ...(execution ? { execution } : {}),
+        ...(typeof (response as any).source === 'string' ? { source: (response as any).source } : {}),
+        ...((response as any).tag !== undefined ? { tag: (response as any).tag } : {}),
       },
-      { turn, ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}) }
+      { turn, source: (response as any).source, tag: (response as any).tag, ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}) }
     );
     // 同步到 messages 数组
     this.messages.push({
@@ -451,13 +481,15 @@ export class Context {
       thinkingBlocks: response.thinkingBlocks,
       usage,
       ...(execution ? { execution } : {}),
+      ...((response as any).source ? { source: (response as any).source } : {}),
+      ...((response as any).tag !== undefined ? { tag: (response as any).tag } : {}),
     });
   }
 
   /**
    * 添加工具结果
    */
-  addToolMessage(call: ToolCall, result: ToolExecResult, turn: number): void {
+  addToolMessage(call: ToolCall, result: ToolExecResult, turn: number, source?: string): void {
     // 会话事件流：tool_call completed
     emitToolResultEvents(call, result, turn);
 
@@ -467,7 +499,7 @@ export class Context {
       ...(result.error ? { error: result.error } : {}),
       ...(result.interrupted ? { interrupted: result.interrupted } : {}),
     });
-    this.addSerializedToolMessage(call.id, content, turn, result.images, result.display);
+    this.addSerializedToolMessage(call.id, content, turn, result.images, result.display, undefined, source);
   }
 
   /**
@@ -477,7 +509,7 @@ export class Context {
    * 序列化字符串，不应先解析成 ToolExecResult 再重新编码。该入口同时维护
    * messages[] 与 enrichedMessages[]，并保留工具返回的图片附件。
    */
-  addSerializedToolMessage(toolCallId: string, content: string, turn: number, images?: ImageInput[], display?: unknown, timestamp?: number): void {
+  addSerializedToolMessage(toolCallId: string, content: string, turn: number, images?: ImageInput[], display?: unknown, timestamp?: number, source?: string): void {
     const normalizedImages = images?.length ? images : undefined;
     const message: Message = {
       role: 'tool',
@@ -486,21 +518,22 @@ export class Context {
       content,
       ...(normalizedImages ? { images: normalizedImages } : {}),
       ...(display !== undefined ? { display } : {}),
+      ...(source ? { source } : {}),
     };
-    this.addMessage(message, { turn, ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}) });
+    this.addMessage(message, { turn, source, ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}) });
     this.messages.push({ ...message });
   }
 
   /**
    * 添加系统消息
    */
-  addSystemMessage(content: string, turn: number, source?: string, tag?: string, timestamp?: number): void {
+  addSystemMessage(content: string, turn: number, source?: string, tag?: JsonValue, timestamp?: number): void {
     this.addMessage(
-      { role: 'system', content, turn, ...(tag ? { tag } : {}) },
-      { turn, source, ...(tag ? { tag } : {}), ...(typeof timestamp === 'number' ? { timestamp } : {}) }
+      { role: 'system', content, turn, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}) },
+      { turn, source, ...(tag !== undefined ? { tag } : {}), ...(typeof timestamp === 'number' ? { timestamp } : {}) }
     );
     // 同步到 messages 数组
-    this.messages.push({ role: 'system', content, turn, ...(source ? { source } : {}), ...(tag ? { tag } : {}) });
+    this.messages.push({ role: 'system', content, turn, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}) });
   }
 
   // ========== 内核化能力：查询接口 ==========
@@ -553,6 +586,7 @@ export class Context {
       reasoning: message.reasoning,
       thinkingBlocks: message.thinkingBlocks,
       images: message.images,
+      display: message.display,
 
       // 元数据字段
       id,
@@ -560,7 +594,7 @@ export class Context {
       turn: meta.turn,
       sequence: this.sequence++,
       agentId: meta.agentId,
-      source: meta.source,
+      source: message.source ?? meta.source,
       tag: message.tag ?? meta.tag,
 
       // 分类标签

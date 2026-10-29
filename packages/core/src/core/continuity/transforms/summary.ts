@@ -221,6 +221,8 @@ export function buildSummarySeedMessage(summaryText: string): SessionSeedMessage
   const body = cleanMultilineText(summaryText);
   return {
     role: 'system',
+    source: 'handoff-seed',
+    tag: { kind: 'summary' },
     content: [
       '以下是前一会话的工作摘要，用于延续同一任务上下文。',
       '摘要涵盖前一轮对话的关键内容。',
@@ -318,7 +320,8 @@ function buildChatMessages(snapshot: AgentSessionSnapshot, prompt: string): Mess
       role: m?.role,
       content: typeof m?.content === 'string' ? m.content : '',
       turn: m?.turn,
-      ...(m?.tag ? { tag: m.tag } : {}),
+      ...(m?.source ? { source: m.source } : {}),
+      ...(m?.tag !== undefined ? { tag: m.tag } : {}),
     } as Message);
   }
   const closing: Message = { role: 'user', content: SUMMARY_CLOSING_ANCHOR };

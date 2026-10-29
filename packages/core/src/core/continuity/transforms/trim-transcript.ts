@@ -11,6 +11,7 @@
  */
 
 import type { AgentSessionSnapshot } from '../../session-store.js';
+import type { JsonValue } from '../../types.js';
 import type {
   SessionTransformation,
   TransformInput,
@@ -29,6 +30,7 @@ export const DEFAULT_EXPORT_POLICY = {
   strategy: 'trim-transcript',
   includeSystemMessages: false,
   keepSystemTags: ['folded-tool-activity'],
+  messageRules: [],
   includeUserMessages: true,
   includeAssistantMessages: true,
   keepRecentTurns: null,
@@ -114,6 +116,19 @@ function normalizeToolNameList(value: unknown): string[] {
   return [...new Set(value.map(cleanInlineText).filter(Boolean))];
 }
 
+function normalizeMessageRules(value: unknown): Array<{ role?: string; source?: string; tag?: JsonValue; action: 'keep' }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw: any) => {
+    if (!raw || typeof raw !== 'object' || raw.action !== 'keep') return [];
+    const rule: { role?: string; source?: string; tag?: JsonValue; action: 'keep' } = { action: 'keep' };
+    if (typeof raw.role === 'string' && raw.role.trim()) rule.role = raw.role.trim();
+    if (typeof raw.source === 'string' && raw.source.trim()) rule.source = raw.source.trim();
+    if (Object.prototype.hasOwnProperty.call(raw, 'tag')) rule.tag = raw.tag;
+    if (rule.role === undefined && rule.source === undefined && rule.tag === undefined) return [];
+    return [rule];
+  });
+}
+
 function normalizeKeepSystemTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [...DEFAULT_EXPORT_POLICY.keepSystemTags];
   return [...new Set(value.map(cleanInlineText).filter(Boolean))];
@@ -153,6 +168,8 @@ export interface TrimExportPolicy {
    * 全量保护）取并集。null = 不启用（默认）。
    */
   keepRecentToolCalls?: number | null | typeof Infinity;
+  /** 通用消息裁决规则；rule 可按 role/source/tag 匹配，当前仅支持 keep。 */
+  messageRules?: Array<{ role?: string; source?: string; tag?: JsonValue; action: 'keep' }>;
   preserveToolNames: string[];
 }
 
@@ -161,6 +178,7 @@ export function normalizeExportPolicy(rawPolicy: Record<string, unknown> = {}): 
     strategy: 'trim-transcript',
     includeSystemMessages: rawPolicy?.includeSystemMessages === true,
     keepSystemTags: normalizeKeepSystemTags(rawPolicy?.keepSystemTags),
+    messageRules: normalizeMessageRules(rawPolicy?.messageRules),
     includeUserMessages: rawPolicy?.includeUserMessages !== false,
     includeAssistantMessages: rawPolicy?.includeAssistantMessages !== false,
     keepRecentTurns: normalizeNullableTurnCount(rawPolicy?.keepRecentTurns as unknown),
@@ -261,12 +279,44 @@ function getFoldedToolTurnSet(rawMessages: any[], retainedTurns: Set<number> | n
   return retainedTurns;
 }
 
-function shouldKeepDialogueMessage(role: string, policy: TrimExportPolicy, tag?: string): boolean {
+function jsonValueEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left)) {
+    return Array.isArray(right) && left.length === right.length && left.every((value, index) => jsonValueEqual(value, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index] && jsonValueEqual(leftRecord[key], rightRecord[key]));
+}
+
+function shouldKeepDialogueMessage(message: any, policy: TrimExportPolicy): boolean {
+  const role = cleanInlineText(message?.role);
   if (role === 'user') return policy.includeUserMessages;
   if (role === 'assistant') return policy.includeAssistantMessages;
   if (role === 'system') {
-    if (tag && Array.isArray(policy.keepSystemTags) && policy.keepSystemTags.includes(tag)) return true;
-    return policy.includeSystemMessages;
+    const tag = message?.tag;
+    const legacyTag = typeof tag === 'string'
+      ? tag
+      : tag && typeof tag === 'object' && typeof (tag as any).kind === 'string'
+        ? (tag as any).kind
+        : undefined;
+    const keepByLegacyTag = !!legacyTag
+      && Array.isArray(policy.keepSystemTags)
+      && policy.keepSystemTags.includes(legacyTag);
+    const rules = Array.isArray((policy as any).messageRules) ? (policy as any).messageRules : [];
+    const keepByRule = rules.some((rule: any) => {
+      if (!rule || rule.action !== 'keep') return false;
+      if (rule.role && rule.role !== role) return false;
+      if (rule.source !== undefined && rule.source !== message?.source) return false;
+      if (rule.tag !== undefined && !jsonValueEqual(rule.tag, tag)) return false;
+      return rule.role !== undefined || rule.source !== undefined || rule.tag !== undefined;
+    });
+    return keepByLegacyTag || keepByRule || policy.includeSystemMessages;
   }
   return false;
 }
@@ -330,14 +380,15 @@ function getSkillInvokeProtectedMessages(rawMessages: any[], policy: TrimExportP
   return protectedIndices.size > 0 ? protectedIndices : null;
 }
 
-function createSeedMessage(role: string, content: string, turn: number, tag?: string, timestamp?: number): SessionSeedMessage | null {
+function createSeedMessage(role: string, content: string, turn: number, source?: string, tag?: JsonValue, timestamp?: number): SessionSeedMessage | null {
   const text = cleanMultilineText(content);
   if (!text) return null;
   return {
     role,
     content: text,
     turn: Number.isFinite(turn) ? turn : null,
-    ...(tag ? { tag } : {}),
+    ...(source ? { source } : {}),
+    ...(tag !== undefined ? { tag } : {}),
     ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { timestamp } : {}),
   } as SessionSeedMessage;
 }
@@ -368,7 +419,7 @@ function flushPendingToolFold(seedMessages: SessionSeedMessage[], pendingFold: a
   const lines = ['[Folded tool activity]'];
   lines.push(`assistant tool calls: ${deduped.join('; ')}`);
 
-  const note = createSeedMessage(policy.foldedToolNoteRole, lines.join('\n'), pendingFold.turn, 'folded-tool-activity');
+  const note = createSeedMessage(policy.foldedToolNoteRole, lines.join('\n'), pendingFold.turn, 'handoff-seed', 'folded-tool-activity');
   if (note) {
     seedMessages.push(note);
     stats.foldedToolNoteCount += 1;
@@ -523,7 +574,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
         : (Number.isFinite(fullPreserveFrom as number) && turn >= (fullPreserveFrom as number));
     if (inPreserveZone) {
       flushIfNeeded();
-      if (role === 'tool' || shouldKeepDialogueMessage(role, policy, message?.tag)) {
+      if (role === 'tool' || shouldKeepDialogueMessage(message, policy)) {
         const ts = msgTimestamp(index);
         seedMessages.push({ ...message, turn, ...(ts !== undefined ? { timestamp: ts } : {}) } as SessionSeedMessage);
         stats.keptSeedMessageCount += 1;
@@ -541,7 +592,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
     const protectedCalls = role === 'assistant'
       ? toolCalls.filter((call: any) => protectedToolCallIds.has(cleanInlineText(call?.id)))
       : [];
-    if (protectedCalls.length > 0 && shouldKeepDialogueMessage(role, policy, message?.tag)) {
+    if (protectedCalls.length > 0 && shouldKeepDialogueMessage(message, policy)) {
       flushIfNeeded();
       const tsProtected = msgTimestamp(index);
       seedMessages.push({ ...message, toolCalls: protectedCalls, turn, ...(tsProtected !== undefined ? { timestamp: tsProtected } : {}) } as SessionSeedMessage);
@@ -576,7 +627,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
         : shouldHandleToolActivity(turn, foldedToolTurns, policy);
       if (policy.toolMessageMode === 'keep' || !shouldHandle) {
         flushIfNeeded();
-        const seedMessage = createSeedMessage('tool', message.content, turn, message?.tag, msgTimestamp(index));
+        const seedMessage = createSeedMessage('tool', message.content, turn, message?.source, message?.tag, msgTimestamp(index));
         if (seedMessage) {
           seedMessages.push(seedMessage);
           stats.keptSeedMessageCount += 1;
@@ -628,7 +679,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
       flushIfNeeded();
     }
 
-    if (!shouldKeepDialogueMessage(role, policy, message?.tag)) {
+    if (!shouldKeepDialogueMessage(message, policy)) {
       stats.droppedDialogueMessageCount += 1;
       stats.droppedMessageCount += 1;
     } else {
@@ -636,7 +687,7 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
       if (role === 'assistant' && toolCalls.length > 0 && policy.assistantToolCallMode === 'keep' && toolCallSummaries.length > 0 && shouldHandleToolCalls) {
         assistantContent = `${assistantContent}\n[tool calls kept inline] ${toolCallSummaries.join('; ')}`.trim();
       }
-      const seedMessage = createSeedMessage(role, assistantContent, turn, message?.tag, msgTimestamp(index));
+      const seedMessage = createSeedMessage(role, assistantContent, turn, message?.source, message?.tag, msgTimestamp(index));
       if (seedMessage) {
         seedMessages.push(seedMessage);
         stats.keptSeedMessageCount += 1;

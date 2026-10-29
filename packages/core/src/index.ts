@@ -6,7 +6,7 @@
 
 // 核心
 export { Agent } from './core/agent.js';
-export { Context } from './core/context.js';
+export { Context, withMessageSource } from './core/context.js';
 export type {
   ContextSnapshot,
   ContextBoundaryV2,
@@ -150,6 +150,7 @@ export * from './skills/index.js';
 // 类型
 export type {
   Message,
+  JsonValue,
   MessageRole,
   MessageUsage,
   Tool,

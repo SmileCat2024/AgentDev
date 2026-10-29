@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Context } from '../../src/core/context.js';
+import { Context, withMessageSource } from '../../src/core/context.js';
 import type { ContextBoundaryV2 } from '../../src/core/context.js';
 import type { LLMResponse, ToolCall } from '../../src/core/types.js';
 
@@ -181,6 +181,18 @@ describe('Context', () => {
       const enriched = ctx.getAllEnriched();
       expect(enriched[0].role).toBe('system');
       expect(enriched[0].tags).toContain('system');
+    });
+
+    it('binds Feature source over caller-supplied source and persists JSON tag', () => {
+      const context = new Context();
+      const featureContext = withMessageSource(context, 'session-reference');
+      featureContext.addSystemMessage('reference reminder', 0, 'forged-source', { kind: 'reference', ids: ['s-1'] });
+
+      const snapshot = Context.deserialize(context.serialize()).toJSON();
+      expect(snapshot.messages[0].source).toBe('session-reference');
+      expect(snapshot.messages[0].tag).toEqual({ kind: 'reference', ids: ['s-1'] });
+      expect(snapshot.enrichedMessages?.[0].source).toBe('session-reference');
+      expect(snapshot.enrichedMessages?.[0].tag).toEqual({ kind: 'reference', ids: ['s-1'] });
     });
 
     it('should preserve tag on messages[] and enrichedMessages[]', () => {

@@ -319,6 +319,11 @@ export interface ImageInput {
 }
 
 // 消息结构
+/** JSON 值：消息 tag 的稳定、可序列化业务元信息契约。 */
+export type JsonValue = string | number | boolean | null | JsonValue[] | {
+  [key: string]: JsonValue;
+};
+
 export interface Message {
   role: MessageRole;
   content: string;
@@ -337,25 +342,14 @@ export interface Message {
    */
   display?: unknown;
   /**
-   * 消息来源标记（仅 system 消息使用）。
-   *
-   * - undefined：agent 自身的系统提示词（由 templateResolver 生成），
-   *   Anthropic provider 将其放入顶层 system 参数。
-   * - 有值（如 'handoff-seed'、'partial-compact'）：Feature 注入的 system 消息，
-   *   Anthropic provider 将其包裹为 <reminder> 嵌入最近的 user turn，
-   *   而非混入顶层 system 参数。
+   * 消息来源。Feature 执行上下文中的 system 消息由框架按当前 Feature 自动盖戳；
+   * 非 Feature 注入（如宿主系统消息）可自行指定或缺省。
    */
   source?: string;
   /**
-   * 消息语义标签（所有 role 通用）。
-   *
-   * 与 source 的区别：
-   * - source 控制 LLM 编译层行为（顶层 system vs reminder）
-   * - tag 控制上下文管理层行为（trim/compact 时的保留策略）
-   *
-   * undefined = 无标签，向后兼容，行为与当前完全一致。
+   * 消息语义标签（所有 role 通用）。由注入方自由定义 JSON 值；框架不解释其业务语义。
    */
-  tag?: string;
+  tag?: JsonValue;
   /**
    * LLM 用量信息（仅 assistant 消息有值）。
    *
@@ -417,6 +411,10 @@ export interface LLMResponse {
   usage?: UsageInfo;
   /** 停止原因，由 LLM API 返回（如 end_turn, tool_use, stop 等） */
   stopReason?: string | null;
+  /** 可选的消息来源元信息，由 Context 注入器绑定。 */
+  source?: string;
+  /** 可选的自由 JSON 消息标签。 */
+  tag?: JsonValue;
 }
 
 // ============= 渲染模板类型 =============
@@ -1185,7 +1183,7 @@ export interface MessageMeta {
   /** 来源 Feature（reminder 等消息时填写） */
   source?: string;
   /** 消息语义标签（透传到 EnrichedMessage） */
-  tag?: string;
+  tag?: JsonValue;
   /**
    * 外部权威时刻（毫秒）：消息语义上的发生时刻，而非写入 Context 的时刻。
    *

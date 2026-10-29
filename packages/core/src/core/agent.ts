@@ -14,7 +14,7 @@ import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsage
 import type { AgentFeature, FeatureInitContext, ContextInjector, RestoreOrigin } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
-import { Context, type ContextSnapshot } from './context.js';
+import { Context, withMessageSource, type ContextSnapshot } from './context.js';
 import { DebugHub } from './debug-hub.js';
 import { createLogger, installConsoleBridge, runWithLogScope } from './logging.js';
 import { runWithNotificationScope } from './notification.js';
@@ -1999,7 +1999,7 @@ class AgentBase {
       const feature = this.features.get(featureName) as AgentFeature | undefined;
       if (!feature || typeof (feature as any).onCapabilityActivations !== 'function') continue;
       try {
-        await (feature as any).onCapabilityActivations(groupRefs, { context });
+        await (feature as any).onCapabilityActivations(groupRefs, { context: withMessageSource(context, feature.name) });
         logger.info('turn activations dispatched', { feature: featureName, refs: groupRefs });
       } catch (error) {
         logger.error('turn activation dispatch failed', {
@@ -2035,7 +2035,7 @@ class AgentBase {
         continue;
       }
       try {
-        await (feature as any).onTurnMetadata(value, { context, agent: this });
+        await (feature as any).onTurnMetadata(value, { context: withMessageSource(context, feature.name), agent: this });
         logger.info('turn metadata dispatched', { key });
       } catch (error) {
         logger.error('turn metadata dispatch failed', {

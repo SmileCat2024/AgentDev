@@ -80,9 +80,11 @@ export class DebugHub {
     timestamp: number;
   }>();
 
-  // UDS 客户端连接
-  private udsClient?: Socket;
+  // ViewerWorker 控制通道客户端连接
+  private workerClient?: Socket;
   private udsPath: string;
+  private readonly viewerAddress?: { host: string; port: number };
+  private readonly internalToken?: string;
   private workerReadBuffer: string = '';
   private workerPort: number | null = null;
   private clientReady: boolean = false;
@@ -123,6 +125,19 @@ export class DebugHub {
   // ========== 单例 ==========
   private constructor() {
     this.udsPath = process.env.AGENTDEV_UDS_PATH || getDefaultUDSPath();
+    const viewerAddress = process.env.AGENTDEV_VIEWER_ADDR;
+    if (viewerAddress) {
+      const match = /^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/.exec(viewerAddress);
+      const port = match ? Number(match[3]) : NaN;
+      if (!match || !Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`Invalid AGENTDEV_VIEWER_ADDR: ${viewerAddress}`);
+      }
+      this.viewerAddress = { host: match[1] || match[2], port };
+      this.internalToken = process.env.PROTOCLAW_INTERNAL_TOKEN;
+      if (!this.internalToken) {
+        throw new Error('PROTOCLAW_INTERNAL_TOKEN is required when AGENTDEV_VIEWER_ADDR is set');
+      }
+    }
     // 使用进程 PID 作为唯一标识，确保多进程环境下 Agent ID 不冲突
     this.processId = String(process.pid);
     this.transportMode = resolveDebugTransportMode();
@@ -195,12 +210,12 @@ export class DebugHub {
       await this.connectToWorker();
       console.log(`[DebugHub] 调试服务器已连接: http://localhost:${port}`);
     } catch (connectErr) {
-      // 托管环境（AGENTDEV_UDS_PATH 显式指定，由宿主 spawn 传入）：ViewerWorker
+      // 托管环境（显式指定 UDS 或 TCP 地址，由宿主注入）：ViewerWorker
       // 生命周期归宿主管，连接失败说明宿主 viewer 未就绪或已失联。此时自动
       // 拉起只会起一个注定端口冲突的 worker——它在退出前还会 unlink 并抢占
       // 宿主的 sock 路径，把宿主与全部 runtime 的 IPC 通道一起拖死。直接把
       // 连接错误上抛，让宿主感知失败。
-      if (process.env.AGENTDEV_UDS_PATH) {
+      if (process.env.AGENTDEV_UDS_PATH || process.env.AGENTDEV_VIEWER_ADDR) {
         throw connectErr;
       }
 
@@ -268,6 +283,7 @@ export class DebugHub {
           AGENTDEV_PORT: String(this.workerPort || 2026),
           AGENTDEV_OPEN_BROWSER: this.openBrowser ? 'true' : 'false',
           AGENTDEV_UDS_PATH: this.udsPath,
+          ...(this.viewerAddress ? { AGENTDEV_VIEWER_ADDR: `${this.viewerAddress.host}:${this.viewerAddress.port}` } : {}),
         };
 
         console.log(`[DebugHub] 启动 ViewerWorker: ${viewerPath}`);
@@ -334,10 +350,10 @@ export class DebugHub {
       this.reconnectTimer = undefined;
     }
 
-    if (this.udsClient) {
+    if (this.workerClient) {
       this.sendToWorker({ type: 'stop' });
-      this.udsClient.end();
-      this.udsClient = undefined;
+      this.workerClient.end();
+      this.workerClient = undefined;
       this.clientReady = false;
     }
   }
@@ -355,7 +371,7 @@ export class DebugHub {
       return;
     }
 
-    if (this.clientReady && this.udsClient) {
+    if (this.clientReady && this.workerClient) {
       console.log('[DebugHub] 已经连接，无需重连');
       return;
     }
@@ -722,7 +738,7 @@ export class DebugHub {
     if (this.transportMode === 'claw') {
       return this.clientReady;
     }
-    return this.clientReady && !!this.udsClient;
+    return this.clientReady && !!this.workerClient;
   }
 
   /**
@@ -851,19 +867,19 @@ export class DebugHub {
    */
   private async connectToWorker(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const socket = connect(this.udsPath);
-      this.udsClient = socket;
+      const socket = this.viewerAddress
+        ? connect(this.viewerAddress.port, this.viewerAddress.host)
+        : connect(this.udsPath);
+      this.workerClient = socket;
 
       socket.on('connect', () => {
         this.workerReadBuffer = '';
-        this.clientReady = true;
-        this.reconnectAttempts = 0; // 重置重连计数
-        console.log(`[DebugHub] 已连接到 ViewerWorker: ${this.udsPath}`);
-
-        // 关键：重新注册所有 Agent（用于重连后恢复状态）
-        this.reregisterAllAgents();
-
-        resolve();
+        if (this.viewerAddress) {
+          socket.write(JSON.stringify({ type: 'auth', token: this.internalToken }) + '\n');
+        } else {
+          this.markWorkerConnected(socket);
+          resolve();
+        }
       });
 
       socket.setEncoding('utf8');
@@ -875,7 +891,14 @@ export class DebugHub {
           if (!line.trim()) continue;
           try {
             const msg = JSON.parse(line);
-            this.handleWorkerMessage(msg);
+            if (msg.type === 'auth-ok' && this.viewerAddress && !this.clientReady) {
+              this.markWorkerConnected(socket);
+              resolve();
+            } else if (msg.type === 'auth-error') {
+              socket.destroy(new Error('ViewerWorker TCP authentication failed'));
+            } else {
+              this.handleWorkerMessage(msg);
+            }
           } catch (err) {
             console.error('[DebugHub] Worker 消息解析失败:', err);
           }
@@ -883,18 +906,18 @@ export class DebugHub {
       });
 
       socket.on('error', (err: Error) => {
-        if (this.udsClient === socket) {
-          this.udsClient = undefined;
+        if (this.workerClient === socket) {
+          this.workerClient = undefined;
           this.clientReady = false;
         }
-        reject(new Error(`连接 ViewerWorker 失败 (${this.udsPath}): ${err.message}\n请先启动 ViewerWorker 服务器`));
+        reject(new Error(`连接 ViewerWorker 失败 (${this.viewerAddress ? `${this.viewerAddress.host}:${this.viewerAddress.port}` : this.udsPath}): ${err.message}\n请先启动 ViewerWorker 服务器`));
       });
 
       socket.on('close', () => {
         this.workerReadBuffer = '';
         this.clientReady = false;
-        if (this.udsClient === socket) {
-          this.udsClient = undefined;
+        if (this.workerClient === socket) {
+          this.workerClient = undefined;
         }
         console.warn('[DebugHub] 与 ViewerWorker 的连接已断开');
 
@@ -903,6 +926,15 @@ export class DebugHub {
         }
       });
     });
+  }
+
+  private markWorkerConnected(socket: Socket): void {
+    this.clientReady = true;
+    this.reconnectAttempts = 0;
+    console.log(`[DebugHub] 已连接到 ViewerWorker: ${this.viewerAddress ? `${this.viewerAddress.host}:${this.viewerAddress.port}` : this.udsPath}`);
+
+    // 关键：重新注册所有 Agent（用于重连后恢复状态）
+    this.reregisterAllAgents();
   }
 
   /**
@@ -1134,11 +1166,11 @@ export class DebugHub {
   }
 
   /**
-   * 通过 UDS 发送消息
+   * 通过已连接的 ViewerWorker socket 发送消息
    */
-  private sendViaUDS(msg: DebugHubIPCMessage): void {
-    if (this.udsClient && this.clientReady) {
-      this.udsClient.write(JSON.stringify(msg) + '\n');
+  private sendViaSocket(msg: DebugHubIPCMessage): void {
+    if (this.workerClient && this.clientReady) {
+      this.workerClient.write(JSON.stringify(msg) + '\n');
     }
     // 未连接时丢弃消息，不再队列（避免内存泄漏）
   }
@@ -1189,7 +1221,7 @@ export class DebugHub {
    * 发送消息到 Worker
    */
   private sendToWorker(msg: DebugHubIPCMessage): boolean {
-    if (!this.udsClient || !this.clientReady) {
+    if (!this.workerClient || !this.clientReady) {
       // Do not present this as a delivered message. Stateful registrations and
       // input leases are reconciled by re-registerAllAgents on reconnect;
       // this warning keeps non-replayable debug updates observable instead of
@@ -1201,7 +1233,7 @@ export class DebugHub {
       }
       return false;
     }
-    this.sendViaUDS(msg);
+    this.sendViaSocket(msg);
     return true;
   }
 }

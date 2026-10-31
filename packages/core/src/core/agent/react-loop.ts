@@ -824,14 +824,21 @@ export class ReActLoopRunner {
    * @returns 排队消息（文本 + 图片 + 能力激活通知 + 自由元数据 + 输入身份），如果没有则返回 null
    */
   private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number } | null> {
-    // 从环境变量获取 ViewerWorker 端口
-    const viewerPort = process.env.AGENTDEV_VIEWER_PORT || '2026';
-    const viewerUrl = `http://127.0.0.1:${viewerPort}`;
+    // runtime → 平台 HTTP 面寻址（ADR-0037 决策 3）：宿主可注入完整 origin
+    // （AGENTDEV_VIEWER_ORIGIN，容器/远程部署时 runtime 不在同一网络命名空间），
+    // 未注入时回退现状：本机回环 + AGENTDEV_VIEWER_PORT。
+    const viewerOrigin = process.env.AGENTDEV_VIEWER_ORIGIN || `http://127.0.0.1:${process.env.AGENTDEV_VIEWER_PORT || '2026'}`;
+    // 内部 token 存在时随请求携带 Bearer：回环模式服务端不校验（行为不变），
+    // 非回环监听启用后直接生效——与 TCP 控制通道共用同一 token 体系。
+    const internalToken = process.env.PROTOCLAW_INTERNAL_TOKEN;
 
     try {
-      const res = await fetch(`${viewerUrl}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
+      const res = await fetch(`${viewerOrigin}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(internalToken ? { Authorization: `Bearer ${internalToken}` } : {}),
+        },
       });
 
       if (!res.ok) {

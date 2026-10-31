@@ -105,6 +105,9 @@ class ViewerWorker {
   private server: ReturnType<typeof createServer>;
   private udsPath: string;
   private udsServer?: Server;
+  private tcpServer?: Server;
+  private readonly tcpAddress?: { host: string; port: number };
+  private readonly internalToken?: string;
   private udsClients: Map<string, Socket> = new Map();
 
   // 多 Agent 会话存储
@@ -133,6 +136,19 @@ class ViewerWorker {
     this.port = port;
     this.openBrowser = openBrowser;
     this.udsPath = udsPath || getDefaultUDSPath();
+    const tcpAddress = process.env.AGENTDEV_VIEWER_ADDR;
+    if (tcpAddress) {
+      const match = /^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/.exec(tcpAddress);
+      const tcpPort = match ? Number(match[3]) : NaN;
+      if (!match || !Number.isInteger(tcpPort) || tcpPort < 1 || tcpPort > 65535) {
+        throw new Error(`Invalid AGENTDEV_VIEWER_ADDR: ${tcpAddress}`);
+      }
+      this.tcpAddress = { host: match[1] || match[2], port: tcpPort };
+      this.internalToken = process.env.PROTOCLAW_INTERNAL_TOKEN;
+      if (!this.internalToken) {
+        throw new Error('PROTOCLAW_INTERNAL_TOKEN is required when AGENTDEV_VIEWER_ADDR is set');
+      }
+    }
     this.server = createServer();
   }
 
@@ -160,8 +176,9 @@ class ViewerWorker {
           console.log(`[Viewer Worker] ${url} (loopback only)`);
           console.log(`[Viewer Worker] MCP endpoint: ${url}/mcp`);
 
-          // HTTP 就绪后才接管 UDS 路径
+          // HTTP 就绪后才接管本机 UDS 与可选网络传输。
           await this.startUDSServer();
+          if (this.tcpAddress) await this.startTCPServer();
 
           // 打开浏览器（仅在 openBrowser 为 true 时）
           if (this.openBrowser) {
@@ -182,6 +199,7 @@ class ViewerWorker {
 
           resolve();
         } catch (err) {
+          await this.stop();
           reject(err);
         }
       });
@@ -193,21 +211,39 @@ class ViewerWorker {
    */
   async stop(): Promise<void> {
     return new Promise((resolve) => {
+      let pendingCloseCallbacks = 0;
+      const finishClose = () => {
+        pendingCloseCallbacks -= 1;
+        if (pendingCloseCallbacks === 0) resolve();
+      };
+
       // 关闭 HTTP 服务器
       if (this.server) {
+        pendingCloseCallbacks += 1;
         this.server.close(() => {
           console.log('[Viewer Worker] HTTP 服务器已关闭');
+          finishClose();
         });
       }
 
-      // 关闭 UDS 服务器
+      // 关闭传输监听器
+      if (this.tcpServer) {
+        pendingCloseCallbacks += 1;
+        this.tcpServer.close(() => {
+          console.log('[Viewer Worker] TCP 服务器已关闭');
+          finishClose();
+        });
+        this.tcpServer = undefined;
+      }
       if (this.udsServer) {
+        pendingCloseCallbacks += 1;
         this.udsServer.close(() => {
           console.log('[Viewer Worker] UDS 服务器已关闭');
+          finishClose();
         });
       }
 
-      // 关闭所有 UDS 客户端连接
+      // 关闭所有控制通道客户端连接
       for (const [id, socket] of this.udsClients) {
         socket.destroy();
         console.log(`[Viewer Worker] 客户端连接已关闭: ${id}`);
@@ -224,7 +260,7 @@ class ViewerWorker {
         } catch {}
       }
 
-      resolve();
+      if (pendingCloseCallbacks === 0) resolve();
     });
   }
 
@@ -295,6 +331,69 @@ class ViewerWorker {
 
       this.udsServer.listen(this.udsPath, () => {
         console.log(`[Viewer Worker] UDS 服务器已启动: ${this.udsPath}`);
+        resolve();
+      });
+    });
+  }
+
+  /** TCP 控制通道在首条业务消息前必须完成内部 token 认证。 */
+  private startTCPServer(): Promise<void> {
+    const address = this.tcpAddress;
+    const token = this.internalToken;
+    if (!address || !token) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let connectionCounter = 0;
+      this.tcpServer = createNetServer((socket: Socket) => {
+        const clientId = `tcp-client-${++connectionCounter}-${Date.now()}`;
+        let buffer = '';
+        let authenticated = false;
+        socket.setEncoding('utf8');
+        socket.on('data', (data: string) => {
+          buffer += data;
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            let message: any;
+            try {
+              message = JSON.parse(line);
+            } catch {
+              socket.destroy();
+              return;
+            }
+            if (!authenticated) {
+              if (message?.type !== 'auth' || typeof message.token !== 'string' || message.token !== token) {
+                socket.write(JSON.stringify({ type: 'auth-error' }) + '\n', () => socket.destroy());
+                return;
+              }
+              authenticated = true;
+              this.udsClients.set(clientId, socket);
+              socket.write(JSON.stringify({ type: 'auth-ok' }) + '\n');
+              console.log(`[Viewer Worker] 已认证 TCP 客户端: ${clientId}`);
+              continue;
+            }
+            this.handleUDSMessage(message as DebugHubIPCMessage, socket, clientId);
+          }
+        });
+        socket.on('close', () => {
+          if (!authenticated) return;
+          this.udsClients.delete(clientId);
+          this.emitDisconnectedByClientId(clientId);
+        });
+        socket.on('error', (err) => {
+          console.error('[Viewer Worker] TCP 客户端错误:', err);
+          if (authenticated) {
+            this.udsClients.delete(clientId);
+            this.emitDisconnectedByClientId(clientId);
+          }
+        });
+      });
+      this.tcpServer.once('error', (error) => {
+        this.tcpServer = undefined;
+        reject(error);
+      });
+      this.tcpServer.listen(address.port, address.host, () => {
+        console.log(`[Viewer Worker] TCP 控制通道已监听: ${address.host}:${address.port}`);
         resolve();
       });
     });

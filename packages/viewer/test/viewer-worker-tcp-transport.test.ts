@@ -91,4 +91,60 @@ describe('ViewerWorker TCP control transport', () => {
     }
     expect(authorized).toBe(true);
   });
+
+  it('delivers stop-agent to a connected runtime over TCP and refuses disconnected ones', async () => {
+    const port = await getFreePort();
+    const httpPort = await getFreeHttpPort();
+    process.env.AGENTDEV_VIEWER_ADDR = `127.0.0.1:${port}`;
+    process.env.PROTOCLAW_INTERNAL_TOKEN = 'test-internal-token';
+    worker = new ViewerWorker(httpPort, false, getTestUdsPath());
+    await worker.start();
+    const httpAddress = (worker as any).server.address();
+
+    const unknown = await fetch(`http://127.0.0.1:${httpAddress.port}/api/agents/never-registered/stop`, { method: 'POST' });
+    expect(unknown.status).toBe(404);
+
+    const socket = connect(port, '127.0.0.1');
+    sockets.push(socket);
+    socket.setEncoding('utf8');
+    const received: any[] = [];
+    socket.on('data', (data: string) => {
+      for (const line of String(data).split('\n')) {
+        if (!line) continue;
+        try { received.push(JSON.parse(line)); } catch { /* 跨 chunk 半行 */ }
+      }
+    });
+    await once(socket, 'connect');
+    socket.write(JSON.stringify({ type: 'auth', token: 'test-internal-token' }) + '\n');
+    socket.write(JSON.stringify({ type: 'register-agent', agentId: 'stop-target', name: 'Stop Target' }) + '\n');
+
+    let connected = false;
+    for (let attempt = 0; attempt < 100 && !connected; attempt++) {
+      const response = await fetch(`http://127.0.0.1:${httpAddress.port}/api/agents`);
+      const body = await response.json() as { agents: Array<{ id: string; connected: boolean }> };
+      connected = body.agents.some(agent => agent.id === 'stop-target' && agent.connected);
+      if (!connected) await new Promise(resolve => setImmediate(resolve));
+    }
+    expect(connected).toBe(true);
+
+    const stopResponse = await fetch(`http://127.0.0.1:${httpAddress.port}/api/agents/stop-target/stop`, { method: 'POST' });
+    expect(stopResponse.status).toBe(200);
+    expect(await stopResponse.json()).toEqual({ success: true });
+
+    let delivered = false;
+    for (let attempt = 0; attempt < 100 && !delivered; attempt++) {
+      delivered = received.some(message => message.type === 'stop-agent' && message.agentId === 'stop-target');
+      if (!delivered) await new Promise(resolve => setImmediate(resolve));
+    }
+    expect(delivered).toBe(true);
+
+    socket.destroy();
+    let refused = false;
+    for (let attempt = 0; attempt < 100 && !refused; attempt++) {
+      const response = await fetch(`http://127.0.0.1:${httpAddress.port}/api/agents/stop-target/stop`, { method: 'POST' });
+      if (response.status === 409) { refused = true; break; }
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    expect(refused).toBe(true);
+  });
 });

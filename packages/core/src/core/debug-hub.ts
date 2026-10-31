@@ -67,6 +67,10 @@ export class DebugHub {
   private pendingInputRequests = new Map<string, PendingInputRequest>();
   private interruptHandlers = new Map<string, (agentId: string, clearQueue: boolean) => void | Promise<void>>();
   private globalInterruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
+  // 平台停止指令回调（外部 runtime 生命周期通道，ADR-0037）：未注册时收到
+  // stop-agent 只记录不动作——停止语义归宿主，框架不代决定退出时机。
+  private stopHandlers = new Map<string, (agentId: string) => void | Promise<void>>();
+  private globalStopHandler?: (agentId: string) => void | Promise<void>;
 
   // 活跃的输入请求元数据（用于重连恢复）：agentId → requestInfo
   private activeInputRequests = new Map<string, {
@@ -713,6 +717,34 @@ export class DebugHub {
   }
 
   /**
+   * 注册平台停止指令回调：ViewerWorker 下发 stop-agent 时触发。返回注销函数。
+   * 与 setInterruptHandler 同一注册形态（per-agent 优先，全局 fallback）。
+   */
+  setStopHandler(
+    agentIdOrHandler: string | ((agentId: string) => void | Promise<void>) | undefined,
+    handler?: (agentId: string) => void | Promise<void>,
+  ): () => void {
+    if (typeof agentIdOrHandler === 'string') {
+      if (handler) {
+        this.stopHandlers.set(agentIdOrHandler, handler);
+        return () => {
+          if (this.stopHandlers.get(agentIdOrHandler) === handler) {
+            this.stopHandlers.delete(agentIdOrHandler);
+          }
+        };
+      }
+      this.stopHandlers.delete(agentIdOrHandler);
+      return () => {};
+    }
+    this.globalStopHandler = agentIdOrHandler;
+    return () => {
+      if (this.globalStopHandler === agentIdOrHandler) {
+        this.globalStopHandler = undefined;
+      }
+    };
+  }
+
+  /**
    * 根据 Agent 实例获取其 ID
    */
   getAgentId(agent: Agent): string | undefined {
@@ -982,6 +1014,21 @@ export class DebugHub {
           Promise.resolve(effectiveHandler(msg.agentId, msg.clearQueue === true)).catch((error) => {
             console.error('[DebugHub] interruptHandler 执行失败:', error);
           });
+        }
+        break;
+      }
+
+      // 平台停止指令（外部 runtime 生命周期通道）：宿主注册回调决定优雅退出
+      // 路径（持久化、收尾、断连）；未注册回调时仅记录，不自动退出进程。
+      case 'stop-agent': {
+        console.log(`[DebugHub] 收到停止指令: agentId=${msg.agentId}`);
+        const stopHandler = this.stopHandlers.get(msg.agentId) ?? this.globalStopHandler;
+        if (stopHandler) {
+          Promise.resolve(stopHandler(msg.agentId)).catch((error) => {
+            console.error('[DebugHub] stopHandler 执行失败:', error);
+          });
+        } else {
+          console.warn(`[DebugHub] 无停止回调，忽略停止指令: ${msg.agentId}`);
         }
         break;
       }

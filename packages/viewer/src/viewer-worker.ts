@@ -613,6 +613,13 @@ class ViewerWorker {
       return;
     }
 
+    // POST /api/agents/:id/stop - 请求 runtime 优雅停止（外部 runtime 生命周期通道）
+    const stopMatch = url.match(/^\/api\/agents\/([^/]+)\/stop$/);
+    if (stopMatch && req.method === 'POST') {
+      this.handleStopAgent(req, res, stopMatch[1]);
+      return;
+    }
+
     // GET /api/agents/:id/running - 查询 Agent 是否正在运行
     const runningMatch = url.match(/^\/api\/agents\/([^/]+)\/running$/);
     if (runningMatch && req.method === 'GET') {
@@ -1410,6 +1417,50 @@ class ViewerWorker {
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ success: true }));
+  }
+
+  /**
+   * 请求 Agent runtime 优雅停止（外部 runtime 生命周期通道，ADR-0037 决策 4）。
+   * 与 interrupt 同一连接下发通路（UDS / TCP 认证客户端共用 clientId 注册表），
+   * 只回报受理结果；停止完成以连接断开与会话状态为准。
+   */
+  private handleStopAgent(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    // 停止请求不带 body；读掉可能的空 body，避免 keep-alive 连接解析错位。
+    req.resume?.();
+
+    const session = this.agentSessions.get(agentId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Agent not found' }));
+      return;
+    }
+
+    const targetClientId = session.clientId;
+    const targetSocket = targetClientId ? this.udsClients.get(targetClientId) : null;
+    if (!targetSocket) {
+      res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        success: false,
+        code: 'runtime_not_accepting_input',
+        error: 'Agent runtime is not connected',
+      }));
+      return;
+    }
+
+    try {
+      targetSocket.write(JSON.stringify({ type: 'stop-agent', agentId }) + '\n');
+      console.log(`[Viewer Worker] stop-agent 已下发: agentId=${agentId}, clientId=${targetClientId}`);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (writeError) {
+      console.error('[Viewer Worker] stop-agent 下发失败:', writeError);
+      res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        success: false,
+        code: 'runtime_not_accepting_input',
+        error: 'Agent runtime is not connected',
+      }));
+    }
   }
 
   /**

@@ -888,7 +888,9 @@ export type DebugHubIPCMessage =
   | RequestInputMsg
   | InputRequestCancelledMsg
   | InterruptAgentMsg
-  | StopMsg;
+  | StopMsg
+  | HostRequestMsg
+  | HostResponseMsg;
 
 /**
  * 注册新 Agent
@@ -1009,6 +1011,30 @@ export interface UnregisterAgentMsg {
  */
 export interface StopMsg {
   type: 'stop';
+}
+
+/**
+ * 宿主定向请求（平台 → runtime，经 ViewerWorker 连接下发）。
+ * 与 stop-agent 同一连接通道的请求/响应扩展：payload 对框架不透明，
+ * 语义归宿主与 runtime 约定（如 Claw 的 feature-comms 定向请求、
+ * 会话数据代理查询）。requestId 由 ViewerWorker 生成并负责关联。
+ */
+export interface HostRequestMsg {
+  type: 'host-request';
+  requestId: string;
+  agentId: string;
+  payload: unknown;
+}
+
+/**
+ * 宿主定向请求的响应（runtime → ViewerWorker）。error 非空表示
+ * runtime 侧处理失败（含未注册 handler）；result 为成功时的返回值。
+ */
+export interface HostResponseMsg {
+  type: 'host-response';
+  requestId: string;
+  result?: unknown;
+  error?: string;
 }
 
 /**

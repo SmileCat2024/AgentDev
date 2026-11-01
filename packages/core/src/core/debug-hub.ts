@@ -71,6 +71,10 @@ export class DebugHub {
   // stop-agent 只记录不动作——停止语义归宿主，框架不代决定退出时机。
   private stopHandlers = new Map<string, (agentId: string) => void | Promise<void>>();
   private globalStopHandler?: (agentId: string) => void | Promise<void>;
+  // 宿主定向请求回调（host-request 帧，经 ViewerWorker 连接）：payload 透明
+  // 传递，返回值经 host-response 帧原路回传。与 stopHandlers 同一注册形态。
+  private hostRequestHandlers = new Map<string, (payload: unknown, agentId: string) => unknown>();
+  private globalHostRequestHandler?: (payload: unknown, agentId: string) => unknown;
 
   // 活跃的输入请求元数据（用于重连恢复）：agentId → requestInfo
   private activeInputRequests = new Map<string, {
@@ -745,6 +749,35 @@ export class DebugHub {
   }
 
   /**
+   * 注册宿主定向请求回调：ViewerWorker 下发 host-request 帧时触发，
+   * 返回值（或抛出的异常）经 host-response 帧回传给发起方。
+   * 与 setStopHandler 同一注册形态（per-agent 优先，全局 fallback）。
+   */
+  setHostRequestHandler(
+    agentIdOrHandler: string | ((payload: unknown, agentId: string) => unknown) | undefined,
+    handler?: (payload: unknown, agentId: string) => unknown,
+  ): () => void {
+    if (typeof agentIdOrHandler === 'string') {
+      if (handler) {
+        this.hostRequestHandlers.set(agentIdOrHandler, handler);
+        return () => {
+          if (this.hostRequestHandlers.get(agentIdOrHandler) === handler) {
+            this.hostRequestHandlers.delete(agentIdOrHandler);
+          }
+        };
+      }
+      this.hostRequestHandlers.delete(agentIdOrHandler);
+      return () => {};
+    }
+    this.globalHostRequestHandler = agentIdOrHandler;
+    return () => {
+      if (this.globalHostRequestHandler === agentIdOrHandler) {
+        this.globalHostRequestHandler = undefined;
+      }
+    };
+  }
+
+  /**
    * 根据 Agent 实例获取其 ID
    */
   getAgentId(agent: Agent): string | undefined {
@@ -1028,8 +1061,35 @@ export class DebugHub {
             console.error('[DebugHub] stopHandler 执行失败:', error);
           });
         } else {
-          console.warn(`[DebugHub] 无停止回调，忽略停止指令: ${msg.agentId}`);
+          console.warn(`[DebugHub] 无停止回调，忽略停止指令: agentId=${msg.agentId}`);
         }
+        break;
+      }
+
+      // 宿主定向请求：payload 透传给注册回调，返回值/异常经 host-response
+      // 帧回传。无回调也必须回 error——ViewerWorker 的 HTTP 调用方在等
+      // requestId 关联的响应，静默丢弃会让它挂到超时。
+      case 'host-request': {
+        console.log(`[DebugHub] 收到宿主定向请求: agentId=${msg.agentId}, requestId=${msg.requestId}`);
+        const hostRequestHandler = this.hostRequestHandlers.get(msg.agentId) ?? this.globalHostRequestHandler;
+        if (!hostRequestHandler) {
+          this.sendToWorker({ type: 'host-response', requestId: msg.requestId, error: 'No host request handler registered' });
+          break;
+        }
+        // 调用必须包进 then 链：同步 throw 与异步 reject 都要收口为
+        // host-response error，直接穿透会静默丢响应（调用方挂到超时）。
+        Promise.resolve()
+          .then(() => hostRequestHandler(msg.payload, msg.agentId))
+          .then((result) => {
+            this.sendToWorker({ type: 'host-response', requestId: msg.requestId, result });
+          })
+          .catch((error) => {
+            this.sendToWorker({
+              type: 'host-response',
+              requestId: msg.requestId,
+              error: String((error as Error)?.message || error),
+            });
+          });
         break;
       }
     }

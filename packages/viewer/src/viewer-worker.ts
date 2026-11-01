@@ -8,7 +8,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
 import { unlinkSync, existsSync, readFile } from 'fs';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { join, resolve, sep, extname } from 'path';
 import { type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type TurnKind, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, getDefaultUDSPath } from '@agentdevjs/core';
 import {
@@ -120,6 +120,14 @@ class ViewerWorker {
   private readonly httpBind: string;
   private readonly httpRequiresAuth: boolean;
   private udsClients: Map<string, Socket> = new Map();
+
+  // 宿主定向请求的在途关联：requestId → pending。宿主断连（socket close /
+  // error）时按 clientId 整批失败，避免 HTTP 调用方挂到超时。
+  private hostRequestPendings: Map<string, {
+    clientId: string;
+    resolve: (value: { result?: unknown; error?: string }) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = new Map();
 
   // 多 Agent 会话存储
   private agentSessions: Map<string, AgentSession> = new Map();
@@ -461,6 +469,16 @@ class ViewerWorker {
       case 'stop':
         this.handleStop();
         break;
+      case 'host-response': {
+        // requestId 关联的宿主定向请求回传：无对应 pending（已超时/断连
+        // 清理）时静默丢弃。
+        const pending = this.hostRequestPendings.get(msg.requestId);
+        if (pending) {
+          this.hostRequestPendings.delete(msg.requestId);
+          pending.resolve({ result: (msg as { result?: unknown }).result, error: (msg as { error?: string }).error });
+        }
+        break;
+      }
     }
   }
 
@@ -652,6 +670,14 @@ class ViewerWorker {
     const stopMatch = url.match(/^\/api\/agents\/([^/]+)\/stop$/);
     if (stopMatch && req.method === 'POST') {
       this.handleStopAgent(req, res, stopMatch[1]);
+      return;
+    }
+
+    // POST /api/agents/:id/host-request - 宿主定向请求（与 stop 同一连接通道的
+    // 请求/响应扩展，requestId 关联，runtime 以 host-response 帧回传）
+    const hostRequestMatch = url.match(/^\/api\/agents\/([^/]+)\/host-request$/);
+    if (hostRequestMatch && req.method === 'POST') {
+      this.handleHostRequest(req, res, hostRequestMatch[1]);
       return;
     }
 
@@ -1499,6 +1525,103 @@ class ViewerWorker {
   }
 
   /**
+   * 宿主定向请求（host-request 通道，与 stop-agent 同一连接下发通路）：
+   * body 透传给 runtime 侧注册的 host request 回调，响应经 host-response
+   * 帧回传后以 200 返回。payload 对 viewer 不透明，语义归宿主与 runtime。
+   * 超时（默认 30s，AGENTDEV_HOST_REQUEST_TIMEOUT_MS 可覆盖）与连接断开
+   * 都会终结在途请求，不让 HTTP 调用方悬挂。
+   */
+  private handleHostRequest(req: IncomingMessage, res: ServerResponse, agentId: string): void {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => { body += chunk; });
+    req.on('end', () => {
+      let payload: unknown;
+      try {
+        payload = body.trim() ? JSON.parse(body) : undefined;
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: false, code: 'invalid_json', error: 'Invalid JSON body' }));
+        return;
+      }
+      const session = this.agentSessions.get(agentId);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Agent not found' }));
+        return;
+      }
+      const targetClientId = session.clientId;
+      const targetSocket = targetClientId ? this.udsClients.get(targetClientId) : null;
+      if (!targetSocket) {
+        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          success: false,
+          code: 'runtime_not_accepting_input',
+          error: 'Agent runtime is not connected',
+        }));
+        return;
+      }
+
+      const requestId = randomUUID();
+      const timeoutMs = Math.max(1, Number(process.env.AGENTDEV_HOST_REQUEST_TIMEOUT_MS) || 30_000);
+      // null = 超时标记（断连走 error 形态，二者都以同一 promise 收口）
+      const responsePromise = new Promise<{ result?: unknown; error?: string } | null>((resolve) => {
+        const timer = setTimeout(() => {
+          this.hostRequestPendings.delete(requestId);
+          resolve(null);
+        }, timeoutMs);
+        this.hostRequestPendings.set(requestId, {
+          clientId: targetClientId as string,
+          timer,
+          resolve: (value) => { clearTimeout(timer); resolve(value); },
+        });
+      });
+      try {
+        targetSocket.write(JSON.stringify({ type: 'host-request', requestId, agentId, payload }) + '\n');
+        console.log(`[Viewer Worker] host-request 已下发: agentId=${agentId}, requestId=${requestId}, clientId=${targetClientId}`);
+      } catch (writeError) {
+        console.error('[Viewer Worker] host-request 下发失败:', writeError);
+        const pending = this.hostRequestPendings.get(requestId);
+        if (pending) {
+          this.hostRequestPendings.delete(requestId);
+          clearTimeout(pending.timer);
+        }
+        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          success: false,
+          code: 'runtime_not_accepting_input',
+          error: 'Agent runtime is not connected',
+        }));
+        return;
+      }
+      void responsePromise.then((response) => {
+        if (response === null) {
+          res.writeHead(504, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ success: false, code: 'host_request_timeout', error: 'Runtime did not respond in time' }));
+          return;
+        }
+        if (response.error !== undefined) {
+          res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ success: false, code: 'host_request_failed', error: response.error }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: true, result: response.result ?? null }));
+      });
+    });
+  }
+
+  /** 按连接失败在途 host-request（socket close/error 时调用）。 */
+  private failHostRequestsByClient(clientId: string): void {
+    for (const [requestId, pending] of this.hostRequestPendings) {
+      if (pending.clientId !== clientId) continue;
+      this.hostRequestPendings.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve({ error: 'Runtime connection closed' });
+    }
+  }
+
+  /**
    * 查询 Agent 是否正在运行
    */
   private handleGetRunning(req: IncomingMessage, res: ServerResponse, agentId: string): void {
@@ -1606,6 +1729,7 @@ class ViewerWorker {
    * 多个 session（register 时各自记录 clientId），必须遍历求全集。
    */
   private emitDisconnectedByClientId(clientId: string): void {
+    this.failHostRequestsByClient(clientId);
     for (const [agentId, session] of this.agentSessions) {
       if (session.clientId === clientId) {
         this.emitSessionEvent({ kind: 'connection', agentId, connected: false, reconnected: false });

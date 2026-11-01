@@ -97,6 +97,13 @@ function validateTurnMetadata(metadata: unknown): string | null {
   return null;
 }
 
+// HTTP 面回环判定（ADR-0037 M5）：按字面量判定，不解析 DNS——bind 值
+// 直接传给 net.Server.listen，可预测性优先。'0.0.0.0' / '::' 监听全部接口，
+// 非回环可达，按非回环处理。
+function isLoopbackHttpBind(bind: string): boolean {
+  return bind === '127.0.0.1' || bind === '::1' || bind === 'localhost';
+}
+
 // ============= Worker 类 =============
 
 class ViewerWorker {
@@ -108,6 +115,10 @@ class ViewerWorker {
   private tcpServer?: Server;
   private readonly tcpAddress?: { host: string; port: number };
   private readonly internalToken?: string;
+  // HTTP 面绑定地址（ADR-0037 M5）：默认回环；显式非回环绑定（容器部署时
+  // runtime 经 host.docker.internal 访问）时全端点强制 Bearer。
+  private readonly httpBind: string;
+  private readonly httpRequiresAuth: boolean;
   private udsClients: Map<string, Socket> = new Map();
 
   // 多 Agent 会话存储
@@ -149,6 +160,16 @@ class ViewerWorker {
         throw new Error('PROTOCLAW_INTERNAL_TOKEN is required when AGENTDEV_VIEWER_ADDR is set');
       }
     }
+    this.httpBind = process.env.AGENTDEV_VIEWER_HTTP_BIND || '127.0.0.1';
+    this.httpRequiresAuth = !isLoopbackHttpBind(this.httpBind);
+    if (this.httpRequiresAuth && !tcpAddress) {
+      // 非回环 HTTP 面与 TCP 控制通道同一信任模型（ADR-0037）：跨出本机
+      // 即要求共享内部 token。tcpAddress 已校验过，不重复抛。
+      this.internalToken = process.env.PROTOCLAW_INTERNAL_TOKEN;
+      if (!this.internalToken) {
+        throw new Error('PROTOCLAW_INTERNAL_TOKEN is required when AGENTDEV_VIEWER_HTTP_BIND is non-loopback');
+      }
+    }
     this.server = createServer();
   }
 
@@ -168,27 +189,30 @@ class ViewerWorker {
         }
       });
 
-      // ViewerWorker is an internal debug/control transport for Claw. Keep its
-      // HTTP surface on loopback; the product server is the public gateway.
-      this.server.listen(this.port, '127.0.0.1', async () => {
+      // HTTP 面默认保持回环（本机 debug/control 传输，产品公共入口是 Claw
+      // server）。非回环绑定仅经 AGENTDEV_VIEWER_HTTP_BIND 显式开启（容器
+      // 部署，ADR-0037 M5），开启后全端点强制 Bearer（见 handleRequest）。
+      this.server.listen(this.port, this.httpBind, async () => {
         try {
-          const url = `http://127.0.0.1:${this.port}`;
-          console.log(`[Viewer Worker] ${url} (loopback only)`);
+          const url = `http://${this.httpBind}:${this.port}`;
+          console.log(`[Viewer Worker] ${url}${this.httpRequiresAuth ? ' (Bearer auth required)' : ' (loopback only)'}`);
           console.log(`[Viewer Worker] MCP endpoint: ${url}/mcp`);
 
           // HTTP 就绪后才接管本机 UDS 与可选网络传输。
           await this.startUDSServer();
           if (this.tcpAddress) await this.startTCPServer();
 
-          // 打开浏览器（仅在 openBrowser 为 true 时）
+          // 打开浏览器（仅在 openBrowser 为 true 时）。浏览器在本机访问，
+          // 非回环 bind（如 0.0.0.0）不是有效访问地址，固定用回环。
           if (this.openBrowser) {
+            const browserUrl = `http://127.0.0.1:${this.port}`;
             try {
               const open = await import('open');
-              await open.default(url).catch(() => {
-                console.warn('[Viewer Worker] 浏览器打开失败，请手动访问: ' + url);
+              await open.default(browserUrl).catch(() => {
+                console.warn('[Viewer Worker] 浏览器打开失败，请手动访问: ' + browserUrl);
               });
             } catch {
-              console.warn('[Viewer Worker] open 模块不可用，请手动访问: ' + url);
+              console.warn('[Viewer Worker] open 模块不可用，请手动访问: ' + browserUrl);
             }
           }
 
@@ -443,6 +467,17 @@ class ViewerWorker {
   // ========== HTTP 请求处理 ==========
 
   private handleRequest(req: IncomingMessage, res: ServerResponse) {
+    // 非回环绑定（AGENTDEV_VIEWER_HTTP_BIND 显式开启，ADR-0037 M5）时
+    // 全端点强制 Bearer：HTTP 面是 internal debug/control 传输，跨出本机的
+    // 合法消费方只有持有 PROTOCLAW_INTERNAL_TOKEN 的 runtime（dequeue 轮询，
+    // react-loop 侧 M2 已实现携带）。回环绑定不校验，行为与历史完全一致。
+    if (this.httpRequiresAuth) {
+      if (req.headers.authorization !== `Bearer ${this.internalToken}`) {
+        res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Unauthorized');
+        return;
+      }
+    }
     res.setHeader('Access-Control-Allow-Origin', '*');
 
     // 路由分发

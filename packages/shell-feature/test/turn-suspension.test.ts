@@ -264,6 +264,7 @@ describe('通知投递 body 携带 sessionId（user-turn 契约）', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   function makeDeliverableRegistry(sessionId?: string): { registry: BgRegistry; access: BackgroundAccess } {
@@ -307,6 +308,28 @@ describe('通知投递 body 携带 sessionId（user-turn 契约）', () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(body).not.toHaveProperty('sessionId');
+  });
+
+  it('配置内部 token 时，user-turn 投递携带 ViewerWorker Bearer 认证', async () => {
+    const { createViewerUserTurnDeliver } = await import('../src/bg-core.js');
+    vi.stubEnv('PROTOCLAW_INTERNAL_TOKEN', 'test-internal-token');
+    const deliver = createViewerUserTurnDeliver('agent-deliver-auth');
+
+    await deliver({ eventId: 'evt-auth', text: 'payload', workIds: ['bg-1'] });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer test-internal-token');
+  });
+
+  it('未配置内部 token 时，user-turn 投递不附加空 Bearer', async () => {
+    const { createViewerUserTurnDeliver } = await import('../src/bg-core.js');
+    vi.stubEnv('PROTOCLAW_INTERNAL_TOKEN', '');
+    const deliver = createViewerUserTurnDeliver('agent-deliver-no-auth');
+
+    await deliver({ eventId: 'evt-no-auth', text: 'payload', workIds: ['bg-1'] });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).has('authorization')).toBe(false);
   });
 
   it('送达判定核验 payload：HTTP 200 {success:false} 不算投递成功', async () => {

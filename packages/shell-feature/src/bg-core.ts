@@ -934,7 +934,14 @@ export function createViewerUserTurnDeliver(agentId: string, viewerUrl?: string)
       `${base}/api/agents/${encodeURIComponent(agentId)}/user-turn`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // ViewerWorker 非回环 HTTP bind 时全端点要求内部 Bearer；Claw
+          // 宿主把同一 token 注入 runtime 环境，后台唤醒与 dequeue 使用同一认证。
+          ...(process.env.PROTOCLAW_INTERNAL_TOKEN
+            ? { Authorization: `Bearer ${process.env.PROTOCLAW_INTERNAL_TOKEN}` }
+            : {}),
+        },
         body: JSON.stringify({
           text: event.text,
           kind: 'reminder',

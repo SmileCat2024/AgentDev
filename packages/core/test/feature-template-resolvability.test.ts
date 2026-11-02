@@ -13,12 +13,12 @@
  *      - 独立包布局：dist/templates/<name>.render.js
  * 2. 反向：dist 布局目录里的每个 .render.js 都被某个声明覆盖（防死文件）。
  * 3. 模板产物内的相对 import（tsup 共享 chunk 等）目标必须存在于磁盘。
- *    mount 协议下 URL = /tpl/{mountId}/{rel}，mount root 到文件是字节级
- *    镜像（URL 路径层级 = 磁盘路径层级），磁盘可达即 URL 可达；
- *    若此断言失败，浏览器加载模板时其依赖链会静默 404（2026-08-21 二次事故）。
- * 4. 注册载荷闭环：模拟 agent.ts 的 mount 探测逻辑构造
- *    { mounts, entries }，每个 entry 的 join(mounts[mount], rel) 必须存在
- *    ——这是 viewer-worker 注册时验证的同款检查，从生成端提前锁定。
+ *    资源读取协议下 URL = /res/{agentId}/{rootId}/{rel}（ADR-0038），根内
+ *    磁盘层级与 URL 层级同构，磁盘可达即 URL 可达；若此断言失败，浏览器
+ *    加载模板时其依赖链会静默 404（2026-08-21 二次事故）。
+ * 4. 注册载荷闭环：模拟 agent.ts 的资源根探测逻辑构造
+ *    { rootCount, entries }，每个 entry 的 join(roots[root], rel) 必须存在
+ *    ——这是 runtime resource.fetch handler 解析的同款路径，从生成端提前锁定。
  *
  * 运行前提：包已构建（npm run build）。CI 中测试排在 build 之后。
  */
@@ -134,11 +134,11 @@ for (const [featureName, FeatureClass] of BUILTIN_FEATURES) {
   });
 }
 
-test('注册载荷闭环：模拟 agent.ts mount 探测，每个 entry 在其 mount root 下真实存在', () => {
-  // 复刻 src/core/agent.ts withViewer() 的载荷构造逻辑（探测顺序 / realpath /
+test('注册载荷闭环：模拟 agent.ts 资源根探测，每个 entry 在其资源根下真实存在', () => {
+  // 复刻 src/core/agent.ts start() 的载荷构造逻辑（探测顺序 / realpath /
   // rel 分隔符归一），agent.ts 变更时需同步此处。
-  const templateMounts: string[] = [];
-  const templateEntries: Record<string, { mount: number; rel: string }> = {};
+  const resourceRoots: string[] = [];
+  const templateEntries: Record<string, { root: number; rel: string }> = {};
 
   for (const [featureName, FeatureClass] of BUILTIN_FEATURES) {
     const feature: any = new FeatureClass();
@@ -146,16 +146,16 @@ test('注册载荷闭环：模拟 agent.ts mount 探测，每个 entry 在其 mo
     const templateNames: string[] = feature.getTemplateNames();
     if (!pkgInfo || templateNames.length === 0) continue;
 
-    let mountRoot: string;
+    let rootAbs: string;
     try {
-      mountRoot = realpathSync(pkgInfo.root);
+      rootAbs = realpathSync(pkgInfo.root);
     } catch {
       continue;
     }
-    let mountIndex = templateMounts.indexOf(mountRoot);
-    if (mountIndex < 0) {
-      templateMounts.push(mountRoot);
-      mountIndex = templateMounts.length - 1;
+    let rootId = resourceRoots.indexOf(rootAbs);
+    if (rootId < 0) {
+      resourceRoots.push(rootAbs);
+      rootId = resourceRoots.length - 1;
     }
 
     for (const templateName of templateNames) {
@@ -166,21 +166,25 @@ test('注册载荷闭环：模拟 agent.ts mount 探测，每个 entry 在其 mo
       const templatePath = candidates.find((p) => existsSync(p));
       if (!templatePath) continue;
       templateEntries[templateName] = {
-        mount: mountIndex,
-        rel: relative(mountRoot, realpathSync(templatePath)).split(sep).join('/'),
+        root: rootId,
+        rel: relative(rootAbs, realpathSync(templatePath)).split(sep).join('/'),
       };
     }
   }
 
   assert.ok(Object.keys(templateEntries).length > 0, '注册载荷应包含至少一个模板条目');
 
-  // viewer-worker 注册时验证的同款检查：join(mounts[mount], rel) 必须命中磁盘
+  // runtime resource.fetch handler 解析的同款路径：join(roots[root], rel) 必须命中磁盘
   for (const [templateName, entry] of Object.entries(templateEntries)) {
-    const root = templateMounts[entry.mount];
+    assert.ok(
+      entry.root >= 0 && entry.root < resourceRoots.length,
+      `模板 "${templateName}" 的 rootId 越界: ${entry.root}`
+    );
+    const root = resourceRoots[entry.root];
     const target = join(root, entry.rel);
     assert.ok(
       existsSync(target),
-      `模板 "${templateName}" 的注册条目不可达: mount=${root} rel=${entry.rel}`
+      `模板 "${templateName}" 的注册条目不可达: root=${root} rel=${entry.rel}`
     );
   }
 });

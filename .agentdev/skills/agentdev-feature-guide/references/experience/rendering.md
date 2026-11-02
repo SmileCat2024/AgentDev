@@ -135,7 +135,7 @@ class RecordFeature {
 }
 ```
 
-模板 URL 由 ViewerWorker 从注册事实生成（`/tpl/{mountId}/{rel}`，mountId 由装载根目录哈希而来），对前端不透明：前端不做任何本地路径推断，只查 FEATURE_TEMPLATE_MAP。
+模板 URL 由 ViewerWorker 从注册事实生成（`/res/{agentId}/{rootId}/{rel}`，资源根随 agent 注册上报，ADR-0038），对前端不透明：前端不做任何本地路径推断，只查 FEATURE_TEMPLATE_MAP。
 
 `getTemplateNames()` 返回不带 `.render.js` 的名称。
 

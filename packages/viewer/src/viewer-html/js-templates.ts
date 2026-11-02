@@ -1,6 +1,7 @@
 export const VIEWER_JS_TEMPLATES = `    /**
      * 根据模板名解析文件路径
-     * 模板 URL 由 ViewerWorker 从注册事实生成（/tpl/{mountId}/{rel}），不透明、不含布局知识。
+     * 模板 URL 由 ViewerWorker 从注册事实生成（/res/{agentId}/{rootId}/{rel}，
+     * ADR-0038），不透明、不含布局知识。
      * 未注册的模板名一律等待 FEATURE_TEMPLATE_MAP 加载，不做任何本地路径推断。
      */
     const self = this;

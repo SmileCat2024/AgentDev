@@ -75,6 +75,11 @@ export class DebugHub {
   // 传递，返回值经 host-response 帧原路回传。与 stopHandlers 同一注册形态。
   private hostRequestHandlers = new Map<string, (payload: unknown, agentId: string) => unknown>();
   private globalHostRequestHandler?: (payload: unknown, agentId: string) => unknown;
+  // 类型化宿主定向请求（ADR-0038）：按 payload.requestType 分发的框架级业务
+  // （如 resource.fetch），优先于 per-agent / 全局回调——宿主层全局 handler
+  // （feature-comms / capability 分发）注册在前者的场景下，框架业务不能靠
+  // per-agent 注册（会遮蔽宿主全局回调），单设一层类型化分发。
+  private typedHostRequestHandlers = new Map<string, (payload: unknown, agentId: string) => unknown>();
 
   // 活跃的输入请求元数据（用于重连恢复）：agentId → requestInfo
   private activeInputRequests = new Map<string, {
@@ -110,8 +115,9 @@ export class DebugHub {
   private reconnectAttempts: number = 0;
   private readonly RECONNECT_DELAY = 2000;
 
-  // 缓存每个 Agent 的模板装载载荷（mounts + entries，用于重连后重新注册）
-  private agentTemplatePayload: Map<string, { mounts: string[]; entries: Record<string, { mount: number; rel: string }> }> = new Map();
+  // 缓存每个 Agent 的资源注册载荷（根数量 + 模板 entries，用于重连后重新
+  // 注册；ADR-0038：路径只在 runtime 侧，不随载荷跨进程）
+  private agentResourcePayload: Map<string, { rootCount: number; entries: Record<string, { root: number; rel: string }> }> = new Map();
 
   // 缓存每个 Agent 的外部输入策略（用于重连后重新注册）
   private agentInputPolicy: Map<string, 'standard' | 'none'> = new Map();
@@ -404,15 +410,15 @@ export class DebugHub {
    * 注册 Agent
    * @param agent Agent 实例
    * @param name 显示名称（可选，默认使用类名）
-   * @param templateMounts 模板装载点（真实目录根，可选）
-   * @param templateEntries 模板名 → {mount 下标, rel 相对路径}（可选）
+   * @param resourceRootCount 资源根数量（rootId = 0..n-1，可选；ADR-0038）
+   * @param templateEntries 模板名 → {root 编号, rel 相对路径}（可选）
    * @returns 分配的 agentId
    */
   registerAgent(
     agent: Agent,
     name?: string,
-    templateMounts?: string[],
-    templateEntries?: Record<string, { mount: number; rel: string }>,
+    resourceRootCount?: number,
+    templateEntries?: Record<string, { root: number; rel: string }>,
     hookInspector?: HookInspectorSnapshot,
     overview?: AgentOverviewSnapshot,
     projectRoot?: string,
@@ -441,10 +447,10 @@ export class DebugHub {
 
       this.agents.set(id, { info, agent });
 
-      // 缓存模板装载载荷（用于重连后重新注册）
-      if (templateMounts || templateEntries) {
-        this.agentTemplatePayload.set(id, {
-          mounts: templateMounts ?? [],
+      // 缓存资源注册载荷（用于重连后重新注册）
+      if (resourceRootCount !== undefined || templateEntries) {
+        this.agentResourcePayload.set(id, {
+          rootCount: resourceRootCount ?? 0,
           entries: templateEntries ?? {},
         });
       }
@@ -460,7 +466,7 @@ export class DebugHub {
           agentId: id,
           name: info.name,
           projectRoot: resolvedProjectRoot,
-          templateMounts: templateMounts ?? [],
+          resourceRootCount: resourceRootCount ?? 0,
           templateEntries: templateEntries ?? {},
           hookInspector,
           overview,
@@ -475,7 +481,7 @@ export class DebugHub {
           name: info.name,
           createdAt: info.registeredAt,
           projectRoot: resolvedProjectRoot,
-          templateMounts: templateMounts ?? [],
+          resourceRootCount: resourceRootCount ?? 0,
           templateEntries: templateEntries ?? {},
           hookInspector,
           overview,
@@ -501,7 +507,7 @@ export class DebugHub {
 
     const deleted = this.agents.delete(agentId);
     if (deleted) {
-      this.agentTemplatePayload.delete(agentId);
+      this.agentResourcePayload.delete(agentId);
       this.agentInputPolicy.delete(agentId);
       this.agentMessagePushState.delete(agentId);
       this.agentMessagePushQueues.delete(agentId);
@@ -775,6 +781,28 @@ export class DebugHub {
         this.globalHostRequestHandler = undefined;
       }
     };
+  }
+
+  /**
+   * 注册类型化宿主定向请求回调（ADR-0038）：host-request 帧的 payload 携带
+   * 字符串 requestType 时优先分发到对应类型回调，未命中再走 per-agent /
+   * 全局回调。同一 requestType 重复注册以后者覆盖前者（与 setStopHandler
+   * 的替换语义一致）。返回注销函数。
+   */
+  setHostRequestTypeHandler(
+    requestType: string,
+    handler?: (payload: unknown, agentId: string) => unknown,
+  ): () => void {
+    if (handler) {
+      this.typedHostRequestHandlers.set(requestType, handler);
+      return () => {
+        if (this.typedHostRequestHandlers.get(requestType) === handler) {
+          this.typedHostRequestHandlers.delete(requestType);
+        }
+      };
+    }
+    this.typedHostRequestHandlers.delete(requestType);
+    return () => {};
   }
 
   /**
@@ -1069,9 +1097,14 @@ export class DebugHub {
       // 宿主定向请求：payload 透传给注册回调，返回值/异常经 host-response
       // 帧回传。无回调也必须回 error——ViewerWorker 的 HTTP 调用方在等
       // requestId 关联的响应，静默丢弃会让它挂到超时。
+      // 分发顺序：类型化（payload.requestType，ADR-0038）→ per-agent → 全局。
       case 'host-request': {
         console.log(`[DebugHub] 收到宿主定向请求: agentId=${msg.agentId}, requestId=${msg.requestId}`);
-        const hostRequestHandler = this.hostRequestHandlers.get(msg.agentId) ?? this.globalHostRequestHandler;
+        const payloadRecord = (msg.payload !== null && typeof msg.payload === 'object') ? msg.payload as Record<string, unknown> : null;
+        const requestType = payloadRecord?.requestType;
+        const hostRequestHandler = (typeof requestType === 'string' ? this.typedHostRequestHandlers.get(requestType) : undefined)
+          ?? this.hostRequestHandlers.get(msg.agentId)
+          ?? this.globalHostRequestHandler;
         if (!hostRequestHandler) {
           this.sendToWorker({ type: 'host-response', requestId: msg.requestId, error: 'No host request handler registered' });
           break;
@@ -1109,14 +1142,14 @@ export class DebugHub {
         const hookInspector = (data.agent as any).buildHookInspectorSnapshot?.()
           || (data.agent as any).hookInspector;
         const overview = (data.agent as any).buildOverviewSnapshot?.();
-        const templatePayload = this.agentTemplatePayload.get(id) || { mounts: [], entries: {} };
+        const resourcePayload = this.agentResourcePayload.get(id) || { rootCount: 0, entries: {} };
 
         void this.clawClient?.registerAgent({
           agentId: id,
           name: data.info.name,
           projectRoot: data.info.projectRoot || process.cwd(),
-          templateMounts: templatePayload.mounts,
-          templateEntries: templatePayload.entries,
+          resourceRootCount: resourcePayload.rootCount,
+          templateEntries: resourcePayload.entries,
           hookInspector,
           overview,
           inputPolicy: this.agentInputPolicy.get(id) || undefined,
@@ -1161,8 +1194,8 @@ export class DebugHub {
         || (data.agent as any).hookInspector;
       const overview = (data.agent as any).buildOverviewSnapshot?.();
 
-      // 获取缓存的模板装载载荷
-      const templatePayload = this.agentTemplatePayload.get(id) || { mounts: [], entries: {} };
+      // 获取缓存的资源注册载荷
+      const resourcePayload = this.agentResourcePayload.get(id) || { rootCount: 0, entries: {} };
 
       // 获取活跃的输入请求（用于恢复输入框）
       const activeInputRequest = this.activeInputRequests.get(id);
@@ -1176,8 +1209,8 @@ export class DebugHub {
         name: data.info.name,
         createdAt: data.info.registeredAt,
         projectRoot: data.info.projectRoot || process.cwd(),
-        templateMounts: templatePayload.mounts,
-        templateEntries: templatePayload.entries,
+        resourceRootCount: resourcePayload.rootCount,
+        templateEntries: resourcePayload.entries,
         hookInspector,
         overview,
         activeInputRequest, // 携带活跃输入请求

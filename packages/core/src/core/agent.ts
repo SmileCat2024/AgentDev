@@ -65,6 +65,7 @@ import { discover } from '../skills/loader.js';
 import type { SkillMetadata } from '../skills/types.js';
 import { existsSync, realpathSync } from 'fs';
 import { dirname, join, relative, sep } from 'path';
+import { serveResourceFetch, type ResourceFetchResult } from './agent/resource-serve.js';
 import { fileURLToPath } from 'url';
 
 // 导入重构后的模块
@@ -189,6 +190,19 @@ class AgentBase {
 
   /** Agent 级数据源注册表（per-Agent 实例，非进程全局） */
   private _dataSourceRegistry = new DataSourceRegistry();
+
+  // ========== 资源读取协议（ADR-0038） ==========
+  /** agentId → 资源根表（realpath 后的包根；进程内可注册多个 Agent，按 id 隔离） */
+  private static resourceRootsByAgentId = new Map<string, string[]>();
+
+  /**
+   * resource.fetch 类型化宿主定向请求：按 agentId 定位根表后经
+   * serveResourceFetch 服务（根内解析读取 + 路径穿越拒绝，实现见
+   * agent/resource-serve.ts）。
+   */
+  private static handleResourceFetch(payload: unknown, agentId: string): Promise<ResourceFetchResult> {
+    return serveResourceFetch(AgentBase.resourceRootsByAgentId.get(agentId), payload);
+  }
 
   // ========== LLM 热切换 ==========
   /** 与 LLMClient 实例解耦的模型元数据 */
@@ -780,13 +794,15 @@ class AgentBase {
     // the same DebugHub connection barrier; start() is idempotent once ready.
     await this.debugHub.start(port, openBrowser);
 
-    // 收集 Feature 模板装载信息（mount 协议：注册事实，不推导 URL）
-    // mount root 来自 feature.getPackageInfo()（唯一权威来源），realpath 解析
-    // junction / 符号链接；模板文件按包内两种布局探测（dist/templates 与
-    // dist/features/<feature>/templates）。声明了但磁盘不存在的模板不上报，
-    // 由 viewer-worker 在注册时做最终存在性验证并告警。
-    const templateMounts: string[] = [];
-    const templateEntries: Record<string, { mount: number; rel: string }> = {};
+    // 收集 Feature 资源根与模板条目（ADR-0038 资源读取协议）。
+    // 资源根唯一来源：feature.getPackageInfo()（包根，realpath 解析 junction /
+    // 符号链接）——包根即授权边界，越根路径在 resource.fetch handler 内拒绝。
+    // 根的真实路径只留在本进程（handler 服务用）；注册只上报数量与条目，
+    // rootId = 注册顺序下标，runtime 会话内稳定。模板文件按包内两种布局探测
+    // （dist/templates 与 dist/features/<feature>/templates），磁盘不存在的
+    // 不上报。
+    const resourceRoots: string[] = [];
+    const templateEntries: Record<string, { root: number; rel: string }> = {};
 
     for (const feature of this.features.values()) {
       if (!feature.getPackageInfo || !feature.getTemplateNames) continue;
@@ -794,16 +810,16 @@ class AgentBase {
       const templateNames = feature.getTemplateNames();
       if (!pkgInfo || templateNames.length === 0) continue;
 
-      let mountRoot: string;
+      let rootAbs: string;
       try {
-        mountRoot = realpathSync(pkgInfo.root);
+        rootAbs = realpathSync(pkgInfo.root);
       } catch {
         continue; // 包根不可达（异常装配），该 feature 的模板整体不上报
       }
-      let mountIndex = templateMounts.indexOf(mountRoot);
-      if (mountIndex < 0) {
-        templateMounts.push(mountRoot);
-        mountIndex = templateMounts.length - 1;
+      let rootId = resourceRoots.indexOf(rootAbs);
+      if (rootId < 0) {
+        resourceRoots.push(rootAbs);
+        rootId = resourceRoots.length - 1;
       }
 
       for (const templateName of templateNames) {
@@ -813,19 +829,24 @@ class AgentBase {
         ];
         const templatePath = candidates.find((p) => existsSync(p));
         if (!templatePath) continue;
-        // rel 基于 realpath 后的 mount root 计算，与 worker 服务端的磁盘读取同源
+        // rel 基于 realpath 后的根计算，与 handler 侧的磁盘解析同源
         templateEntries[templateName] = {
-          mount: mountIndex,
-          rel: relative(mountRoot, realpathSync(templatePath)).split(sep).join('/'),
+          root: rootId,
+          rel: relative(rootAbs, realpathSync(templatePath)).split(sep).join('/'),
         };
       }
     }
+
+    // 资源读取服务（resource.fetch）：按 agentId 定位根表，根内解析读取。
+    // 一个进程可注册多个 Agent，根表按 agentId 隔离。
+    AgentBase.resourceRootsByAgentId.set(this.agentId, resourceRoots);
+    this.debugHub.setHostRequestTypeHandler('resource.fetch', AgentBase.handleResourceFetch);
 
     const wasRegistered = this.debugHub.isAgentRegistered(this.agentId);
     const registeredAgentId = this.debugHub.registerAgent(
       this,
       name || this.constructor.name,
-      templateMounts,
+      resourceRoots.length,
       templateEntries,
       this.buildHookInspectorSnapshot(),
       this.buildOverviewSnapshot(),
@@ -859,6 +880,7 @@ class AgentBase {
       if (!wasRegistered) {
         this.debugHub.unregisterAgent(this.agentId);
       }
+      AgentBase.resourceRootsByAgentId.delete(this.agentId);
       this.debugEnabled = wasRegistered;
       throw error;
     }
@@ -1579,6 +1601,7 @@ class AgentBase {
       this.debugHub.unregisterAgent(this.agentId);
       this.debugEnabled = false;
     }
+    AgentBase.resourceRootsByAgentId.delete(this.agentId);
 
     // 重置状态
     this._initialized = false;

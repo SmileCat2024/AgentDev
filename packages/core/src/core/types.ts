@@ -902,16 +902,16 @@ export interface RegisterAgentMsg {
   createdAt: number;
   projectRoot?: string; // 项目根目录
   /**
-   * 模板装载点：Feature 所属包的真实目录根（junction 已解析）。
-   * Agent 侧是唯一知道权威 mount root 的一层（来自 feature.getPackageInfo()），
-   * 注册只传事实，不做 URL 推导；URL 由 viewer-worker 分配。
+   * 资源根数量（ADR-0038 资源读取协议）。根的真实路径只存在于 runtime 侧
+   * （agent.start 收集，resource.fetch handler 按根内解析读取）；注册只上报
+   * 数量，rootId = 0..n-1（注册顺序），worker 不接收可服务化的路径。
    */
-  templateMounts?: string[];
+  resourceRootCount?: number;
   /**
-   * 模板名 → 装载条目。mount 为 templateMounts 数组下标，
-   * rel 为该 mount root 下的相对路径（POSIX 分隔符）。
+   * 模板名 → 资源定位。root 为资源根编号（0..resourceRootCount-1），
+   * rel 为该根下的相对路径（POSIX 分隔符）。
    */
-  templateEntries?: Record<string, { mount: number; rel: string }>;
+  templateEntries?: Record<string, { root: number; rel: string }>;
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
   activeInputRequest?: ActiveInputRequest; // 活跃的输入请求（用于重连后恢复）

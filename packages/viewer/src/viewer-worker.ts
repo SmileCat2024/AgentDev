@@ -7,9 +7,9 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
-import { unlinkSync, existsSync, readFile } from 'fs';
-import { createHash, randomUUID } from 'crypto';
-import { join, resolve, sep, extname } from 'path';
+import { unlinkSync, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { join } from 'path';
 import { type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type TurnKind, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, getDefaultUDSPath } from '@agentdevjs/core';
 import {
   DebuggerMCPServer,
@@ -132,12 +132,10 @@ class ViewerWorker {
   // 多 Agent 会话存储
   private agentSessions: Map<string, AgentSession> = new Map();
 
-  // 模板装载注册表（mountId → 装载点）。mountId 是 root 的稳定哈希，
-  // 多 agent 共享同一 root（如同一个框架包 junction）时复用同一条目。
-  private templateMounts: Map<string, { root: string; agents: Set<string> }> = new Map();
-
-  // 每个 agent 的模板装载载荷（agentId → { mounts 根数组, entries 模板名→{mount,rel} }）
-  private templatePayloads: Map<string, { mounts: string[]; entries: Record<string, { mount: number; rel: string }> }> = new Map();
+  // 每个 agent 的资源注册载荷（ADR-0038）：agentId → { rootCount, entries }。
+  // 根的真实路径留在 runtime 侧（resource.fetch 回源读取），worker 只认
+  // rootId（0..rootCount-1）；URL = /res/{agentId}/{rootId}/{rel}。
+  private templatePayloads: Map<string, { rootCount: number; entries: Record<string, { root: number; rel: string }> }> = new Map();
 
   private readonly debuggerMcp = new DebuggerMCPServer({
     listAgents: () => this.listAgentSummaries(),
@@ -519,11 +517,12 @@ class ViewerWorker {
       return;
     }
 
-    // 模板装载资产：/tpl/{mountId}/{mount内相对路径}
-    // URL 层级与 mount root 下磁盘层级同构，模板内的相对依赖（tsup 共享
-    // chunk、sourcemap）按相同布局自然命中，无需任何布局推断。
-    if (url.startsWith('/tpl/')) {
-      this.handleTplAsset(req, res, url);
+    // 资源读取协议资产（ADR-0038）：/res/{agentId}/{rootId}/{rel}。
+    // 文件在 runtime 侧（本地 / 容器 / 外部同链路），worker 经 host-request
+    // 回源；URL 层级与根内磁盘层级同构，模板相对依赖（chunk、sourcemap）
+    // 按相同布局自然命中。
+    if (url.startsWith('/res/')) {
+      this.handleResAsset(req, res, url);
       return;
     }
 
@@ -734,13 +733,13 @@ class ViewerWorker {
       return;
     }
 
-    // URL = /tpl/{mountId}/{rel}。mountId 由装载根目录哈希而来，与 agent 无关：
-    // 多 agent 共享同一包时浏览器复用同一份模块缓存，chunk 相对 import 也天然命中。
+    // URL = /res/{agentId}/{rootId}/{rel}（ADR-0038）。agentId 限定归属：
+    // 不同 runtime（含容器）内同路径根内容可不同，必须按 runtime 隔离；
+    // chunk 相对 import 在同前缀下天然命中。URL 不跨 runtime 代稳定，
+    // 每次经本端点获取映射。
     const featureTemplateMapForFrontend: Record<string, string> = {};
     for (const [templateName, entry] of Object.entries(payload.entries)) {
-      const root = payload.mounts[entry.mount];
-      if (root === undefined) continue;
-      featureTemplateMapForFrontend[templateName] = `/tpl/${ViewerWorker.mountIdForRoot(root)}/${entry.rel}`;
+      featureTemplateMapForFrontend[templateName] = `/res/${encodeURIComponent(targetAgentId)}/${entry.root}/${entry.rel}`;
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1552,7 +1551,7 @@ class ViewerWorker {
       }
       const targetClientId = session.clientId;
       const targetSocket = targetClientId ? this.udsClients.get(targetClientId) : null;
-      if (!targetSocket) {
+      if (!targetClientId || !targetSocket) {
         res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({
           success: false,
@@ -1562,39 +1561,7 @@ class ViewerWorker {
         return;
       }
 
-      const requestId = randomUUID();
-      const timeoutMs = Math.max(1, Number(process.env.AGENTDEV_HOST_REQUEST_TIMEOUT_MS) || 30_000);
-      // null = 超时标记（断连走 error 形态，二者都以同一 promise 收口）
-      const responsePromise = new Promise<{ result?: unknown; error?: string } | null>((resolve) => {
-        const timer = setTimeout(() => {
-          this.hostRequestPendings.delete(requestId);
-          resolve(null);
-        }, timeoutMs);
-        this.hostRequestPendings.set(requestId, {
-          clientId: targetClientId as string,
-          timer,
-          resolve: (value) => { clearTimeout(timer); resolve(value); },
-        });
-      });
-      try {
-        targetSocket.write(JSON.stringify({ type: 'host-request', requestId, agentId, payload }) + '\n');
-        console.log(`[Viewer Worker] host-request 已下发: agentId=${agentId}, requestId=${requestId}, clientId=${targetClientId}`);
-      } catch (writeError) {
-        console.error('[Viewer Worker] host-request 下发失败:', writeError);
-        const pending = this.hostRequestPendings.get(requestId);
-        if (pending) {
-          this.hostRequestPendings.delete(requestId);
-          clearTimeout(pending.timer);
-        }
-        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({
-          success: false,
-          code: 'runtime_not_accepting_input',
-          error: 'Agent runtime is not connected',
-        }));
-        return;
-      }
-      void responsePromise.then((response) => {
+      void this.sendHostRequestToAgent(agentId, targetClientId, targetSocket, payload).then((response) => {
         if (response === null) {
           res.writeHead(504, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ success: false, code: 'host_request_timeout', error: 'Runtime did not respond in time' }));
@@ -1609,6 +1576,46 @@ class ViewerWorker {
         res.end(JSON.stringify({ success: true, result: response.result ?? null }));
       });
     });
+  }
+
+  /**
+   * host-request 下发核心（供 HTTP 端点与 /res/ 资产回源共用）：向目标
+   * runtime 连接写入 host-request 帧，pendings 关联 host-response 回传。
+   * resolve(null) = 超时；{error} = 断连被按 clientId 批量失败或 runtime 报错。
+   */
+  private sendHostRequestToAgent(
+    agentId: string,
+    clientId: string,
+    socket: Socket,
+    payload: unknown,
+  ): Promise<{ result?: unknown; error?: string } | null> {
+    const requestId = randomUUID();
+    const timeoutMs = Math.max(1, Number(process.env.AGENTDEV_HOST_REQUEST_TIMEOUT_MS) || 30_000);
+    // null = 超时标记（断连走 error 形态，二者都以同一 promise 收口）
+    const responsePromise = new Promise<{ result?: unknown; error?: string } | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.hostRequestPendings.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.hostRequestPendings.set(requestId, {
+        clientId,
+        timer,
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+      });
+    });
+    try {
+      socket.write(JSON.stringify({ type: 'host-request', requestId, agentId, payload }) + '\n');
+      console.log(`[Viewer Worker] host-request 已下发: agentId=${agentId}, requestId=${requestId}, clientId=${clientId}`);
+    } catch (writeError) {
+      console.error('[Viewer Worker] host-request 下发失败:', writeError);
+      const pending = this.hostRequestPendings.get(requestId);
+      if (pending) {
+        this.hostRequestPendings.delete(requestId);
+        clearTimeout(pending.timer);
+      }
+      return Promise.resolve({ error: 'Agent runtime is not connected' });
+    }
+    return responsePromise;
   }
 
   /** 按连接失败在途 host-request（socket close/error 时调用）。 */
@@ -1869,7 +1876,7 @@ class ViewerWorker {
    * 处理注册 Agent
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
-    const { agentId, name, projectRoot, templateMounts, templateEntries, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
+    const { agentId, name, projectRoot, resourceRootCount, templateEntries, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
     // 重连判定：session 已存在即 UDS 断开后的重新注册（DebugHub 重连
     // reRegisterAgents 全量重推），订阅方据此对该 agent 触发一次对账。
     const isReconnect = this.agentSessions.has(agentId);
@@ -1890,48 +1897,20 @@ class ViewerWorker {
       session.clientId = clientId;
     }
 
-    // 收集模板装载载荷（mount 协议：mounts 为真实目录根数组，entries 为
-    // 模板名 → {mount 下标, rel 相对路径}）。协议不混版：worker 只认
-    // mount 载荷，旧版字段（URL 映射）一律无视。
-    if (Array.isArray(templateMounts) && templateEntries && typeof templateEntries === 'object') {
-      const mounts: string[] = [];
-      const entries: Record<string, { mount: number; rel: string }> = {};
-      const missing: string[] = [];
-
-      for (const root of templateMounts) {
-        if (typeof root !== 'string' || !root) continue;
-        if (!mounts.includes(root)) mounts.push(root);
-      }
+    // 收集资源注册载荷（ADR-0038：rootCount + entries，rootId = 0..n-1）。
+    // 协议不混版：worker 只认资源根载荷，旧版 mount 载荷一律无视。
+    // 根路径不跨进程——文件存在性由 runtime 侧收集时保证，worker 侧缺失
+    // 只会在回源 404 时显性化（有日志）。
+    if (typeof resourceRootCount === 'number' && templateEntries && typeof templateEntries === 'object') {
+      const entries: Record<string, { root: number; rel: string }> = {};
       for (const [templateName, entry] of Object.entries(templateEntries)) {
-        const root = mounts[(entry as any)?.mount];
+        const root = (entry as any)?.root;
         const rel = (entry as any)?.rel;
-        if (typeof root !== 'string' || typeof rel !== 'string') continue;
-        // 注册时验证：装载条目在磁盘必须存在。缺失在这里显性化（warn），
-        // 而不是留到浏览器 404 后静默降级。
-        if (!existsSync(join(root, rel))) {
-          missing.push(`${templateName} -> ${join(root, rel)}`);
-          continue;
-        }
-        entries[templateName] = { mount: mounts.indexOf(root), rel };
+        if (typeof root !== 'number' || !Number.isInteger(root) || root < 0 || root >= resourceRootCount) continue;
+        if (typeof rel !== 'string' || !rel) continue;
+        entries[templateName] = { root, rel };
       }
-      if (missing.length > 0) {
-        console.warn(`[Viewer Worker] Agent ${agentId} 注册时发现 ${missing.length} 个模板装载条目缺失: ${missing.join('; ')}`);
-      }
-
-      this.templatePayloads.set(agentId, { mounts, entries });
-      for (const root of mounts) {
-        const mountId = ViewerWorker.mountIdForRoot(root);
-        let mount = this.templateMounts.get(mountId);
-        if (!mount) {
-          mount = { root, agents: new Set() };
-          this.templateMounts.set(mountId, mount);
-        } else if (mount.root !== root) {
-          // 哈希碰撞（概率可忽略）：拒绝注册该 root 并告警，不静默错配
-          console.warn(`[Viewer Worker] mountId 碰撞: ${mountId} 已绑定 ${mount.root}，拒绝 ${root}`);
-          continue;
-        }
-        mount.agents.add(agentId);
-      }
+      this.templatePayloads.set(agentId, { rootCount: resourceRootCount, entries });
     }
 
     if (hookInspector) {
@@ -2011,17 +1990,11 @@ class ViewerWorker {
   }
 
   /**
-   * 清空 Feature 模板装载（当 Agent 断开连接时调用）：
-   * 移除该 agent 的载荷，并对 mount 注册表做引用计数回收。
+   * 清空 Feature 资源注册载荷（当 Agent 断开连接时调用）。
+   * URL 随 agent 会话失效：断连后 /res/ 请求在会话/连接检查处 404。
    */
   private clearFeatureTemplates(agentId: string): void {
     this.templatePayloads.delete(agentId);
-    for (const [mountId, mount] of this.templateMounts) {
-      mount.agents.delete(agentId);
-      if (mount.agents.size === 0) {
-        this.templateMounts.delete(mountId);
-      }
-    }
   }
 
   /**
@@ -2867,73 +2840,105 @@ class ViewerWorker {
   }
 
   /**
-   * mountId：装载根目录的稳定哈希（sha1 前 12 hex）。与 agent 无关，
-   * 同一 root 跨 agent / 跨注册复用同一 ID，浏览器模块缓存天然共享。
+   * /res/{agentId}/{rootId}/{rel...} — 资源读取协议资产服务（ADR-0038）。
+   * 内容回源自 runtime（本地 / 容器 / 外部同链路）：经 host-request 通道
+   * 发 resource.fetch，runtime 在其声明的资源根内解析读取并返回 base64。
+   * 失败映射：forbidden → 403；其余（未知根 / 文件缺失 / 断连 / 超时 /
+   * runtime 错误 / 协议形状不符）一律 404，前端回退默认渲染为既有降级。
    */
-  private static mountIdForRoot(root: string): string {
-    return createHash('sha1').update(root.split('\\').join('/').toLowerCase()).digest('hex').slice(0, 12);
-  }
-
-  /**
-   * /tpl/{mountId}/{rel...} — 模板装载资产服务。
-   * mount root 下的字节级镜像：模板文件、tsup 共享 chunk、sourcemap 同构命中。
-   * 唯一安全边界：resolve 后必须仍在 mount root 内（路径穿越防护）。
-   */
-  public handleTplAsset(req: IncomingMessage, res: ServerResponse, url: string): void {
+  public handleResAsset(req: IncomingMessage, res: ServerResponse, url: string): void {
     try {
-      const match = url.match(/^\/tpl\/([0-9a-f]{12})\/(.+)$/);
+      const match = url.match(/^\/res\/([^/]+)\/(\d+)\/(.+)$/);
       if (!match) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Invalid template mount path');
+        res.end('Invalid resource path');
         return;
       }
-      const [, mountId, rel] = match;
+      const [, rawAgentId, rootIdRaw, rel] = match;
+      let agentId = rawAgentId;
+      try {
+        agentId = decodeURIComponent(rawAgentId);
+      } catch {
+        // 保留原样，按未编码形式寻址
+      }
+      const rootId = Number(rootIdRaw);
 
-      const mount = this.templateMounts.get(mountId);
-      if (!mount) {
-        console.warn(`[Viewer Worker] /tpl/ 未注册 mountId: ${mountId} (url=${url})`);
+      const session = this.agentSessions.get(agentId);
+      if (!session) {
+        console.warn(`[Viewer Worker] /res/ 未注册 agent: ${agentId} (url=${url})`);
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end(`Unknown template mount: ${mountId}`);
+        res.end('Unknown resource agent');
+        return;
+      }
+      const payload = this.templatePayloads.get(agentId);
+      if (!payload || rootId >= payload.rootCount) {
+        console.warn(`[Viewer Worker] /res/ 未注册 rootId: ${rootId} (agent=${agentId}, url=${url})`);
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Unknown resource root');
+        return;
+      }
+      const targetClientId = session.clientId;
+      const targetSocket = targetClientId ? this.udsClients.get(targetClientId) : null;
+      if (!targetClientId || !targetSocket) {
+        console.warn(`[Viewer Worker] /res/ runtime 未连接: agentId=${agentId} (url=${url})`);
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Resource runtime is not connected');
         return;
       }
 
-      // 路径穿越防护：解析后的绝对路径不得逃出 mount root
-      // （win32 盘符大小写不敏感，前缀比较统一小写）
-      const rootAbs = resolve(mount.root);
-      const target = resolve(rootAbs, rel);
-      const targetLower = target.toLowerCase();
-      const rootLower = rootAbs.toLowerCase();
-      if (targetLower !== rootLower && !targetLower.startsWith(rootLower + sep)) {
-        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Forbidden path');
-        return;
-      }
-
-      readFile(target, (err: any, data: Buffer) => {
-        if (err) {
-          console.warn(`[Viewer Worker] /tpl/ 文件缺失: ${target} (url=${url})`);
+      void this.sendHostRequestToAgent(agentId, targetClientId, targetSocket, {
+        requestType: 'resource.fetch',
+        rootId,
+        rel,
+      }).then((response) => {
+        if (response === null) {
+          console.warn(`[Viewer Worker] /res/ 回源超时 (url=${url})`);
           res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-          res.end('Template asset not found');
+          res.end('Resource fetch timed out');
           return;
         }
-        const ext = extname(target).toLowerCase();
+        if (response.error !== undefined) {
+          console.warn(`[Viewer Worker] /res/ 回源失败: ${response.error} (url=${url})`);
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Resource fetch failed');
+          return;
+        }
+        const result = response.result as { ok?: unknown; data?: unknown; code?: unknown } | null;
+        if (!result || result.ok !== true || typeof result.data !== 'string') {
+          if (result && (result as any).code === 'forbidden') {
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Forbidden path');
+            return;
+          }
+          console.warn(`[Viewer Worker] /res/ 资源不可得: ${(result as any)?.code ?? 'invalid_response'} (url=${url})`);
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Resource not found');
+          return;
+        }
+
+        const ext = rel.slice(rel.lastIndexOf('.')).toLowerCase();
         const contentType = ext === '.js' || ext === '.mjs'
           ? 'application/javascript; charset=utf-8'
           : ext === '.json' || ext === '.map'
             ? 'application/json; charset=utf-8'
             : ext === '.css'
               ? 'text/css; charset=utf-8'
-              : 'application/octet-stream';
+              : ext === '.md'
+                ? 'text/markdown; charset=utf-8'
+                : ext === '.svg'
+                  ? 'image/svg+xml'
+                  : ext === '.png' || ext === '.webp' || ext === '.gif' || ext === '.jpeg' || ext === '.jpg'
+                    ? `image/${ext === '.jpg' ? 'jpeg' : ext.slice(1)}`
+                    : 'application/octet-stream';
         res.writeHead(200, {
           'Content-Type': contentType,
-          // 开发态（junction 指向框架仓库）dist 会在运行中重建，chunk 名随内容
-          // 变化；协商缓存保证重建后浏览器拿到新文件，同时保留 304 能力。
+          // 与旧 /tpl/ 语义一致：开发态 dist 重建后浏览器可协商更新，保留 304 能力
           'Cache-Control': 'no-cache',
         });
-        res.end(data);
+        res.end(Buffer.from(result.data, 'base64'));
       });
     } catch (err: any) {
-      console.error('[Viewer Worker] /tpl/ 处理错误:', err.message);
+      console.error('[Viewer Worker] /res/ 处理错误:', err.message);
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Internal server error');
     }

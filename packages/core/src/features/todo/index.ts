@@ -40,6 +40,7 @@ const __dirname = dirname(__filename);
 const MAX_INJECT_TASKS = 20;
 const MAX_SUBJECT_LENGTH = 160;
 const MAX_DESCRIPTION_LENGTH = 500;
+const MAX_DELIVER_LENGTH = 300;
 
 /**
  * TodoFeature 实现
@@ -173,6 +174,7 @@ export class TodoFeature implements AgentFeature {
         id: task.id,
         subject: task.subject,
         description: task.description,
+        deliver: task.deliver,
         status: task.status,
         metadata: task.metadata,
         createdAt: task.createdAt,
@@ -341,13 +343,14 @@ export class TodoFeature implements AgentFeature {
   createTask(
     subject: string,
     description: string = '',
-    options?: { metadata?: Record<string, unknown> }
+    options?: { deliver?: string; metadata?: Record<string, unknown> }
   ): TodoTask {
     this.counter++;
     const task: TodoTask = {
       id: String(this.counter),
       subject,
       description: description || undefined,
+      deliver: options?.deliver || undefined,
       status: 'pending',
       metadata: options?.metadata,
       createdAt: Date.now(),
@@ -377,6 +380,7 @@ export class TodoFeature implements AgentFeature {
     return tasks.map(task => ({
       id: task.id,
       subject: task.subject,
+      deliver: task.deliver,
       status: task.status,
     }));
   }
@@ -384,7 +388,7 @@ export class TodoFeature implements AgentFeature {
   /**
    * 更新任务
    *
-   * 允许更新的字段：status, subject, description（模型工具可见）。
+   * 允许更新的字段：status, subject, description, deliver（模型工具可见）。
    * metadata 不在模型工具 schema 中，但内部代码（如 ControlledTodoFeature）
    * 需要通过它记录终态时间戳等生命周期数据。
    */
@@ -392,7 +396,7 @@ export class TodoFeature implements AgentFeature {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
 
-    const allowedFields: string[] = ['status', 'subject', 'description', 'metadata'];
+    const allowedFields: string[] = ['status', 'subject', 'description', 'deliver', 'metadata'];
     for (const field of allowedFields) {
       if (updates[field as keyof typeof updates] !== undefined) {
         (task as unknown as Record<string, unknown>)[field] = updates[field as keyof typeof updates];
@@ -427,6 +431,7 @@ export class TodoFeature implements AgentFeature {
         id: task.id,
         subject: task.subject,
         description: task.description || '',
+        deliver: task.deliver,
         status: task.status,
         metadata: task.metadata && typeof task.metadata === 'object' ? { ...task.metadata } : undefined,
         createdAt: task.createdAt,
@@ -510,9 +515,13 @@ export class TodoFeature implements AgentFeature {
     for (const task of visible) {
       const subject = this.truncate(task.subject, MAX_SUBJECT_LENGTH);
       const desc = task.description ? this.truncate(task.description, MAX_DESCRIPTION_LENGTH) : '';
+      const deliver = task.deliver ? this.truncate(task.deliver, MAX_DELIVER_LENGTH) : '';
       lines.push(`- #${task.id} [${task.status}] ${subject}`);
       if (desc) {
         lines.push(`  ${desc}`);
+      }
+      if (deliver) {
+        lines.push(`  交付: ${deliver}`);
       }
     }
     if (omitted > 0) {

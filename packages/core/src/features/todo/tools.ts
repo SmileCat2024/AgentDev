@@ -23,7 +23,7 @@ export class TodoToolFactory {
   private createTaskFn: (
     subject: string,
     description: string,
-    options?: { metadata?: Record<string, unknown> }
+    options?: { deliver?: string; metadata?: Record<string, unknown> }
   ) => TodoTask;
   private listTasksFn: (filter?: { status?: TaskStatus }) => TodoTaskSummary[];
   private updateTaskFn: (taskId: string, updates: TodoTaskUpdate) => TodoTask | undefined;
@@ -34,7 +34,7 @@ export class TodoToolFactory {
     createTask: (
       subject: string,
       description: string,
-      options?: { metadata?: Record<string, unknown> }
+      options?: { deliver?: string; metadata?: Record<string, unknown> }
     ) => TodoTask;
     listTasks: (filter?: { status?: TaskStatus }) => TodoTaskSummary[];
     updateTask: (taskId: string, updates: TodoTaskUpdate) => TodoTask | undefined;
@@ -65,6 +65,7 @@ export class TodoToolFactory {
 任务字段：
 - subject: 简短可执行的标题，使用祈使句形式（如 "修复认证漏洞"）
 - description: 详细描述，包括上下文和验收标准（可选）
+- deliver: 具体交付物（可选，自由文本）：如将产出的文件路径、要通过的命令或验证方式；调查、沟通类任务没有具体交付物可不填
 
 重要说明：
 - subject 应该是祈使句形式（"执行任务"）
@@ -75,12 +76,14 @@ export class TodoToolFactory {
         properties: {
           subject: { type: 'string', description: '简短的任务标题，使用祈使句形式（如 "运行测试"）' },
           description: { type: 'string', description: '详细的任务描述，包括上下文、具体步骤和验收标准' },
+          deliver: { type: 'string', description: '本任务的具体交付物（可选，自由文本）：如将产出的文件路径、要通过的命令或验证方式' },
         },
         required: ['subject'],
       },
       render: { call: 'task-create', result: 'task-create' },
-      execute: ({ subject, description = '' }: { subject?: unknown; description?: unknown }) => {
-        const task = self.createTaskFn(String(subject), String(description));
+      execute: ({ subject, description = '', deliver }: { subject?: unknown; description?: unknown; deliver?: unknown }) => {
+        const deliverText = deliver === undefined || deliver === null ? undefined : String(deliver);
+        const task = self.createTaskFn(String(subject), String(description), deliverText ? { deliver: deliverText } : undefined);
         // 模型只看极简确认；前端通过 display 看到完整信息
         return Promise.resolve(withDisplay(
           JSON.stringify({ ok: true, taskId: task.id, status: task.status }),
@@ -89,6 +92,7 @@ export class TodoToolFactory {
               id: task.id,
               subject: task.subject,
               description: task.description || '',
+              deliver: task.deliver || '',
               status: task.status,
             },
             allTasks: self.listTasksFn(),
@@ -158,12 +162,15 @@ export class TodoToolFactory {
 
 主要用途：
 1. 标记任务进行中：将 status 设置为 "in_progress"
-2. 标记任务完成：将 status 设置为 "completed"
+2. 标记任务完成：将 status 设置为 "completed"，并在 deliver 字段写明实际交付结果（文件、命令及其结果）
 3. 取消任务并保留记录：将 status 设置为 "deleted"
+
+并发约束：同一时刻只允许一个任务处于 in_progress。开始新任务前，先完成、取消当前进行中任务，或将其调整回 pending。
 
 任务字段：
 - subject: 简短可执行的标题，使用祈使句形式（如 "执行任务"）
-- description: 详细描述，包括上下文和验收标准`,
+- description: 详细描述，包括上下文和验收标准
+- deliver: 交付物说明（自由文本），完成任务时建议写明实际交付结果`,
       parameters: {
         type: 'object',
         properties: {
@@ -175,12 +182,28 @@ export class TodoToolFactory {
           },
           subject: { type: 'string', description: '新的任务标题' },
           description: { type: 'string', description: '新的任务描述' },
+          deliver: { type: 'string', description: '交付物说明（自由文本）；完成任务时建议写明实际交付结果，如文件路径、通过的命令' },
         },
         required: ['taskId'],
       },
       render: { call: 'task-update', result: 'task-update' },
       execute: (rawArgs: Record<string, unknown>) => {
         const { taskId, ...rest } = rawArgs as unknown as { taskId: string } & TodoTaskUpdate;
+        // 单 in_progress 硬约束：目标从其他状态转入 in_progress 时，
+        // 若已有另一任务处于 in_progress，拒绝并指明阻塞项。
+        // 目标任务自身已是 in_progress 的重复设置（幂等）不受影响。
+        if (rest.status === 'in_progress') {
+          const target = self.getTaskFn(taskId);
+          if (target && target.status !== 'in_progress') {
+            const blocker = self.listTasksFn({ status: 'in_progress' }).find(t => t.id !== taskId);
+            if (blocker) {
+              return Promise.resolve({
+                ok: false,
+                error: `同一时刻只能有一个 in_progress 任务：#${blocker.id}「${blocker.subject}」正在进行中。请先将其标记为 completed（如已交付）、deleted（如不再适用），或调整回 pending，再开始任务 ${taskId}。`,
+              });
+            }
+          }
+        }
         const task = self.updateTaskFn(taskId, rest);
         if (!task) {
           return Promise.resolve({ ok: false, error: `任务 ${taskId} 不存在` });

@@ -17,6 +17,8 @@ export interface TodoTask {
   subject: string;
   /** 详细描述（可选） */
   description?: string;
+  /** 具体交付物（可选，自由文本）：将产出的文件路径、通过的命令或验证方式等 */
+  deliver?: string;
   /** 任务状态 */
   status: TaskStatus;
   /** 元数据（内部生命周期数据，不暴露给模型工具） */
@@ -34,6 +36,7 @@ export interface TodoTaskUpdate {
   status?: TaskStatus;
   subject?: string;
   description?: string;
+  deliver?: string;
 }
 
 /**
@@ -42,6 +45,7 @@ export interface TodoTaskUpdate {
 export interface TodoTaskSummary {
   id: string;
   subject: string;
+  deliver?: string;
   status: TaskStatus;
 }
 

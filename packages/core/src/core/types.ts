@@ -684,6 +684,8 @@ export interface TodoTaskSnapshot {
   id: string;
   subject: string;
   description: string;
+  /** 具体交付物（可选，自由文本）：文件路径、命令及其结果等 */
+  deliver?: string;
   status: 'pending' | 'in_progress' | 'completed' | 'deleted';
   metadata?: Record<string, unknown>;
   createdAt: number;

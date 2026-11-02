@@ -445,4 +445,118 @@ describe('TodoFeature', () => {
       expect(text).toContain('温和的提醒');
     });
   });
+
+  // ========== deliver 字段 ==========
+
+  describe('deliver field', () => {
+    it('stores deliver from createTask options', () => {
+      const task = feature.createTask('修复登录', '描述', { deliver: 'test/auth.test.js 全部通过' });
+      expect(task.deliver).toBe('test/auth.test.js 全部通过');
+    });
+
+    it('updates deliver via updateTask', () => {
+      feature.createTask('修复登录', '描述');
+      const updated = feature.updateTask('1', { status: 'completed', deliver: 'src/auth.ts 已提交' });
+      expect(updated!.deliver).toBe('src/auth.ts 已提交');
+    });
+
+    it('includes deliver in listTasks summaries', () => {
+      feature.createTask('修复登录', '描述', { deliver: '测试通过' });
+      expect(feature.listTasks()[0].deliver).toBe('测试通过');
+    });
+
+    it('includes deliver in plan snapshot', () => {
+      feature.createTask('修复登录', '描述', { deliver: '测试通过' });
+      expect(feature.getPlanSnapshot().tasks[0].deliver).toBe('测试通过');
+    });
+
+    it('preserves deliver across capture/restore', () => {
+      feature.createTask('修复登录', '描述', { deliver: '测试通过' });
+      const snapshot = feature.captureState();
+
+      const fresh = new TodoFeature();
+      fresh.restoreState(snapshot);
+
+      expect(fresh.getTask('1')!.deliver).toBe('测试通过');
+    });
+
+    it('task_create tool passes deliver through', async () => {
+      const createTool = feature.getTools().find(t => t.name === 'task_create')!;
+      const result: any = await createTool.execute({ subject: '修复登录', deliver: 'test/auth 通过' });
+      expect(result.__withDisplay).toBe(true);
+      expect(feature.getTask('1')!.deliver).toBe('test/auth 通过');
+      expect(result.display.task.deliver).toBe('test/auth 通过');
+    });
+
+    it('renders deliver line in CallStart injection', async () => {
+      feature.createTask('修复登录', '描述', { deliver: 'test/auth.test.js 通过' });
+      feature.updateTask('1', { status: 'in_progress' });
+      const added: Array<{ role: string; content: string }> = [];
+      const ctx = {
+        isFirstCall: false,
+        context: { add: (m: { role: string; content: string }) => added.push(m) },
+      } as any;
+      await feature.onCallStart(ctx);
+      expect(added[0].content).toContain('交付: test/auth.test.js 通过');
+    });
+  });
+
+  // ========== task_update 单 in_progress 硬约束 ==========
+
+  describe('single in_progress constraint (task_update tool)', () => {
+    function getUpdateTool() {
+      return feature.getTools().find(t => t.name === 'task_update')!;
+    }
+
+    it('rejects starting a second task while another is in_progress, naming the blocker', async () => {
+      feature.createTask('任务甲');
+      feature.createTask('任务乙');
+      const first: any = await getUpdateTool().execute({ taskId: '1', status: 'in_progress' });
+      expect(first.__withDisplay).toBe(true);
+
+      const rejected: any = await getUpdateTool().execute({ taskId: '2', status: 'in_progress' });
+      expect(rejected.ok).toBe(false);
+      expect(rejected.error).toContain('#1');
+      expect(rejected.error).toContain('任务甲');
+      // 拒绝时状态未被修改
+      expect(feature.getTask('2')!.status).toBe('pending');
+    });
+
+    it('allows starting the next task after the blocker is completed', async () => {
+      feature.createTask('任务甲');
+      feature.createTask('任务乙');
+      await getUpdateTool().execute({ taskId: '1', status: 'in_progress' });
+      await getUpdateTool().execute({ taskId: '1', status: 'completed', deliver: '已交付' });
+      const result: any = await getUpdateTool().execute({ taskId: '2', status: 'in_progress' });
+      expect(result.__withDisplay).toBe(true);
+      expect(feature.getTask('2')!.status).toBe('in_progress');
+    });
+
+    it('allows idempotent re-asserting in_progress on the same task', async () => {
+      feature.createTask('任务甲');
+      await getUpdateTool().execute({ taskId: '1', status: 'in_progress' });
+      const result: any = await getUpdateTool().execute({ taskId: '1', status: 'in_progress' });
+      expect(result.__withDisplay).toBe(true);
+    });
+
+    it('allows completing or cancelling other tasks while one is in_progress', async () => {
+      feature.createTask('任务甲');
+      feature.createTask('任务乙');
+      feature.createTask('任务丙');
+      await getUpdateTool().execute({ taskId: '1', status: 'in_progress' });
+      const completed: any = await getUpdateTool().execute({ taskId: '2', status: 'completed' });
+      const deleted: any = await getUpdateTool().execute({ taskId: '3', status: 'deleted' });
+      expect(completed.__withDisplay).toBe(true);
+      expect(deleted.__withDisplay).toBe(true);
+    });
+
+    it('internal updateTask API is not constrained', () => {
+      // 约束只在模型工具层；内部 API（ControlledTodoFeature 等编程调用）不受限
+      feature.createTask('任务甲');
+      feature.createTask('任务乙');
+      feature.updateTask('1', { status: 'in_progress' });
+      const second = feature.updateTask('2', { status: 'in_progress' });
+      expect(second!.status).toBe('in_progress');
+    });
+  });
 });

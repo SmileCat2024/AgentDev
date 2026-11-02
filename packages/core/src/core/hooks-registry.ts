@@ -334,6 +334,9 @@ export class HooksRegistry {
             };
           }
       } catch (error) {
+        if (lifecycle === CoreLifecycle.PreCallStart) {
+          throw error;
+        }
         const message = error instanceof Error ? error.message : String(error);
         logger.error('Reverse hook execution failed', {
           feature: feature.name,

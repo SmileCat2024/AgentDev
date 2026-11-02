@@ -5,7 +5,8 @@
  */
 
 // 核心
-export { Agent } from './core/agent.js';
+export { Agent, CallAdmissionDeniedError } from './core/agent.js';
+export type { CallAdmissionCallbacks } from './core/agent.js';
 export { Context, withMessageSource } from './core/context.js';
 export type {
   ContextSnapshot,
@@ -366,6 +367,7 @@ export type {
   HookDeclarations,
   HookDeclarationIssue,
   HookDeclarationIssueCode,
+  PreCallStartHook,
   AgentInitiateHook,
   AgentDestroyHook,
   CallStartHook,
@@ -377,6 +379,7 @@ export type {
   ToolResultTransformHook,
 } from './core/hook-declarations.js';
 export type {
+  PreCallStartContext,
   CallStartContext,
   CallFinishContext,
   StepStartContext,

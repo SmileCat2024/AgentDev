@@ -87,7 +87,10 @@ desktop/*.tmp
 desktop/nul
 
 # 特定于项目的目录
-docs/
+# 文档默认不纳入版本控制；ADR 是框架契约，单独保留。
+docs/*
+!docs/adr/
+!docs/adr/*.md
 config/
 # agent 运行时数据不入库；仅版本化项目自有的指导 skills
 .agentdev/*

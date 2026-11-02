@@ -27,6 +27,7 @@ import { CoreLifecycle, type DecisionResult } from './lifecycle.js';
 import type {
   AgentInitiateContext,
   AgentDestroyContext,
+  PreCallStartContext,
   CallStartContext,
   CallFinishContext,
   StepStartContext,
@@ -85,11 +86,12 @@ export interface HookDeclarationIssue {
 
 // ========== kind 与 lifecycle 的合法组合 ==========
 //
-// guard 只出现在有流程控制能力的生命周期（ToolUse / StepFinish）；
+// guard 只出现在有流程控制能力的生命周期（PreCallStart / ToolUse / StepFinish）；
 // transform 只出现在 ToolResultTransform；
 // observe 可挂在任意生命周期。
 
 const GUARD_LIFECYCLES = new Set<CoreLifecycle>([
+  CoreLifecycle.PreCallStart,
   CoreLifecycle.ToolUse,
   CoreLifecycle.StepFinish,
 ]);
@@ -228,7 +230,7 @@ export function validateHookDeclarations(feature: AgentFeature): HookDeclaration
     if (!lifecycleValid) {
       const expected =
         decl.kind === 'guard'
-          ? 'ToolUse / StepFinish'
+          ? 'PreCallStart / ToolUse / StepFinish'
           : 'ToolResultTransform';
       issues.push({
         feature: featureName,
@@ -295,6 +297,7 @@ export function issuesToError(issues: HookDeclarationIssue[]): Error {
  */
 type HookMethod<TContext, TReturn> = (ctx: TContext) => TReturn;
 
+export type PreCallStartHook = HookMethod<PreCallStartContext, DecisionResult | Promise<DecisionResult>>;
 export type AgentInitiateHook = HookMethod<AgentInitiateContext, void | Promise<void>>;
 export type AgentDestroyHook = HookMethod<AgentDestroyContext, void | Promise<void>>;
 export type CallStartHook = HookMethod<CallStartContext, void | Promise<void>>;

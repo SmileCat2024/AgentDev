@@ -3,7 +3,7 @@
  * 定义 Agent 生命周期钩子相关的类型
  */
 
-import type { ToolCall, Tool, LLMResponse } from './types.js';
+import type { ToolCall, Tool, LLMResponse, CallTurnOptions } from './types.js';
 import { type Context, type ToolExecResult } from './context.js';
 import type { Agent } from './agent.js';
 import type { AgentFeature } from './feature.js';
@@ -39,6 +39,9 @@ export enum CoreLifecycle {
   AgentDestroy = 'AgentDestroy',
 
   // ========== Call 级 ==========
+  /** Call 启动前准入检查 */
+  PreCallStart = 'PreCallStart',
+
   /** Call 开始 */
   CallStart = 'CallStart',
 
@@ -125,6 +128,20 @@ export interface AgentDestroyContext {
 }
 
 // ========== Call 级别 ==========
+
+/**
+ * Call 启动前准入上下文。框架只传递输入身份，不解释业务含义。
+ */
+export interface PreCallStartContext {
+  /** 即将提交的输入，保持原始内容；拒绝时框架不消费该输入。 */
+  input: string;
+  /** 输入身份；缺省按 user 处理。 */
+  options?: CallTurnOptions;
+  /** 随输入传递的自由元数据。 */
+  metadata?: Record<string, unknown>;
+  /** Agent 实例。 */
+  agent: Agent;
+}
 
 /**
  * Call 开始上下文

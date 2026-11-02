@@ -621,6 +621,8 @@ export interface FeatureInspectorSnapshot {
   enabledToolCount: number;
   /** feature 自带 skills 目录中的技能数（0 = 无；宿主面板据此推导 skills 能力） */
   skillCount?: number;
+  /** feature 自带 Skill 元数据；path 相对资源根，由宿主经 resource.fetch 读取 */
+  skills?: Array<{ name: string; description: string; root: number; path: string }>;
   source?: string;
   description?: string;
   tools: Array<{
@@ -1257,6 +1259,7 @@ export interface EnrichedMessage extends Message {
 import type {
   AgentInitiateContext,
   AgentDestroyContext,
+  PreCallStartContext,
   CallStartContext,
   CallFinishContext,
   StepStartContext,
@@ -1275,6 +1278,7 @@ import type {
 export type {
   AgentInitiateContext,
   AgentDestroyContext,
+  PreCallStartContext,
   CallStartContext,
   CallFinishContext,
   CallFinishReason,
@@ -1302,6 +1306,7 @@ export type {
 export type DecisionContext =
   | AgentInitiateContext
   | AgentDestroyContext
+  | PreCallStartContext
   | CallStartContext
   | CallFinishContext
   | StepStartContext

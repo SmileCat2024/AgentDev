@@ -79,7 +79,7 @@ import type { DebugPusher, ReActResult } from './agent/types.js';
 
 // 导入钩子注册表
 import { HooksRegistry, type HookInvocationObserver } from './hooks-registry.js';
-import { CoreLifecycle } from './lifecycle.js';
+import { CoreLifecycle, Decision, type PreCallStartContext } from './lifecycle.js';
 
 // Re-export ContextSnapshot and HookErrorHandling for convenience
 export type { ContextSnapshot };
@@ -93,6 +93,22 @@ export type { AgentSessionSnapshot, SessionStore };
 type CallRollbackCheckpoint = CallRollbackSnapshotV2;
 
 // 基础类（不含生命周期钩子）
+export interface CallAdmissionCallbacks {
+  /** Invoked once admission succeeds and before any call-start side effect. */
+  onAdmitted?: () => void | Promise<void>;
+}
+
+export class CallAdmissionDeniedError extends Error {
+  readonly code = 'call_admission_denied';
+  readonly reason?: string;
+
+  constructor(reason?: string) {
+    super(reason ? `Call admission denied: ${reason}` : 'Call admission denied');
+    this.name = 'CallAdmissionDeniedError';
+    this.reason = reason;
+  }
+}
+
 class AgentBase {
   protected readonly logger = createLogger('agent.runtime');
 
@@ -371,8 +387,8 @@ class AgentBase {
    *
    * 同一实例的会话状态不可并发访问；后续调用会按提交顺序排队。
    */
-  async onCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions): Promise<string> {
-    const outcome = await this.onCallDetailed(input, images, activations, metadata, options);
+  async onCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions, admissionCallbacks?: CallAdmissionCallbacks): Promise<string> {
+    const outcome = await this.onCallDetailed(input, images, activations, metadata, options, admissionCallbacks);
     return outcome.response;
   }
 
@@ -392,7 +408,7 @@ class AgentBase {
    * `options` 携带本条输入的身份（kind/source）：'reminder' 表示机器
    * 通报唤醒的 call，触发消息落为带 source 的 system 消息而非 user 消息。
    */
-  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions): Promise<CallOutcome> {
+  async onCallDetailed(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions, admissionCallbacks?: CallAdmissionCallbacks): Promise<CallOutcome> {
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
     }
@@ -402,7 +418,7 @@ class AgentBase {
         throw new Error('Agent is disposing or has been disposed');
       }
 
-      const execution = this.executeCall(input, images, activations, metadata, options);
+      const execution = this.executeCall(input, images, activations, metadata, options, admissionCallbacks);
       const completion = execution.then(() => undefined, () => undefined);
       this._activeCallPromise = completion;
       try {
@@ -424,11 +440,21 @@ class AgentBase {
     return this._lastCallOutcome ? { ...this._lastCallOutcome } : null;
   }
 
-  private async executeCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions): Promise<CallOutcome> {
-    // 确保 Feature 工具已注册
+  private async executeCall(input: string, images?: ImageInput[], activations?: string[], metadata?: Record<string, unknown>, options?: CallTurnOptions, admissionCallbacks?: CallAdmissionCallbacks): Promise<CallOutcome> {
+    // 准入在任何 Call 生命周期副作用之前；拒绝时输入仍归调用方持有。
     await this.ensureFeatureTools();
     if (this._lifecycleState !== 'active') {
       throw new Error('Agent is disposing or has been disposed');
+    }
+    const admissionContext: PreCallStartContext = {
+      input,
+      ...(options ? { options } : {}),
+      ...(metadata ? { metadata } : {}),
+      agent: this,
+    };
+    const admission = await this.hooksRegistry.executeDecision(CoreLifecycle.PreCallStart, admissionContext);
+    if (typeof admission === 'object' && admission.action === Decision.Deny) {
+      throw new CallAdmissionDeniedError(admission.reason);
     }
     // 延迟绑定门禁（ADR-0034）：未绑定的 Agent 可构造、可恢复状态、不可执行。
     // 提示装配层在 READY 前完成绑定（构造注入 / setModel 恢复 / 回退默认）。
@@ -438,6 +464,7 @@ class AgentBase {
         'Bind via config.llm at construction, or via setModel/setLLM (restore orchestration) before the first call.',
       );
     }
+    await admissionCallbacks?.onAdmitted?.();
 
     // 清理上次 onCall 遗留的 continuation request
     this._continuationRequest = null;

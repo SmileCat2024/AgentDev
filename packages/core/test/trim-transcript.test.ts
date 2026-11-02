@@ -184,21 +184,29 @@ describe('trim-compact fixes (golden, ported from Claw)', () => {
       assert.equal(stats.foldedToolCallCount, 4, 'all 4 tool calls folded');
     });
 
-    it('still separates folds when assistant text appears between tool calls', () => {
+    it('groups all tool calls in a call across assistant prose and closes before the next user input', () => {
       const messages = [
         { role: 'user', content: 'do task', turn: 0 },
         { role: 'assistant', content: 'Step 1.', turn: 0, toolCalls: [{ name: 'grep', arguments: '{}' }] },
         { role: 'tool', toolCallId: 'tc1', content: '{}', turn: 0 },
         { role: 'assistant', content: 'Step 2.', turn: 0, toolCalls: [{ name: 'bash', arguments: '{}' }] },
         { role: 'tool', toolCallId: 'tc2', content: '{}', turn: 0 },
-        { role: 'user', content: 'ok', turn: 1 },
+        { role: 'assistant', content: 'Finished this request.', turn: 0 },
+        { role: 'user', content: 'next request', turn: 1 },
         { role: 'assistant', content: 'done', turn: 1 },
       ];
       const policy = normalizeExportPolicy({ preservedTurns: [1] });
-      const { seedMessages } = buildTrimmedSeedMessages(messages, policy);
+      const { seedMessages, stats } = buildTrimmedSeedMessages(messages, policy);
 
       const foldNotes = seedMessages.filter(m => m.content.includes('[Folded tool activity]'));
-      assert.equal(foldNotes.length, 2, 'text between tool calls should produce separate folds');
+      assert.equal(foldNotes.length, 1, 'one user-input call produces one folded activity note');
+      assert.equal(stats.foldedToolNoteCount, 1, 'the transform reports the actual number of emitted notes');
+      assert.match(foldNotes[0].content, /Tool calls since user input above, through here:/);
+      assert.match(foldNotes[0].content, /assistant tool calls: grep; bash/);
+      assert.deepEqual(seedMessages.filter(m => m.role === 'assistant' && m.turn === 0).map(m => m.content),
+        ['Step 1.', 'Step 2.', 'Finished this request.']);
+      assert.equal(seedMessages.indexOf(foldNotes[0]),
+        seedMessages.findIndex(m => m.role === 'user' && m.content === 'next request') - 1);
     });
   });
 
@@ -523,6 +531,29 @@ describe('trim-compact fixes (golden, ported from Claw)', () => {
         m.tag === 'folded-tool-activity' && m.content.includes('[Folded tool activity]'));
       assert.ok(survivingFoldNotes.length > 0,
         'fold note with tag folded-tool-activity must survive second trim');
+    });
+
+    it('merges an inherited note with new calls in the same call instead of appending a second note', () => {
+      // Successor session: the previous generation folded read(server.log) ×2 into
+      // a note for turn 0, and the same call later ran a new bash command.
+      const source = [
+        { role: 'user', content: 'old request', turn: 0 },
+        { role: 'assistant', content: 'I checked the log.', turn: 0 },
+        { role: 'system', content: '[Folded tool activity]\nassistant tool calls: read(server.log) ×2', turn: 0, tag: 'folded-tool-activity' },
+        { role: 'assistant', content: 'Now rerun the check.', turn: 0, toolCalls: [{ name: 'bash', arguments: '{}' }] },
+        { role: 'tool', toolCallId: 'tc1', content: '{}', turn: 0 },
+        { role: 'user', content: 'current request', turn: 1 },
+        { role: 'assistant', content: 'verified', turn: 1 },
+      ];
+      const { seedMessages } = buildTrimmedSeedMessages(source, normalizeExportPolicy({}));
+
+      const notes = seedMessages.filter(m => m.tag === 'folded-tool-activity');
+      assert.equal(notes.length, 1, 'inherited and new activity in one call must yield a single note');
+      assert.match(notes[0].content, /read\(server\.log\) ×2/, 'inherited counts survive the merge');
+      assert.match(notes[0].content, /bash/, 'new activity is merged into the same note');
+      assert.equal(seedMessages.indexOf(notes[0]),
+        seedMessages.findIndex(m => m.role === 'user' && m.content === 'current request') - 1,
+        'the merged note is emitted at the call boundary');
     });
 
     it('applies source/tag rules to preserve matching injected system messages and drops non-matches', () => {

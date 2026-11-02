@@ -393,6 +393,23 @@ function createSeedMessage(role: string, content: string, turn: number, source?:
   } as SessionSeedMessage;
 }
 
+function parseFoldedToolSummaries(content: unknown): string[] {
+  if (typeof content !== 'string' || !content.startsWith('[Folded tool activity]')) return [];
+  const summaryLine = content.split(String.fromCharCode(10)).find(line => line.startsWith('assistant tool calls: '));
+  if (!summaryLine) return [];
+  const summaries: string[] = [];
+  for (const part of summaryLine.slice('assistant tool calls: '.length).split('; ')) {
+    if (!part) continue;
+    const marker = part.lastIndexOf(' ×');
+    const countText = marker >= 0 ? part.slice(marker + 2) : '';
+    const hasCount = countText.length > 0 && [...countText].every(char => char >= '0' && char <= '9');
+    const summary = hasCount ? part.slice(0, marker) : part;
+    const count = hasCount ? Math.min(10000, Math.max(1, Number(countText))) : 1;
+    for (let index = 0; index < count; index += 1) summaries.push(summary);
+  }
+  return summaries;
+}
+
 function deduplicateToolCallSummaries(summaries: string[]): string[] {
   const counts = new Map<string, number>();
   const order: string[] = [];
@@ -416,8 +433,11 @@ function flushPendingToolFold(seedMessages: SessionSeedMessage[], pendingFold: a
   }
 
   const deduped = deduplicateToolCallSummaries(pendingFold.toolCalls);
-  const lines = ['[Folded tool activity]'];
-  lines.push(`assistant tool calls: ${deduped.join('; ')}`);
+  const lines = [
+    '[Folded tool activity]',
+    'Tool calls since user input above, through here:',
+    `assistant tool calls: ${deduped.join('; ')}`,
+  ];
 
   const note = createSeedMessage(policy.foldedToolNoteRole, lines.join('\n'), pendingFold.turn, 'handoff-seed', 'folded-tool-activity');
   if (note) {
@@ -565,6 +585,12 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
     }
 
     const turn = getMessageTurn(message, index);
+    // A user message starts a new call: the previous call's folded activity is
+    // emitted here, so one note covers exactly one user-input call.
+    if (role === 'user') {
+      flushIfNeeded();
+    }
+
     const withinDialogueWindow = hasPreserveBoundary || !retainedTurns || retainedTurns.has(turn);
 
     const inPreserveZone = preservedMsgIndices
@@ -572,6 +598,18 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
       : preservedTurnSet
         ? preservedTurnSet.has(turn)
         : (Number.isFinite(fullPreserveFrom as number) && turn >= (fullPreserveFrom as number));
+
+    // Inherited notes from earlier trim generations are re-collected into their
+    // call so repeated trims emit one note instead of copying every old note.
+    // Preserve-zone content is replayed verbatim and must not be rewritten.
+    if (!inPreserveZone && role === 'system' && message?.tag === 'folded-tool-activity') {
+      const inheritedSummaries = parseFoldedToolSummaries(message.content);
+      if (inheritedSummaries.length > 0) {
+        ensurePendingFold(turn).toolCalls.push(...inheritedSummaries);
+        return;
+      }
+    }
+
     if (inPreserveZone) {
       flushIfNeeded();
       if (role === 'tool' || shouldKeepDialogueMessage(message, policy)) {
@@ -670,14 +708,8 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
       return;
     }
 
-    const isToolOnlyAssistantFold = role === 'assistant'
-      && !cleanMultilineText(message.content)
-      && toolCalls.length > 0
-      && policy.assistantToolCallMode === 'fold'
-      && shouldHandleToolCalls;
-    if (!isToolOnlyAssistantFold) {
-      flushIfNeeded();
-    }
+    // Assistant prose inside the same call does not close the aggregate note;
+    // only the next user message does. This keeps one note per user-input call.
 
     if (!shouldKeepDialogueMessage(message, policy)) {
       stats.droppedDialogueMessageCount += 1;

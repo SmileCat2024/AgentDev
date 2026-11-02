@@ -18,6 +18,12 @@ class HookEndAgent extends Agent {
   }
 }
 
+class HookContinueAgent extends Agent {
+  protected async onStepFinished(_ctx: StepFinishedContext): Promise<HookResult | undefined> {
+    return { action: 'continue' } as unknown as HookResult;
+  }
+}
+
 class FailingLLM implements LLMClient {
   async chat(_messages: Message[], _tools: Tool[]): Promise<LLMResponse> {
     throw new Error('model exploded');
@@ -160,6 +166,36 @@ describe('turn event source identity (ADR-0031 step 1)', () => {
 describe('busy queued input consumption identity (react-loop drain)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('injects input before the next model request when a step hook continues the call', async () => {
+    const mailbox: Array<{ text: string; source?: string }> = [];
+    const modelInputs: Message[][] = [];
+    const llm: LLMClient = {
+      async chat(messages: Message[]): Promise<LLMResponse> {
+        modelInputs.push(messages);
+        if (modelInputs.length === 1) {
+          mailbox.push({ text: '请先检查这个改动', source: 'chat-composer' });
+        }
+        return { content: `reply-${modelInputs.length}` };
+      },
+    };
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      if (String(url).includes('/dequeue-input')) {
+        return {
+          ok: true,
+          json: async () => ({ input: mailbox.shift() ?? null, remaining: mailbox.length }),
+        };
+      }
+      throw new Error(`unexpected fetch: ${String(url)}`);
+    });
+
+    const agent = new HookContinueAgent({ llm, maxTurns: 3 });
+    await agent.onCall('继续原任务');
+
+    expect(modelInputs.length).toBeGreaterThanOrEqual(2);
+    expect(modelInputs[1].some((message) => message.role === 'user' && message.content === '请先检查这个改动'))
+      .toBe(true);
   });
 
   it('turn.completed carries consumedSourceRefs for busy-injected inputs in injection order', async () => {

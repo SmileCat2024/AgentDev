@@ -749,8 +749,13 @@ export class ReActLoopRunner {
         break;
       }
       if (stepResult === 'continue') {
+        const drained = await this._drainAndInjectQueuedInputs(context, callIndex, 'Step 继续前队列检查');
+        if (drained.injected) {
+          consumedSourceRefs.push(...drained.sourceRefs);
+        }
         continue outerLoop;
       }
+
       if (stepResult === 'interrupted') {
         // 用户中断：不触发 onInterrupt 钩子（已在上面补齐 tool result）
         break;

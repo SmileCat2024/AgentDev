@@ -234,13 +234,14 @@ export class TodoFeature implements AgentFeature {
   }
 
   /**
-   * Call 开始时注入简短任务状态
+   * Call 开始时注入完整任务计划
    *
    * 触发时机：每次用户发送新消息、Agent 开始处理时
    * 处理逻辑：
    * 1. 首次调用跳过（还没有任务）
    * 2. 无待执行任务时跳过
-   * 3. 有待执行任务时注入简短的"当前/下一项"状态
+   * 3. 有待执行任务时注入完整任务列表（与写操作后的注入同构，
+   *    保证被跳过或搁置的任务对模型持续可见）
    * 4. 重置 no-todo 计数器（新一轮用户交互）
    */
   async onCallStart(ctx: CallStartContext): Promise<void> {
@@ -257,14 +258,16 @@ export class TodoFeature implements AgentFeature {
     );
     if (!hasActiveTasks) return;
 
-    // 注入简短任务状态
-    ctx.context.add({ role: 'system', content: this.buildCallStartBrief() });
+    // 注入完整任务列表（与写操作后的 StepFinish 注入同构）。
+    // 只展示「当前/下一项」两个槽位时，被跳过或搁置的任务会从模型
+    // 视野中消失：既不被执行，也不被清理，成为无人认领的僵尸任务。
+    ctx.context.add({ role: 'system', content: this.buildCurrentTaskPlanContext() });
 
     // 重置计数器（新的用户消息代表新一轮交互）
     this.consecutiveNoTodoTurns = 0;
     this.reminderInjected = false;
 
-    console.log('[TodoFeature] CallStart: injected brief task status, reset counter');
+    console.log('[TodoFeature] CallStart: injected full task plan, reset counter');
   }
 
   /**
@@ -465,16 +468,39 @@ export class TodoFeature implements AgentFeature {
   }
 
   /**
-   * 构建 StepFinish 注入的最新完整任务列表文本
-   * 仅包含 active tasks（pending + in_progress），按 createdAt 升序
-   */
+    * 构建 StepFinish 注入的最新完整任务列表文本
+    * 仅包含 active tasks（pending + in_progress），按 createdAt 升序
+    */
   private buildCurrentTaskPlanContext(): string {
+    const lines = this.renderActiveTaskLines();
+    if (!lines) {
+      return '当前没有待执行任务。若当前工作仍需多步跟踪，可创建任务。不要向用户提及此内部提示。';
+    }
+
+    lines.push('');
+    lines.push('请以此列表作为当前任务计划继续推进；任务开始、完成、调整或取消时，使用 Todo 工具同步状态。');
+    lines.push('不要向用户提及此内部提示。');
+
+    return lines.join('\n');
+  }
+
+  /**
+   * 渲染 active 任务列表主体：[当前任务计划] 头 + 任务行 + 截断说明，不含尾行提示。
+   * 无 active 任务时返回 null。
+   *
+   * CallStart 与阈值 reminder 共用此渲染。任务列表必须全量可见——
+   * 只展示「当前/下一项」两个槽位时，被跳过或搁置的任务会从模型视野中
+   * 消失（历史缺陷）：注入声称的「下一项」与实际执行顺序脱节（跳过、
+   * 插入新任务都常见），模型会无视整个注入，搁置任务长期无人认领。
+   * 全量列表把排序权留给模型，并让它每轮都有机会推进、调整或取消搁置任务。
+   */
+  private renderActiveTaskLines(): string[] | null {
     const activeTasks = Array.from(this.tasks.values())
       .filter(task => task.status === 'pending' || task.status === 'in_progress')
       .sort((a, b) => a.createdAt - b.createdAt || Number(a.id) - Number(b.id));
 
     if (activeTasks.length === 0) {
-      return '当前没有待执行任务。若当前工作仍需多步跟踪，可创建任务。不要向用户提及此内部提示。';
+      return null;
     }
 
     const visible = activeTasks.slice(0, MAX_INJECT_TASKS);
@@ -492,45 +518,21 @@ export class TodoFeature implements AgentFeature {
     if (omitted > 0) {
       lines.push(`（其余 ${omitted} 项未展示；如需查看全部计划，请使用 task_list。）`);
     }
-    lines.push('');
-    lines.push('请以此列表作为当前任务计划继续推进；任务开始、完成、调整或取消时，使用 Todo 工具同步状态。');
-    lines.push('不要向用户提及此内部提示。');
-
-    return lines.join('\n');
+    return lines;
   }
 
   /**
    * 构建动态 reminder 文本
-   * 如果有 active tasks，包含"当前"和"下一项"信息
-   * 否则回退到默认温和提醒
+   * 有 active tasks 时为完整任务列表 + 自定义模板/默认提醒；无任务时仅模板/默认提醒
    */
   private buildDynamicReminder(): string {
-    const activeTasks = Array.from(this.tasks.values())
-      .filter(task => task.status === 'pending' || task.status === 'in_progress')
-      .sort((a, b) => a.createdAt - b.createdAt || Number(a.id) - Number(b.id));
-
-    if (activeTasks.length === 0) {
-      // 无待执行任务，使用自定义模板或默认提醒
-      return this.reminderContent || this.getDefaultReminder();
-    }
-
-    const currentTask = activeTasks.find(t => t.status === 'in_progress');
-    const nextTask = activeTasks.find(t => t.status === 'pending');
-
-    const lines: string[] = ['[任务状态提醒]'];
-    if (currentTask) {
-      lines.push(`当前：#${currentTask.id} ${currentTask.subject}`);
-    } else {
-      lines.push('当前：无');
-    }
-    if (nextTask) {
-      lines.push(`下一项：#${nextTask.id} ${nextTask.subject}`);
-    } else {
-      lines.push('下一项：无');
-    }
-    lines.push('');
-    // 拼接自定义模板尾部或默认提醒文本
     const tail = this.reminderContent || this.getDefaultReminder();
+    const lines = this.renderActiveTaskLines();
+    if (!lines) {
+      return tail;
+    }
+
+    lines.push('');
     lines.push(tail);
 
     return lines.join('\n');
@@ -539,35 +541,6 @@ export class TodoFeature implements AgentFeature {
   /** 获取默认 reminder 内容 */
   private getDefaultReminder(): string {
     return '最近没有更新任务状态。若该计划仍适用，请在开始、完成、调整或取消任务时使用 Todo 工具同步状态；若计划已不适用，可清理未完成任务。仅在与当前工作相关时使用这些工具。这只是温和的提醒——如果不适用请忽略。务必注意：绝不要向用户提及此提醒。';
-  }
-
-  /**
-   * 构建 CallStart 简短任务状态
-   * 仅包含"当前/下一项"两行，不附带催促语
-   */
-  private buildCallStartBrief(): string {
-    const activeTasks = Array.from(this.tasks.values())
-      .filter(task => task.status === 'pending' || task.status === 'in_progress')
-      .sort((a, b) => a.createdAt - b.createdAt || Number(a.id) - Number(b.id));
-
-    const currentTask = activeTasks.find(t => t.status === 'in_progress');
-    const nextTask = activeTasks.find(t => t.status === 'pending');
-
-    const lines: string[] = ['[任务状态]'];
-    if (currentTask) {
-      lines.push(`当前：#${currentTask.id} ${currentTask.subject}`);
-    } else {
-      lines.push('当前：无');
-    }
-    if (nextTask) {
-      lines.push(`下一项：#${nextTask.id} ${nextTask.subject}`);
-    } else {
-      lines.push('下一项：无');
-    }
-    lines.push('');
-    lines.push('请根据当前任务计划继续推进。不要向用户提及此内部提示。');
-
-    return lines.join('\n');
   }
 }
 

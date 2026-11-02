@@ -335,4 +335,114 @@ describe('TodoFeature', () => {
       expect(names).not.toContain('task-get');
     });
   });
+
+  // ========== 注入渲染（CallStart / 阈值 reminder 全量可见） ==========
+
+  describe('CallStart injection', () => {
+    function makeCallStartCtx() {
+      const added: Array<{ role: string; content: string }> = [];
+      return {
+        added,
+        ctx: {
+          isFirstCall: false,
+          context: { add: (m: { role: string; content: string }) => added.push(m) },
+        },
+      } as any;
+    }
+
+    it('injects every active task, including skipped/stale ones', async () => {
+      // 用户场景复刻：A B C 完成后跳过 D，创建并执行 E、F
+      feature.createTask('A');
+      feature.createTask('B');
+      feature.createTask('C');
+      feature.createTask('D 被跳过的任务');
+      feature.createTask('E 新目标');
+      feature.createTask('F 新目标');
+      feature.updateTask('1', { status: 'completed' });
+      feature.updateTask('2', { status: 'completed' });
+      feature.updateTask('3', { status: 'completed' });
+      feature.updateTask('5', { status: 'in_progress' });
+
+      const { added, ctx } = makeCallStartCtx();
+      await feature.onCallStart(ctx);
+
+      expect(added).toHaveLength(1);
+      expect(added[0].role).toBe('system');
+      const text = added[0].content;
+      // 被跳过的 D 与新任务 E、F 全部可见
+      expect(text).toContain('D 被跳过的任务');
+      expect(text).toContain('E 新目标');
+      expect(text).toContain('F 新目标');
+      // 已完成任务不进入注入
+      expect(text).not.toMatch(/- #1 \[/);
+      expect(text).not.toMatch(/- #2 \[/);
+      expect(text).not.toMatch(/- #3 \[/);
+      // 维护提示：不再适用时同步状态（完成或取消）
+      expect(text).toContain('调整或取消');
+      expect(text).toContain('同步状态');
+    });
+
+    it('does not inject when no active tasks', async () => {
+      feature.createTask('A');
+      feature.updateTask('1', { status: 'completed' });
+
+      const { added, ctx } = makeCallStartCtx();
+      await feature.onCallStart(ctx);
+      expect(added).toHaveLength(0);
+    });
+
+    it('does not inject on first call', async () => {
+      feature.createTask('A');
+      const { added, ctx } = makeCallStartCtx();
+      ctx.isFirstCall = true;
+      await feature.onCallStart(ctx);
+      expect(added).toHaveLength(0);
+    });
+
+    it('caps listed tasks and notes the omitted count', async () => {
+      for (let i = 1; i <= 25; i++) {
+        feature.createTask(`任务 ${i}`);
+      }
+      const { added, ctx } = makeCallStartCtx();
+      await feature.onCallStart(ctx);
+
+      const text = added[0].content;
+      // 按 createdAt 升序取前 MAX_INJECT_TASKS(20) 项：#20 在、#21 起不可见
+      expect(text).toContain('- #20 [pending] 任务 20');
+      expect(text).not.toContain('- #21 [pending]');
+      expect(text).toContain('其余 5 项未展示');
+    });
+  });
+
+  describe('threshold reminder injection', () => {
+    function makeStepStartCtx() {
+      const added: Array<{ role: string; content: string }> = [];
+      return {
+        added,
+        ctx: {
+          callIndex: 5,
+          context: { add: (m: { role: string; content: string }) => added.push(m) },
+        },
+      } as any;
+    }
+
+    it('injects full task list alongside reminder text', async () => {
+      feature.createTask('正在处理的工作');
+      feature.createTask('B 被搁置的任务');
+      feature.updateTask('1', { status: 'in_progress' });
+      // 连续未使用 todo 工具达到阈值（默认 withTasks=3）
+      (feature as any).consecutiveNoTodoTurns = 3;
+
+      const { added, ctx } = makeStepStartCtx();
+      await feature.checkAndInjectReminder(ctx);
+
+      expect(added).toHaveLength(1);
+      const text = added[0].content;
+      // 完整列表与温和提醒尾部同时在场，证明两者被拼接而非互相替代
+      expect(text).toContain('[当前任务计划]');
+      expect(text).toContain('- #1 [in_progress] 正在处理的工作');
+      expect(text).toContain('- #2 [pending] B 被搁置的任务');
+      expect(text).toContain('温和的提醒');
+    });
+  });
 });

@@ -608,6 +608,62 @@ describe('WorkThread (anchor layer)', () => {
   });
 });
 
+describe('WorkThread membership index authority', () => {
+  let root: string;
+  beforeAll(async () => {
+    root = await makeTempRoot();
+  });
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('findThreadBySession miss on a complete index reads no thread records', async () => {
+    const { store, thread } = makeThread(root);
+    await thread.start({ sessionRef: { agentId: 'a', sessionId: 'member-a' } });
+    await thread.start({ sessionRef: { agentId: 'a', sessionId: 'member-b' } });
+
+    let recordReads = 0;
+    const originalGet = store.get.bind(store);
+    store.get = async (threadId: string) => {
+      recordReads += 1;
+      return originalGet(threadId);
+    };
+
+    // A brand-new session is a member of no thread; the complete index must
+    // answer that negative without re-reading any thread record file. This is
+    // the host's pre-create startable check — it must stay O(1), not O(threads).
+    expect(await thread.findThreadBySession('a', 'brand-new-session')).toBeNull();
+    expect(recordReads).toBe(0);
+  });
+
+  it('findThreadBySession scans only legacy index entries lacking sessionIds', async () => {
+    const { store, thread } = makeThread(root);
+    const legacy = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'legacy-root' } });
+    await thread.start({ sessionRef: { agentId: 'a', sessionId: 'modern-root' } });
+    const index = await store.list() as Array<Record<string, unknown>>;
+    const legacyEntry = index.find((entry) => entry.threadId === legacy.threadId)!;
+    delete legacyEntry.sessionIds;
+    await writeFile(join(root, 'index.json'), JSON.stringify({ revision: 99, threads: index }));
+
+    const reloadedThread = new WorkThread({ store: new WorkThreadStore({ rootDir: root }) });
+    let recordReads = 0;
+    const originalGet = reloadedThread.store.get.bind(reloadedThread.store);
+    reloadedThread.store.get = async (threadId: string) => {
+      recordReads += 1;
+      return originalGet(threadId);
+    };
+
+    // Miss: only the legacy entry may be scanned; the modern entry carries
+    // sessionIds and is an authoritative negative.
+    expect(await reloadedThread.findThreadBySession('a', 'not-a-member')).toBeNull();
+    expect(recordReads).toBe(1);
+
+    // Legacy membership remains discoverable through the fallback scan.
+    const found = await reloadedThread.findThreadBySession('a', 'legacy-root');
+    expect(found?.threadId).toBe(legacy.threadId);
+  });
+});
+
 describe('WorkThread delivery gating (anchor layer only)', () => {
   let root: string;
   beforeAll(async () => {

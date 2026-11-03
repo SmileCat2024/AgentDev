@@ -408,6 +408,13 @@ export class WorkThread {
    * head）时返回线程完整记录。成员事实唯一来自 sessionChain 链记录，
    * 不用 UI 投影或运行时扫描推导；记录上的 identity 即为该成员统一的
    * 身份归属事实（root / head / 历史成员同属一条记录，取值一致）。
+   *
+   * 成员判定的权威路径是索引：updateIndexEntry 每次写盘都从记录链派生
+   * sessionIds，所以携带 sessionIds 的索引条目对「非成员」是否定权威，
+   * 不再回读记录文件验证（宿主「新会话建线程前检查」每次必 miss，若
+   * miss 即全量回读，成本随线程数线性放大）。仅缺 sessionIds 的老条目
+   * 保留记录回读兜底。已知收窄：记录已写、索引未更的崩溃窗口内，新
+   * 成员会被判为非成员；该线程任一后续写操作即自愈。
    */
   async findThreadBySession(agentId: string, sessionId: string): Promise<WorkThreadRecord | null> {
     const normalizedAgentId = cleanText(agentId);
@@ -431,9 +438,12 @@ export class WorkThread {
     }
 
     // Older indexes may not contain sessionIds, and a stale index must not make
-    // a real member undiscoverable. Preserve the authoritative record scan on miss.
+    // a real member undiscoverable. Scan only those legacy entries: entries that
+    // do carry sessionIds are authoritative negatives for membership (written
+    // from the record chain), so re-reading their files is pure cost.
     for (const summary of threads) {
       if (!summary?.threadId || summary.threadId === indexedMatch?.threadId) continue;
+      if (Array.isArray(summary.sessionIds)) continue;
       const record = await this.store.get(summary.threadId);
       if (Array.isArray(record?.sessionChain)
         && record.sessionChain.some((entry) => entry?.sessionId === normalizedSessionId)) {

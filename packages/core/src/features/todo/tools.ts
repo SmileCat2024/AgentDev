@@ -54,34 +54,19 @@ export class TodoToolFactory {
     const self = this;
     return createTool({
       name: 'task_create',
-      description: `创建一个结构化的任务列表，用于跟踪当前会话的工作进度。
-
-使用时机：
-- 复杂的多步骤任务（需要 3 个或以上独立步骤）
-- 非平凡且复杂的任务（需要仔细规划）
-- 用户明确要求创建任务列表
-- 收到新指令时捕获任务
+      description: `创建结构化任务列表，跟踪当前会话的工作进度。适用于需要 3 个以上独立步骤、或需要仔细规划的复杂任务。
 
 任务字段：
-- subject: 简短可执行的标题，使用祈使句形式（如 "修复认证漏洞"）
-- description: 详细描述，包括上下文和验收标准（可选）
-- deliver: 交付物（可选）：任务完成时用什么产物证明"做完了"，一句短语，如「src/auth.ts」「test/auth.test.js 全过」
+- subject: 简短可执行的祈使句标题（如 "修复认证漏洞"）
+- description: 任务定义（可选）：要做什么、怎么验收，写给之后翻开这条任务的人；简单任务可不填
+- deliver: 交付物（可选）：完成时留下什么产物证明"做完了"，一句短语，如「src/auth.ts」「61 项测试通过」。description 说要做什么，deliver 只说留下了什么；调查沟通类无可指认产物时留空
 
-deliver 与 description 的分工（重要）：
-- description 回答"要做什么、怎么验收"，可以长
-- deliver 回答"做完留下了什么"，只写结果本身，写产物不存在写过程
-- deliver 不重复 description、不复述步骤、不写总结段落；超过一句就是在写 description
-- 调查、沟通类任务没有可指认的产物时留空，不要拿"已分析""已沟通"充数
-
-重要说明：
-- subject 应该是祈使句形式（"执行任务"）
-- description 是可选的，简单任务不需要填写
-- 创建后任务状态为 pending，可以通过 task_update 更新为 in_progress、completed 或 deleted（取消并保留记录）`,
+创建后任务为 pending，经 task_update 流转：in_progress → completed，或 deleted（取消并保留记录）。`,
       parameters: {
         type: 'object',
         properties: {
           subject: { type: 'string', description: '简短的任务标题，使用祈使句形式（如 "运行测试"）' },
-          description: { type: 'string', description: '详细的任务描述，包括上下文、具体步骤和验收标准' },
+          description: { type: 'string', description: '任务定义：要做什么、怎么验收，写给之后翻开这条任务的人' },
           deliver: { type: 'string', description: '交付物：一句短语，如 "src/auth.ts"、"test/auth.test.js 全过"。只写结果产物，不写过程、不重复 description；无可指认产物时留空' },
         },
         required: ['subject'],
@@ -116,17 +101,7 @@ deliver 与 description 的分工（重要）：
     const self = this;
     return createTool({
       name: 'task_list',
-      description: `列出任务列表中的所有任务摘要。
-
-使用时机：
-- 查看当前所有任务的状态
-- 了解整体进度
-
-返回信息：
-- id: 任务标识符
-- subject: 简短描述
-- deliver: 交付物说明（若有设置）
-- status: 任务状态（pending/in_progress/completed/deleted）`,
+      description: `列出任务摘要（id、subject、deliver、status）。可按状态筛选，默认全部。`,
       parameters: {
         type: 'object',
         properties: {
@@ -163,21 +138,13 @@ deliver 与 description 的分工（重要）：
     const self = this;
     return createTool({
       name: 'task_update',
-      description: `更新任务的状态或详细信息。
+      description: `更新任务的状态或内容。
 
-状态工作流：pending → in_progress → completed
+状态工作流：pending → in_progress → completed；deleted 为取消并保留记录。标记 completed 时用 deliver 补上结果产物（一句短语），细节留在你的回复里。
 
-主要用途：
-1. 标记任务进行中：将 status 设置为 "in_progress"
-2. 标记任务完成：将 status 设置为 "completed"，并用 deliver 补上结果产物（一句短语：文件、命令及其结果）；deliver 只写结果不写过程，细节留在你的回复里
-3. 取消任务并保留记录：将 status 设置为 "deleted"
+并发约束：同一时刻只允许一个任务处于 in_progress；开始新任务前，先完成、取消当前进行中任务，或将其调整回 pending。
 
-并发约束：同一时刻只允许一个任务处于 in_progress。开始新任务前，先完成、取消当前进行中任务，或将其调整回 pending。
-
-任务字段：
-- subject: 简短可执行的标题，使用祈使句形式（如 "执行任务"）
-- description: 详细描述，包括上下文和验收标准（可写长）
-- deliver: 交付物（一句短语）：完成时留下什么产物，如「src/auth.ts」「61 项测试通过」；不写过程、不重复 description，无可指认产物则留空`,
+可更新字段（仅传需要更新的）：subject 祈使句标题；description 任务定义：要做什么、怎么验收；deliver 交付物一句短语。`,
       parameters: {
         type: 'object',
         properties: {
@@ -188,7 +155,7 @@ deliver 与 description 的分工（重要）：
             description: '任务状态',
           },
           subject: { type: 'string', description: '新的任务标题' },
-          description: { type: 'string', description: '新的任务描述' },
+          description: { type: 'string', description: '新的任务定义：要做什么、怎么验收' },
           deliver: { type: 'string', description: '交付物：一句短语，如 "src/auth.ts"、"61 项测试通过"。只写结果产物，不写过程、不重复 description' },
         },
         required: ['taskId'],
@@ -236,9 +203,7 @@ deliver 与 description 的分工（重要）：
     const self = this;
     return createTool({
       name: 'task_clear',
-      description: `取消任务列表中的所有未完成任务，并保留历史记录。
-
-注意：此操作不会移除历史；pending/in_progress 会变为 deleted，completed 会保留。`,
+      description: `取消所有未完成任务并保留历史：pending/in_progress 转为 deleted，completed 保留。`,
       parameters: {
         type: 'object',
         properties: {},

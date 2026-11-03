@@ -51,6 +51,10 @@ export default {
     if (data.status === 'deleted') {
       return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已取消并保留记录')}</div>`;
     }
-    return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已更新')}</div>`;
+    let output = `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已更新')}</div>`;
+    if (data.deliver) {
+      output += `<div style="color:var(--text-secondary); font-size:12px; margin-top:2px;">交付: ${escapeHtml(data.deliver)}</div>`;
+    }
+    return output;
   }
 } as const satisfies InlineRenderTemplate;

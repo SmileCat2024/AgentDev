@@ -43,6 +43,7 @@ function buildFullPlan(): TodoPlanSnapshot {
         id: 'task-1',
         subject: '已完成任务',
         description: 'desc-1',
+        deliver: 'test/a.test.ts 通过',
         status: 'completed',
         metadata: { finishedAt: 1700000001000 },
         createdAt: 1700000000000,
@@ -105,6 +106,8 @@ describe('ViewerWorker todo plan round-trip', () => {
     expect(output.tasks[0].id).toBe('task-1');
     expect(output.tasks[0].status).toBe('completed');
     expect(output.tasks[0].metadata.finishedAt).toBe(1700000001000);
+    // deliver 是面板数据的来源字段，normalize 重建任务对象时必须保留
+    expect(output.tasks[0].deliver).toBe('test/a.test.ts 通过');
     expect(output.tasks[1].id).toBe('task-2');
     expect(output.tasks[1].status).toBe('in_progress');
     expect(output.summary.total).toBe(2);

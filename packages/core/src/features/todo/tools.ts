@@ -65,7 +65,13 @@ export class TodoToolFactory {
 任务字段：
 - subject: 简短可执行的标题，使用祈使句形式（如 "修复认证漏洞"）
 - description: 详细描述，包括上下文和验收标准（可选）
-- deliver: 具体交付物（可选，自由文本）：如将产出的文件路径、要通过的命令或验证方式；调查、沟通类任务没有具体交付物可不填
+- deliver: 交付物（可选）：任务完成时用什么产物证明"做完了"，一句短语，如「src/auth.ts」「test/auth.test.js 全过」
+
+deliver 与 description 的分工（重要）：
+- description 回答"要做什么、怎么验收"，可以长
+- deliver 回答"做完留下了什么"，只写结果本身，写产物不存在写过程
+- deliver 不重复 description、不复述步骤、不写总结段落；超过一句就是在写 description
+- 调查、沟通类任务没有可指认的产物时留空，不要拿"已分析""已沟通"充数
 
 重要说明：
 - subject 应该是祈使句形式（"执行任务"）
@@ -76,7 +82,7 @@ export class TodoToolFactory {
         properties: {
           subject: { type: 'string', description: '简短的任务标题，使用祈使句形式（如 "运行测试"）' },
           description: { type: 'string', description: '详细的任务描述，包括上下文、具体步骤和验收标准' },
-          deliver: { type: 'string', description: '本任务的具体交付物（可选，自由文本）：如将产出的文件路径、要通过的命令或验证方式' },
+          deliver: { type: 'string', description: '交付物：一句短语，如 "src/auth.ts"、"test/auth.test.js 全过"。只写结果产物，不写过程、不重复 description；无可指认产物时留空' },
         },
         required: ['subject'],
       },
@@ -119,6 +125,7 @@ export class TodoToolFactory {
 返回信息：
 - id: 任务标识符
 - subject: 简短描述
+- deliver: 交付物说明（若有设置）
 - status: 任务状态（pending/in_progress/completed/deleted）`,
       parameters: {
         type: 'object',
@@ -162,15 +169,15 @@ export class TodoToolFactory {
 
 主要用途：
 1. 标记任务进行中：将 status 设置为 "in_progress"
-2. 标记任务完成：将 status 设置为 "completed"，并在 deliver 字段写明实际交付结果（文件、命令及其结果）
+2. 标记任务完成：将 status 设置为 "completed"，并用 deliver 补上结果产物（一句短语：文件、命令及其结果）；deliver 只写结果不写过程，细节留在你的回复里
 3. 取消任务并保留记录：将 status 设置为 "deleted"
 
 并发约束：同一时刻只允许一个任务处于 in_progress。开始新任务前，先完成、取消当前进行中任务，或将其调整回 pending。
 
 任务字段：
 - subject: 简短可执行的标题，使用祈使句形式（如 "执行任务"）
-- description: 详细描述，包括上下文和验收标准
-- deliver: 交付物说明（自由文本），完成任务时建议写明实际交付结果`,
+- description: 详细描述，包括上下文和验收标准（可写长）
+- deliver: 交付物（一句短语）：完成时留下什么产物，如「src/auth.ts」「61 项测试通过」；不写过程、不重复 description，无可指认产物则留空`,
       parameters: {
         type: 'object',
         properties: {
@@ -182,7 +189,7 @@ export class TodoToolFactory {
           },
           subject: { type: 'string', description: '新的任务标题' },
           description: { type: 'string', description: '新的任务描述' },
-          deliver: { type: 'string', description: '交付物说明（自由文本）；完成任务时建议写明实际交付结果，如文件路径、通过的命令' },
+          deliver: { type: 'string', description: '交付物：一句短语，如 "src/auth.ts"、"61 项测试通过"。只写结果产物，不写过程、不重复 description' },
         },
         required: ['taskId'],
       },
@@ -213,6 +220,7 @@ export class TodoToolFactory {
           {
             id: task.id,
             subject: task.subject,
+            deliver: task.deliver || '',
             status: task.status,
             message: `任务 ${taskId} 已更新`,
           },

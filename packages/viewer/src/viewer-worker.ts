@@ -2164,6 +2164,7 @@ class ViewerWorker {
       id: String(task.id ?? ''),
       subject: String(task.subject ?? ''),
       description: String(task.description ?? ''),
+      deliver: task.deliver ? String(task.deliver) : undefined,
       status: normalizeStatus(task.status),
       metadata: task.metadata && typeof task.metadata === 'object' ? task.metadata : undefined,
       createdAt: typeof task.createdAt === 'number' ? task.createdAt : 0,

@@ -17,7 +17,7 @@ export interface TodoTask {
   subject: string;
   /** 详细描述（可选） */
   description?: string;
-  /** 具体交付物（可选，自由文本）：将产出的文件路径、通过的命令或验证方式等 */
+  /** 交付物（可选）：一句短语，如「src/auth.ts」「61 项测试通过」。只写结果产物，不写过程、不重复 description */
   deliver?: string;
   /** 任务状态 */
   status: TaskStatus;

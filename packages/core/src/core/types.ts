@@ -684,7 +684,7 @@ export interface TodoTaskSnapshot {
   id: string;
   subject: string;
   description: string;
-  /** 具体交付物（可选，自由文本）：文件路径、命令及其结果等 */
+  /** 交付物（可选）：一句短语，如「src/auth.ts」「61 项测试通过」。只写结果产物，不写过程、不重复 description */
   deliver?: string;
   status: 'pending' | 'in_progress' | 'completed' | 'deleted';
   metadata?: Record<string, unknown>;

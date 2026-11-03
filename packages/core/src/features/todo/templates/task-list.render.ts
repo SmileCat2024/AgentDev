@@ -32,12 +32,15 @@ function getStatusText(status: string): string {
   return texts[status] || status;
 }
 
-function renderTaskList(tasks: Array<{ id: string; subject: string; status: string }>): string {
+function renderTaskList(tasks: Array<{ id: string; subject: string; status: string; deliver?: string }>): string {
   return `<div style="font-family:"Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size:12px; max-height:300px; overflow:auto;">
     ${tasks.map(t => `
-      <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid var(--border-color);">
+      <div style="display:flex; align-items:flex-start; gap:8px; padding:4px 0; border-bottom:1px solid var(--border-color);">
         <span style="color:var(--text-secondary); min-width:24px;">#${t.id}</span>
-        <span style="color:var(--text-primary); flex:1;">${escapeHtml(t.subject)}</span>
+        <span style="flex:1; display:flex; flex-direction:column; gap:2px;">
+          <span style="color:var(--text-primary);">${escapeHtml(t.subject)}</span>
+          ${t.deliver ? `<span style="color:var(--text-secondary); font-size:11px;">交付: ${escapeHtml(t.deliver)}</span>` : ''}
+        </span>
         <span style="color:${getStatusColor(t.status)}; font-size:11px;">${getStatusText(t.status)}</span>
       </div>
     `).join('')}

@@ -12,6 +12,13 @@ export interface SkillMetadata {
   description: string;
   /** SKILL.md 完整路径 */
   path: string;
+  /**
+   * 是否禁用模型主动调用（frontmatter `disable-model-invocation`）。
+   * true 时技能对模型不可见（系统提示词技能列表与技能摘要变量均排除），
+   * invoke_skill 工具拒绝执行；仅保留用户/编排经 capability 激活的通道。
+   * 缺省或 false 时不设置该字段。
+   */
+  disableModelInvocation?: boolean;
 }
 
 /**

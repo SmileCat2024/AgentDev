@@ -55,7 +55,13 @@ function parseSkillFrontmatter(content: string, path: string): SkillMetadata | n
 
   if (!name || !description) return null;
 
-  return { name, description, path };
+  // `disable-model-invocation: true` 语义见 SkillMetadata.disableModelInvocation；
+  // 仅在显式为 true 时携带（js-yaml 已把 true/True/TRUE 归一为 boolean）
+  const disableModelInvocation = parsed['disable-model-invocation'] === true;
+
+  return disableModelInvocation
+    ? { name, description, path, disableModelInvocation }
+    : { name, description, path };
 }
 
 /**
@@ -69,12 +75,18 @@ function parseFrontmatterFallback(frontmatterStr: string, path: string): SkillMe
   const lines = frontmatterStr.split('\n');
   let name: string | null = null;
   let description: string | null = null;
+  let disableModelInvocation = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const nameMatch = line.match(/^name:\s*(.+)$/);
     if (nameMatch && !name) {
       name = nameMatch[1].trim();
+      continue;
+    }
+    const dmiMatch = line.match(/^disable-model-invocation:\s*(.+)$/);
+    if (dmiMatch) {
+      disableModelInvocation = dmiMatch[1].trim().toLowerCase() === 'true';
       continue;
     }
     const descMatch = line.match(/^description:\s*(.*)$/);
@@ -96,7 +108,9 @@ function parseFrontmatterFallback(frontmatterStr: string, path: string): SkillMe
   }
 
   if (!name || !description) return null;
-  return { name, description, path };
+  return disableModelInvocation
+    ? { name, description, path, disableModelInvocation }
+    : { name, description, path };
 }
 
 /**

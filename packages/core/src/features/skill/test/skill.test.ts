@@ -521,4 +521,142 @@ describe('SkillFeature', () => {
       expect(skills[0].description).toContain('ArkUI');
     });
   });
+
+  // ========== disable-model-invocation ==========
+
+  describe('disable-model-invocation', () => {
+    function writeSkills(ws: string, entries: Array<{ dir: string; frontmatter: string }>) {
+      for (const entry of entries) {
+        const skillDir = join(ws, 'skills', entry.dir);
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(join(skillDir, 'SKILL.md'), `---\n${entry.frontmatter}\n---\nDOC-${entry.dir}`);
+      }
+    }
+
+    async function initFeature(ws: string) {
+      const f = new SkillFeature({ dir: 'skills', scanAgentdevDir: false });
+      const registry = new DataSourceRegistry();
+      await f.onInitiate({
+        agentId: 't', config: { workspaceDir: ws } as any, logger: console as any,
+        getFeature: () => undefined, registerTool: () => {}, dataSourceRegistry: registry,
+      });
+      return { f, registry };
+    }
+
+    it('parses disable-model-invocation: true into metadata, absent/false stay unset', async () => {
+      const ws = join(tempDir, 'ws-parse');
+      writeSkills(ws, [
+        { dir: 'locked', frontmatter: 'name: locked\ndescription: locked skill\ndisable-model-invocation: true' },
+        { dir: 'open', frontmatter: 'name: open\ndescription: open skill' },
+        { dir: 'explicit-off', frontmatter: 'name: explicit-off\ndescription: off skill\ndisable-model-invocation: false' },
+      ]);
+      const { f } = await initFeature(ws);
+
+      const byName = new Map(f.getSkills().map((s) => [s.name, s]));
+      expect(byName.get('locked')?.disableModelInvocation).toBe(true);
+      expect(byName.get('open')?.disableModelInvocation).toBeUndefined();
+      expect(byName.get('explicit-off')?.disableModelInvocation).toBeUndefined();
+    });
+
+    it('parses the flag via YAML fallback parser too', async () => {
+      // 多行 description 中的 "Key: value" 会破坏 YAML 解析，触发 fallback 逐行提取
+      const ws = join(tempDir, 'ws-fallback');
+      writeSkills(ws, [{
+        dir: 'fallback-locked',
+        frontmatter:
+          'name: fallback-locked\n' +
+          'description: Fallback skill. Use when: YAML is broken.\n' +
+          '  Covers: multi-line description.\n' +
+          'disable-model-invocation: true',
+      }]);
+      const { f } = await initFeature(ws);
+
+      const skill = f.getSkills().find((s) => s.name === 'fallback-locked');
+      expect(skill?.disableModelInvocation).toBe(true);
+    });
+
+    it('excludes disabled skills from the prompt data source, keeps enabled ones', async () => {
+      const ws = join(tempDir, 'ws-datasource');
+      writeSkills(ws, [
+        { dir: 'visible', frontmatter: 'name: visible\ndescription: visible skill' },
+        { dir: 'hidden', frontmatter: 'name: hidden\ndescription: hidden skill\ndisable-model-invocation: true' },
+      ]);
+      const { registry } = await initFeature(ws);
+
+      const composer = new TemplateComposer().add({ skills: '- {{name}}' });
+      composer.setDataSourceRegistry(registry);
+      const { content } = await composer.render();
+      expect(content).toContain('visible');
+      expect(content).not.toContain('hidden');
+    });
+
+    it('excludes disabled skills from skillSummary flow variables', async () => {
+      const ws = join(tempDir, 'ws-flowvars');
+      writeSkills(ws, [
+        { dir: 'visible', frontmatter: 'name: visible\ndescription: visible skill' },
+        { dir: 'hidden', frontmatter: 'name: hidden\ndescription: hidden skill\ndisable-model-invocation: true' },
+      ]);
+      const { f } = await initFeature(ws);
+
+      const vars = f.getFlowVariables()!;
+      const items = vars.find((v) => v.key === 'skillSummaryItems')!;
+      const text = vars.find((v) => v.key === 'skillSummaryText')!;
+      expect(JSON.stringify(items.resolver())).not.toContain('hidden');
+      expect(JSON.stringify(items.resolver())).toContain('visible');
+      expect(text.resolver()).not.toContain('hidden');
+      expect(text.resolver()).toContain('visible');
+    });
+
+    it('invoke_skill refuses disabled skills and omits them from the available list', async () => {
+      const skillDir = join(tempDir, 'ws-invoke-refuse', 'skills', 'locked');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: locked\ndescription: locked\ndisable-model-invocation: true\n---\nDOC');
+
+      const result = await invokeSkillTool.execute!(
+        { skill: 'locked' },
+        {
+          _context: {
+            skills: [
+              { name: 'locked', description: 'locked', path: join(skillDir, 'SKILL.md'), disableModelInvocation: true },
+              { name: 'open', description: 'open', path: '/fake/open/SKILL.md' },
+            ],
+          },
+        } as any,
+      );
+      expect(result).toContain('已禁用模型主动调用');
+      expect(result).not.toContain('DOC');
+
+      // “不存在”错误的可用列表同样只显示可主动调用的技能
+      const missing = await invokeSkillTool.execute!(
+        { skill: 'nope' },
+        {
+          _context: {
+            skills: [
+              { name: 'locked', description: 'locked', path: '/fake/locked/SKILL.md', disableModelInvocation: true },
+              { name: 'open', description: 'open', path: '/fake/open/SKILL.md' },
+            ],
+          },
+        } as any,
+      );
+      expect(missing).toContain('open');
+      expect(missing).not.toContain('locked');
+    });
+
+    it('disabled skills stay activatable via capability (registry + injection)', async () => {
+      const ws = join(tempDir, 'ws-capability');
+      writeSkills(ws, [
+        { dir: 'locked', frontmatter: 'name: locked\ndescription: locked skill\ndisable-model-invocation: true' },
+      ]);
+      const { f } = await initFeature(ws);
+
+      const caps = f.getCapabilities();
+      expect(caps.map((c) => c.name)).toEqual(['locked']);
+      expect(caps[0].entryPoints).toEqual(['slash', 'feature']);
+
+      const add = vi.fn();
+      await (f as any).onCapabilityActivations(['skill.locked'], { context: { add } });
+      expect(add).toHaveBeenCalledTimes(1);
+      expect(add.mock.calls[0][0].content).toContain('DOC-locked');
+    });
+  });
 });

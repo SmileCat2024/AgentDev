@@ -43,12 +43,22 @@ export const invokeSkillTool: Tool = createTool({
     const skillMetadata = skills.find(s => s.name === skill);
 
     if (!skillMetadata) {
-      const availableSkills = skills.map(s => s.name).join(', ');
+      // 只列出模型可主动调用的技能：被禁用技能出现在这里会诱导模型反复重试
+      const availableSkills = skills.filter(s => !s.disableModelInvocation).map(s => s.name).join(', ');
       return `错误：技能 "${skill}" 不存在。
 
 可用技能列表：${availableSkills || '(无可用技能)'}
 
 提示：请确保技能名称正确。`;
+    }
+
+    // disable-model-invocation：模型主动调用被禁用，仅保留用户/编排经
+    // capability 激活的通道（slash 命令 / feature invoke）。此处是权威
+    // 闸门，模型可见列表的过滤只是展示层
+    if (skillMetadata.disableModelInvocation) {
+      return `错误：技能 "${skill}" 已禁用模型主动调用（SKILL.md 声明 \`disable-model-invocation: true\`），不能经 invoke_skill 工具激活。
+
+该技能仅可由用户在命令面板中主动选择，或由宿主编排显式激活。若当前任务确需该技能，请向用户说明并等待其激活，不要重试调用。`;
     }
 
     try {

@@ -228,6 +228,19 @@ export class SkillFeature implements AgentFeature {
   }
 
   /**
+   * 模型可见的技能列表：排除声明 `disable-model-invocation` 的技能。
+   *
+   * 会话开始构造的系统提示词技能列表（skills 数据源，经 TemplateComposer
+   * `.add({ skills: ... })` 消费）与技能摘要 flow 变量从这里取数，使被禁用
+   * 技能对模型完全不可见。capability 注册与激活注入不受此过滤影响：
+   * 用户经 slash 菜单 / 其他 feature 编排仍可正常激活（见 getCapabilities
+   * 与 onCapabilityActivations）。
+   */
+  private getModelVisibleSkills(): SkillMetadata[] {
+    return this.skills.filter((skill) => !skill.disableModelInvocation);
+  }
+
+  /**
    * 向 Flow 暴露 Skills 相关变量
    */
   getFlowVariables() {
@@ -237,14 +250,14 @@ export class SkillFeature implements AgentFeature {
         type: 'string',
         title: '技能列表数组',
         description: '可用技能的“名称：介绍”数组，适合做变量遍历或直接插入。',
-        resolver: () => this.skills.map(skill => `${skill.name}：${skill.description}`),
+        resolver: () => this.getModelVisibleSkills().map(skill => `${skill.name}：${skill.description}`),
       },
       {
         key: 'skillSummaryText',
         type: 'string',
         title: '技能列表文本',
         description: '可用技能的多行文本版本，每行一条“- 名称：介绍”。',
-        resolver: () => this.skills.map(skill => `- ${skill.name}：${skill.description}`).join('\n'),
+        resolver: () => this.getModelVisibleSkills().map(skill => `- ${skill.name}：${skill.description}`).join('\n'),
       },
     ];
   }
@@ -349,10 +362,12 @@ export class SkillFeature implements AgentFeature {
       }
     }
 
-    // 注册 skills 数据源到 Agent 级注册表（per-Agent 实例，非进程全局）
+    // 注册 skills 数据源到 Agent 级注册表（per-Agent 实例，非进程全局）。
+    // getData 走模型可见列表：disable-model-invocation 技能不出现在
+    // 系统提示词的技能清单里（渲染面分析见 getModelVisibleSkills 注释）
     ctx.dataSourceRegistry.register({
       name: 'skills',
-      getData: () => this.skills,
+      getData: () => this.getModelVisibleSkills(),
       renderItem: (skill: SkillMetadata, template: string, context: PlaceholderContext) => {
         const skillContext: PlaceholderContext = {
           ...context,

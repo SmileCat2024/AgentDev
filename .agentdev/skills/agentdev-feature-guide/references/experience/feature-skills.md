@@ -55,6 +55,8 @@ description: 使用 item_* 工具查询、创建和更新条目。用于处理�
 ---
 ```
 
+可选字段 `disable-model-invocation: true` 禁用模型主动调用：该技能不出现在会话构造的技能列表与摘要变量中，`invoke_skill` 工具拒绝执行；仅保留用户（slash 命令）与宿主编排（capability）激活通道。适用于"入口唯一、由路由技能或用户点名"的技能集，避免模型按 description 语义自行挑选。
+
 正文优先包含：
 
 1. 工作流入口；

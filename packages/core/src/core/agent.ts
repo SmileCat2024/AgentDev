@@ -11,7 +11,7 @@
  */
 
 import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver, CallTurnOptions } from './types.js';
-import type { AgentFeature, FeatureInitContext, ContextInjector, RestoreOrigin } from './feature.js';
+import { getPackageInfoFromSource, type AgentFeature, type FeatureInitContext, type ContextInjector, type RestoreOrigin } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
 import { Context, withMessageSource, type ContextSnapshot } from './context.js';
@@ -153,8 +153,20 @@ class AgentBase {
   }> = [];
   private featureToolsReady: boolean = false;
   private featureToolsReadyPromise?: Promise<void>;
-  /** feature 自带 skills 的数量归属（feature name → count），collectFeatureSkills 时记录 */
+  /**
+   * feature 自带 skills 的元数据归属；path 相对 feature 包根，供 inspector 展示。
+   * 仅在资源根已知时填充——条目要带 rootId 才能生成 /res/ 地址。
+   */
+  private featureSkills = new Map<string, Array<{ name: string; description: string; root: number; path: string }>>();
+  /**
+   * feature 自带 skills 的数量归属（feature name → count）。
+   * 与 featureSkills 分开维护：资源根由 withViewer() 填充、skills 在
+   * ensureFeatureTools() 收集，无 viewer 或顺序颠倒时无法生成资源条目，
+   * 但「该 feature 有 N 个技能」这个事实仍然成立，宿主面板据此推导能力。
+   */
   private featureSkillCounts = new Map<string, number>();
+  /** feature 包根对应的本次 runtime rootId，供 inspector Skill 条目生成资源地址 */
+  private featureResourceRootIds = new Map<string, number>();
 
   // Capability 注册表（统一控制面，Feature 声明的命令平面寻址）
   private capabilities = new CapabilityRegistry();
@@ -822,37 +834,44 @@ class AgentBase {
     await this.debugHub.start(port, openBrowser);
 
     // 收集 Feature 资源根与模板条目（ADR-0038 资源读取协议）。
-    // 资源根唯一来源：feature.getPackageInfo()（包根，realpath 解析 junction /
-    // 符号链接）——包根即授权边界，越根路径在 resource.fetch handler 内拒绝。
-    // 根的真实路径只留在本进程（handler 服务用）；注册只上报数量与条目，
-    // rootId = 注册顺序下标，runtime 会话内稳定。模板文件按包内两种布局探测
-    // （dist/templates 与 dist/features/<feature>/templates），磁盘不存在的
-    // 不上报。
+    // 包根是唯一授权边界，包含 templates 与 skills；根的真实路径只留在本进程，
+    // 注册只上报数量与条目，rootId = 注册顺序下标，runtime 会话内稳定。
     const resourceRoots: string[] = [];
+    const resourceRootIds = new Map<string, number>();
     const templateEntries: Record<string, { root: number; rel: string }> = {};
+    const getResourceRootId = (packageRoot: string): number | null => {
+      try {
+        const rootAbs = realpathSync(packageRoot); // 解析 junction / 符号链接
+        const existing = resourceRootIds.get(rootAbs);
+        if (existing !== undefined) return existing;
+        const rootId = resourceRoots.length;
+        resourceRoots.push(rootAbs);
+        resourceRootIds.set(rootAbs, rootId);
+        return rootId;
+      } catch {
+        return null;
+      }
+    };
 
     for (const feature of this.features.values()) {
-      if (!feature.getPackageInfo || !feature.getTemplateNames) continue;
-      const pkgInfo = feature.getPackageInfo();
-      const templateNames = feature.getTemplateNames();
-      if (!pkgInfo || templateNames.length === 0) continue;
-
+      const pkgInfo = feature.getPackageInfo?.() || getPackageInfoFromSource(feature.source);
+      if (!pkgInfo) continue;
       let rootAbs: string;
       try {
         rootAbs = realpathSync(pkgInfo.root);
       } catch {
-        continue; // 包根不可达（异常装配），该 feature 的模板整体不上报
+        continue;
       }
-      let rootId = resourceRoots.indexOf(rootAbs);
-      if (rootId < 0) {
-        resourceRoots.push(rootAbs);
-        rootId = resourceRoots.length - 1;
-      }
+      const rootId = getResourceRootId(rootAbs);
+      if (rootId === null) continue;
+      this.featureResourceRootIds.set(feature.name, rootId);
+      if (!feature.getTemplateNames) continue;
+      const templateNames = feature.getTemplateNames();
 
       for (const templateName of templateNames) {
         const candidates = [
-          join(pkgInfo.root, 'dist', 'templates', `${templateName}.render.js`),
-          join(pkgInfo.root, 'dist', 'features', feature.name, 'templates', `${templateName}.render.js`),
+          join(rootAbs, 'dist', 'templates', `${templateName}.render.js`),
+          join(rootAbs, 'dist', 'features', feature.name, 'templates', `${templateName}.render.js`),
         ];
         const templatePath = candidates.find((p) => existsSync(p));
         if (!templatePath) continue;
@@ -2481,7 +2500,37 @@ class AgentBase {
       const found = await discover({ dir: skillsDir });
       if (found.length > 0) {
         collected.push(...found);
+        // 数量与资源条目分开记录：条目依赖 withViewer() 注册的 rootId，
+        // 数量不依赖——无 viewer 时面板仍应知道该 feature 带技能。
         this.featureSkillCounts.set(name, found.length);
+        const pkgInfo = feature.getPackageInfo?.() || getPackageInfoFromSource(feature.source);
+        let packageRoot: string | null = null;
+        try {
+          if (pkgInfo?.root) packageRoot = realpathSync(pkgInfo.root);
+        } catch { /* package root may be unavailable for dynamically supplied features */ }
+        if (packageRoot) {
+          const root = this.featureResourceRootIds.get(name);
+          if (root === undefined) continue;
+          const skills = found.flatMap(skill => {
+            try {
+              const skillPath = realpathSync(skill.path);
+              const packageRootLower = packageRoot!.toLowerCase();
+              const skillPathLower = skillPath.toLowerCase();
+              if (skillPathLower !== packageRootLower && !skillPathLower.startsWith(packageRootLower + sep.toLowerCase())) {
+                return [];
+              }
+              return [{
+                name: skill.name,
+                description: skill.description,
+                root,
+                path: relative(packageRoot!, skillPath).split(sep).join('/'),
+              }];
+            } catch {
+              return [];
+            }
+          });
+          this.featureSkills.set(name, skills);
+        }
       }
     }
 
@@ -2931,6 +2980,7 @@ class AgentBase {
         toolCount: tools.length,
         enabledToolCount,
         skillCount: this.featureSkillCounts.get(feature.name) || 0,
+        skills: this.featureSkills.get(feature.name) || [],
         source: typeof (feature as any).source === 'string'
           ? (feature as any).source
           : hookGroups.flatMap(group => group.entries)

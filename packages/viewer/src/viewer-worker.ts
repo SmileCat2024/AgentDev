@@ -2855,12 +2855,21 @@ class ViewerWorker {
         res.end('Invalid resource path');
         return;
       }
-      const [, rawAgentId, rootIdRaw, rel] = match;
+      const [, rawAgentId, rootIdRaw, rawRel] = match;
       let agentId = rawAgentId;
+      let rel = rawRel;
       try {
         agentId = decodeURIComponent(rawAgentId);
+        rel = decodeURIComponent(rawRel);
       } catch {
-        // 保留原样，按未编码形式寻址
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Invalid resource encoding');
+        return;
+      }
+      if (rel.includes(String.fromCharCode(0)) || rel.includes(String.fromCharCode(92))) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Invalid resource path');
+        return;
       }
       const rootId = Number(rootIdRaw);
 

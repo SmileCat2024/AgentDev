@@ -166,6 +166,30 @@ describe('ViewerWorker resource fetch protocol (/res/)', () => {
     expect(res.getText()).toBe('// pkg-a shared chunk');
   });
 
+  /**
+   * 畸形路径在 viewer 层直接拒绝，不回源。断言点是「没有向 runtime 发帧」：
+   * 仅断言 404 无法区分修复前后——回源后 runtime 同样会返回 not_found/forbidden，
+   * 状态码一致，只有帧数量能暴露边界是否真的前置。
+   *
+   * 三个拒绝口径：百分号编码非法（decodeURIComponent 抛错）、含 NUL、
+   * 含反斜杠（win32 下是路径分隔符，运行在 win32 的 runtime 会把它当穿越）。
+   */
+  it('rejects malformed resource paths at the viewer without consulting the runtime', async () => {
+    const cases = [
+      `/res/${agentId}/0/%zz/etc/passwd`,        // 非法百分号编码
+      `/res/${agentId}/0/dist%00chunk.js`,       // NUL
+      `/res/${agentId}/0/..%5c..%5cetc%5cpasswd`, // 编码后的反斜杠
+    ];
+    for (const url of cases) {
+      const before = captured.length;
+      const res = createMockRes();
+      worker.handleResAsset({} as any, res as any, url);
+      await flushAsync();
+      expect(res.getStatusCode(), url).toBe(404);
+      expect(captured.length, url).toBe(before);
+    }
+  });
+
   it('maps forbidden to 403 and other runtime codes to 404', async () => {
     const res403 = createMockRes();
     worker.handleResAsset({} as any, res403 as any, `/res/${agentId}/0/dist/escape.js`);

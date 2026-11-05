@@ -290,8 +290,19 @@ function buildChatMessages(snapshot: AgentSessionSnapshot, prompt: string): Mess
   // 由摘要指令替换其成为唯一 system 前缀，避免模型在摘要请求中继续扮演原 agent。
   // 对话中途注入的 system（folded-tool-activity、前轮摘要 seed、任务状态等）
   // 不在头部前缀内，作为摘要素材原样保留。
+  //
+  // 判据是 `source` 而非「连续 system」：接续会话的头部形态是
+  // [身份(无 source), 环境文档(memory), handoff-seed × N, thread 接续说明]，
+  // 种子与接续说明紧随静态前缀。按连续 system 剥离会把它们一并丢弃，使摘要请求
+  // 以 assistant 开头；Anthropic 协议要求首条非 system 消息为 user，编译直接失败，
+  // 导致「经历过接续的会话」在第二次接续与手动 resume-rotation 时必然卡死。
+  const STATIC_PREFIX_SOURCES = new Set(['memory']);
   let headEnd = 0;
-  while (headEnd < rawMessages.length && rawMessages[headEnd]?.role === 'system') headEnd++;
+  while (
+    headEnd < rawMessages.length
+    && rawMessages[headEnd]?.role === 'system'
+    && (!rawMessages[headEnd]?.source || STATIC_PREFIX_SOURCES.has(rawMessages[headEnd].source))
+  ) headEnd++;
 
   // 工具返回配对表：toolCallId → 调用签名，让摘要模型能把每条返回对应到具体调用。
   // 补偿型摘要的增量信息（文件内容、命令输出、报错原文）都在工具返回里，

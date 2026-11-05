@@ -329,7 +329,18 @@ export function compileContextForAnthropic(messages: Message[], tools: Tool[], v
     }
 
     if (!seenFirstUser && message.role !== 'user') {
-      throw new Error(`Anthropic compilation requires the first non-system message to be user, got '${message.role}'`);
+      // 前导 system reminder（带 source 的 handoff-seed / thread 等）攒在
+      // pendingUserBlocks 里等 user 承载。若其后直接跟 assistant——典型场景是
+      // 上下文接续后的会话已经产生了一轮工具调用，恢复指令才作为 system 追加
+      // 进来——此时必须把攒下的 reminder 先物化成 user turn，否则 Anthropic
+      // 「首条非 system 消息必须是 user」被破坏，该会话后续每次调用都会失败。
+      // tool 不在此列：没有前序 assistant 的 tool_result 本身不合法，仍按错处理。
+      if (message.role === 'assistant' && pendingUserBlocks.length > 0) {
+        flushPendingUserBlocks();
+        seenFirstUser = true;
+      } else {
+        throw new Error(`Anthropic compilation requires the first non-system message to be user, got '${message.role}'`);
+      }
     }
 
     switch (message.role) {

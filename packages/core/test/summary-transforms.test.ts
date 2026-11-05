@@ -147,6 +147,40 @@ describe('generateSummaryText message construction', () => {
     assert.deepEqual(tools, []);
   });
 
+  it('keeps handoff-seed and thread notes that sit right after the static head prefix', async () => {
+    // 接续会话的真实头部形态：静态前缀（身份 + memory 环境文档）之后紧跟
+    // handoff-seed × N 与 thread 接续说明。这些是摘要素材，必须保留；
+    // 一旦被当作「连续 system」剥离，请求会以 assistant 开头，
+    // Anthropic 编译要求首条非 system 为 user，接续链路整体失败。
+    const { llm, captured } = captureLLM();
+    const snapshot = makeSnapshot([
+      { role: 'system', content: '你是某工作空间的执行 agent' },
+      { role: 'system', content: '# AGENT.md 环境文档', source: 'memory' },
+      { role: 'system', content: '以下是前一会话的工作摘要', source: 'handoff-seed' },
+      { role: 'system', content: '重要文件路径列表', source: 'handoff-seed' },
+      { role: 'system', content: '上下文已精简接续', source: 'thread' },
+      { role: 'assistant', content: '接续进度核对', turn: 0 },
+      { role: 'tool', toolCallId: 'tc1', content: 'file body', turn: 0 },
+      { role: 'assistant', content: '继续', turn: 0 },
+    ]);
+    await generateSummaryText({ llm }, snapshot, buildSummaryPrompt({}));
+    const { messages } = captured;
+
+    // 静态前缀仍被替换为唯一 system 前缀
+    assert.equal(messages[0].role, 'system');
+    assert.ok(!messages.some((m) => m.content?.includes('执行 agent')));
+    assert.ok(!messages.some((m) => m.content?.includes('AGENT.md 环境文档')));
+    // 头部紧邻接续素材保留
+    assert.ok(messages.some((m) => m.content === '以下是前一会话的工作摘要'));
+    assert.ok(messages.some((m) => m.content === '重要文件路径列表'));
+    assert.ok(messages.some((m) => m.content === '上下文已精简接续'));
+    // 这些素材仍在头部位置（第一条 assistant 之前），编译时汇入首个 user turn
+    const firstAssistantIndex = messages.findIndex((m) => m.role === 'assistant');
+    assert.ok(firstAssistantIndex > 0);
+    const seedIndex = messages.findIndex((m) => m.content === '以下是前一会话的工作摘要');
+    assert.ok(seedIndex < firstAssistantIndex, '接续种子应在第一条 assistant 之前，才能作为首个 user turn 的提醒发给模型');
+  });
+
   it('forwards the transform cancellation signal to the non-streaming LLM call', async () => {
     const { llm, captured } = captureLLM();
     const signal = new AbortController().signal;

@@ -254,6 +254,12 @@ export interface CallOutcome {
    * 消费带身份的排队输入。
    */
   consumedSourceRefs?: string[];
+  /**
+   * 本次 call 因外部 interrupt() 终止时，打断方申报的原因标识（宿主自有
+   * 词汇，如 'context_rotation'）。框架只运输不解释；缺省表示打断未申报
+   * 原因（用户手动打断 / 宿主 quiesce）。仅 status === 'cancelled' 时出现。
+   */
+  interruptedBy?: string;
 }
 
 /** @deprecated 使用 CallOutcome.reason。保留旧 hook/API 的类型兼容。 */

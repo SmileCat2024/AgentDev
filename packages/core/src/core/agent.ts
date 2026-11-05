@@ -206,6 +206,9 @@ class AgentBase {
 
   // 中断控制：外部可通过 interrupt() 中断正在运行的 onCall
   private _abortController: AbortController | null = null;
+  // 最近一次 interrupt() 申报的原因标识（per-call 瞬态）：call 开始时清空，
+  // outcome 落定时经 CallOutcome.interruptedBy 透传给观察者
+  private _interruptCause: string | null = null;
   private _lastCallOutcome: CallOutcome | null = null;
 
   // Step 级自动保存配置
@@ -480,6 +483,8 @@ class AgentBase {
 
     // 清理上次 onCall 遗留的 continuation request
     this._continuationRequest = null;
+    // 清理上次 call 的 interrupt 原因申报（per-call 瞬态，不跨 call 泄漏）
+    this._interruptCause = null;
 
     // ========== Call Start ==========
     const context = this.persistentContext ?? new Context();
@@ -1034,11 +1039,15 @@ class AgentBase {
    * 中断正在运行的 onCall
    * 会触发 AbortController，在下一个检查点（step 间或 tool 执行中）优雅停止
    * 返回 true 表示成功触发中断，false 表示当前没有正在运行的 call
+   * @param cause 打断原因标识（打断方自有词汇，如宿主的 'context_rotation'）；
+   *   随 CallOutcome.interruptedBy 透传给观察者，框架不解释该值。缺省视为
+   *   未申报原因，同时清空上一笔残留申报（后到的打断声明覆盖先到）。
    */
-  interrupt(): boolean {
+  interrupt(cause?: string): boolean {
     if (this.isRunning() && this._abortController && !this._abortController.signal.aborted) {
+      this._interruptCause = typeof cause === 'string' && cause.trim() ? cause.trim() : null;
       this._abortController.abort(new Error('Interrupted by user'));
-      this.logger.info('Interrupt triggered', { callIndex: this._callIndex });
+      this.logger.info('Interrupt triggered', { callIndex: this._callIndex, interruptedBy: this._interruptCause ?? undefined });
       return true;
     }
     return false;
@@ -2688,6 +2697,11 @@ class AgentBase {
       ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
       ...(result.consumedSourceRefs && result.consumedSourceRefs.length > 0
         ? { consumedSourceRefs: result.consumedSourceRefs }
+        : {}),
+      // 打断原因申报（interrupt(cause) 存入）：cancelled 终态时携带，供观察者
+      // 区分「用户手动打断」与「宿主策略打断」（如上下文接续）；其余终态无意义。
+      ...(status === 'cancelled' && this._interruptCause
+        ? { interruptedBy: this._interruptCause }
         : {}),
     };
   }

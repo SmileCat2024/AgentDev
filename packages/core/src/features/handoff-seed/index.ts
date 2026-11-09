@@ -17,7 +17,7 @@
 
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync } from 'fs';
-import { join, resolve, normalize } from 'path';
+import { join, resolve, normalize, dirname } from 'path';
 import type {
   AgentFeature,
   FeatureContext,
@@ -26,6 +26,9 @@ import type {
 } from '../../core/feature.js';
 import type { HookDeclarations } from '../../core/hook-declarations.js';
 import { CoreLifecycle } from '../../core/lifecycle.js';
+import type { SkillFeature } from '../skill/index.js';
+import type { JsonValue } from '../../core/types.js';
+import { scanFilesAndSkills } from '../../core/continuity/transforms/summary.js';
 import type { CallStartContext } from '../../core/lifecycle.js';
 import type {
   HandoffSeedFeatureConfig,
@@ -307,9 +310,11 @@ export class HandoffSeedFeature implements AgentFeature {
       injectionTurn += 1;
     }
 
-    const skillBlocks = this.buildSkillBlocks(projectRoot);
+    const skillFeature = ctx.agent?.getFeature?.('skill') as SkillFeature | undefined;
+    const retainedSkills = new Set(scanFilesAndSkills(this.handoff.seedMessages ?? []).skills);
+    const skillBlocks = this.buildSkillBlocks(projectRoot, skillFeature?.getSkills() ?? [], retainedSkills);
     for (const block of skillBlocks) {
-      ctx.context.addSystemMessage(block, injectionTurn, this.name);
+      ctx.context.addSystemMessage(block.content, injectionTurn, this.name, block.tag);
       injectionTurn += 1;
     }
   }
@@ -366,17 +371,20 @@ export class HandoffSeedFeature implements AgentFeature {
     return blocks;
   }
 
-  private buildSkillBlocks(projectRoot: string): string[] {
-    const skills = this.handoff.importantSkills || [];
+  private buildSkillBlocks(projectRoot: string, discoveredSkills: ReturnType<SkillFeature['getSkills']>, retainedSkills: Set<string>): Array<{ content: string; tag?: JsonValue }> {
+    const skills = [...new Set(this.handoff.importantSkills || [])].filter(skill => !retainedSkills.has(skill));
     if (skills.length === 0) return [];
 
-    const blocks: string[] = [];
+    const blocks: Array<{ content: string; tag?: JsonValue }> = [];
     const nameOnlyList: string[] = [];
     let totalChars = 0;
 
     for (const skillName of skills) {
-      const skillDir = join(projectRoot, '.agentdev', 'skills', skillName);
-      const skillMdPath = join(skillDir, 'SKILL.md');
+      // Use the same discovered definition as slash/invoke_skill (including
+      // feature-provided and extra-directory skills), not a guessed directory.
+      const discovered = discoveredSkills.find(skill => skill.name === skillName);
+      const skillMdPath = discovered?.path ?? join(projectRoot, '.agentdev', 'skills', skillName, 'SKILL.md');
+      const skillDir = dirname(skillMdPath);
       const content = this.tryReadFile(skillMdPath);
       const basePath = normalize(skillDir);
 
@@ -401,12 +409,15 @@ export class HandoffSeedFeature implements AgentFeature {
         ? header.slice(0, MAX_SKILL_CHARS) + '\n（已截断）'
         : header;
       if (truncated.length <= budget) {
-        blocks.push([
-          '以下技能在此会话的前一轮中被标记为重要：',
-          '',
-          `### 技能: ${skillName}`,
-          truncated,
-        ].join('\n'));
+        blocks.push({
+          content: [
+            '以下技能在此会话的前一轮中被标记为重要：',
+            '',
+            `### 技能: ${skillName}`,
+            truncated,
+          ].join('\n'),
+          tag: { kind: 'skill-activation', skill: skillName },
+        });
         totalChars += truncated.length;
       } else {
         nameOnlyList.push(`${skillName}（目录：${basePath}）`);
@@ -419,7 +430,7 @@ export class HandoffSeedFeature implements AgentFeature {
         '',
       ];
       for (const s of nameOnlyList) nameBlockLines.push(`- ${s}`);
-      blocks.push(nameBlockLines.join('\n'));
+      blocks.push({ content: nameBlockLines.join('\n') });
     }
 
     return blocks;

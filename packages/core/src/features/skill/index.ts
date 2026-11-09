@@ -210,6 +210,8 @@ export class SkillFeature implements AgentFeature {
         const basePath = normalize(dirname(skill.path)).replace(/\\/g, '/');
         ctx.context.add({
           role: 'system',
+          source: this.name,
+          tag: { kind: 'skill-activation', skill: skill.name },
           content: [
             `[技能激活：${skill.name}]`,
             `技能基础目录：\`${basePath}\``,

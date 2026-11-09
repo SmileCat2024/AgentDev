@@ -15,6 +15,49 @@ import {
   TrimTranscriptTransformation,
 } from '../src/core/continuity/transforms/index.js';
 
+describe('slash skill preservation', () => {
+  const slash = (skill: string, turn?: number) => ({
+    role: 'system', source: 'skill', tag: { kind: 'skill-activation', skill },
+    content: `DOC-${skill}`, ...(turn !== undefined ? { turn } : {}),
+  });
+
+  it('shares the recent-turn budget between slash activations and tool invocations', () => {
+    const messages = [
+      slash('old', 0),
+      { role: 'assistant', turn: 1, content: '', toolCalls: [{ id: 's', name: 'invoke_skill', arguments: { skill: 'tool' } }] },
+      { role: 'tool', turn: 1, toolCallId: 's', content: 'TOOL-DOC' },
+      slash('recent'),
+      { role: 'user', turn: 2, content: 'continue' },
+      { role: 'system', turn: 2, source: 'other', content: '[技能激活：fake]' },
+    ];
+    const policy = normalizeExportPolicy({ keepRecentSkillInvokes: 2 });
+    const { seedMessages } = buildTrimmedSeedMessages(messages, policy);
+    assert.ok(seedMessages.some(m => m.content === 'DOC-recent'));
+    assert.ok(seedMessages.some(m => m.content === 'TOOL-DOC'));
+    assert.ok(!seedMessages.some(m => m.content === 'DOC-old'));
+    assert.ok(!seedMessages.some(m => m.content === '[技能激活：fake]'));
+    const repeated = buildTrimmedSeedMessages(seedMessages, policy).seedMessages;
+    assert.ok(repeated.some(m => m.content === 'DOC-recent' && (m.tag as any)?.skill === 'recent'));
+  });
+
+  it('keeps legacy source=skill messages without parsing content, but honors a disabled budget', () => {
+    const messages = [{ role: 'system', source: 'skill', content: 'opaque legacy doc' }, { role: 'user', turn: 4, content: 'go' }];
+    assert.ok(buildTrimmedSeedMessages(messages, normalizeExportPolicy({ keepRecentSkillInvokes: 1 })).seedMessages.some(m => m.content === 'opaque legacy doc'));
+    assert.ok(!buildTrimmedSeedMessages(messages, normalizeExportPolicy({ keepRecentSkillInvokes: null })).seedMessages.some(m => m.content === 'opaque legacy doc'));
+    const first = buildTrimmedSeedMessages(messages, normalizeExportPolicy({ keepRecentSkillInvokes: 1 })).seedMessages;
+    // Runtime hook ownership changes source on replay; the retained tag must
+    // still identify a legacy document even though its name remains unknown.
+    const replayed = first.map(m => m.role === 'system' ? { ...m, source: 'handoff-seed' } : m);
+    assert.ok(buildTrimmedSeedMessages(replayed, normalizeExportPolicy({ keepRecentSkillInvokes: 1 })).seedMessages.some(m => m.content === 'opaque legacy doc'));
+  });
+
+  it('preserves multiple slash skills in the same recent round even inside the preserve zone', () => {
+    const messages = [slash('a', 1), slash('b', 1), slash('old', 0)];
+    const { seedMessages } = buildTrimmedSeedMessages(messages, normalizeExportPolicy({ keepRecentSkillInvokes: Infinity, preservedTurns: [1] }));
+    assert.deepEqual(seedMessages.map(m => m.content), ['DOC-a', 'DOC-b', 'DOC-old']);
+  });
+});
+
 describe('trim-compact fixes (golden, ported from Claw)', () => {
 
   describe('Fix 3: foldedToolNoteRole default is system (not assistant)', () => {

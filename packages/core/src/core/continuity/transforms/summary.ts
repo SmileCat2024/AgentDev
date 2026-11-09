@@ -14,6 +14,7 @@
  */
 
 import type { Message, LLMResponse } from '../../types.js';
+import { readSkillActivationName } from '../../../skills/activation.js';
 import type { AgentSessionSnapshot } from '../../session-store.js';
 import type {
   SessionTransformation,
@@ -161,12 +162,14 @@ export interface ScanFilesAndSkillsResult {
   fileRanges: Record<string, string>;
 }
 
-/** 从原始消息中扫描 read/write/edit 与 invoke_skill 调用，收集重要文件、技能与行号范围。 */
+/** 从工具调用与技能激活元数据收集重要文件、技能与行号范围；不解析技能正文。 */
 export function scanFilesAndSkills(rawMessages: any[]): ScanFilesAndSkillsResult {
   const files = new Set<string>();
   const skills = new Set<string>();
   const fileRanges: Record<string, string> = {};
   for (const message of rawMessages) {
+    const activatedSkill = readSkillActivationName(message);
+    if (activatedSkill) skills.add(activatedSkill);
     if (message.role !== 'assistant' || !Array.isArray(message.toolCalls)) continue;
     for (const tc of message.toolCalls) {
       const name = typeof tc?.name === 'string' ? tc.name : '';

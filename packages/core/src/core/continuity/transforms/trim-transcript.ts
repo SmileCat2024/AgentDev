@@ -11,6 +11,7 @@
  */
 
 import type { AgentSessionSnapshot } from '../../session-store.js';
+import { isSkillActivationMessage } from '../../../skills/activation.js';
 import type { JsonValue } from '../../types.js';
 import type {
   SessionTransformation,
@@ -327,18 +328,33 @@ function shouldHandleToolActivity(messageTurn: number, foldedToolTurns: Set<numb
   return foldedToolTurns.has(messageTurn);
 }
 
-function getSkillInvokeProtectedMessages(rawMessages: any[], policy: TrimExportPolicy): Set<number> | null {
-  if (!policy.keepRecentSkillInvokes) return null;
+function getSkillActivationTurns(rawMessages: any[]): Map<number, number> {
+  // Slash documents are injected before their user input and older snapshots
+  // omit turn on those messages. Recover the turn from the following input,
+  // without interpreting document text.
+  const activationTurns = new Map<number, number>();
+  let followingUserTurn: number | undefined;
+  for (let i = rawMessages.length - 1; i >= 0; i--) {
+    const message = rawMessages[i];
+    if (message?.role === 'user') followingUserTurn = getMessageTurn(message, i);
+    if (isSkillActivationMessage(message)) {
+      activationTurns.set(i, Number.isFinite(message.turn) ? Number(message.turn) : followingUserTurn ?? i);
+    }
+  }
 
-  // Phase 1: find the N most recent turns that contain invoke_skill calls.
+  return activationTurns;
+}
+
+function getSkillInvokeProtectedMessages(rawMessages: any[], policy: TrimExportPolicy, activationTurns: Map<number, number>): Set<number> | null {
+  if (!policy.keepRecentSkillInvokes) return null;
+  // Both activation paths share the existing recent-N-turn budget.
   const skillTurns: number[] = [];
   for (let i = rawMessages.length - 1; i >= 0; i--) {
     const m = rawMessages[i];
-    if (m?.role !== 'assistant') continue;
-    const toolCalls = Array.isArray(m.toolCalls) ? m.toolCalls : [];
-    const hasSkill = toolCalls.some((tc: any) => tc?.name === 'invoke_skill');
+    const toolCalls = m?.role === 'assistant' && Array.isArray(m.toolCalls) ? m.toolCalls : [];
+    const hasSkill = activationTurns.has(i) || toolCalls.some((tc: any) => tc?.name === 'invoke_skill');
     if (!hasSkill) continue;
-    const turn = getMessageTurn(m, i);
+    const turn = activationTurns.get(i) ?? getMessageTurn(m, i);
     if (!skillTurns.includes(turn)) {
       skillTurns.unshift(turn);
       if (skillTurns.length >= (policy.keepRecentSkillInvokes as number) && policy.keepRecentSkillInvokes !== Infinity) break;
@@ -354,8 +370,12 @@ function getSkillInvokeProtectedMessages(rawMessages: any[], policy: TrimExportP
   const skillToolCallIds = new Set<string>();
 
   rawMessages.forEach((message, index) => {
-    const turn = getMessageTurn(message, index);
+    const turn = activationTurns.get(index) ?? getMessageTurn(message, index);
     if (!protectedTurnSet.has(turn)) return;
+    if (activationTurns.has(index)) {
+      protectedIndices.add(index);
+      return;
+    }
     if (message?.role !== 'assistant') return;
     const toolCalls = Array.isArray(message.toolCalls) ? message.toolCalls : [];
     const skillCalls = toolCalls.filter((tc: any) => tc?.name === 'invoke_skill');
@@ -478,7 +498,8 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
   };
   const retainedTurns = getRetainedTurnSet(rawMessages, policy);
   const foldedToolTurns = getFoldedToolTurnSet(rawMessages, retainedTurns, policy);
-  const skillProtectedIndices = getSkillInvokeProtectedMessages(rawMessages, policy);
+  const activationTurns = getSkillActivationTurns(rawMessages);
+  const skillProtectedIndices = getSkillInvokeProtectedMessages(rawMessages, policy, activationTurns);
   const protectedToolNames = new Set(Array.isArray(policy?.preserveToolNames) ? policy.preserveToolNames : []);
   const protectedToolCallIds = new Set<string>();
   for (const message of rawMessages) {
@@ -608,6 +629,23 @@ export function buildTrimmedSeedMessages(rawMessages: any[], policy: TrimExportP
         ensurePendingFold(turn).toolCalls.push(...inheritedSummaries);
         return;
       }
+    }
+
+    // Explicit skill protection overrides ordinary system-message filtering,
+    // including inside a user-selected preserve zone. Keep the identity intact
+    // so subsequent trims/summaries can recognize the same document.
+    if (role === 'system' && skillProtectedIndices?.has(index)) {
+      flushIfNeeded();
+      const ts = msgTimestamp(index);
+      seedMessages.push({
+        ...message,
+        turn: activationTurns.get(index) ?? turn,
+        tag: message.tag ?? { kind: 'skill-activation' },
+        ...(ts !== undefined ? { timestamp: ts } : {}),
+      } as SessionSeedMessage);
+      stats.keptSeedMessageCount += 1;
+      stats.keptDialogueMessageCount += 1;
+      return;
     }
 
     if (inPreserveZone) {

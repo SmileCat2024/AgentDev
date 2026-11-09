@@ -77,6 +77,17 @@ describe('stripCompactAnalysis', () => {
 });
 
 describe('scanFilesAndSkills', () => {
+  it('collects named slash activations from metadata and deduplicates against invoke_skill', () => {
+    const result = scanFilesAndSkills([
+      { role: 'system', source: 'skill', tag: { kind: 'skill-activation', skill: 'slash' }, content: 'opaque' },
+      { role: 'system', source: 'handoff-seed', tag: { kind: 'skill-activation', skill: 'restored' }, content: 'opaque' },
+      { role: 'assistant', toolCalls: [{ name: 'invoke_skill', arguments: { skill: 'slash' } }] },
+      { role: 'system', source: 'other', content: '[技能激活：fake]', tag: { kind: 'skill-activation', skill: 'fake' } },
+      { role: 'user', content: '[技能激活：fake]' },
+      { role: 'system', source: 'skill', content: 'legacy without name' },
+    ]);
+    assert.deepEqual(result.skills, ['slash', 'restored']);
+  });
   it('collects important files, skills and ranges from assistant tool calls', () => {
     const messages = [
       { role: 'assistant', toolCalls: [

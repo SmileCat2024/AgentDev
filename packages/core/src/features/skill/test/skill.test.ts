@@ -1,6 +1,10 @@
 import { readInjectDeclarations } from '../../../core/feature-graph.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SkillFeature } from '../index.js';
+import { Context, withMessageSource } from '../../../core/context.js';
+import { buildTrimmedSeedMessages, normalizeExportPolicy } from '../../../core/continuity/transforms/trim-transcript.js';
+import { SummaryTransformation, TrimTranscriptWithSummaryTransformation, scanFilesAndSkills } from '../../../core/continuity/transforms/summary.js';
+import { HandoffSeedFeature } from '../../handoff-seed/index.js';
 import { invokeSkillTool } from '../tools.js';
 import { splitFrontmatter } from '../../../skills/loader.js';
 import { TemplateComposer } from '../../../template/composer.js';
@@ -318,6 +322,65 @@ describe('SkillFeature', () => {
       // 无激活通知的后续轮不再注入
       await (f as any).onCapabilityActivations([], { context: { add } });
       expect(add).toHaveBeenCalledTimes(1);
+    });
+
+    it('retains real slash injection through snapshot and repeated trim using structured metadata', async () => {
+      const { f } = await setup();
+      const context = new Context();
+      await f.onCapabilityActivations(['skill.grill'], { context: withMessageSource(context, 'skill') });
+      context.addUserMessage('continue', 3);
+      const messages = JSON.parse(JSON.stringify(context.getAll()));
+      expect(messages[0]).toMatchObject({ source: 'skill', tag: { kind: 'skill-activation', skill: 'grill' } });
+      const policy = normalizeExportPolicy({ keepRecentSkillInvokes: 1 });
+      const first = buildTrimmedSeedMessages(messages, policy).seedMessages;
+      const successor = new Context();
+      await new HandoffSeedFeature({ handoff: { seedMessages: first } }).injectHandoffSummary({
+        isFirstCall: true, context: withMessageSource(successor, 'handoff-seed'), agent: { _callIndex: 0 },
+      } as any);
+      const second = buildTrimmedSeedMessages(successor.getAll(), policy).seedMessages;
+      expect(second.some(m => m.content.includes('DOC-grill') && (m.tag as any)?.skill === 'grill')).toBe(true);
+    });
+
+    it('summarizes slash skills and reinjects their discovered documents across two successors', async () => {
+      const { f } = await setup(['grill', 'lark']);
+      const source = new Context();
+      await f.onCapabilityActivations(['skill.grill', 'skill.lark'], { context: withMessageSource(source, 'skill') });
+      source.addUserMessage('continue', 0);
+      let messages = source.getAll();
+      for (let generation = 0; generation < 2; generation++) {
+        const seed = await new SummaryTransformation().transform({
+          sourceSnapshot: { sessionId: 'source', runtime: { context: { messages } } },
+        } as any, { llm: { chat: async () => ({ content: 'task summary' }) } } as any);
+        expect(seed.importantSkills).toEqual(['grill', 'lark']);
+        const successor = new Context();
+        const handoff = new HandoffSeedFeature({ handoff: { ...seed, mode: 'summary-message' } });
+        await handoff.injectHandoffSummary({
+          isFirstCall: true, context: withMessageSource(successor, 'handoff-seed'),
+          agent: { _callIndex: 0, projectRoot: tempDir, getFeature: (name: string) => name === 'skill' ? f : undefined },
+        } as any);
+        messages = JSON.parse(JSON.stringify(successor.getAll()));
+        expect(messages.filter(m => m.content.includes('DOC-grill'))).toHaveLength(1);
+        expect(messages.filter(m => m.content.includes('DOC-lark'))).toHaveLength(1);
+        expect(scanFilesAndSkills(messages).skills).toEqual(['grill', 'lark']);
+      }
+    });
+
+    it('does not duplicate slash documents already retained by trim-with-summary', async () => {
+      const { f } = await setup();
+      const source = new Context();
+      await f.onCapabilityActivations(['skill.grill'], { context: withMessageSource(source, 'skill') });
+      source.addUserMessage('continue', 0);
+      const seed = await new TrimTranscriptWithSummaryTransformation().transform({
+        sourceSnapshot: { runtime: { context: { messages: source.getAll() } } },
+        policy: { keepRecentSkillInvokes: 1 },
+      } as any, { llm: { chat: async () => ({ content: 'summary' }) } } as any);
+      const successor = new Context();
+      await new HandoffSeedFeature({ handoff: seed }).injectHandoffSummary({
+        isFirstCall: true, context: withMessageSource(successor, 'handoff-seed'),
+        agent: { _callIndex: 0, projectRoot: tempDir, getFeature: () => f },
+      } as any);
+      expect(successor.getAll().filter(m => m.content.includes('DOC-grill'))).toHaveLength(1);
+      expect(scanFilesAndSkills(successor.getAll()).skills).toEqual(['grill']);
     });
 
     it('wraps frontmatter in code fence when injecting via turn activation', async () => {

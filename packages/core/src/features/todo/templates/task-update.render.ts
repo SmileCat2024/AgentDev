@@ -32,6 +32,15 @@ function getStatusText(status: string): string {
   return texts[status] || status;
 }
 
+const KIND_TEXTS: Record<string, string> = {
+  investigate: '调查', design: '设计', implement: '实现', fix: '修复', verify: '验证',
+};
+
+function renderKindBadge(kind?: string): string {
+  if (!kind || !KIND_TEXTS[kind]) return '';
+  return `<span style="display:inline-block; margin-right:6px; padding:0 5px; border:1px solid var(--border-color); border-radius:3px; font-size:10px; color:var(--text-secondary); vertical-align:1px;">${KIND_TEXTS[kind]}</span>`;
+}
+
 export default {
   call: (args: any) => {
     let output = `<div class="bash-command">更新任务 <span class="pattern">#${escapeHtml(args.taskId || '')}</span>`;
@@ -52,6 +61,9 @@ export default {
       return `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已取消并保留记录')}</div>`;
     }
     let output = `<div style="color:var(--success-color)">✓ ${escapeHtml(data.message || '任务已更新')}</div>`;
+    if (data.subject) {
+      output += `<div style="color:var(--text-primary); font-size:12px; margin-top:2px;">${renderKindBadge(data.kind)}${escapeHtml(data.subject)}</div>`;
+    }
     if (data.deliver) {
       output += `<div style="color:var(--text-secondary); font-size:12px; margin-top:2px;">交付: ${escapeHtml(data.deliver)}</div>`;
     }

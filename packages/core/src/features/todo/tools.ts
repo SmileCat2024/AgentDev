@@ -13,7 +13,20 @@
 import type { Tool } from '../../core/types.js';
 import { createTool } from '../../core/tool.js';
 import { withDisplay } from '../../core/tool-result-display.js';
-import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus } from './types.js';
+import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TaskKind } from './types.js';
+import { TASK_KINDS } from './types.js';
+
+const KIND_FIELD_DOC = `kind: 任务类型（可选）：investigate（调查：查明事实/定位原因/核实争议，交付有据结论）、design（设计/决策：确定方案、边界或取舍）、implement（实现：新建或扩展能力）、fix（修复：恢复被破坏的行为）、verify（验证：独立确认目标场景达标）。
+类型声明这项工作怎样推进、怎样证明完成，不是阶段门禁，不选也不影响任务的目标与完成标准。调查与修复不得合并成一项：原因未明时先立调查项，再立依赖其结论的修复项。验证项的完成证据只覆盖其实际验证的范围。`;
+
+/** 校验 kind 入参：undefined 合法（可选字段）；非法值返回错误消息 */
+function validateKind(kind: unknown): { ok: true; kind?: TaskKind } | { ok: false; error: string } {
+  if (kind === undefined || kind === null || kind === '') return { ok: true };
+  const value = String(kind);
+  if ((TASK_KINDS as readonly string[]).includes(value)) return { ok: true, kind: value as TaskKind };
+  return { ok: false, error: `kind 必须是 ${TASK_KINDS.join(' / ')} 之一或留空` };
+}
+
 /**
  * Todo 工具工厂类
  * 用于创建 Todo 工具，需要传入 Feature 实例来访问任务数据
@@ -23,7 +36,7 @@ export class TodoToolFactory {
   private createTaskFn: (
     subject: string,
     description: string,
-    options?: { deliver?: string; metadata?: Record<string, unknown> }
+    options?: { deliver?: string; kind?: TaskKind; metadata?: Record<string, unknown> }
   ) => TodoTask;
   private listTasksFn: (filter?: { status?: TaskStatus }) => TodoTaskSummary[];
   private updateTaskFn: (taskId: string, updates: TodoTaskUpdate) => TodoTask | undefined;
@@ -34,7 +47,7 @@ export class TodoToolFactory {
     createTask: (
       subject: string,
       description: string,
-      options?: { deliver?: string; metadata?: Record<string, unknown> }
+      options?: { deliver?: string; kind?: TaskKind; metadata?: Record<string, unknown> }
     ) => TodoTask;
     listTasks: (filter?: { status?: TaskStatus }) => TodoTaskSummary[];
     updateTask: (taskId: string, updates: TodoTaskUpdate) => TodoTask | undefined;
@@ -60,6 +73,7 @@ export class TodoToolFactory {
 - subject: 简短可执行的祈使句标题（如 "修复认证漏洞"）
 - description: 任务定义（可选）：要做什么、怎么验收，写给之后翻开这条任务的人；简单任务可不填
 - deliver: 交付物（可选）：完成时留下什么产物证明"做完了"，一句短语，如「src/auth.ts」「61 项测试通过」。description 说要做什么，deliver 只说留下了什么；调查沟通类无可指认产物时留空
+- ${KIND_FIELD_DOC}
 
 创建后任务为 pending，经 task_update 流转：in_progress → completed，或 deleted（取消并保留记录）。`,
       parameters: {
@@ -68,13 +82,28 @@ export class TodoToolFactory {
           subject: { type: 'string', description: '简短的任务标题，使用祈使句形式（如 "运行测试"）' },
           description: { type: 'string', description: '任务定义：要做什么、怎么验收，写给之后翻开这条任务的人' },
           deliver: { type: 'string', description: '交付物：一句短语，如 "src/auth.ts"、"test/auth.test.js 全过"。只写结果产物，不写过程、不重复 description；无可指认产物时留空' },
+          kind: {
+            type: 'string',
+            enum: [...TASK_KINDS],
+            description: '任务类型（可选）：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证。调查与修复不得合并成一项；验证项证据只覆盖实际验证范围',
+          },
         },
         required: ['subject'],
       },
       render: { call: 'task-create', result: 'task-create' },
-      execute: ({ subject, description = '', deliver }: { subject?: unknown; description?: unknown; deliver?: unknown }) => {
+      execute: ({ subject, description = '', deliver, kind }: { subject?: unknown; description?: unknown; deliver?: unknown; kind?: unknown }) => {
+        if (!subject || !String(subject).trim()) {
+          return Promise.resolve({ ok: false, error: 'subject 不能为空' });
+        }
+        const kindCheck = validateKind(kind);
+        if (!kindCheck.ok) {
+          return Promise.resolve({ ok: false, error: kindCheck.error });
+        }
         const deliverText = deliver === undefined || deliver === null ? undefined : String(deliver);
-        const task = self.createTaskFn(String(subject), String(description), deliverText ? { deliver: deliverText } : undefined);
+        const task = self.createTaskFn(String(subject), String(description), {
+          ...(deliverText ? { deliver: deliverText } : {}),
+          ...(kindCheck.kind ? { kind: kindCheck.kind } : {}),
+        });
         // 模型只看极简确认；前端通过 display 看到完整信息
         return Promise.resolve(withDisplay(
           JSON.stringify({ ok: true, taskId: task.id, status: task.status }),
@@ -84,6 +113,7 @@ export class TodoToolFactory {
               subject: task.subject,
               description: task.description || '',
               deliver: task.deliver || '',
+              kind: task.kind || '',
               status: task.status,
             },
             allTasks: self.listTasksFn(),
@@ -101,7 +131,7 @@ export class TodoToolFactory {
     const self = this;
     return createTool({
       name: 'task_list',
-      description: `列出任务摘要（id、subject、deliver、status）。可按状态筛选，默认全部。`,
+      description: `列出任务摘要（id、subject、deliver、kind、status）。可按状态筛选，默认全部。`,
       parameters: {
         type: 'object',
         properties: {
@@ -144,7 +174,7 @@ export class TodoToolFactory {
 
 并发约束：同一时刻只允许一个任务处于 in_progress；开始新任务前，先完成、取消当前进行中任务，或将其调整回 pending。
 
-可更新字段（仅传需要更新的）：subject 祈使句标题；description 任务定义：要做什么、怎么验收；deliver 交付物一句短语。`,
+可更新字段（仅传需要更新的）：subject 祈使句标题；description 任务定义：要做什么、怎么验收；deliver 交付物一句短语；kind 任务类型（investigate / design / implement / fix / verify）。`,
       parameters: {
         type: 'object',
         properties: {
@@ -157,16 +187,27 @@ export class TodoToolFactory {
           subject: { type: 'string', description: '新的任务标题' },
           description: { type: 'string', description: '新的任务定义：要做什么、怎么验收' },
           deliver: { type: 'string', description: '交付物：一句短语，如 "src/auth.ts"、"61 项测试通过"。只写结果产物，不写过程、不重复 description' },
+          kind: {
+            type: 'string',
+            enum: [...TASK_KINDS],
+            description: '任务类型（可选）：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证',
+          },
         },
         required: ['taskId'],
       },
       render: { call: 'task-update', result: 'task-update' },
       execute: (rawArgs: Record<string, unknown>) => {
-        const { taskId, ...rest } = rawArgs as unknown as { taskId: string } & TodoTaskUpdate;
+        const { taskId, kind, ...rest } = rawArgs as unknown as { taskId: string; kind?: unknown } & TodoTaskUpdate;
+        const kindCheck = validateKind(kind);
+        if (!kindCheck.ok) {
+          return Promise.resolve({ ok: false, error: kindCheck.error });
+        }
+        const updates: TodoTaskUpdate = { ...rest };
+        if (kindCheck.kind) updates.kind = kindCheck.kind;
         // 单 in_progress 硬约束：目标从其他状态转入 in_progress 时，
         // 若已有另一任务处于 in_progress，拒绝并指明阻塞项。
         // 目标任务自身已是 in_progress 的重复设置（幂等）不受影响。
-        if (rest.status === 'in_progress') {
+        if (updates.status === 'in_progress') {
           const target = self.getTaskFn(taskId);
           if (target && target.status !== 'in_progress') {
             const blocker = self.listTasksFn({ status: 'in_progress' }).find(t => t.id !== taskId);
@@ -178,7 +219,7 @@ export class TodoToolFactory {
             }
           }
         }
-        const task = self.updateTaskFn(taskId, rest);
+        const task = self.updateTaskFn(taskId, updates);
         if (!task) {
           return Promise.resolve({ ok: false, error: `任务 ${taskId} 不存在` });
         }
@@ -188,6 +229,7 @@ export class TodoToolFactory {
             id: task.id,
             subject: task.subject,
             deliver: task.deliver || '',
+            kind: task.kind || '',
             status: task.status,
             message: `任务 ${taskId} 已更新`,
           },

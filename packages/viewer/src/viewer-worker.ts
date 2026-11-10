@@ -2160,11 +2160,20 @@ class ViewerWorker {
         ? status
         : 'pending';
     };
+    // 与 features/todo 的 TaskKind 校验基准一致；非法值清洗为 undefined，
+    // 避免损坏数据流向前端（字段透传契约见 viewer-worker-todo-roundtrip 测试）
+    const KINDS: readonly string[] = ['investigate', 'design', 'implement', 'fix', 'verify'];
+    const normalizeKind = (kind: unknown): TodoTaskSnapshot['kind'] => {
+      return typeof kind === 'string' && KINDS.includes(kind)
+        ? (kind as TodoTaskSnapshot['kind'])
+        : undefined;
+    };
     const tasks = Array.isArray(plan.tasks) ? plan.tasks.map(task => ({
       id: String(task.id ?? ''),
       subject: String(task.subject ?? ''),
       description: String(task.description ?? ''),
       deliver: task.deliver ? String(task.deliver) : undefined,
+      kind: normalizeKind(task.kind),
       status: normalizeStatus(task.status),
       metadata: task.metadata && typeof task.metadata === 'object' ? task.metadata : undefined,
       createdAt: typeof task.createdAt === 'number' ? task.createdAt : 0,

@@ -8,6 +8,18 @@
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
 
 /**
+ * 任务类型（可选工作方式声明）
+ *
+ * 按工作怎样推进、怎样证明完成区分，不按功能领域区分；是策略与验收
+ * 约束的载体，不是阶段门禁。与 core/types.ts 的 TodoTaskSnapshot.kind
+ * 内联定义保持同步（core 层不 import feature 层，现状如此）。
+ */
+export type TaskKind = 'investigate' | 'design' | 'implement' | 'fix' | 'verify';
+
+/** 合法任务类型集合（工具入参与快照恢复的校验基准） */
+export const TASK_KINDS: readonly TaskKind[] = ['investigate', 'design', 'implement', 'fix', 'verify'];
+
+/**
  * 任务数据结构
  */
 export interface TodoTask {
@@ -19,6 +31,8 @@ export interface TodoTask {
   description?: string;
   /** 交付物（可选）：一句短语，如「src/auth.ts」「61 项测试通过」。只写结果产物，不写过程、不重复 description */
   deliver?: string;
+  /** 任务类型（可选）：不选表示不启用类型专用策略，不改变任务自身的目标与验收 */
+  kind?: TaskKind;
   /** 任务状态 */
   status: TaskStatus;
   /** 元数据（内部生命周期数据，不暴露给模型工具） */
@@ -37,6 +51,7 @@ export interface TodoTaskUpdate {
   subject?: string;
   description?: string;
   deliver?: string;
+  kind?: TaskKind;
 }
 
 /**
@@ -46,6 +61,7 @@ export interface TodoTaskSummary {
   id: string;
   subject: string;
   deliver?: string;
+  kind?: TaskKind;
   status: TaskStatus;
 }
 

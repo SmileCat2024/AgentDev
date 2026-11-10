@@ -686,6 +686,12 @@ export interface TodoTaskSnapshot {
   description: string;
   /** 交付物（可选）：一句短语，如「src/auth.ts」「61 项测试通过」。只写结果产物，不写过程、不重复 description */
   deliver?: string;
+  /**
+   * 任务类型（可选工作方式声明）：investigate / design / implement / fix / verify。
+   * 语义与校验基准在 features/todo/types.ts 的 TaskKind；core 层按现状不
+   * import feature 层，此内联 union 需与那边同步修改。
+   */
+  kind?: 'investigate' | 'design' | 'implement' | 'fix' | 'verify';
   status: 'pending' | 'in_progress' | 'completed' | 'deleted';
   metadata?: Record<string, unknown>;
   createdAt: number;

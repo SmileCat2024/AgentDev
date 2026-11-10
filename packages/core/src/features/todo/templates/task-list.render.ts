@@ -32,13 +32,22 @@ function getStatusText(status: string): string {
   return texts[status] || status;
 }
 
-function renderTaskList(tasks: Array<{ id: string; subject: string; status: string; deliver?: string }>): string {
+const KIND_TEXTS: Record<string, string> = {
+  investigate: '调查', design: '设计', implement: '实现', fix: '修复', verify: '验证',
+};
+
+function renderKindBadge(kind?: string): string {
+  if (!kind || !KIND_TEXTS[kind]) return '';
+  return `<span style="display:inline-block; margin-right:6px; padding:0 5px; border:1px solid var(--border-color); border-radius:3px; font-size:10px; color:var(--text-secondary); vertical-align:1px;">${KIND_TEXTS[kind]}</span>`;
+}
+
+function renderTaskList(tasks: Array<{ id: string; subject: string; status: string; deliver?: string; kind?: string }>): string {
   return `<div style="font-family:"Fira Code", "Cascadia Code", "Source Code Pro", "JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size:12px; max-height:300px; overflow:auto;">
     ${tasks.map(t => `
       <div style="display:flex; align-items:flex-start; gap:8px; padding:4px 0; border-bottom:1px solid var(--border-color);">
         <span style="color:var(--text-secondary); min-width:24px;">#${t.id}</span>
         <span style="flex:1; display:flex; flex-direction:column; gap:2px;">
-          <span style="color:var(--text-primary);">${escapeHtml(t.subject)}</span>
+          <span style="color:var(--text-primary);">${renderKindBadge(t.kind)}${escapeHtml(t.subject)}</span>
           ${t.deliver ? `<span style="color:var(--text-secondary); font-size:11px;">交付: ${escapeHtml(t.deliver)}</span>` : ''}
         </span>
         <span style="color:${getStatusColor(t.status)}; font-size:11px;">${getStatusText(t.status)}</span>

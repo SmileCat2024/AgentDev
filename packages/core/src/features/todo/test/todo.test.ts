@@ -559,4 +559,87 @@ describe('TodoFeature', () => {
       expect(second!.status).toBe('in_progress');
     });
   });
+
+  // ========== kind 字段（任务类型） ==========
+
+  describe('kind field', () => {
+    it('stores kind from createTask options and leaves it undefined when omitted', () => {
+      const typed = feature.createTask('定位崩溃原因', '描述', { kind: 'investigate' });
+      expect(typed.kind).toBe('investigate');
+      const plain = feature.createTask('普通任务');
+      expect(plain.kind).toBeUndefined();
+    });
+
+    it('ignores invalid kind passed via public API', () => {
+      const task = feature.createTask('任务', '描述', { kind: 'explore' as never });
+      expect(task.kind).toBeUndefined();
+    });
+
+    it('task_create tool passes kind through and exposes it in display', async () => {
+      const createTool = feature.getTools().find(t => t.name === 'task_create')!;
+      const result: any = await createTool.execute({ subject: '修复登录', kind: 'fix' });
+      expect(result.__withDisplay).toBe(true);
+      expect(feature.getTask('1')!.kind).toBe('fix');
+      expect(result.display.task.kind).toBe('fix');
+      expect(result.display.allTasks[0].kind).toBe('fix');
+    });
+
+    it('task_create tool rejects invalid kind', async () => {
+      const createTool = feature.getTools().find(t => t.name === 'task_create')!;
+      const result: any = await createTool.execute({ subject: '修复登录', kind: 'explore' });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('kind');
+      expect(feature.listTasks()).toHaveLength(0);
+    });
+
+    it('task_update tool updates kind and rejects invalid values', async () => {
+      const updateTool = feature.getTools().find(t => t.name === 'task_update')!;
+      feature.createTask('任务');
+      const ok: any = await updateTool.execute({ taskId: '1', kind: 'verify' });
+      expect(ok.__withDisplay).toBe(true);
+      expect(feature.getTask('1')!.kind).toBe('verify');
+
+      const bad: any = await updateTool.execute({ taskId: '1', kind: '随机' });
+      expect(bad.ok).toBe(false);
+      expect(feature.getTask('1')!.kind).toBe('verify');
+    });
+
+    it('includes kind in listTasks summaries and plan snapshot', () => {
+      feature.createTask('定位原因', '描述', { kind: 'investigate' });
+      expect(feature.listTasks()[0].kind).toBe('investigate');
+      expect(feature.getPlanSnapshot().tasks[0].kind).toBe('investigate');
+    });
+
+    it('preserves kind across capture/restore and drops invalid persisted kind', () => {
+      feature.createTask('定位原因', '描述', { kind: 'investigate' });
+      const snapshot = feature.captureState();
+      const fresh = new TodoFeature();
+      fresh.restoreState(snapshot);
+      expect(fresh.getTask('1')!.kind).toBe('investigate');
+
+      // 旧版本快照无 kind；损坏快照的非法 kind 被清洗为 undefined
+      const dirty = new TodoFeature();
+      dirty.restoreState({
+        tasks: [{ id: '1', subject: '旧任务', status: 'pending', kind: 'legacy', createdAt: 1, updatedAt: 1 }],
+        counter: 1,
+      });
+      expect(dirty.getTask('1')!.kind).toBeUndefined();
+    });
+
+    it('renders kind in injected task plan lines as [kind/status]', async () => {
+      feature.createTask('定位原因', '描述', { kind: 'investigate' });
+      feature.createTask('普通任务');
+      feature.updateTask('1', { status: 'in_progress' });
+      const added: Array<{ role: string; content: string }> = [];
+      const ctx = {
+        isFirstCall: false,
+        context: { add: (m: { role: string; content: string }) => added.push(m) },
+      } as any;
+      await feature.onCallStart(ctx);
+      const text = added[0].content;
+      expect(text).toContain('- #1 [investigate/in_progress] 定位原因');
+      // 无 kind 的任务保持原有 [status] 格式
+      expect(text).toContain('- #2 [pending] 普通任务');
+    });
+  });
 });

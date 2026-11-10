@@ -30,7 +30,8 @@ import type { Tool } from '../../core/types.js';
 import type { TodoPlanSnapshot } from '../../core/types.js';
 import { DebugHub } from '../../core/debug-hub.js';
 import { TodoToolFactory } from './tools.js';
-import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TodoFeatureConfig } from './types.js';
+import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TaskKind, TodoFeatureConfig } from './types.js';
+import { TASK_KINDS } from './types.js';
 
 // ESM 中获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -175,6 +176,9 @@ export class TodoFeature implements AgentFeature {
         subject: task.subject,
         description: task.description,
         deliver: task.deliver,
+        kind: typeof task.kind === 'string' && (TASK_KINDS as readonly string[]).includes(task.kind)
+          ? task.kind
+          : undefined,
         status: task.status,
         metadata: task.metadata,
         createdAt: task.createdAt,
@@ -343,14 +347,20 @@ export class TodoFeature implements AgentFeature {
   createTask(
     subject: string,
     description: string = '',
-    options?: { deliver?: string; metadata?: Record<string, unknown> }
+    options?: { deliver?: string; kind?: TaskKind; metadata?: Record<string, unknown> }
   ): TodoTask {
     this.counter++;
+    // 公开 API 防御：非法 kind 当未声明处理（工具层已校验，这里兜底）
+    const rawKind = options?.kind as unknown;
+    const kind = typeof rawKind === 'string' && (TASK_KINDS as readonly string[]).includes(rawKind)
+      ? (rawKind as TaskKind)
+      : undefined;
     const task: TodoTask = {
       id: String(this.counter),
       subject,
       description: description || undefined,
       deliver: options?.deliver || undefined,
+      kind,
       status: 'pending',
       metadata: options?.metadata,
       createdAt: Date.now(),
@@ -381,6 +391,7 @@ export class TodoFeature implements AgentFeature {
       id: task.id,
       subject: task.subject,
       deliver: task.deliver,
+      kind: task.kind,
       status: task.status,
     }));
   }
@@ -396,7 +407,7 @@ export class TodoFeature implements AgentFeature {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
 
-    const allowedFields: string[] = ['status', 'subject', 'description', 'deliver', 'metadata'];
+    const allowedFields: string[] = ['status', 'subject', 'description', 'deliver', 'kind', 'metadata'];
     for (const field of allowedFields) {
       if (updates[field as keyof typeof updates] !== undefined) {
         (task as unknown as Record<string, unknown>)[field] = updates[field as keyof typeof updates];
@@ -432,6 +443,7 @@ export class TodoFeature implements AgentFeature {
         subject: task.subject,
         description: task.description || '',
         deliver: task.deliver,
+        kind: task.kind,
         status: task.status,
         metadata: task.metadata && typeof task.metadata === 'object' ? { ...task.metadata } : undefined,
         createdAt: task.createdAt,
@@ -516,7 +528,9 @@ export class TodoFeature implements AgentFeature {
       const subject = this.truncate(task.subject, MAX_SUBJECT_LENGTH);
       const desc = task.description ? this.truncate(task.description, MAX_DESCRIPTION_LENGTH) : '';
       const deliver = task.deliver ? this.truncate(task.deliver, MAX_DELIVER_LENGTH) : '';
-      lines.push(`- #${task.id} [${task.status}] ${subject}`);
+      // kind 放在 status 前：类型是工作性质（模型按类型选策略），状态是流转态
+      const stateTag = task.kind ? `${task.kind}/${task.status}` : task.status;
+      lines.push(`- #${task.id} [${stateTag}] ${subject}`);
       if (desc) {
         lines.push(`  ${desc}`);
       }
@@ -554,4 +568,5 @@ export class TodoFeature implements AgentFeature {
 }
 
 // 重新导出类型
-export type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TodoFeatureConfig };
+export type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TaskKind, TodoFeatureConfig };
+export { TASK_KINDS };

@@ -44,6 +44,7 @@ function buildFullPlan(): TodoPlanSnapshot {
         subject: '已完成任务',
         description: 'desc-1',
         deliver: 'test/a.test.ts 通过',
+        kind: 'fix',
         status: 'completed',
         metadata: { finishedAt: 1700000001000 },
         createdAt: 1700000000000,
@@ -53,6 +54,7 @@ function buildFullPlan(): TodoPlanSnapshot {
         id: 'task-2',
         subject: '进行中任务',
         description: 'desc-2',
+        kind: 'investigate',
         status: 'in_progress',
         metadata: {},
         createdAt: 1700000002000,
@@ -108,10 +110,31 @@ describe('ViewerWorker todo plan round-trip', () => {
     expect(output.tasks[0].metadata.finishedAt).toBe(1700000001000);
     // deliver 是面板数据的来源字段，normalize 重建任务对象时必须保留
     expect(output.tasks[0].deliver).toBe('test/a.test.ts 通过');
+    // kind 同为面板来源字段，normalize 重建时必须保留（合法枚举）
+    expect(output.tasks[0].kind).toBe('fix');
     expect(output.tasks[1].id).toBe('task-2');
     expect(output.tasks[1].status).toBe('in_progress');
+    expect(output.tasks[1].kind).toBe('investigate');
     expect(output.summary.total).toBe(2);
     expect(output.summary.inProgress).toBe(1);
+  });
+
+  it('drops invalid kind values during normalize', () => {
+    const worker = new ViewerWorker(0, false, getTestUdsPath());
+    const agentId = 'roundtrip-kind-invalid-agent';
+    worker.getOrCreateSession(agentId, 'Invalid Kind');
+
+    const plan = buildFullPlan();
+    (plan.tasks[0] as any).kind = 'not-a-kind';
+    worker.handleUpdateTodoPlan({ agentId, plan });
+
+    const res = createMockRes();
+    worker.handleGetAgentTodoPlan({} as any, res as any, agentId);
+
+    const output = res.getJson();
+    // 非法 kind 清洗为 undefined；合法 kind 不受影响
+    expect(output.tasks[0].kind).toBeUndefined();
+    expect(output.tasks[1].kind).toBe('investigate');
   });
 
   it('strips old schema fields (activeForm/owner/blocks/blockedBy) during normalize', () => {

@@ -26,7 +26,7 @@ function getStatusColor(status: string): string {
 }
 
 const KIND_TEXTS: Record<string, string> = {
-  investigate: '调查', design: '设计', implement: '实现', fix: '修复', verify: '验证',
+  investigate: '调查', design: '设计', implement: '实现', fix: '修复', verify: '验证', other: '其他',
 };
 
 function renderKindBadge(kind?: string): string {

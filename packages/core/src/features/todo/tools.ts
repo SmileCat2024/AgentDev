@@ -16,15 +16,22 @@ import { withDisplay } from '../../core/tool-result-display.js';
 import type { TodoTask, TodoTaskUpdate, TodoTaskSummary, TaskStatus, TaskKind } from './types.js';
 import { TASK_KINDS } from './types.js';
 
-const KIND_FIELD_DOC = `kind: 任务类型（可选）：investigate（调查：查明事实/定位原因/核实争议，交付有据结论）、design（设计/决策：确定方案、边界或取舍）、implement（实现：新建或扩展能力）、fix（修复：恢复被破坏的行为）、verify（验证：独立确认目标场景达标）。
-类型声明这项工作怎样推进、怎样证明完成，不是阶段门禁，不选也不影响任务的目标与完成标准。调查与修复不得合并成一项：原因未明时先立调查项，再立依赖其结论的修复项。验证项的完成证据只覆盖其实际验证的范围。`;
+const KIND_FIELD_DOC = `kind: 任务类型（必填）：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证；无法归入时填 other。选错类型不影响任务的目标与完成标准。`;
 
-/** 校验 kind 入参：undefined 合法（可选字段）；非法值返回错误消息 */
-function validateKind(kind: unknown): { ok: true; kind?: TaskKind } | { ok: false; error: string } {
-  if (kind === undefined || kind === null || kind === '') return { ok: true };
+/**
+ * 校验 kind 入参。
+ * required=true（task_create）：kind 必填，缺省/空值拒绝并给出选择出口；
+ * required=false（task_update）：可选，不传表示不更新该字段。
+ */
+function validateKind(kind: unknown, required: boolean): { ok: true; kind?: TaskKind } | { ok: false; error: string } {
+  if (kind === undefined || kind === null || kind === '') {
+    return required
+      ? { ok: false, error: 'kind 必填：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证 / other=无法归入' }
+      : { ok: true };
+  }
   const value = String(kind);
   if ((TASK_KINDS as readonly string[]).includes(value)) return { ok: true, kind: value as TaskKind };
-  return { ok: false, error: `kind 必须是 ${TASK_KINDS.join(' / ')} 之一或留空` };
+  return { ok: false, error: `kind 必须是 ${TASK_KINDS.join(' / ')} 之一` };
 }
 
 /**
@@ -85,17 +92,17 @@ export class TodoToolFactory {
           kind: {
             type: 'string',
             enum: [...TASK_KINDS],
-            description: '任务类型（可选）：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证。调查与修复不得合并成一项；验证项证据只覆盖实际验证范围',
+            description: '任务类型（必填）：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证 / other=无法归入',
           },
         },
-        required: ['subject'],
+        required: ['subject', 'kind'],
       },
       render: { call: 'task-create', result: 'task-create' },
       execute: ({ subject, description = '', deliver, kind }: { subject?: unknown; description?: unknown; deliver?: unknown; kind?: unknown }) => {
         if (!subject || !String(subject).trim()) {
           return Promise.resolve({ ok: false, error: 'subject 不能为空' });
         }
-        const kindCheck = validateKind(kind);
+        const kindCheck = validateKind(kind, true);
         if (!kindCheck.ok) {
           return Promise.resolve({ ok: false, error: kindCheck.error });
         }
@@ -174,7 +181,7 @@ export class TodoToolFactory {
 
 并发约束：同一时刻只允许一个任务处于 in_progress；开始新任务前，先完成、取消当前进行中任务，或将其调整回 pending。
 
-可更新字段（仅传需要更新的）：subject 祈使句标题；description 任务定义：要做什么、怎么验收；deliver 交付物一句短语；kind 任务类型（investigate / design / implement / fix / verify）。`,
+可更新字段（仅传需要更新的）：subject 祈使句标题；description 任务定义：要做什么、怎么验收；deliver 交付物一句短语；kind 任务类型（investigate / design / implement / fix / verify / other）。`,
       parameters: {
         type: 'object',
         properties: {
@@ -190,7 +197,7 @@ export class TodoToolFactory {
           kind: {
             type: 'string',
             enum: [...TASK_KINDS],
-            description: '任务类型（可选）：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证',
+            description: '任务类型（可选，不传保持不变）：investigate=调查 / design=设计决策 / implement=实现 / fix=修复 / verify=验证 / other=无法归入五类',
           },
         },
         required: ['taskId'],
@@ -198,7 +205,7 @@ export class TodoToolFactory {
       render: { call: 'task-update', result: 'task-update' },
       execute: (rawArgs: Record<string, unknown>) => {
         const { taskId, kind, ...rest } = rawArgs as unknown as { taskId: string; kind?: unknown } & TodoTaskUpdate;
-        const kindCheck = validateKind(kind);
+        const kindCheck = validateKind(kind, false);
         if (!kindCheck.ok) {
           return Promise.resolve({ ok: false, error: kindCheck.error });
         }

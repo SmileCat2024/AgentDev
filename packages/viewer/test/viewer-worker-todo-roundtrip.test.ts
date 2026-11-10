@@ -137,6 +137,23 @@ describe('ViewerWorker todo plan round-trip', () => {
     expect(output.tasks[1].kind).toBe('investigate');
   });
 
+  it('preserves the other fallback kind through normalize', () => {
+    const worker = new ViewerWorker(0, false, getTestUdsPath());
+    const agentId = 'roundtrip-kind-other-agent';
+    worker.getOrCreateSession(agentId, 'Other Kind');
+
+    const plan = buildFullPlan();
+    (plan.tasks[0] as any).kind = 'other';
+    worker.handleUpdateTodoPlan({ agentId, plan });
+
+    const res = createMockRes();
+    worker.handleGetAgentTodoPlan({} as any, res as any, agentId);
+
+    // other 是模型侧 kind 必填的兜底值：数据层合法，normalize 不得清洗
+    const output = res.getJson();
+    expect(output.tasks[0].kind).toBe('other');
+  });
+
   it('strips old schema fields (activeForm/owner/blocks/blockedBy) during normalize', () => {
     const worker = new ViewerWorker(0, false, getTestUdsPath());
     const agentId = 'roundtrip-strip-agent';

@@ -11,13 +11,14 @@ export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
  * 任务类型（可选工作方式声明）
  *
  * 按工作怎样推进、怎样证明完成区分，不按功能领域区分；是策略与验收
- * 约束的载体，不是阶段门禁。与 core/types.ts 的 TodoTaskSnapshot.kind
- * 内联定义保持同步（core 层不 import feature 层，现状如此）。
+ * 约束的载体，不是阶段门禁。other 是模型侧 kind 必填的显式兜底值：
+ * 数据层合法保留，不参与五类的策略语义。与 core/types.ts 的
+ * TodoTaskSnapshot.kind 内联定义保持同步（core 层不 import feature 层，现状如此）。
  */
-export type TaskKind = 'investigate' | 'design' | 'implement' | 'fix' | 'verify';
+export type TaskKind = 'investigate' | 'design' | 'implement' | 'fix' | 'verify' | 'other';
 
 /** 合法任务类型集合（工具入参与快照恢复的校验基准） */
-export const TASK_KINDS: readonly TaskKind[] = ['investigate', 'design', 'implement', 'fix', 'verify'];
+export const TASK_KINDS: readonly TaskKind[] = ['investigate', 'design', 'implement', 'fix', 'verify', 'other'];
 
 /**
  * 任务数据结构

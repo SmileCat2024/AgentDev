@@ -482,7 +482,7 @@ describe('TodoFeature', () => {
 
     it('task_create tool passes deliver through', async () => {
       const createTool = feature.getTools().find(t => t.name === 'task_create')!;
-      const result: any = await createTool.execute({ subject: '修复登录', deliver: 'test/auth 通过' });
+      const result: any = await createTool.execute({ subject: '修复登录', deliver: 'test/auth 通过', kind: 'fix' });
       expect(result.__withDisplay).toBe(true);
       expect(feature.getTask('1')!.deliver).toBe('test/auth 通过');
       expect(result.display.task.deliver).toBe('test/auth 通过');
@@ -582,6 +582,24 @@ describe('TodoFeature', () => {
       expect(feature.getTask('1')!.kind).toBe('fix');
       expect(result.display.task.kind).toBe('fix');
       expect(result.display.allTasks[0].kind).toBe('fix');
+    });
+
+    it('task_create tool rejects missing kind with the fallback hint', async () => {
+      const createTool = feature.getTools().find(t => t.name === 'task_create')!;
+      const result: any = await createTool.execute({ subject: '修复登录' });
+      expect(result.ok).toBe(false);
+      // 错误文案即选择出口：列出全部合法值，含 other 兜底
+      expect(result.error).toContain('kind 必填');
+      expect(result.error).toContain('other');
+      expect(feature.listTasks()).toHaveLength(0);
+    });
+
+    it('task_create tool accepts other as the explicit fallback kind', async () => {
+      const createTool = feature.getTools().find(t => t.name === 'task_create')!;
+      const result: any = await createTool.execute({ subject: '整理工作区', kind: 'other' });
+      expect(result.__withDisplay).toBe(true);
+      expect(feature.getTask('1')!.kind).toBe('other');
+      expect(result.display.task.kind).toBe('other');
     });
 
     it('task_create tool rejects invalid kind', async () => {

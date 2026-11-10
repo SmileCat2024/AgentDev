@@ -2160,9 +2160,10 @@ class ViewerWorker {
         ? status
         : 'pending';
     };
-    // 与 features/todo 的 TaskKind 校验基准一致；非法值清洗为 undefined，
+    // 与 features/todo 的 TaskKind 校验基准一致（other 是模型侧 kind 必填的
+    // 兜底值，数据层合法保留）；非法值清洗为 undefined，
     // 避免损坏数据流向前端（字段透传契约见 viewer-worker-todo-roundtrip 测试）
-    const KINDS: readonly string[] = ['investigate', 'design', 'implement', 'fix', 'verify'];
+    const KINDS: readonly string[] = ['investigate', 'design', 'implement', 'fix', 'verify', 'other'];
     const normalizeKind = (kind: unknown): TodoTaskSnapshot['kind'] => {
       return typeof kind === 'string' && KINDS.includes(kind)
         ? (kind as TodoTaskSnapshot['kind'])

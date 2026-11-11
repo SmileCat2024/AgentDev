@@ -10,7 +10,7 @@
  * - ReAct 循环移至 agent/react-loop.ts
  */
 
-import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver, CallTurnOptions } from './types.js';
+import type { AgentConfig, Message, HookInspectorSnapshot, UsageInfo, ModelUsageKey, AgentOverviewSnapshot, ImageInput, LLMMeta, ModelPresetResolver, CallTurnOptions, InputReceiptIdentity } from './types.js';
 import { getPackageInfoFromSource, type AgentFeature, type FeatureInitContext, type ContextInjector, type RestoreOrigin } from './feature.js';
 import type { TemplateSource, PlaceholderContext } from '../template/types.js';
 import { ToolRegistry } from './tool.js';
@@ -136,6 +136,7 @@ class AgentBase {
   protected debugHub?: DebugHub;
   /** Stable process-local identity; Viewer attachment reuses this exact ID. */
   protected readonly agentId: string;
+  private runtimeInputIdentity: { runtimeInstanceId?: string; threadId?: string; headGeneration?: number; sessionId?: string } = {};
   protected debugEnabled: boolean = false;
 
   // 子代理相关
@@ -249,6 +250,7 @@ class AgentBase {
     installConsoleBridge();
     this.agentId = DebugHub.getInstance().allocateAgentId();
     this.config = config;
+    this.runtimeInputIdentity = { ...(config.runtimeInputIdentity || {}) };
     this.llm = config.llm;
     this._modelResolver = config.modelResolver ?? null;
     this.maxTurns = config.maxTurns ?? 10;
@@ -611,7 +613,19 @@ class AgentBase {
         finalInput = input;
         this.padDanglingToolCalls(context);
       } else {
-        context.addUserMessage(finalInput, this._callIndex, images);
+        context.addUserMessage(finalInput, this._callIndex, images, undefined, undefined, undefined, options?.inputReceipt);
+        if (options?.inputReceipt) {
+          const store = this._stepAutoSave?.store;
+          const sessionId = this._stepAutoSave?.sessionId;
+          if (!store || !sessionId) {
+            throw new Error('Durable input receipt requires an enabled session store');
+          }
+          // Durable ownership boundary: the command identity is in Context and
+          // the running-call snapshot before the model/tool loop may execute.
+          if (typeof options.acknowledgeInputReceipt !== 'function') {
+            throw new Error('Durable input receipt requires an acknowledgement handler');
+          }
+        }
       }
       this.pushToDebug(context.getAll(), context.getTimestamps());
 
@@ -625,6 +639,21 @@ class AgentBase {
         contextBoundary: preCallBoundary,
         runtimeState: preCallRuntimeState,
       });
+
+      if (options?.inputReceipt) {
+        const store = this._stepAutoSave?.store;
+        const sessionId = this._stepAutoSave?.sessionId;
+        if (!store || !sessionId) {
+          throw new Error('Durable input receipt requires an enabled session store');
+        }
+        if (typeof options.acknowledgeInputReceipt !== 'function') {
+          throw new Error('Durable input receipt requires an acknowledgement handler');
+        }
+        // Save the receipt and rollback boundary together before acknowledging;
+        // no model/tool step may start until this write and the ack both succeed.
+        await this.saveSession(sessionId, store);
+        await options.acknowledgeInputReceipt(options.inputReceipt);
+      }
 
       // ========== 初始化执行器（延迟初始化）==========
       this.ensureExecutorsInitialized();
@@ -824,6 +853,42 @@ class AgentBase {
   /**
    * 启用可视化查看器
    */
+  setRuntimeInputIdentity(identity: { runtimeInstanceId?: string; threadId?: string; headGeneration?: number; sessionId?: string }): void {
+    this.runtimeInputIdentity = { ...identity };
+  }
+
+  getRuntimeInputIdentity(): { runtimeInstanceId?: string; threadId?: string; headGeneration?: number; sessionId?: string } {
+    return { ...this.runtimeInputIdentity };
+  }
+
+  /**
+   * 换头后由宿主推送线程身份（ADR-0047 阶段 5 身份采纳通道）。
+   *
+   * successor 在 READY 门前拉起时尚未成为 head，spawn 身份不含线程信息；
+   * 换头提交后宿主经 runtime IPC 调用本方法：更新身份并立即向 Viewer
+   * 重新注册，WorkThread fencing 对齐后线程指令才能投递。返回是否已发起
+   * 重注册推送（不承诺 viewer 落地；投递校验是最终守卫，失败保持
+   * retryable-pending，重启路径在 spawn 时注入身份自然收敛）。
+   */
+  async adoptThreadHeadIdentity(identity: {
+    threadId?: string; headGeneration?: number; sessionId?: string;
+  }): Promise<{ ok: boolean; error?: string }> {
+    if (!identity?.threadId || !Number.isInteger(identity.headGeneration) || !identity.sessionId) {
+      return { ok: false, error: 'adopt-thread-head requires threadId, headGeneration and sessionId' };
+    }
+    this.setRuntimeInputIdentity({
+      ...this.runtimeInputIdentity,
+      threadId: identity.threadId,
+      headGeneration: identity.headGeneration,
+      sessionId: identity.sessionId,
+    });
+    if (!this.debugEnabled || !this.debugHub || !this.agentId) {
+      return { ok: false, error: 'viewer registration inactive' };
+    }
+    const pushed = this.debugHub.reregisterAgentIdentity(this.agentId);
+    return pushed ? { ok: true } : { ok: false, error: 'register-agent re-push failed' };
+  }
+
   async withViewer(
     name?: string,
     port?: number,
@@ -904,6 +969,7 @@ class AgentBase {
       options?.projectRoot ?? this.config.projectRoot,
       this.agentId,
       options?.inputPolicy,
+      this.runtimeInputIdentity,
     );
     if (registeredAgentId !== this.agentId) {
       throw new Error(`DebugHub registered unexpected Agent ID '${registeredAgentId}'`);
@@ -1239,6 +1305,27 @@ class AgentBase {
       runtimeState,
     });
     return callIndex;
+  }
+
+  /**
+   * 排队 durable 命令的回执落盘边界（react-loop drain 路径调用）。
+   * 幂等口径 = 命令身份三元组（commandId / threadId / headGeneration）：
+   * leaseId 是领取实例标识，重启后重新 claim 必然换新——纳入比较会让
+   * 「快照已含该命令 → 只补 ack、不重复追加」（ADR-0047 阶段 3b）在
+   * 重启恢复场景失效，同一命令在上下文出现两次。
+   */
+  async _persistInputReceiptDurable(context: Context, input: { text: string; images?: ImageInput[]; timestamp?: number; receipt: InputReceiptIdentity }): Promise<void> {
+    const store = this._stepAutoSave?.store;
+    const sessionId = this._stepAutoSave?.sessionId;
+    if (!store || !sessionId) throw new Error('Durable input receipt requires an enabled session store');
+    const receiptExists = context.getAll().some((message) => message.inputReceipt?.commandId === input.receipt.commandId
+      && message.inputReceipt?.threadId === input.receipt.threadId
+      && message.inputReceipt?.headGeneration === input.receipt.headGeneration);
+    if (!receiptExists) {
+      const turn = await this.captureInterjectionCheckpoint(input.text, context);
+      context.addUserMessage(input.text, turn, input.images, input.timestamp, undefined, undefined, input.receipt);
+    }
+    await this.saveSession(sessionId, store);
   }
 
   async rollbackToCall(callIndex: number): Promise<{ draftInput: string }> {
@@ -2617,6 +2704,7 @@ class AgentBase {
         maxTurns: this.maxTurns,
         debugEnabled: this.debugEnabled,
         agentId: this.agentId,
+        getRuntimeInputIdentity: () => this.getRuntimeInputIdentity(),
         _currentStep: this._currentStep,
         _agentId: this._agentId,
         _parentPool: this._parentPool,
@@ -2628,6 +2716,8 @@ class AgentBase {
         dispatchTurnActivations: (refs: string[], context: Context) => this.dispatchTurnActivations(refs, context),
         dispatchTurnMetadata: (metadata: Record<string, unknown>, context: Context) => this.dispatchTurnMetadata(metadata, context),
         captureInterjectionCheckpoint: (draftInput: string, context: Context) => this.captureInterjectionCheckpoint(draftInput, context),
+        persistInputReceipt: (context: Context, input: { text: string; images?: ImageInput[]; timestamp?: number; receipt: InputReceiptIdentity }) =>
+          this._persistInputReceiptDurable(context, input),
         stepSaveFn: this._createStepSaveFn(),
         peekContinuationRequest: () => this._continuationRequest,
         // ADR-0019：StepFinish 决策上下文据此感知待唤醒后台工作

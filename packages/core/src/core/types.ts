@@ -324,8 +324,23 @@ export type JsonValue = string | number | boolean | null | JsonValue[] | {
   [key: string]: JsonValue;
 };
 
+export interface WorkThreadCommandIdentity {
+  commandId: string;
+  threadId: string;
+  headGeneration: number;
+}
+
+export interface InputReceiptIdentity extends WorkThreadCommandIdentity {
+  /** Viewer lease granted to this concrete runtime. */
+  leaseId: string;
+  sessionId: string;
+  runtimeInstanceId: string;
+}
+
 export interface Message {
   role: MessageRole;
+  /** Durable runtime receipt identity; metadata only, excluded from LLM wire messages. */
+  inputReceipt?: InputReceiptIdentity;
   content: string;
   turn?: number;
   toolCallId?: string;
@@ -519,6 +534,8 @@ export type { UsageInfo, ModelUsageKey, ModelUsageSegment, CallUsageSummary };
 
 // Agent 配置
 export interface AgentConfig {
+  /** Runtime identity used only for durable WorkThread receipt fencing. */
+  runtimeInputIdentity?: { runtimeInstanceId?: string; threadId?: string; headGeneration?: number; sessionId?: string };
   /**
    * LLM 客户端（可选，ADR-0034 延迟绑定）。
    *
@@ -734,6 +751,13 @@ export interface AgentSession {
   // call 运行状态（独立于 currentState，不受 state 覆盖影响）
   callActive?: boolean;
   runtimeState?: AgentRuntimeStateSnapshot;
+  /** Current runtime instance identity, used to fence durable input leases. */
+  runtimeInstanceId?: string;
+  /** Claw's durable business session id; distinct from Viewer AgentSession.id. */
+  workSessionId?: string;
+  /** WorkThread target identity for this registered runtime. */
+  threadId?: string;
+  headGeneration?: number;
   events: Notification[];
   lastEventCount: number;
   logs: DebugLogEntry[];
@@ -788,6 +812,7 @@ export interface QueuedInput {
   id: string;
   text: string;
   timestamp: number;
+  inputLease?: InputReceiptIdentity;
   kind?: TurnKind;
   /** 图片附件（多模态输入） */
   images?: ImageInput[];
@@ -795,6 +820,8 @@ export interface QueuedInput {
   source?: string;
   /** 来源侧事件/请求标识，不承担全局幂等语义 */
   sourceRef?: string;
+  /** Idempotent WorkThread command identity; independent of sourceRef. */
+  commandIdentity?: WorkThreadCommandIdentity;
   /**
    * 会话归属事实（ADR-0019 决策 8）：宿主多会话拓扑下，投递方声明本条
    * 输入归属的会话。框架只透传不解释；不携带时路由行为与现状一致。
@@ -819,6 +846,8 @@ export interface UserTurnInput {
   images?: ImageInput[];
   source?: string;
   sourceRef?: string;
+  /** Stable WorkThread command identity; receipt lease is assigned by ViewerWorker. */
+  commandIdentity?: WorkThreadCommandIdentity;
   /**
    * 会话归属事实（ADR-0019 决策 8）：宿主多会话拓扑下，投递方声明本条
    * 输入归属的会话。框架只透传不解释（排队项随行、dequeue 可见）；不携带
@@ -850,14 +879,35 @@ export type UserTurnSubmissionResult =
       delivery: 'queued';
       id: string;
       queueLength: number;
+      /**
+       * 接收端幂等命中（ADR-0047 阶段 3a）：同一 sourceRef 的重复投递
+       * 返回既有排队项，不重复入队。id 是既有排队项的 id。
+       */
+      duplicate?: boolean;
+      source?: string;
+      sourceRef?: string;
+    }
+  | {
+      /**
+       * 已消费幂等命中（ADR-0047 阶段 3a）：sourceRef 已被消费（持久
+       * consumedSourceRefs 记录在案），重复投递不重新执行，幂等成功。
+       */
+      success: true;
+      delivery: 'consumed';
+      duplicate: true;
       source?: string;
       sourceRef?: string;
     }
   | {
       success: false;
-      code: 'agent_not_found' | 'invalid_input' | 'input_mode_conflict' | 'runtime_not_accepting_input';
+      code: 'agent_not_found' | 'invalid_input' | 'input_mode_conflict' | 'runtime_not_accepting_input' | 'persistent_store_unavailable';
       error: string;
       pendingMode?: UserInputRequestMode;
+      /**
+       * 接收边界收敛（ADR-0047 阶段 3a）：持久接管写盘失败时为 true——
+       * 输入未被接收（内存与磁盘均未入队），投递方应重试而非收敛。
+       */
+      retryable?: boolean;
     };
 
 /**
@@ -881,6 +931,10 @@ export interface CallTurnOptions {
    * 它的那次提交；不承担全局幂等语义（与 QueuedInput.sourceRef 同义）。
    */
   sourceRef?: string;
+  /** Runtime durable-input receipt; only valid for user turns; not a sourceRef alias. */
+  inputReceipt?: InputReceiptIdentity;
+  /** Invoked only after the receipt-bearing snapshot is saved successfully. */
+  acknowledgeInputReceipt?: (identity: InputReceiptIdentity) => Promise<void>;
 }
 
 /**
@@ -926,6 +980,11 @@ export interface RegisterAgentMsg {
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
   activeInputRequest?: ActiveInputRequest; // 活跃的输入请求（用于重连后恢复）
+  /** Runtime instance and WorkThread head fence for durable input receipt. */
+  runtimeInstanceId?: string;
+  workSessionId?: string;
+  threadId?: string;
+  headGeneration?: number;
   inputPolicy?: 'standard' | 'none'; // 外部用户回合接受策略（'none' = 拒绝排队注入）
 }
 

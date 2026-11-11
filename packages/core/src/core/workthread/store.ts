@@ -23,7 +23,7 @@
 import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import type { WorkThreadCommand } from './inbox.js';
+import type { WorkThreadCommand, WorkThreadUnresolvedCommand } from './inbox.js';
 
 export interface WorkThreadChainEntry {
   sessionId: string;
@@ -66,8 +66,16 @@ export interface WorkThreadRecord {
   identity?: string | null;
   rootSessionId: string;
   headSessionId: string;
+  /** Monotonic generation incremented only when the thread head changes. */
+  headGeneration?: number;
   sessionChain: WorkThreadChainEntry[];
   commands: WorkThreadCommand[];
+  /**
+   * ADR-0047 阶段 2：接续时无法判定消费的退役棒指令（unresolved 一等事实）。
+   * 与 head 推进同盘原子落盘；open（未处置）记录及其引用的命令豁免裁剪。
+   * 旧记录缺省该字段，读取方按空数组防御。
+   */
+  unresolvedCommands?: WorkThreadUnresolvedCommand[];
   pendingSuccession: WorkThreadPendingSuccession | null;
   /** 宿主级「暂停投递」落盘第一等布尔开关（重启不丢）。 */
   hold: boolean;

@@ -11,7 +11,7 @@
 import type { Context } from '../context.js';
 import type { ToolExecResult } from '../context.js';
 import type { ToolRegistry } from '../tool.js';
-import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta, TurnKind, Tool } from '../types.js';
+import type { ToolCall, LLMResponse, Message, UsageInfo, ImageInput, LLMMeta, TurnKind, Tool, InputReceiptIdentity, WorkThreadCommandIdentity } from '../types.js';
 import type { HookResult, StepFinishDecisionContext, PendingWakeup, ExecutionError } from '../lifecycle.js';
 import type { CallFinishReason, CallOutcome } from '../lifecycle.js';
 import type { ReActResult, DebugPusher } from './types.js';
@@ -43,6 +43,7 @@ export class ReActLoopRunner {
       maxTurns: number;  // 实际是 maxSteps，但保留兼容性
       debugEnabled: boolean;
       agentId?: string;
+      getRuntimeInputIdentity?: () => { threadId?: string; headGeneration?: number };
       _currentStep: number;
       _agentId?: string;
       _parentPool?: any;
@@ -54,6 +55,7 @@ export class ReActLoopRunner {
       dispatchTurnActivations(refs: string[], context: Context): Promise<void>;
       dispatchTurnMetadata(metadata: Record<string, unknown>, context: Context): Promise<void>;
       captureInterjectionCheckpoint(draftInput: string, context: Context): Promise<number>;
+      persistInputReceipt(context: Context, input: { text: string; images?: ImageInput[]; timestamp?: number; receipt: InputReceiptIdentity }): Promise<void>;
       stepSaveFn?: () => Promise<void>;
       peekContinuationRequest?: () => CallContinuationRequest | null;
       collectPendingWakeups(): PendingWakeup[];
@@ -828,7 +830,7 @@ export class ReActLoopRunner {
    * @param agentId Agent ID
    * @returns 排队消息（文本 + 图片 + 能力激活通知 + 自由元数据 + 输入身份），如果没有则返回 null
    */
-  private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number } | null> {
+  private async fetchQueuedInput(agentId: string): Promise<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number; inputReceipt?: InputReceiptIdentity } | null> {
     // runtime → 平台 HTTP 面寻址（ADR-0037 决策 3）：宿主可注入完整 origin
     // （AGENTDEV_VIEWER_ORIGIN，容器/远程部署时 runtime 不在同一网络命名空间），
     // 未注入时回退现状：本机回环 + AGENTDEV_VIEWER_PORT。
@@ -838,19 +840,33 @@ export class ReActLoopRunner {
     const internalToken = process.env.PROTOCLAW_INTERNAL_TOKEN;
 
     try {
-      const res = await fetch(`${viewerOrigin}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
+      const runtimeIdentity = this.agent.getRuntimeInputIdentity?.();
+      const reliableThreadInput = runtimeIdentity?.threadId && Number.isInteger(runtimeIdentity.headGeneration);
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(internalToken ? { Authorization: `Bearer ${internalToken}` } : {}),
+      };
+      let res = await fetch(`${viewerOrigin}/api/agents/${encodeURIComponent(agentId)}/${reliableThreadInput ? 'command-input/claim' : 'dequeue-input'}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(internalToken ? { Authorization: `Bearer ${internalToken}` } : {}),
-        },
+        headers,
       });
+      // Legacy non-thread items keep their dequeue semantics. A 204 claim means
+      // the queue head is empty or non-command; only then consume the legacy item.
+      if (reliableThreadInput && res.status === 204) {
+        res = await fetch(`${viewerOrigin}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
+          method: 'POST',
+          headers,
+        });
+      }
 
       if (!res.ok) {
         return null;
       }
 
       const data = await res.json();
+      if (reliableThreadInput && data.input && !data.input.inputLease) {
+        throw new Error('Viewer returned a thread command without a durable lease');
+      }
       // 空文本项：resume 唤醒的合法形态（text 允许为空）。不能按"无项"返回——
       // 否则 drain pass 在此提前终止，堵住其后排队项的消费与身份关联。
       // resume 项由注入循环消费即弃（不注入、不进 consumedSourceRefs）。
@@ -878,6 +894,7 @@ export class ReActLoopRunner {
           ...(typeof data.input.timestamp === 'number' && Number.isFinite(data.input.timestamp)
             ? { timestamp: data.input.timestamp }
             : {}),
+          ...(data.input.inputLease ? { inputReceipt: data.input.inputLease as InputReceiptIdentity } : {}),
         };
       }
       return null;
@@ -903,12 +920,20 @@ export class ReActLoopRunner {
   ): Promise<{ injected: boolean; sourceRefs: string[] }> {
     if (!this.agent.agentId) return { injected: false, sourceRefs: [] };
     const consumedSourceRefs: string[] = [];
+    let durableReceiptClaimed = false;
+    const internalToken = process.env.PROTOCLAW_INTERNAL_TOKEN;
     try {
-      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number }> = [];
+      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number; inputReceipt?: InputReceiptIdentity }> = [];
       while (true) {
         const qi = await this.fetchQueuedInput(this.agent.agentId);
         if (!qi) break;
         items.push(qi);
+        // A durable claim remains at the queue head until snapshot+ack. Process
+        // one receipt at a time so the next poll cannot claim the same item.
+        if (qi.inputReceipt) {
+          durableReceiptClaimed = true;
+          break;
+        }
       }
       if (items.length > 0) {
         logger.info(`${logLabel}：注入排队消息`, { count: items.length });
@@ -932,6 +957,28 @@ export class ReActLoopRunner {
           // 与 tool result 合流到下一个 wire 级 user turn
           if (qi.kind === 'reminder') {
             context.addSystemMessage(qi.text, callIndex, qi.source, undefined, qi.timestamp);
+          } else if (qi.inputReceipt) {
+            // Reliable thread input is snapshotted and acked via Agent's shared
+            // receipt boundary before this drain pass continues model execution.
+            await (this.agent as any).persistInputReceipt(context, {
+              text: qi.text,
+              images: qi.images,
+              timestamp: qi.timestamp,
+              receipt: qi.inputReceipt,
+            });
+            const viewerOrigin = process.env.AGENTDEV_VIEWER_ORIGIN || `http://127.0.0.1:${process.env.AGENTDEV_VIEWER_PORT || '2026'}`;
+            const ack = await fetch(`${viewerOrigin}/api/agents/${encodeURIComponent(this.agent.agentId!)}/command-input/ack`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(internalToken ? { Authorization: `Bearer ${internalToken}` } : {}),
+              },
+              body: JSON.stringify({ receipt: qi.inputReceipt }),
+            });
+            if (!ack.ok) throw new Error(`Durable input acknowledgement failed: ${ack.status}`);
+            if (qi.sourceRef) consumedSourceRefs.push(qi.sourceRef);
+            injected = true;
+            break;
           } else {
             // 插话锚点：同轮内排队消息注入前建 checkpoint（callIndex 取
             // N+1-2^-k 二分序列），否则「回退到插话」只能落到轮边界 =
@@ -952,6 +999,7 @@ export class ReActLoopRunner {
       }
     } catch (e) {
       logger.debug(`${logLabel}：队列查询失败，忽略`, { error: e instanceof Error ? e.message : String(e) });
+      if (durableReceiptClaimed) throw e;
     }
     return { injected: false, sourceRefs: [] };
   }

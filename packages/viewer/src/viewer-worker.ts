@@ -7,7 +7,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createNetServer, type Server, type Socket } from 'net';
-import { unlinkSync, existsSync } from 'fs';
+import { unlinkSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { type DebugLogEntry, type AgentOverviewSnapshot, type AgentRuntimeStateSnapshot, type TodoPlanSnapshot, type TodoTaskSnapshot, type AgentSession, type DebugHubIPCMessage, type ImageInput, type InputLease, type InputRequestCancelledMsg, type QueuedInput, type TurnKind, type UserInputResponse, type UserTurnInput, type UserTurnSubmissionResult, getDefaultUDSPath } from '@agentdevjs/core';
@@ -119,6 +119,15 @@ class ViewerWorker {
   // runtime 经 host.docker.internal 访问）时全端点强制 Bearer。
   private readonly httpBind: string;
   private readonly httpRequiresAuth: boolean;
+  // 排队输入持久接管目录（ADR-0047 阶段 3a）：undefined = 内存队列（旧行为，
+  // 兼容不落盘宿主）；传入目录则 per-agent 文件持久化，worker 重启后队列
+  // 与已消费 sourceRef 记录恢复，接收端以 sourceRef 幂等去重。
+  private readonly queuedInputStoreDir?: string;
+  /**
+   * 会话内已 ack 命令集（内存兜底，与持久 consumedSourceRefs 同容量语义）：
+   * 无 storeDir 宿主的重复 ack 幂等判定；持久模式重启后由磁盘消费集接管。
+   */
+  private readonly consumedCommandAcks = new Map<string, Set<string>>();
   private udsClients: Map<string, Socket> = new Map();
 
   // 宿主定向请求的在途关联：requestId → pending。宿主断连（socket close /
@@ -149,10 +158,11 @@ class ViewerWorker {
   private readonly MAX_BYTES = 50 * 1024 * 1024; // 50MB
   private readonly MAX_LOGS = 5000;
 
-  constructor(port: number, openBrowser: boolean = true, udsPath?: string) {
+  constructor(port: number, openBrowser: boolean = true, udsPath?: string, options?: { queuedInputStoreDir?: string }) {
     this.port = port;
     this.openBrowser = openBrowser;
     this.udsPath = udsPath || getDefaultUDSPath();
+    this.queuedInputStoreDir = options?.queuedInputStoreDir;
     const tcpAddress = process.env.AGENTDEV_VIEWER_ADDR;
     if (tcpAddress) {
       const match = /^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/.exec(tcpAddress);
@@ -651,7 +661,36 @@ class ViewerWorker {
       return;
     }
 
-    // POST /api/agents/:id/dequeue-input - 消费第一条排队消息
+    // POST /api/agents/:id/command-input/claim - durable WorkThread receipt claim
+    const commandClaimMatch = url.match(/^\/api\/agents\/([^/]+)\/command-input\/claim$/);
+    if (commandClaimMatch && req.method === 'POST') {
+      const input = this.claimCommandInput(commandClaimMatch[1]);
+      res.writeHead(input ? 200 : 204, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(input ? JSON.stringify({ input }) : '');
+      return;
+    }
+
+    // POST /api/agents/:id/command-input/ack - remove only the matching durable claim
+    const commandAckMatch = url.match(/^\/api\/agents\/([^/]+)\/command-input\/ack$/);
+    if (commandAckMatch && req.method === 'POST') {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { receipt } = JSON.parse(body || '{}');
+          const acknowledged = this.acknowledgeCommandInput(commandAckMatch[1], receipt);
+          res.writeHead(acknowledged ? 200 : 409, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ acknowledged }));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ acknowledged: false, error: 'Invalid receipt' }));
+        }
+      });
+      return;
+    }
+
+    // POST /api/agents/:id/dequeue-input - legacy input consumption
     const dequeueMatch = url.match(/^\/api\/agents\/([^/]+)\/dequeue-input$/);
     if (dequeueMatch && req.method === 'POST') {
       this.handleDequeueInput(req, res, dequeueMatch[1]);
@@ -1167,6 +1206,15 @@ class ViewerWorker {
       && (typeof input.sessionId !== 'string' || input.sessionId.length === 0 || input.sessionId.length > 128)) {
       return { success: false, code: 'invalid_input', error: 'sessionId must be a non-empty string up to 128 characters' };
     }
+    if (input.commandIdentity !== undefined) {
+      const identity = input.commandIdentity;
+      if (!identity || typeof identity.commandId !== 'string' || !identity.commandId
+        || typeof identity.threadId !== 'string' || !identity.threadId
+        || !Number.isInteger(identity.headGeneration) || identity.headGeneration < 0
+        || input.kind === 'reminder' || input.kind === 'resume') {
+        return { success: false, code: 'invalid_input', error: 'commandIdentity must identify a user WorkThread command' };
+      }
+    }
     if (input.capabilityActivations !== undefined
       && (!Array.isArray(input.capabilityActivations)
         || input.capabilityActivations.length > 16
@@ -1208,7 +1256,51 @@ class ViewerWorker {
       };
     }
 
-    if (!isNonUserTurn && lease) {
+    // 接收端幂等去重（ADR-0047 阶段 3a）：带 sourceRef 的重复投递不重复
+    // 接收——投递方在标记 delivered 前崩溃重试、或消费回执丢失后重试，
+    // 同一 commandId 幂等返回。两层：未消费（队列内，含重启恢复的持久
+    // 队列）返回既有排队项；已消费返回幂等成功（不重新执行）。无
+    // sourceRef 的输入（前端直发用户消息）不去重，保持原语义。
+    // 检查位置必须在 lease 直接应答之前：否则重复投递遇活动 lease 会
+    // 绕过两层去重被再次转交执行（阶段 3 审查裁定）。
+    if (input.commandIdentity) {
+      const inQueue = session.queuedInputs.find((q) => q.commandIdentity?.threadId === input.commandIdentity!.threadId
+        && q.commandIdentity?.commandId === input.commandIdentity!.commandId);
+      if (inQueue) {
+        return { success: true, delivery: 'queued', id: inQueue.id, queueLength: session.queuedInputs.length, duplicate: true, source: input.source, sourceRef: input.sourceRef };
+      }
+    }
+    if (input.commandIdentity && (session.threadId !== input.commandIdentity.threadId
+      || session.headGeneration !== input.commandIdentity.headGeneration
+      || input.sessionId !== session.workSessionId)) {
+      return { success: false, code: 'runtime_not_accepting_input', error: 'Command identity does not match the registered WorkThread head' };
+    }
+    if (input.sourceRef && this.queuedInputStoreDir) {
+      const inQueue = session.queuedInputs.find((q) => q.sourceRef === input.sourceRef);
+      if (inQueue) {
+        return {
+          success: true,
+          delivery: 'queued',
+          id: inQueue.id,
+          queueLength: session.queuedInputs.length,
+          duplicate: true,
+          ...(input.source ? { source: input.source } : {}),
+          ...(input.sourceRef ? { sourceRef: input.sourceRef } : {}),
+        };
+      }
+      const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+      if (consumedSourceRefs.includes(input.sourceRef)) {
+        return {
+          success: true,
+          delivery: 'consumed',
+          duplicate: true,
+          ...(input.source ? { source: input.source } : {}),
+          ...(input.sourceRef ? { sourceRef: input.sourceRef } : {}),
+        };
+      }
+    }
+
+    if (!isNonUserTurn && lease && !input.commandIdentity) {
       const requestId = lease.requestId;
       const response = this.createTextInputResponse(input);
       if (!this.forwardInputResponse(agentId, session, requestId, input.text, response)) {
@@ -1240,7 +1332,34 @@ class ViewerWorker {
         error: 'This runtime does not accept external user turns',
       };
     }
-    const queuedInput = this.enqueueQueuedInput(session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata, input.kind, input.sessionId);
+    // 接收端幂等去重（ADR-0047 阶段 3a）：带 sourceRef 的重复投递不重复
+    // 入队——投递方在标记 delivered 前崩溃重试、或消费回执丢失后重试，
+    // 同一 commandId 幂等返回。两层：未消费（队列内，含重启恢复的持久
+    // 队列）返回既有排队项；已消费返回幂等成功（不重新执行）。无
+    // sourceRef 的输入（前端直发用户消息）不去重，保持原语义。
+    if (input.commandIdentity && !this.queuedInputStoreDir) {
+      return {
+        success: false,
+        code: 'persistent_store_unavailable',
+        error: 'WorkThread commands require a durable Viewer input store',
+        retryable: true,
+      };
+    }
+    if (input.commandIdentity && (session.threadId !== input.commandIdentity.threadId
+      || session.headGeneration !== input.commandIdentity.headGeneration
+      || !input.sessionId)) {
+      return { success: false, code: 'runtime_not_accepting_input', error: 'Command identity does not match the registered WorkThread head' };
+    }
+    const queuedInput = this.enqueueQueuedInput(agentId, session, input.text, input.images, input.source, input.sourceRef, input.capabilityActivations, input.metadata, input.kind, input.sessionId, input.commandIdentity);
+    if (!queuedInput) {
+      // 持久接管失败 = 未接收：可重试失败，内存与磁盘均未入队。
+      return {
+        success: false,
+        code: 'persistent_store_unavailable',
+        error: 'Queued input store unavailable; retry delivery',
+        retryable: true,
+      };
+    }
     this.emitSessionEvent({ kind: 'queued-inputs', agentId });
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
@@ -1266,7 +1385,9 @@ class ViewerWorker {
             ? 404
             : result.code === 'input_mode_conflict' || result.code === 'runtime_not_accepting_input'
               ? 409
-              : 400;
+              : result.code === 'persistent_store_unavailable'
+                ? 503
+                : 400;
         res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(result));
       } catch {
@@ -1333,7 +1454,171 @@ class ViewerWorker {
     };
   }
 
+  // ── 排队输入持久接管（ADR-0047 阶段 3a）────────────────────────────
+  //
+  // 文件布局：<dir>/queued-inputs/<safe(agentId)>.json
+  //   { version: 1, items: QueuedInput[], consumedSourceRefs: string[] }
+  // 原子写（tmp + rename）；损坏文件按空队列处理并保留 .corrupt 取证副本。
+  // consumedSourceRefs 保留最近 500 条，仅用于旧 sourceRef 输入的兼容去重。
+  // WorkThread commandIdentity 走持久 inputLease/ack 状态，不依赖该有界集合。
+  private static readonly CONSUMED_REF_CAP = 500;
+
+  /** Claim one durable WorkThread command without removing it from the queue. */
+  public claimCommandInput(agentId: string): QueuedInput | null {
+    const session = this.agentSessions.get(agentId);
+    const input = session?.queuedInputs?.[0];
+    if (!session || !input?.commandIdentity) return null;
+    const identity = session.runtimeInstanceId && session.threadId && session.workSessionId && Number.isInteger(session.headGeneration)
+      ? {
+          ...input.commandIdentity,
+          leaseId: input.inputLease?.leaseId || randomUUID(),
+          sessionId: session.workSessionId,
+          runtimeInstanceId: session.runtimeInstanceId,
+        }
+      : null;
+    if (!identity || identity.threadId !== session.threadId || identity.headGeneration !== session.headGeneration) return null;
+    const previous = input.inputLease;
+    if (previous && (previous.runtimeInstanceId !== identity.runtimeInstanceId
+      || previous.headGeneration !== identity.headGeneration
+      || previous.sessionId !== identity.sessionId)) {
+      identity.leaseId = randomUUID();
+    }
+    const persistedItems = session.queuedInputs.map((item) => item === input ? { ...item, inputLease: identity } : item);
+    const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+    if (!this.saveQueuedInputState(agentId, persistedItems, consumedSourceRefs)) return null;
+    input.inputLease = identity;
+    return structuredClone(input);
+  }
+
+  /** Acknowledge only the exact persisted lease currently owned by this runtime/head. */
+  public acknowledgeCommandInput(agentId: string, receipt: QueuedInput['inputLease']): boolean {
+    if (!receipt) return false;
+    const session = this.agentSessions.get(agentId);
+    if (!session || session.runtimeInstanceId !== receipt.runtimeInstanceId
+      || session.threadId !== receipt.threadId || session.headGeneration !== receipt.headGeneration) return false;
+    const index = session.queuedInputs.findIndex((item) => item.commandIdentity?.commandId === receipt.commandId
+      && item.inputLease?.leaseId === receipt.leaseId
+      && item.inputLease?.sessionId === receipt.sessionId
+      && item.inputLease?.runtimeInstanceId === receipt.runtimeInstanceId
+      && item.inputLease?.headGeneration === receipt.headGeneration);
+    if (index < 0) {
+      // 重复 ack 幂等（ADR-0047 阶段 3b）：ack 成功但响应丢失后重试，条目已
+      // 移除。持久模式以磁盘消费集判定（重启后仍幂等）；内存模式以会话内
+      // 已 ack 集合判定。两者都未命中才是真正的身份不符（409）。
+      if (this.queuedInputStoreDir
+        && this.loadQueuedInputState(agentId).consumedSourceRefs.includes(receipt.commandId)) return true;
+      return this.consumedCommandAcks.get(agentId)?.has(receipt.commandId) === true;
+    }
+    const next = [...session.queuedInputs];
+    next.splice(index, 1);
+    const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+    if (this.queuedInputStoreDir) {
+      // ack 即消费确认（该输入已随会话快照持久进入上下文，不同于转交前的
+      // 预写）：与队列移除同一次原子写记入有界消费集——重复 ack 幂等成功；
+      // 同 commandId 重投（投递响应丢失 + 已 claim/ack 的窗口）在提交面
+      // 两层去重命中 delivery:'consumed'，不重新入队二次执行。
+      const nextRefs = consumedSourceRefs.includes(receipt.commandId)
+        ? consumedSourceRefs
+        : [...consumedSourceRefs, receipt.commandId].slice(-ViewerWorker.CONSUMED_REF_CAP);
+      if (!this.saveQueuedInputState(agentId, next, nextRefs)) return false;
+    }
+    session.queuedInputs.splice(index, 1);
+    const acked = this.consumedCommandAcks.get(agentId) ?? new Set<string>();
+    acked.add(receipt.commandId);
+    if (acked.size > ViewerWorker.CONSUMED_REF_CAP) {
+      for (const id of acked) {
+        acked.delete(id);
+        break;
+      }
+    }
+    this.consumedCommandAcks.set(agentId, acked);
+    this.emitSessionEvent({ kind: 'queued-inputs', agentId });
+    return true;
+  }
+
+  private queuedInputStoreFile(agentId: string): string | null {
+    if (!this.queuedInputStoreDir) return null;
+    // encodeURIComponent 是单射编码：不同 agentId 不会折叠为同一文件名
+    // （审查裁定：`_` 替换可能让 `a/b` 与 `a_b` 碰撞）。
+    const safe = encodeURIComponent(agentId);
+    return join(this.queuedInputStoreDir, 'queued-inputs', `${safe}.json`);
+  }
+
+  private loadQueuedInputState(agentId: string): { items: QueuedInput[]; consumedSourceRefs: string[] } {
+    const file = this.queuedInputStoreFile(agentId);
+    if (!file || !existsSync(file)) return { items: [], consumedSourceRefs: [] };
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8'));
+      const items = Array.isArray(parsed?.items) ? parsed.items.filter((x: unknown) => x && typeof x === 'object') : [];
+      const refs = Array.isArray(parsed?.consumedSourceRefs)
+        ? parsed.consumedSourceRefs.filter((x: unknown): x is string => typeof x === 'string')
+        : [];
+      return { items, consumedSourceRefs: refs };
+    } catch (error) {
+      // 损坏不炸 worker：隔离取证副本，按空状态继续（下次写覆盖）。
+      try { renameSync(file, `${file}.corrupt`); } catch { /* 并发隔离失败可容忍 */ }
+      console.warn(`[Viewer Worker] 排队输入持久文件损坏，已隔离并重置: ${file}`, error);
+      return { items: [], consumedSourceRefs: [] };
+    }
+  }
+
+  /** @returns 持久化是否成功。无 storeDir 时返回 true（内存语义无磁盘承诺）。 */
+  private saveQueuedInputState(agentId: string, items: QueuedInput[], consumedSourceRefs: string[]): boolean {
+    const file = this.queuedInputStoreFile(agentId);
+    if (!file) return true;
+    try {
+      mkdirSync(join(file, '..'), { recursive: true });
+      const tmp = `${file}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ version: 1, items, consumedSourceRefs }));
+      renameSync(tmp, file);
+      return true;
+    } catch (error) {
+      // 持久接管承诺下，写盘失败必须信号化（ADR-0047 阶段 3a 审查裁定）：
+      // 接收方返回失败让投递方重试，而不是静默 success 后在崩溃中丢输入。
+      console.error('[Viewer Worker] 排队输入持久化失败:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 移除预写（ADR-0047 阶段 3a 二轮审查裁定）：把「移除 consumed 后的
+   * 队列」写入磁盘，**不记消费引用**。调用方在写成功后才从内存移除并
+   * 转交；消费引用由 `recordConsumedRef` 在转交/响应成功后补记。
+   *
+   * 为什么不预记引用：预写（移除+记引用）成功后若转交失败且补救写也
+   * 失败（或预写后立即崩溃），磁盘记录「已消费」会挡住重投（去重返回
+   * consumed 不重新入队）——形成丢且不可重发。只移除不记引用后，任何
+   * 转交前/转交失败路径的重投都能重新入队：重复执行是可见的（turn
+   * 事件链留痕），静默丢失不可见——ADR-0047 的一贯取舍。
+   *
+   * @returns 写盘是否成功；无 storeDir 返回 true（内存语义无磁盘承诺）。
+   */
+  private persistRemoveQueuedInput(agentId: string, nextItems: QueuedInput[]): boolean {
+    if (!this.queuedInputStoreDir) return true;
+    const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+    return this.saveQueuedInputState(agentId, nextItems, consumedSourceRefs);
+  }
+
+  /**
+   * 转交/响应成功后补记消费引用（接收端去重防护窗口）。失败仅告警：
+   * items 已移除，引用未记只让后续重投重新入队（可见的重复），不产生
+   * 丢失。有界窗口（CONSUMED_REF_CAP）语义见去重检查处注释。
+   */
+  private recordConsumedRef(agentId: string, sourceRef?: string): void {
+    if (!this.queuedInputStoreDir || !sourceRef) return;
+    const { items, consumedSourceRefs } = this.loadQueuedInputState(agentId);
+    if (consumedSourceRefs.includes(sourceRef)) return;
+    consumedSourceRefs.push(sourceRef);
+    if (consumedSourceRefs.length > ViewerWorker.CONSUMED_REF_CAP) {
+      consumedSourceRefs.splice(0, consumedSourceRefs.length - ViewerWorker.CONSUMED_REF_CAP);
+    }
+    if (!this.saveQueuedInputState(agentId, items, consumedSourceRefs)) {
+      console.warn(`[Viewer Worker] 消费引用补记失败（重投将重新入队，不丢失）: agentId=${agentId}`);
+    }
+  }
+
   private enqueueQueuedInput(
+    agentId: string,
     session: AgentSession,
     text: string,
     images?: ImageInput[],
@@ -1343,7 +1628,8 @@ class ViewerWorker {
     metadata?: Record<string, unknown>,
     kind?: TurnKind,
     sessionId?: string,
-  ): QueuedInput {
+    commandIdentity?: QueuedInput['commandIdentity'],
+  ): QueuedInput | null {
     if (!session.queuedInputs) {
       (session as any).queuedInputs = [];
     }
@@ -1357,12 +1643,22 @@ class ViewerWorker {
       ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
       ...(source ? { source } : {}),
       ...(sourceRef ? { sourceRef } : {}),
+      ...(commandIdentity ? { commandIdentity } : {}),
       // 会话归属事实（ADR-0019 决策 8）：排队项随行，dequeue 消费端可见。
       ...(sessionId ? { sessionId } : {}),
       ...(Array.isArray(capabilityActivations) && capabilityActivations.length > 0 ? { capabilityActivations } : {}),
       ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
     session.queuedInputs.push(queuedInput);
+    if (this.queuedInputStoreDir) {
+      const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+      if (!this.saveQueuedInputState(agentId, [...session.queuedInputs], consumedSourceRefs)) {
+        // 接收边界收敛规则：持久接管失败 = 未接收。回滚内存保持两层
+        // 一致，返回失败让投递方重试；不能静默 success（崩溃丢输入）。
+        session.queuedInputs.pop();
+        return null;
+      }
+    }
     return queuedInput;
   }
 
@@ -1408,11 +1704,30 @@ class ViewerWorker {
       return;
     }
 
-    const input = queued.shift()!;
+    const input = queued[0];
+    // WorkThread commands are consumed only through durable claim/ack. Legacy
+    // dequeue callers (React drain / CallArbiter safety net) must not remove one
+    // before the runtime has persisted its receipt-bearing session snapshot.
+    if (input.commandIdentity) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ input: null, remaining: queued.length }));
+      return;
+    }
+    // 消费边界收敛：先把移除预写成功，才动内存并转交；写失败 → 输入
+    // 保留未消费，503 让 runtime 下轮再取。消费引用在响应成功后补记
+    // （recordConsumedRef）——预记引用会在「预写成功+响应前崩溃+重投」
+    // 窗口挡住重试造成丢失。
+    if (!this.persistRemoveQueuedInput(agentId, queued.slice(1))) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '1' });
+      res.end(JSON.stringify({ error: 'Queued input store unavailable', retryable: true }));
+      return;
+    }
+    queued.shift();
     console.log(`[Viewer Worker] 消费排队输入: ${agentId}, remaining=${queued.length}`);
     this.emitSessionEvent({ kind: 'queued-inputs', agentId });
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ input, remaining: queued.length }));
+    this.recordConsumedRef(agentId, input.sourceRef);
   }
 
   /**
@@ -1446,6 +1761,15 @@ class ViewerWorker {
       }
       try {
         if (Array.isArray(session.queuedInputs) && session.queuedInputs.length > 0) {
+          // 用户显式中断 = 放弃排队项（不是消费）：持久队列同步清空，
+          // 但不记 consumedSourceRefs——同 commandId 重投是新的投递意图。
+          // 取舍：中断优先于存储（不能被 store 故障劫持），写盘失败仅告警
+          // ——重启后这些被放弃的项会恢复入队，由下一次中断或人工清理；
+          // 这是显式接受的窄风险，不是静默降级。
+          if (this.queuedInputStoreDir) {
+            const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+            this.saveQueuedInputState(agentId, [], consumedSourceRefs);
+          }
           session.queuedInputs = [];
         }
         targetSocket.write(JSON.stringify({
@@ -1678,7 +2002,9 @@ class ViewerWorker {
         logs: [],
         overview: this.createEmptyOverview(),
         todoPlan: this.createEmptyTodoPlan(),
-        queuedInputs: [],
+        // 持久接管恢复（ADR-0047 阶段 3a）：worker 重启后排队输入从磁盘
+        // 恢复，runtime 重连消费——接收后崩溃不再丢失已接收输入。
+        queuedInputs: this.queuedInputStoreDir ? this.loadQueuedInputState(agentId).items : [],
       };
       this.agentSessions.set(agentId, session);
     }
@@ -1877,10 +2203,23 @@ class ViewerWorker {
    */
   public handleRegisterAgent(msg: any, clientId?: string): void {
     const { agentId, name, projectRoot, resourceRootCount, templateEntries, hookInspector, overview, activeInputRequest, inputPolicy } = msg;
+    // 身份字段按 RegisterAgentMsg 契约位于消息顶层（DebugHub UDS 发送端
+    // 的展开位置）；msg.metadata 是 Claw HTTP 注册通道（ClawSessionRegistration
+    // .metadata）的承载位置，作兜底。只读一处会让另一通道的身份静默丢失，
+    // WorkThread fencing 将拒绝一切线程指令（阶段 5 真实宿主联测捕获）。
+    const metadata = msg.metadata && typeof msg.metadata === 'object' ? msg.metadata : {};
+    const identitySource = { ...metadata, ...msg };
+    const { runtimeInstanceId, threadId, headGeneration, workSessionId } = identitySource;
     // 重连判定：session 已存在即 UDS 断开后的重新注册（DebugHub 重连
     // reRegisterAgents 全量重推），订阅方据此对该 agent 触发一次对账。
     const isReconnect = this.agentSessions.has(agentId);
     const session = this.getOrCreateSession(agentId, name);
+
+    // Runtime registration is authoritative for durable WorkThread receipt fencing.
+    session.runtimeInstanceId = typeof runtimeInstanceId === 'string' ? runtimeInstanceId : undefined;
+    session.threadId = typeof threadId === 'string' ? threadId : undefined;
+    session.headGeneration = Number.isInteger(headGeneration) ? headGeneration : undefined;
+    session.workSessionId = typeof workSessionId === 'string' ? workSessionId : undefined;
 
     // 外部输入策略（'none' = 拒绝排队注入，如测试沙盒）
     if (inputPolicy === 'none') {
@@ -2804,17 +3143,33 @@ class ViewerWorker {
     // 队首是 reminder（机器通报）时不转交：它不冒充用户应答租约，
     // 留在邮箱由空闲邮箱消费循环按 FIFO 顺序处理（跳过它转交后面的
     // 项会颠倒用户消息顺序）。
+    // 队首带 commandIdentity（WorkThread 用户命令）时同样不转交：
+    // 直答活动租约会绕过 claim/ack 协议（无持久 lease、无 runtime/head
+    // 身份校验、无 inputReceipt 盖戳，ADR-0047 阶段 3b 明确禁止）；
+    // 该命令留在持久队列，由 runtime 的 claim 路径接管。
     if (!session.inputLease && msg.mode !== 'choices' && session.queuedInputs.length > 0
-      && session.queuedInputs[0].kind !== 'reminder') {
+      && session.queuedInputs[0].kind !== 'reminder'
+      && !session.queuedInputs[0].commandIdentity) {
       const queuedInput = session.queuedInputs[0];
       const response = this.createTextInputResponse(queuedInput);
-      if (this.forwardInputResponse(agentId, session, requestId, queuedInput.text, response)) {
-        session.queuedInputs.shift();
-        console.log(`[Viewer Worker] 排队用户回合已转交给新输入请求: ${requestId}, remaining=${session.queuedInputs.length}`);
-        // 转交路径不经过 dequeue 端点：队列变化必须在此 emit，否则前端
-        // 排队气泡滞留（SSE 事件源完整性约束，非 IPC 写入路径）。
-        this.emitSessionEvent({ kind: 'queued-inputs', agentId });
-        return;
+      // 移除预写（不记消费引用）：写盘失败 → 不转交，输入保留，
+      // fall through 存储 lease，下个输入请求再试。
+      if (this.persistRemoveQueuedInput(agentId, session.queuedInputs.slice(1))) {
+        if (this.forwardInputResponse(agentId, session, requestId, queuedInput.text, response)) {
+          session.queuedInputs.shift();
+          console.log(`[Viewer Worker] 排队用户回合已转交给新输入请求: ${requestId}, remaining=${session.queuedInputs.length}`);
+          // 转交路径不经过 dequeue 端点：队列变化必须在此 emit，否则前端
+          // 排队气泡滞留（SSE 事件源完整性约束，非 IPC 写入路径）。
+          this.emitSessionEvent({ kind: 'queued-inputs', agentId });
+          // 转交成功才补记消费引用：补记失败 → 后续重投重新入队
+          // （可见的重复，turn 事件留痕），不产生静默丢失。
+          this.recordConsumedRef(agentId, queuedInput.sourceRef);
+          return;
+        }
+        // 转交失败补救：内存首项未动，用内存全量覆盖磁盘恢复未消费态。
+        // 补救写也失败 → 磁盘 items 已无该项但引用未记 → 重投可重新
+        // 入队——不存在「丢且不可重发」窗口（二轮审查裁定）。
+        this.saveQueuedInputState(agentId, [...session.queuedInputs], this.loadQueuedInputState(agentId).consumedSourceRefs);
       }
     }
 

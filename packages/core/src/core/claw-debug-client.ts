@@ -44,19 +44,25 @@ export interface RegisterClawAgentInput {
   hookInspector?: HookInspectorSnapshot;
   overview?: AgentOverviewSnapshot;
   inputPolicy?: 'standard' | 'none';
+  runtimeInstanceId?: string;
+  sessionId?: string;
+  threadId?: string;
+  headGeneration?: number;
 }
 
 export class ClawDebugClient {
   private readonly runtimeUrl: string;
   private readonly processId: string;
   private readonly projectRoot: string;
+  private readonly fetchImpl: typeof fetch;
   private readonly sessionByAgentId = new Map<string, string>();
   private readonly pendingSessionByAgentId = new Map<string, Promise<string>>();
 
-  constructor(options: { runtimeUrl?: string; processId?: string; projectRoot?: string } = {}) {
+  constructor(options: { runtimeUrl?: string; processId?: string; projectRoot?: string; fetchImpl?: typeof fetch } = {}) {
     this.runtimeUrl = (options.runtimeUrl ?? getClawRuntimeUrl()).replace(/\/$/, '');
     this.processId = options.processId ?? String(process.pid);
     this.projectRoot = options.projectRoot ?? process.cwd();
+    this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
   async ping(): Promise<void> {
@@ -81,7 +87,12 @@ export class ClawDebugClient {
           agentId: input.agentId,
           resourceRootCount: input.resourceRootCount ?? 0,
           templateEntries: input.templateEntries ?? {},
+          ...(input.runtimeInstanceId ? { runtimeInstanceId: input.runtimeInstanceId } : {}),
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          ...(Number.isInteger(input.headGeneration) ? { headGeneration: input.headGeneration } : {}),
+          ...(input.sessionId ? { workSessionId: input.sessionId } : {}),
         },
+
         state: {
           hookInspector: input.hookInspector ?? null,
           overview: input.overview ?? null,
@@ -272,7 +283,7 @@ export class ClawDebugClient {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const response = await fetch(`${this.runtimeUrl}${path}`, {
+      const response = await this.fetchImpl(`${this.runtimeUrl}${path}`, {
         ...init,
         signal: controller.signal,
         headers: {

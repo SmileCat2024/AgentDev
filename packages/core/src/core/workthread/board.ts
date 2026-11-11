@@ -171,6 +171,80 @@ export class WorkThreadBoard {
     }
   }
 
+  /**
+   * 带完整性信号的看板读态（ADR-0047 阶段 2）：区分 ok / missing（无状态
+   * 文件——惰性创建下是普通线程的合法态）/ corrupt（文件存在但解析失败）。
+   *
+   * getState 把后两者都吞成 null，宿主因此无法区分「没有证据」与「证据
+   * 坏了」——消费分类只能一律按缺失处理。本方法补齐结构化信号：
+   *   - ok：证据可用（state 同 getState 的缓存契约）；
+   *   - missing：无文件（含 stat 失败的其它 IO 错误，主场景是未创建）；
+   *   - corrupt：文件存在但 JSON 解析失败（携带错误说明）。corrupt 文件
+   *     不会被本类自动修复或删除——修复是丢失证据的决定，走显式
+   *     quarantineBoard 运维动作保留证物。
+   */
+  async readStateDetailed(workThreadId: string): Promise<
+    | { integrity: 'ok'; state: WorkThreadBoardState }
+    | { integrity: 'missing' }
+    | { integrity: 'corrupt'; error: string }
+  > {
+    const filePath = this.boardFilePath(workThreadId);
+    let fileStat: Awaited<ReturnType<typeof stat>>;
+    try {
+      fileStat = await stat(filePath);
+    } catch {
+      this._stateCache.delete(filePath);
+      return { integrity: 'missing' };
+    }
+    const cached = this._stateCache.get(filePath);
+    if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+      return { integrity: 'ok', state: cached.value };
+    }
+    try {
+      const state = JSON.parse(await readFile(filePath, 'utf8')) as WorkThreadBoardState;
+      this._stateCache.set(filePath, { mtimeMs: fileStat.mtimeMs, size: fileStat.size, value: state });
+      return { integrity: 'ok', state };
+    } catch (error) {
+      this._stateCache.delete(filePath);
+      return { integrity: 'corrupt', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * 损坏看板的运维隔离（ADR-0047 阶段 2）：把 corrupt 状态文件改名为
+   * `<name>.corrupt-<timestamp>.json` 保留证物，随后看板按 missing 语义
+   * 惰性重建。隔离是显式的证据放弃动作——重建后的空窗口意味着历史事件
+   * 不可恢复，退役棒指令的消费分类将以 evidence_missing 进 unresolved。
+   *
+   * 与 mutate 同 _locks 串行链，隔离期间不会与状态写入交错。幂等：文件
+   * 已缺失时返回 missing（无需隔离）；ok 时返回 intact（不应隔离）。
+   */
+  async quarantineBoard(workThreadId: string): Promise<{
+    quarantined: boolean;
+    outcome: 'quarantined' | 'missing' | 'intact';
+    quarantinePath?: string;
+  }> {
+    const prev = this._locks.get(workThreadId) || Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((r) => (release = r));
+    this._locks.set(workThreadId, next);
+    await prev.catch(() => {});
+    try {
+      const detailed = await this.readStateDetailed(workThreadId);
+      if (detailed.integrity === 'ok') return { quarantined: false, outcome: 'intact' };
+      if (detailed.integrity === 'missing') return { quarantined: false, outcome: 'missing' };
+
+      const source = this.boardFilePath(workThreadId);
+      const quarantinePath = `${source}.corrupt-${Date.now()}.json`;
+      this._stateCache.delete(source);
+      await rename(source, quarantinePath);
+      return { quarantined: true, outcome: 'quarantined', quarantinePath };
+    } finally {
+      release();
+      if (this._locks.get(workThreadId) === next) this._locks.delete(workThreadId);
+    }
+  }
+
   private async atomicWriteJson(filePath: string, data: unknown): Promise<void> {
     const tmpPath = `${filePath}.tmp`;
     await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf8');

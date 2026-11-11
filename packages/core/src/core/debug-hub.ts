@@ -424,6 +424,7 @@ export class DebugHub {
     projectRoot?: string,
     reservedAgentId?: string,
     inputPolicy?: 'standard' | 'none',
+    runtimeIdentity?: { runtimeInstanceId?: string; threadId?: string; headGeneration?: number; sessionId?: string },
   ): string {
     // 等待注册锁
     while (this.registrationLock) {
@@ -471,6 +472,7 @@ export class DebugHub {
           hookInspector,
           overview,
           inputPolicy: inputPolicy || undefined,
+          ...runtimeIdentity,
         }).catch(error => {
           console.error(`[DebugHub] Claw registerAgent 失败: ${(error as Error).message}`);
         });
@@ -486,6 +488,7 @@ export class DebugHub {
           hookInspector,
           overview,
           inputPolicy: inputPolicy || undefined,
+          ...DebugHub.toRegisterIdentity(runtimeIdentity),
         });
       }
 
@@ -1129,6 +1132,76 @@ export class DebugHub {
   }
 
   /**
+   * 将 Agent 侧身份对象（键名 sessionId）映射为 RegisterAgentMsg 契约字段
+   * （workSessionId）。UDS 发送端此前原样展开身份对象，sessionId 键永远
+   * 不被 viewer 读取端认领，WorkThread fencing 因此拒收一切线程指令
+   * （ADR-0047 阶段 5 真实宿主联测捕获）。claw HTTP 通道由 claw-debug-client
+   * 做同名映射，不走本方法。
+   */
+  private static toRegisterIdentity(identity?: {
+    runtimeInstanceId?: string; threadId?: string; headGeneration?: number; sessionId?: string;
+  }): { runtimeInstanceId?: string; threadId?: string; headGeneration?: number; workSessionId?: string } {
+    if (!identity) return {};
+    const { runtimeInstanceId, threadId, headGeneration, sessionId } = identity;
+    return {
+      ...(runtimeInstanceId !== undefined ? { runtimeInstanceId } : {}),
+      ...(threadId !== undefined ? { threadId } : {}),
+      ...(headGeneration !== undefined ? { headGeneration } : {}),
+      ...(sessionId !== undefined ? { workSessionId: sessionId } : {}),
+    };
+  }
+
+  /**
+   * 单 Agent 身份重注册（ADR-0047 换头身份采纳通道）。
+   *
+   * 与 reregisterAllAgents 的重连全量重同步不同：身份采纳只改变
+   * register-agent 携带的线程身份字段，工具与消息注册态不变。claw 模式经
+   * clawClient（即发即忘，失败仅日志），UDS 模式同步 sendToWorker；返回
+   * 是否已发起推送，不承诺 viewer 已落地（fencing 校验是最终守卫）。
+   */
+  reregisterAgentIdentity(id: string): boolean {
+    const data = this.agents.get(id);
+    if (!data) return false;
+    const identity = (data.agent as any).getRuntimeInputIdentity?.() || {};
+    const hookInspector = (data.agent as any).buildHookInspectorSnapshot?.()
+      || (data.agent as any).hookInspector;
+    const overview = (data.agent as any).buildOverviewSnapshot?.();
+    const resourcePayload = this.agentResourcePayload.get(id) || { rootCount: 0, entries: {} };
+
+    if (this.transportMode === 'claw') {
+      void this.clawClient?.registerAgent({
+        agentId: id,
+        name: data.info.name,
+        projectRoot: data.info.projectRoot || process.cwd(),
+        resourceRootCount: resourcePayload.rootCount,
+        templateEntries: resourcePayload.entries,
+        hookInspector,
+        overview,
+        inputPolicy: this.agentInputPolicy.get(id) || undefined,
+        ...identity,
+      }).catch((error) => {
+        console.error(`[DebugHub] Claw identity re-register 失败: ${(error as Error).message}`);
+      });
+      return Boolean(this.clawClient);
+    }
+
+    return this.sendToWorker({
+      type: 'register-agent' as const,
+      agentId: id,
+      name: data.info.name,
+      createdAt: data.info.registeredAt,
+      projectRoot: data.info.projectRoot || process.cwd(),
+      resourceRootCount: resourcePayload.rootCount,
+      templateEntries: resourcePayload.entries,
+      hookInspector,
+      overview,
+      activeInputRequest: this.activeInputRequests.get(id),
+      inputPolicy: this.agentInputPolicy.get(id) || undefined,
+      ...DebugHub.toRegisterIdentity(identity),
+    });
+  }
+
+  /**
    * 重新注册所有 Agent（重连后调用）
    * 确保 ViewerWorker 能够恢复所有 Agent 的注册信息
    */
@@ -1153,6 +1226,7 @@ export class DebugHub {
           hookInspector,
           overview,
           inputPolicy: this.agentInputPolicy.get(id) || undefined,
+          ...((data.agent as any).getRuntimeInputIdentity?.() || {}),
         }).then(async () => {
           const tools = (data.agent as any).tools;
           if (tools && typeof tools.getEntries === 'function') {
@@ -1215,6 +1289,7 @@ export class DebugHub {
         overview,
         activeInputRequest, // 携带活跃输入请求
         inputPolicy: this.agentInputPolicy.get(id) || undefined,
+        ...DebugHub.toRegisterIdentity((data.agent as any).getRuntimeInputIdentity?.()),
       });
 
       // 重新注册工具（如果有）

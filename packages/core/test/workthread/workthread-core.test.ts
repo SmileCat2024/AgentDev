@@ -273,11 +273,19 @@ describe('WorkThreadInbox helpers', () => {
   it('pruneCommands drops oldest terminal commands beyond retention', () => {
     const commands: any[] = [];
     for (let i = 0; i < 12; i++) {
-      commands.push({ commandId: `cmd-${i}`, status: WorkThreadCommandStatus.DELIVERED, createdAt: i, updatedAt: i });
+      // deliveredAt 显式归属旧棒窗口（< head 起点 100）：已归属的终态
+      // 指令可裁。缺 deliveredAt 的形态已改语义（阶段 5 审查 P2-9：
+      // 无法归属 → 等待接续分类转 unresolved，保守豁免不裁），由
+      // workthread-succession-commit 的豁免用例锁定。
+      commands.push({ commandId: `cmd-${i}`, status: WorkThreadCommandStatus.DELIVERED, createdAt: i, updatedAt: i, deliveredAt: i + 1 });
     }
     commands.push({ commandId: 'keep-me', status: WorkThreadCommandStatus.PENDING, createdAt: 99, updatedAt: 99 });
 
-    const record = { commands };
+    const record = {
+      commands,
+      headSessionId: 's-head',
+      sessionChain: [{ sessionId: 's-head', startedAt: 100, endedAt: null }],
+    };
     const changed = pruneCommands(record as any, 5);
     expect(changed).toBe(true);
     expect(record.commands.length).toBe(6); // 5 terminal + 1 pending

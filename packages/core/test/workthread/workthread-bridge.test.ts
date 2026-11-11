@@ -79,6 +79,47 @@ describe('WorkThreadRuntimeBridge', () => {
     expect(seen[0].sourceRef).toBe('cmd-1');
   });
 
+  it('forwards stable command identity and target head generation to submitTurn', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const bridge = new WorkThreadRuntimeBridge({
+      enabled: true,
+      resolveRuntimeViewerId: () => 'viewer-abc',
+      submitTurn: async (params) => { seen.push(params); return { success: true }; },
+    });
+    await bridge.deliver({
+      thread: { ...thread, threadId: 'thread-4', headGeneration: 9 },
+      command: { commandId: 'cmd-9', text: 'reliable command' },
+    });
+    expect(seen[0]).toMatchObject({
+      sourceRef: 'cmd-9',
+      sessionId: 'head-1',
+      commandIdentity: { commandId: 'cmd-9', threadId: 'thread-4', headGeneration: 9 },
+    });
+  });
+
+  it('attaches commandIdentity only to user-intent kinds (P0-1 regression: machine notices must not be fenced)', async () => {
+    // viewer 契约拒收 commandIdentity + kind reminder/resume（invalid_input
+    // 不可重试 → 指令标 failed）。system_continuation 通知经宿主映射为
+    // viewer reminder——bridge 对机器通报附加身份会让自动接续的恢复指令
+    // 与 unresolved 清单永远到不了新 head。
+    const seen: Array<Record<string, unknown>> = [];
+    const bridge = new WorkThreadRuntimeBridge({
+      enabled: true,
+      resolveRuntimeViewerId: () => 'viewer-abc',
+      submitTurn: async (params) => { seen.push(params); return { success: true }; },
+    });
+    const base = { ...thread, threadId: 'thread-4', headGeneration: 9 };
+    await bridge.deliver({ thread: base, command: { commandId: 'cmd-n1', kind: 'system_continuation', text: '上下文已精简接续' } });
+    await bridge.deliver({ thread: base, command: { commandId: 'cmd-n2', kind: 'reminder', text: 'reminder body' } });
+    await bridge.deliver({ thread: base, command: { commandId: 'cmd-n3', kind: 'external', text: 'external dispatch' } });
+    await bridge.deliver({ thread: base, command: { commandId: 'cmd-n4', text: 'kind 省略按 user_message' } });
+    expect(seen[0]).toMatchObject({ kind: 'system_continuation', sourceRef: 'cmd-n1' });
+    expect(seen[0].commandIdentity).toBeUndefined();
+    expect(seen[1].commandIdentity).toBeUndefined();
+    expect(seen[2]).toMatchObject({ commandIdentity: { commandId: 'cmd-n3', threadId: 'thread-4', headGeneration: 9 } });
+    expect(seen[3]).toMatchObject({ commandIdentity: { commandId: 'cmd-n4', threadId: 'thread-4', headGeneration: 9 } });
+  });
+
   it('forwards command metadata to submitTurn untouched', async () => {
     const seen: Array<Record<string, unknown>> = [];
     const bridge = new WorkThreadRuntimeBridge({

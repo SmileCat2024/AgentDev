@@ -27,6 +27,8 @@ export interface WorkThreadBridgeSubmitTurnParams {
   text: string;
   source: string;
   sourceRef: string;
+  commandIdentity?: { commandId: string; threadId: string; headGeneration: number };
+  sessionId?: string;
   capabilityActivations?: string[];
   images?: string[];
   metadata?: Record<string, unknown>;
@@ -43,7 +45,7 @@ export interface WorkThreadDeliveryOutcome {
 export interface WorkThreadBridge {
   isEnabled(): boolean;
   deliver(params: {
-    thread: { agentId?: string; headSessionId?: string; threadId?: string };
+    thread: { agentId?: string; headSessionId?: string; threadId?: string; headGeneration?: number };
     command: { commandId?: string; kind?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
   }): Promise<WorkThreadDeliveryOutcome>;
 }
@@ -79,7 +81,7 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
   }
 
   async deliver(params: {
-    thread: { agentId?: string; headSessionId?: string; threadId?: string };
+    thread: { agentId?: string; headSessionId?: string; threadId?: string; headGeneration?: number };
     command: { commandId?: string; kind?: string; text?: string; capabilityActivations?: string[]; images?: string[]; metadata?: Record<string, unknown> };
   }): Promise<WorkThreadDeliveryOutcome> {
     const { thread, command } = params;
@@ -104,12 +106,22 @@ export class WorkThreadRuntimeBridge implements WorkThreadBridge {
       // 抛 invalid_input（不可重试），指令被误判 failed——契约测试覆盖此点。
       // turn 身份随指令原样转发（ADR-0024 决策 3）；存量记录缺 kind 时按
       // user_message 投递，读取路径不因身份缺失报错。
+      const resolvedKind = command.kind || WorkThreadCommandKind.USER_MESSAGE;
       await this._submitTurn({
         agentId: viewerAgentId,
-        kind: command.kind || WorkThreadCommandKind.USER_MESSAGE,
+        kind: resolvedKind,
         text: command.text || '',
         source: 'thread',
         sourceRef: command.commandId || '',
+        sessionId: thread.headSessionId,
+        // fencing 身份只属于用户意图命令（user_message / external）；
+        // machine 通报（reminder / system_continuation）走 sourceRef 关联 +
+        // 队列去重的既有通道，viewer 契约按「reminder/resume 不冒充用户
+        // 命令」拒收其 commandIdentity（invalid_input 不可重试 → failed）。
+        ...(command.commandId && thread.threadId
+          && (resolvedKind === WorkThreadCommandKind.USER_MESSAGE || resolvedKind === WorkThreadCommandKind.EXTERNAL)
+          ? { commandIdentity: { commandId: command.commandId, threadId: thread.threadId, headGeneration: Number(thread.headGeneration) || 1 } }
+          : {}),
         ...(Array.isArray(command.capabilityActivations) && command.capabilityActivations.length > 0
           ? { capabilityActivations: command.capabilityActivations }
           : {}),

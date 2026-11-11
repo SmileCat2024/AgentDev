@@ -30,9 +30,17 @@ import {
   pendingCommands,
   findCommand,
   pruneCommands,
+  pruneResolvedUnresolved,
+  openUnresolvedCommands,
+  classifyRetiredCommands,
+  createUnresolvedRecord,
+  MAX_RETAINED_RESOLVED_UNRESOLVED,
   WorkThreadCommandStatus,
   WorkThreadCommandKind,
   type WorkThreadCommand,
+  type WorkThreadCommandKindValue,
+  type WorkThreadUnresolvedCommand,
+  type SuccessionEvidence,
 } from './inbox.js';
 import { WorkThreadRuntimeBridge, WORKTHREAD_BRIDGE_DISABLED_REASON } from './bridge.js';
 import type { WorkThreadBridge } from './bridge.js';
@@ -131,6 +139,24 @@ export const DEFAULT_SUCCESSION_INSTRUCTION = [
 
 function threadIdentityError(message: string, code: string, status: number): Error {
   return Object.assign(new Error(message), { code, status });
+}
+
+/**
+ * 判断指令是否派生自指定 unresolved 记录的重投：reissue 命令创建时在
+ * metadata.reissueOf 写入原指令 commandId（见 resolveUnresolved）。键空间
+ * 保留让正常路径的 `reissue-<unresolvedId>` 键只可能属于该记录自身的重投；
+ * 不匹配即损坏态（手工编辑 / 异常迁移），调用方不得收口或返回假句柄。
+ */
+function isReissueDerivedFrom(
+  command: { metadata?: unknown },
+  target: { commandId?: unknown },
+): boolean {
+  const expected = typeof target?.commandId === 'string' ? target.commandId : null;
+  if (!expected) return false;
+  const meta = command?.metadata;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return false;
+  const reissueOf = (meta as { reissueOf?: unknown }).reissueOf;
+  return reissueOf === expected;
 }
 
 // ── 锚点状态机转换表（state-kernel，PR-F3 / ADR-0021 阶段 1）──────────
@@ -309,6 +335,7 @@ function createWorkThreadAnchorMachine(
             successorSessionId: null,
           });
           record.headSessionId = event.toSessionId!;
+          record.headGeneration = Math.max(1, Number(record.headGeneration) || 1) + 1;
           // 交接完成：同一次落盘内清除交接意图（与 head 推进原子成对）。
           record.pendingSuccession = null;
         },
@@ -385,6 +412,14 @@ export class WorkThread {
 
   isTerminal(record: WorkThreadRecord | null | undefined): boolean {
     return Boolean(record && record.status === WORKTHREAD_TERMINAL_STATUS);
+  }
+
+  /** Return the stable head generation, deriving it for legacy records. */
+  headGeneration(record: WorkThreadRecord): number {
+    if (Number.isInteger(record.headGeneration) && Number(record.headGeneration) > 0) {
+      return Number(record.headGeneration);
+    }
+    return Math.max(1, Array.isArray(record.sessionChain) ? record.sessionChain.length : 1);
   }
 
   /**
@@ -494,6 +529,7 @@ export class WorkThread {
       identity: threadIdentity,
       rootSessionId: sessionId,
       headSessionId: sessionId,
+      headGeneration: 1,
       sessionChain: [
         {
           sessionId,
@@ -878,7 +914,10 @@ export class WorkThread {
         continue;
       }
 
-      const outcome = await this._bridge.deliver({ thread: fresh, command: freshCommand });
+      const outcome = await this._bridge.deliver({
+        thread: { ...fresh, headGeneration: this.headGeneration(fresh) },
+        command: freshCommand,
+      });
       results.push({ commandId: command.commandId, ...outcome });
 
       if (outcome.accepted) {
@@ -1049,57 +1088,250 @@ export class WorkThread {
 
         // T001 身份连续性不变量（事务内校验，结构守卫在前）：
         //   - session_workspace_mismatch：successor 不属于线程的工作空间宿主
-        //     （identitySource 以线程自身 agentId 定位不到该会话 = 非本宿主）；
         //   - thread_identity_missing：线程身份未知且无法从 root Session 再推导
-        //     （旧数据缺字段的明确失败，绝不静默放行或默认成具体身份）；
-        //   - thread_identity_mismatch：successor 身份与线程身份不一致；
+        //   - thread_identity_mismatch：successor 身份与线程身份不一致
         //   - session_already_in_thread：successor 已是其它线程的成员。
-        if (this._identitySource) {
-          const threadAgentId = cleanText(draft.agentId);
-          const toIdentity = cleanText(await this._identitySource(threadAgentId, normalizedTo));
-          if (!toIdentity) {
-            throw threadIdentityError(
-              `Session "${normalizedTo}" does not belong to workspace host "${threadAgentId}" of thread "${threadId}"`,
-              'session_workspace_mismatch',
-              409,
+        await this.assertSuccessorIdentity(draft, normalizedTo);
+
+        return draft;
+      },
+      { expectedRevision: Number.isInteger(opts.expectedRevision) ? opts.expectedRevision : undefined },
+    );
+
+    return record;
+  }
+
+  /**
+   * T001 身份连续性不变量的事务内校验（advanceHead 与 commitSessionSuccession
+   * 共用的单一实现）。校验通过时可能有 draft.identity 回填副作用（留在 draft
+   * 上，随外层事务原子落盘）；校验失败抛 409 错误，外层 store.update 整体
+   * 丢弃 draft。
+   */
+  private async assertSuccessorIdentity(
+    draft: WorkThreadRecord,
+    normalizedTo: string,
+  ): Promise<void> {
+    if (!this._identitySource) return;
+    const threadId = draft.threadId;
+    const threadAgentId = cleanText(draft.agentId);
+    const toIdentity = cleanText(await this._identitySource(threadAgentId, normalizedTo));
+    if (!toIdentity) {
+      throw threadIdentityError(
+        `Session "${normalizedTo}" does not belong to workspace host "${threadAgentId}" of thread "${threadId}"`,
+        'session_workspace_mismatch',
+        409,
+      );
+    }
+    // 线程身份归属：优先盘上事实；旧记录缺字段（null）时从 root Session
+    // 的真实身份再推导并回填（事实推导，非默认值）；仍不可得则明确失败。
+    let effectiveThreadIdentity = draft.identity;
+    if (!effectiveThreadIdentity) {
+      effectiveThreadIdentity =
+        cleanText(await this._identitySource(threadAgentId, draft.rootSessionId)) || null;
+      if (!effectiveThreadIdentity) {
+        throw threadIdentityError(
+          `Thread "${threadId}" has no identity attribution and its root session identity is unknown; backfill the root identity before advancing the head`,
+          'thread_identity_missing',
+          409,
+        );
+      }
+      // 回填与 head 推进同盘原子落盘（draft.identity 赋值）。
+      draft.identity = effectiveThreadIdentity;
+    }
+    if (toIdentity !== effectiveThreadIdentity) {
+      throw threadIdentityError(
+        `Session "${normalizedTo}" has identity "${toIdentity}" but thread "${threadId}" is bound to identity "${effectiveThreadIdentity}"`,
+        'thread_identity_mismatch',
+        409,
+      );
+    }
+    // 成员独占：successor 不得已是其它线程的成员（本线程内的重复由
+    // duplicate_session 覆盖）。
+    const summaries = await this.store.list();
+    for (const summary of summaries as Array<{ threadId?: string }>) {
+      if (!summary?.threadId || summary.threadId === threadId) continue;
+      const other = await this.store.get(summary.threadId);
+      if (Array.isArray(other?.sessionChain)
+        && other.sessionChain.some((entry) => entry?.sessionId === normalizedTo)) {
+        throw threadIdentityError(
+          `Session "${normalizedTo}" is already a member of thread "${summary.threadId}"`,
+          'session_already_in_thread',
+          409,
+        );
+      }
+    }
+  }
+
+  // ── 原子接续提交与 unresolved 处置（ADR-0047 阶段 2）──────────────
+
+  /**
+   * 原子接续提交：head 推进、挡板清除、退役棒指令消费分类、unresolved
+   * 持久化在同一次 store.update 内完成（单文件原子写 + per-thread 串行锁
+   * + expectedRevision CAS）。任一环节失败整体丢弃 draft，磁盘无半套状态。
+   * 原子性边界：指 thread record 文件本身；写记录之后、updateIndexEntry
+   * 之前崩溃会让 index.json 摘要短暂陈旧——index 是可重建投影（list 消费方
+   * 经 getThread 读权威记录），下一次任何写都会刷新该条目，不构成恢复
+   * 依据的丢失窗口（阶段 2a 审查核实）。
+   *
+   * 分类语义与宿主判定闸同源（ADR-0047 决策 2）：退役棒 delivered 指令
+   * 只有可靠消费引用（turn.* 事件携带的 sourceRef / consumedSourceRefs）
+   * 才算已消费；无法判定的指令不失败、不重放、不静默滞留——转为
+   * unresolved 一等事实随本事务持久，处置（consumed / reissue / discard）
+   * 是后续的显式决定。
+   *
+   * 证据经宿主在事务外读取后以类型化快照注入（锚点层不 import 看板模块）。
+   * 读取与提交之间的迟到事件只可能把「无法判定」升级为「已消费」（正向
+   * 引用只增不减），错过迟到引用最多多建一条 unresolved（显式处置可收敛），
+   * 不会反向误判。缺省不传 evidence 视为 integrity 'missing'（保守）；
+   * integrity 'unreadable'（瞬时读取失败）在本方法入口被拒绝（可重试
+   * 409 evidence_unreadable），不进入分类。
+   *
+   * 崩溃窗口：事务提交后、响应返回前进程死亡——调用方重试时 from 已不是
+   * head，handoff_completed 的 head CAS 守卫以 head_mismatch 拒绝（幂等），
+   * unresolved 与换头事实均已持久，无丢失窗口。
+   *
+   * 强制发现通知（ADR-0047 阶段 2b）：自动接续传 composeNotice 回调时，
+   * 本事务在 unresolved 创建后立即构造通知指令入箱（幂等键
+   * `succession-notice:<threadId>:<toSessionId>`）。通知与换头/unresolved
+   * 同事务原子——不存在「已换头但通知未追加」的窗口（阶段 2b 审查发现：
+   * 事务外追加在 commit 后崩溃会因 head CAS 拒绝重试而永不补建，未决项
+   * 有记录但永不进入后继首轮）。手动免播路径不传 composeNotice（通知
+   * 会唤醒轮次，违反免播语义）；未决事实经 listUnresolved API 面可见。
+   *
+   * @returns record 提交后线程记录；unresolved 本事务新建的未决记录；
+   *          consumedCommandIds 有可靠消费引用、保持 delivered 终态的指令。
+   */
+  async commitSessionSuccession(opts: {
+    threadId: string;
+    fromSessionId: string;
+    toSessionId: string;
+    expectedRevision?: number;
+    endKind?: string;
+    evidence?: SuccessionEvidence;
+    composeNotice?: (unresolved: WorkThreadUnresolvedCommand[]) => { text: string } | null;
+  }): Promise<{
+    record: WorkThreadRecord;
+    unresolved: WorkThreadUnresolvedCommand[];
+    consumedCommandIds: string[];
+  }> {
+    const threadId = validateId(opts.threadId, 'threadId');
+    const normalizedTo = validateId(opts.toSessionId, 'toSessionId');
+    const normalizedFrom = validateId(opts.fromSessionId, 'fromSessionId');
+    const normalizedEndKind = cleanText(opts.endKind) || 'manual';
+    // unreadable（读取抛错，重试可恢复证据）拒绝换头：不建 unresolved、不
+    // 推进 head，调用方按可重试失败收敛（ADR 阶段 1「读取失败不推进」语义
+    // 在阶段 2 保留——unresolved 只承接结构性缺失 missing / corrupt）。
+    if (opts.evidence?.integrity === 'unreadable') {
+      throw Object.assign(
+        new Error(
+          `Succession evidence unreadable for workthread "${threadId}" (${opts.evidence.note || 'read failed'}); retry when the board is readable`,
+        ),
+        { code: 'evidence_unreadable', status: 409 },
+      );
+    }
+    const evidence: SuccessionEvidence = opts.evidence
+      && (opts.evidence.integrity === 'ok' || opts.evidence.integrity === 'corrupt')
+      ? opts.evidence
+      : { integrity: 'missing', events: [] };
+
+    const createdUnresolved: WorkThreadUnresolvedCommand[] = [];
+    const consumedCommandIds: string[] = [];
+
+    const { record } = await this.store.update(
+      threadId,
+      async (draft) => {
+        // 换头守卫与效果：与 advanceHead 完全同源（hold / head CAS /
+        // already_head / duplicate_session / 终态保护 + chain 收口清挡板）。
+        const result = reduce(
+          this._anchorMachine,
+          draft,
+          {
+            type: 'handoff_completed',
+            fromSessionId: normalizedFrom,
+            toSessionId: normalizedTo,
+            endKind: normalizedEndKind,
+          },
+          { now: () => Date.now() },
+        );
+        if (result.type !== 'transitioned') {
+          if (result.type === 'unhandled') {
+            throw new Error(
+              `WorkThread "${threadId}" status "${draft.status}" is not a declared anchor state`,
             );
           }
-          // 线程身份归属：优先盘上事实；旧记录缺字段（null）时从 root Session
-          // 的真实身份再推导并回填（事实推导，非默认值）；仍不可得则明确失败。
-          let effectiveThreadIdentity = draft.identity;
-          if (!effectiveThreadIdentity) {
-            effectiveThreadIdentity =
-              cleanText(await this._identitySource(threadAgentId, draft.rootSessionId)) || null;
-            if (!effectiveThreadIdentity) {
-              throw threadIdentityError(
-                `Thread "${threadId}" has no identity attribution and its root session identity is unknown; backfill the root identity before advancing the head`,
-                'thread_identity_missing',
-                409,
-              );
-            }
-            // 回填与 head 推进同盘原子落盘（下方 draft.identity 赋值）。
-            draft.identity = effectiveThreadIdentity;
+          if (result.reason === 'terminal') {
+            throw Object.assign(new Error(`WorkThread "${threadId}" is closed`), {
+              code: 'thread_closed',
+              status: 409,
+            });
           }
-          if (toIdentity !== effectiveThreadIdentity) {
-            throw threadIdentityError(
-              `Session "${normalizedTo}" has identity "${toIdentity}" but thread "${threadId}" is bound to identity "${effectiveThreadIdentity}"`,
-              'thread_identity_mismatch',
-              409,
+          if (result.reason === 'thread_held') {
+            throw Object.assign(
+              new Error(`WorkThread "${threadId}" is held (administrative freeze); head cannot advance`),
+              { code: 'thread_held', status: 409 },
             );
           }
-          // 成员独占：successor 不得已是其它线程的成员（本线程内的重复由
-          // 上方 duplicate_session 覆盖）。
-          const summaries = await this.store.list();
-          for (const summary of summaries as Array<{ threadId?: string }>) {
-            if (!summary?.threadId || summary.threadId === threadId) continue;
-            const other = await this.store.get(summary.threadId);
-            if (Array.isArray(other?.sessionChain)
-              && other.sessionChain.some((entry) => entry?.sessionId === normalizedTo)) {
-              throw threadIdentityError(
-                `Session "${normalizedTo}" is already a member of thread "${summary.threadId}"`,
-                'session_already_in_thread',
-                409,
-              );
+          if (result.reason === 'head_mismatch') {
+            throw Object.assign(
+              new Error(`Head mismatch on workthread "${threadId}": expected ${normalizedFrom}, current ${draft.headSessionId}`),
+              { code: 'head_mismatch', status: 409 },
+            );
+          }
+          if (result.reason === 'already_head') {
+            throw Object.assign(
+              new Error(`Session "${normalizedTo}" is already the head of workthread "${threadId}"`),
+              { code: 'already_head', status: 409 },
+            );
+          }
+          throw Object.assign(
+            new Error(`Session "${normalizedTo}" already appears in the chain of workthread "${threadId}"`),
+            { code: 'duplicate_session', status: 409 },
+          );
+        }
+        pushLifecycleEvent(draft, result.lifecycleEvent);
+
+        // T001 身份连续性不变量（与 advanceHead 共用实现）。
+        await this.assertSuccessorIdentity(draft, normalizedTo);
+
+        // 退役棒指令消费分类：无法判定 → unresolved 一等事实（同事务持久）。
+        const classification = classifyRetiredCommands(draft, normalizedFrom, evidence);
+        consumedCommandIds.push(...classification.consumedCommandIds);
+        if (classification.undecidable.length > 0) {
+          const reasons = [...new Set(classification.undecidable.map((entry) => entry.reason))];
+          for (const { command, reason } of classification.undecidable) {
+            const unresolved = createUnresolvedRecord(command, normalizedFrom, reason);
+            draft.unresolvedCommands = [
+              ...(Array.isArray(draft.unresolvedCommands) ? draft.unresolvedCommands : []),
+              unresolved,
+            ];
+            createdUnresolved.push(unresolved);
+          }
+          pushLifecycleEvent(draft, {
+            type: 'unresolved_created',
+            status: draft.status,
+            at: Date.now(),
+            fromSessionId: normalizedFrom,
+            toSessionId: normalizedTo,
+            count: classification.undecidable.length,
+            reasons,
+            commandIds: classification.undecidable.map((entry) => entry.command.commandId),
+          });
+
+          // 强制发现通知与换头/unresolved 同事务：commit 后崩溃也不存在
+          // 「已换头、unresolved 已持久，但通知永不进入后继首轮」的窗口。
+          // 回调抛错 = 整体失败回滚（换头不发生），调用方重试。
+          if (typeof opts.composeNotice === 'function') {
+            const notice = opts.composeNotice(createdUnresolved);
+            if (notice && typeof notice.text === 'string' && notice.text.trim()) {
+              const noticeCommand = createCommandRecord({
+                threadId,
+                kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
+                text: notice.text,
+                source: 'thread_succession',
+                idempotencyKey: `succession-notice:${threadId}:${normalizedTo}`,
+              });
+              appendCommandToRecord(draft, noticeCommand);
+              pruneCommands(draft);
             }
           }
         }
@@ -1109,7 +1341,175 @@ export class WorkThread {
       { expectedRevision: Number.isInteger(opts.expectedRevision) ? opts.expectedRevision : undefined },
     );
 
-    return record;
+    return { record, unresolved: createdUnresolved, consumedCommandIds };
+  }
+
+  /**
+   * 未决指令处置（ADR-0047 阶段 2）：对一条 open 的 unresolved 记录做显式收口。
+   *
+   * 处置方式（都是决定，不是推断）：
+   *   - consumed：核实确认已被旧会话消费，仅标记收口；
+   *   - discard：放弃该指令（过期 / 无效 / 已由其它途径覆盖），仅标记收口；
+   *   - reissue：以原载荷重新入箱一条 pending 指令（de4d5d03 的重投路径，
+   *     现在是显式处置动作）。新指令的幂等键固定为 `reissue-<unresolvedId>`
+   *     ——沿用旧键会命中 appendCommand 对 delivered 的幂等去重，重投落空；
+   *     不提供自定义键：处置面无需区分调用方，固定键同时消除幂等冲突面
+   *     （阶段 2a 审查裁定：duplicate 命中时静默指向未入箱对象的缺陷面）。
+   *     deliveryRef 不进 unresolved 快照：reissue 语义不需要投递审计标识，
+   *     投递审计事实在 commands 本体（有意取舍）。
+   *
+   * 幂等：重复以相同方式处置已收口的记录返回现状（不重复 reissue）；
+   * 以不同方式处置已收口的记录是冲突，409 拒绝。
+   * closed 线程拒绝 reissue（终态不开新指令）；consumed / discard 在
+   * closed 线程上允许（归档后清理未决是合法运维动作，不动 commands）。
+   *
+   * @returns record 处置后线程记录；command reissue 时新建的 pending 指令
+   */
+  async resolveUnresolved(opts: {
+    threadId: string;
+    unresolvedId: string;
+    resolution: 'consumed' | 'reissue' | 'discard';
+    note?: string;
+  }): Promise<{ record: WorkThreadRecord; command: WorkThreadCommand | null }> {
+    const threadId = validateId(opts.threadId, 'threadId');
+    const unresolvedId = cleanText(opts.unresolvedId);
+    const resolution = opts.resolution;
+    if (resolution !== 'consumed' && resolution !== 'reissue' && resolution !== 'discard') {
+      throw Object.assign(
+        new Error(`Invalid resolution "${resolution}" (expected consumed | reissue | discard)`),
+        { code: 'invalid_request', status: 400 },
+      );
+    }
+
+    let reissued: WorkThreadCommand | null = null;
+
+    const { record } = await this.store.update(threadId, (draft) => {
+      const all = Array.isArray(draft.unresolvedCommands) ? draft.unresolvedCommands : [];
+      const target = all.find((entry) => entry?.unresolvedId === unresolvedId);
+      if (!target) {
+        throw Object.assign(
+          new Error(`Unresolved command "${unresolvedId}" not found on workthread "${threadId}"`),
+          { code: 'unresolved_not_found', status: 404 },
+        );
+      }
+      // 幂等：相同处置返回现状（reissue 时找回既有重投指令供对账——幂等
+      // 重试的调用方不因重复请求丢失指令句柄）；不同处置是冲突。
+      if (target.resolvedAt) {
+        if (target.resolution === resolution) {
+          if (resolution === 'reissue') {
+            const existing = (draft.commands || []).find(
+              (c) => c?.idempotencyKey === `reissue-${target.unresolvedId}`,
+            ) ?? null;
+            // 防御：找回的重投指令必须确实派生自该 unresolved（metadata.reissueOf
+            // 指回其原指令）。键空间保留（appendCommand 守卫）让正常路径构造不出
+            // 不匹配状态；此处拦截的是手工编辑 / 损坏记录，不得把无关命令当
+            // 对账句柄返回。
+            if (existing && !isReissueDerivedFrom(existing, target)) {
+              throw Object.assign(
+                new Error(
+                  `idempotencyKey "reissue-${target.unresolvedId}" is occupied by an unrelated command ${existing.commandId}`,
+                ),
+                { code: 'inconsistent_state', status: 500 },
+              );
+            }
+            reissued = existing;
+          }
+          return draft;
+        }
+        throw Object.assign(
+          new Error(
+            `Unresolved command "${unresolvedId}" already resolved as "${target.resolution}"; cannot re-resolve as "${resolution}"`,
+          ),
+          { code: 'unresolved_already_resolved', status: 409 },
+        );
+      }
+      if (resolution === 'reissue' && draft.status === WORKTHREAD_TERMINAL_STATUS) {
+        throw Object.assign(
+          new Error(`WorkThread "${threadId}" is closed; terminal threads hold no new commands`),
+          { code: 'thread_closed', status: 409 },
+        );
+      }
+
+      const now = Date.now();
+      target.resolvedAt = now;
+      target.resolution = resolution;
+      target.resolutionNote = cleanText(opts.note) || null;
+      target.updatedAt = now;
+
+      if (resolution === 'reissue') {
+        const command = createCommandRecord({
+          threadId,
+          kind: target.kind as WorkThreadCommandKindValue,
+          text: target.text,
+          source: target.source,
+          idempotencyKey: `reissue-${target.unresolvedId}`,
+          ...(Array.isArray(target.capabilityActivations)
+            ? { capabilityActivations: [...target.capabilityActivations] }
+            : {}),
+          ...(Array.isArray(target.images) ? { images: [...target.images] } : {}),
+          ...(target.metadata && typeof target.metadata === 'object' && !Array.isArray(target.metadata)
+            // 深拷贝：避免调用方对快照 metadata 的原地修改穿透进新指令
+            ? { metadata: { ...structuredClone(target.metadata), reissueOf: target.commandId } }
+            : { metadata: { reissueOf: target.commandId } }),
+          ...(typeof target.originSourceRef === 'string' && target.originSourceRef
+            ? { originSourceRef: target.originSourceRef }
+            : {}),
+        });
+        const appendOutcome = appendCommandToRecord(draft, command, { allowReservedPrefix: true });
+        if (appendOutcome.duplicate) {
+          // 幂等命中：同一 unresolved 的重复重投。必须是派生自该 unresolved
+          // 的既有指令；否则键被无关命令占用（键空间保留下正常路径不可达，
+          // 损坏态防御）——抛错回滚整次事务，unresolved 保持未处置。
+          if (!isReissueDerivedFrom(appendOutcome.command, target)) {
+            throw Object.assign(
+              new Error(
+                `idempotencyKey "reissue-${target.unresolvedId}" is occupied by an unrelated command ${appendOutcome.command.commandId}`,
+              ),
+              { code: 'inconsistent_state', status: 500 },
+            );
+          }
+          // 命中关联正确的既有指令：以入箱实体为准返回（新建对象未入箱，
+          // 作为句柄返回会造成"收口但指令不存在"的假成功）。
+          reissued = appendOutcome.command;
+        } else {
+          reissued = command;
+        }
+        pruneCommands(draft);
+      }
+
+      pruneResolvedUnresolved(draft);
+      pushLifecycleEvent(draft, {
+        type: 'unresolved_resolved',
+        status: draft.status,
+        at: now,
+        unresolvedId,
+        resolution,
+        reissuedCommandId: reissued?.commandId || null,
+      });
+      return draft;
+    });
+
+    return { record, command: reissued };
+  }
+
+  /**
+   * 未决指令查询：open（未处置）优先按创建时间稳定排序；includeResolved
+   * 时附带最近若干条已处置记录（处置历史审计，裁剪口径同 pruneResolvedUnresolved）。
+   */
+  async listUnresolved(
+    threadId: string,
+    opts: { includeResolved?: boolean } = {},
+  ): Promise<WorkThreadUnresolvedCommand[]> {
+    const tid = validateId(threadId, 'threadId');
+    const thread = await this.store.get(tid);
+    if (!thread) throw new WorkThreadNotFoundError(tid);
+    const open = openUnresolvedCommands(thread);
+    if (!opts.includeResolved) return open;
+    const resolved = (Array.isArray(thread.unresolvedCommands) ? thread.unresolvedCommands : [])
+      .filter((entry) => entry?.resolvedAt)
+      .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
+      .slice(0, MAX_RETAINED_RESOLVED_UNRESOLVED);
+    return [...open, ...resolved];
   }
 
   // ── 状态迁移（锚点收口）────────────────────────────────────────

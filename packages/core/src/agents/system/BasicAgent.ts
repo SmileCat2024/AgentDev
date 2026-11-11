@@ -58,6 +58,12 @@ export interface BasicAgentConfig {
   workspaceDir?: string;
   /** 模型预设解析器（可选；运行期 setModel / setThinkingEffort 消费，未注入时二者抛错） */
   modelResolver?: AgentConfig['modelResolver'];
+  /**
+   * Runtime 身份（ADR-0047 WorkThread fencing）：必须透传给 Agent 基类——
+   * 白名单重建 agentConfig 时丢弃该字段会让 spawn 注入的线程身份永远到
+   * 不了 Viewer 注册，fencing 拒收一切线程指令（阶段 5 真实宿主联测捕获）。
+   */
+  runtimeInputIdentity?: AgentConfig['runtimeInputIdentity'];
 }
 
 /**
@@ -96,6 +102,7 @@ export class BasicAgent extends Agent {
       workspaceDir,
       features: config.features,
       modelResolver: config.modelResolver,
+      runtimeInputIdentity: config.runtimeInputIdentity,
     };
 
     super(agentConfig);

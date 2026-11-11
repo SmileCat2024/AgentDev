@@ -52,18 +52,29 @@ export {
   WorkThreadCommandStatus,
   WorkThreadCommandKind,
   MAX_RETAINED_TERMINAL_COMMANDS,
+  MAX_RETAINED_RESOLVED_UNRESOLVED,
+  WORKTHREAD_SUCCESSION_REASONS,
   createCommandRecord,
   appendCommand,
   pendingCommands,
   findCommand,
   pruneCommands,
+  pruneResolvedUnresolved,
+  openUnresolvedCommands,
+  classifyRetiredCommands,
+  createUnresolvedRecord,
   generateCommandId,
+  generateUnresolvedId,
 } from './inbox.js';
 export type {
   WorkThreadCommand,
   WorkThreadCommandStatusValue,
   WorkThreadCommandStatusName,
   WorkThreadCommandKindValue,
+  WorkThreadUnresolvedCommand,
+  SuccessionEvidence,
+  SuccessionEvidenceIntegrity,
+  WorkThreadSuccessionReasonValue,
 } from './inbox.js';
 
 export {

@@ -198,6 +198,56 @@ describe('busy queued input consumption identity (react-loop drain)', () => {
       .toBe(true);
   });
 
+  it('busy thread claim persists receipt before ack and exposes the receipt on the next model request', async () => {
+    const receipt = {
+      commandId: 'cmd-busy-durable', threadId: 'wt-busy', headGeneration: 3,
+      leaseId: 'lease-busy', sessionId: 'session-busy', runtimeInstanceId: 'runtime-busy',
+    };
+    const order: string[] = [];
+    const store = {
+      snapshots: [] as any[],
+      async save(_sessionId: string, snapshot: any) { this.snapshots.push(structuredClone(snapshot)); return '/tmp/busy.json'; },
+      async load() { throw new Error('unused'); },
+      async list() { return []; },
+      async delete() {},
+    };
+    let chatCalls = 0;
+    let receiptReachedModel = false;
+    const llm: LLMClient = {
+      async chat(messages: Message[]): Promise<LLMResponse> {
+        chatCalls++;
+        receiptReachedModel ||= messages.some((message: any) => message.inputReceipt?.commandId === receipt.commandId);
+        order.push(`llm-${chatCalls}`);
+        return { content: `reply-${chatCalls}` };
+      },
+    };
+    const runtimeIdentity = { threadId: receipt.threadId, headGeneration: receipt.headGeneration };
+    const mailbox = [{ text: 'durable busy command', source: 'thread', sourceRef: receipt.commandId, inputLease: receipt }];
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('/command-input/claim')) {
+        order.push('claim');
+        return { ok: true, status: 200, json: async () => ({ input: mailbox[0] || null }) };
+      }
+      if (String(url).includes('/command-input/ack')) {
+        expect(JSON.parse(String(init?.body)).receipt).toEqual(receipt);
+        expect(store.snapshots.at(-1)?.runtime.context?.messages.some((message: any) => message.inputReceipt?.commandId === receipt.commandId)).toBe(true);
+        order.push('ack');
+        mailbox.shift();
+        return { ok: true, status: 200, json: async () => ({ acknowledged: true }) };
+      }
+      throw new Error(`unexpected fetch: ${String(url)}`);
+    });
+
+    const agent = new HookContinueAgent({ llm, maxTurns: 2, runtimeInputIdentity: runtimeIdentity });
+    agent.enableStepAutoSave('session-busy', store as any);
+    await agent.onCallDetailed('start work');
+
+    expect(order.indexOf('ack')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('ack')).toBeLessThan(order.indexOf('llm-2'));
+    expect(receiptReachedModel).toBe(true);
+    expect(agent.getContext().getAll().filter((message: any) => message.inputReceipt?.commandId === receipt.commandId)).toHaveLength(1);
+  });
+
   it('turn.completed carries consumedSourceRefs for busy-injected inputs in injection order', async () => {
     // busy 路径：call 进行/收尾边界 drain 邮箱，排队项身份聚合为
     // consumedSourceRefs 挂到本回合终态（排队项不产生独立 turn）。

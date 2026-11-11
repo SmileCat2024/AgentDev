@@ -19,6 +19,7 @@ import type {
   ParsedContent,
   ImageInput,
   MessageExecutionMeta,
+  InputReceiptIdentity,
   ToolTerminationReason,
 } from './types.js';
 import { cloneMessages } from './message.js';
@@ -146,7 +147,7 @@ export function withMessageSource(context: Context, source: string): Context {
       if (property === 'addAll') return (messages: Message[]) => { for (const message of messages) target.add({ ...message, source: owner }); return view; };
       if (property === 'addAssistantMessage') return (response: LLMResponse, turn: number, timestamp?: number) => target.addAssistantMessage({ ...response, source: owner }, turn, timestamp);
       if (property === 'addSystemMessage') return (content: string, turn: number, _source?: string, tag?: JsonValue, timestamp?: number) => target.addSystemMessage(content, turn, owner, tag, timestamp);
-      if (property === 'addUserMessage') return (content: string, turn: number, images?: ImageInput[], timestamp?: number, _source?: string, tag?: JsonValue) => target.addUserMessage(content, turn, images, timestamp, owner, tag);
+      if (property === 'addUserMessage') return (content: string, turn: number, images?: ImageInput[], timestamp?: number, _source?: string, tag?: JsonValue, inputReceipt?: InputReceiptIdentity) => target.addUserMessage(content, turn, images, timestamp, owner, tag, inputReceipt);
       if (property === 'addSerializedToolMessage') return (id: string, content: string, turn: number, images?: ImageInput[], display?: unknown, timestamp?: number) => target.addSerializedToolMessage(id, content, turn, images, display, timestamp, owner);
       if (property === 'addToolMessage') return (call: ToolCall, result: ToolExecResult, turn: number) => target.addToolMessage(call, result, turn, owner);
       const value = Reflect.get(target, property, target);
@@ -431,13 +432,13 @@ export class Context {
   /**
    * 添加用户消息
    */
-  addUserMessage(content: string, turn: number, images?: ImageInput[], timestamp?: number, source?: string, tag?: JsonValue): void {
+  addUserMessage(content: string, turn: number, images?: ImageInput[], timestamp?: number, source?: string, tag?: JsonValue, inputReceipt?: InputReceiptIdentity): void {
     this.addMessage(
-      { role: 'user', content, turn, images, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}) },
+      { role: 'user', content, turn, images, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}), ...(inputReceipt ? { inputReceipt } : {}) },
       { turn, source, ...(tag !== undefined ? { tag } : {}), ...(typeof timestamp === 'number' ? { timestamp } : {}) }
     );
     // 同步到 messages 数组（保持向后兼容）
-    this.messages.push({ role: 'user', content, turn, images, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}) });
+    this.messages.push({ role: 'user', content, turn, images, ...(source ? { source } : {}), ...(tag !== undefined ? { tag } : {}), ...(inputReceipt ? { inputReceipt } : {}) });
   }
 
   /**
@@ -587,6 +588,7 @@ export class Context {
       thinkingBlocks: message.thinkingBlocks,
       images: message.images,
       display: message.display,
+      inputReceipt: message.inputReceipt,
 
       // 元数据字段
       id,

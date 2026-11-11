@@ -31,8 +31,23 @@ export interface HandoffSeedPayload {
   featureContinuity?: unknown;
 }
 
+/**
+ * seed 注入事务末尾追加的宿主消息（如接续校准提醒）。
+ *
+ * 注入与 seed 同事务确定性发生（isFirstCall && 未注入过），不依赖任何
+ * 运行时探测；无 seed 内容的 runtime 不走注入路径，appendix 自然不触发。
+ * 落账 source 恒为本 feature（框架 context 代理按注入者强制标记 owner，
+ * 声明其他 source 会被覆盖）；内容归属（如 [工程素养] 前缀）由正文自表达。
+ */
+export interface HandoffSeedAppendix {
+  /** 注入正文（完整文本，含任何体系前缀，由宿主组装）。 */
+  content: string;
+}
+
 export interface HandoffSeedFeatureConfig {
   handoff: HandoffSeedPayload;
+  /** seed 与重要文件/技能重载注入完成后，末尾追加一条 system 消息（tag='reminder'）。 */
+  appendix?: HandoffSeedAppendix;
 }
 
 /**

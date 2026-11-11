@@ -31,6 +31,7 @@ import type { JsonValue } from '../../core/types.js';
 import { scanFilesAndSkills } from '../../core/continuity/transforms/summary.js';
 import type { CallStartContext } from '../../core/lifecycle.js';
 import type {
+  HandoffSeedAppendix,
   HandoffSeedFeatureConfig,
   HandoffSeedPayload,
   HandoffSeedMessage,
@@ -139,6 +140,7 @@ export class HandoffSeedFeature implements AgentFeature {
   readonly description = 'Injects a trimmed handoff transcript exactly once on the first CallStart when a runtime is booted from a handoff package.';
 
   private readonly handoff: HandoffSeedPayload;
+  private readonly appendix?: HandoffSeedAppendix;
   private injected = false;
   /** 注入事实（注入完成时记录，captureState 回写进会话快照）。 */
   private injectionFacts?: {
@@ -170,6 +172,8 @@ export class HandoffSeedFeature implements AgentFeature {
         : {},
       featureContinuity: config?.handoff?.featureContinuity,
     };
+    const appendixContent = cleanValue(config?.appendix?.content);
+    this.appendix = appendixContent ? { content: appendixContent } : undefined;
   }
 
   async onInitiate(ctx: FeatureInitContext): Promise<void> {
@@ -269,7 +273,17 @@ export class HandoffSeedFeature implements AgentFeature {
       turn: fallbackTurn,
     });
 
-    this.injectImportantContext(ctx, injectionTurn);
+    const finalTurn = this.injectImportantContext(ctx, injectionTurn);
+
+    // appendix 与 seed 同事务注入：配置存在即追加，无需运行时探测；与
+    // importantFiles/Skills 一样不计入 seed 段的注入账目（seedCount/seq 区间）。
+    // source 恒为本 feature（context 代理按注入者标记 owner）。
+    if (this.appendix) {
+      ctx.context.addSystemMessage(this.appendix.content, finalTurn + 1, this.name, 'reminder');
+      this.logger?.info('Injected handoff seed appendix', {
+        packageId: this.handoff.packageId || null,
+      });
+    }
   }
 
   /**
@@ -296,7 +310,8 @@ export class HandoffSeedFeature implements AgentFeature {
     };
   }
 
-  private injectImportantContext(ctx: CallStartContext, baseTurn: number): void {
+  /** 注入重要文件/技能重载块，返回消耗完的 turn（供 appendix 等后续注入衔接）。 */
+  private injectImportantContext(ctx: CallStartContext, baseTurn: number): number {
     const projectRoot = typeof (ctx.agent as any)?.projectRoot === 'string'
       ? (ctx.agent as any).projectRoot
       // eslint-disable-next-line no-restricted-syntax -- 防御性默认值，共享进程下返回 Claw 根目录；Agent 已注册 projectRoot 时不会走到这里
@@ -317,6 +332,8 @@ export class HandoffSeedFeature implements AgentFeature {
       ctx.context.addSystemMessage(block.content, injectionTurn, this.name, block.tag);
       injectionTurn += 1;
     }
+
+    return injectionTurn;
   }
 
   private resolveFilePath(filePath: string, projectRoot: string): string {

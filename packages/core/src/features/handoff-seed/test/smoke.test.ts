@@ -46,9 +46,12 @@ function createContextRecorder(options: { startSequence?: number; prefill?: numb
       // add() intentionally does NOT sync enrichedMessages — this is the
       // behavior we are testing against.
     },
-    addSystemMessage(content: string, turn: number): void {
-      messages.push({ role: 'system', content, turn });
-      enrichedMessages.push({ role: 'system', content, turn, sequence: sequence++ });
+    addSystemMessage(content: string, turn: number, source?: string, tag?: any): void {
+      const msg: any = { role: 'system', content, turn };
+      if (source !== undefined) msg.source = source;
+      if (tag !== undefined) msg.tag = tag;
+      messages.push(msg);
+      enrichedMessages.push({ ...msg, sequence: sequence++ });
     },
     addUserMessage(content: string, turn: number): void {
       messages.push({ role: 'user', content, turn });
@@ -379,5 +382,68 @@ describe('HandoffSeedFeature captureState（注入事实回写，ADR-0024 PR-3�
     const recorderB = createContextRecorder({ prefill: 2 });
     await inject(target, recorderB);
     assert.equal(recorderB.messages.length, 2, 'restore 后不得重复注入 seed');
+  });
+});
+
+describe('HandoffSeedFeature appendix（seed 事务末尾的宿主附言）', () => {
+  function createAppendixFeature(appendix?: { content: string }) {
+    return new HandoffSeedFeature({
+      handoff: {
+        packageId: 'pkg-appendix',
+        sourceSessionId: 'session-appendix',
+        mode: 'trim-transcript',
+        seedMessages: [
+          { role: 'user', content: 'do work', turn: 1 },
+          { role: 'assistant', content: 'done', turn: 1 },
+        ],
+        importantFiles: ['definitely-missing-file-for-test.ts'],
+      },
+      ...(appendix ? { appendix } : {}),
+    });
+  }
+
+  it('配置 appendix 时在 seed 与重载块之后注入最后一条 system 消息（tag=reminder）', async () => {
+    const feature = createAppendixFeature({ content: '[工程素养] calibration' });
+    const recorder = createContextRecorder();
+    await feature.injectHandoffSummary({
+      input: 'hello', isFirstCall: true, context: recorder.context, agent: { _callIndex: 0 },
+    } as any);
+
+    const enriched = recorder.enrichedMessages;
+    const last = enriched[enriched.length - 1];
+    assert.equal(last.role, 'system');
+    assert.equal(last.content, '[工程素养] calibration');
+    assert.equal(last.tag, 'reminder');
+    // 位置承诺：排在 name-only 重载块之后（重载块内容含"仅保留路径"）
+    const nameOnlyIndex = enriched.findIndex(m => String(m.content).includes('仅保留路径'));
+    assert.ok(nameOnlyIndex >= 0, '重载块应先于 appendix 注入');
+    assert.ok(nameOnlyIndex < enriched.length - 1, 'appendix 应是最后一条注入消息');
+    assert.ok((last.turn as number) > (enriched[nameOnlyIndex].turn as number), 'appendix turn 应晚于重载块');
+  });
+
+  it('无 appendix 或空白内容时消息序列与旧行为一致（不产生额外消息）', async () => {
+    for (const feature of [createAppendixFeature(), createAppendixFeature({ content: '   ' })]) {
+      const recorder = createContextRecorder();
+      await feature.injectHandoffSummary({
+        input: 'hello', isFirstCall: true, context: recorder.context, agent: { _callIndex: 0 },
+      } as any);
+      // 2 条 seed + 1 个 name-only 重载块，无 appendix 消息
+      assert.equal(recorder.messages.length, 3);
+      assert.ok(!recorder.enrichedMessages.some(m => m.source === 'handoff-seed' && m.tag === 'reminder'));
+    }
+  });
+
+  it('appendix 不进入 seed 区间账目（seedCount 与 seq 区间语义不变）', async () => {
+    const feature = createAppendixFeature({ content: 'calibration' });
+    const recorder = createContextRecorder();
+    await feature.injectHandoffSummary({
+      input: 'hello', isFirstCall: true, context: recorder.context, agent: { _callIndex: 0 },
+    } as any);
+
+    const snapshot = feature.captureState() as Record<string, unknown>;
+    assert.equal(snapshot.seedCount, 2, 'appendix 不计入 seedCount');
+    const enriched = recorder.enrichedMessages;
+    assert.equal(snapshot.firstMessageSeq, enriched[0].sequence);
+    assert.equal(snapshot.lastMessageSeq, enriched[1].sequence, 'seq 区间仍指向 seed 末条，不含 appendix');
   });
 });

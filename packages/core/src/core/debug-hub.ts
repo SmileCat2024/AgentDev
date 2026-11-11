@@ -71,6 +71,11 @@ export class DebugHub {
   // stop-agent 只记录不动作——停止语义归宿主，框架不代决定退出时机。
   private stopHandlers = new Map<string, (agentId: string) => void | Promise<void>>();
   private globalStopHandler?: (agentId: string) => void | Promise<void>;
+  // 队列变更通知回调（queued-input-available 帧）：ViewerWorker 在输入入队
+  // 落盘成功后下发的纯加速信号——不携带队列数据，消费仍走 claim/dequeue
+  // 完整协议；未注册或信号丢失时，消费方轮询兜底，行为不变。
+  private queuedInputAvailableHandlers = new Map<string, (agentId: string) => void | Promise<void>>();
+  private globalQueuedInputAvailableHandler?: (agentId: string) => void | Promise<void>;
   // 宿主定向请求回调（host-request 帧，经 ViewerWorker 连接）：payload 透明
   // 传递，返回值经 host-response 帧原路回传。与 stopHandlers 同一注册形态。
   private hostRequestHandlers = new Map<string, (payload: unknown, agentId: string) => unknown>();
@@ -758,6 +763,36 @@ export class DebugHub {
   }
 
   /**
+   * 注册队列变更通知回调：ViewerWorker 下发 queued-input-available 帧时
+   * 触发（输入入队落盘成功之后）。信号不携带数据，回调应触发一次既有的
+   * claim/dequeue 消费尝试。返回注销函数。
+   * 与 setStopHandler 同一注册形态（per-agent 优先，全局 fallback）。
+   */
+  setQueuedInputAvailableHandler(
+    agentIdOrHandler: string | ((agentId: string) => void | Promise<void>) | undefined,
+    handler?: (agentId: string) => void | Promise<void>,
+  ): () => void {
+    if (typeof agentIdOrHandler === 'string') {
+      if (handler) {
+        this.queuedInputAvailableHandlers.set(agentIdOrHandler, handler);
+        return () => {
+          if (this.queuedInputAvailableHandlers.get(agentIdOrHandler) === handler) {
+            this.queuedInputAvailableHandlers.delete(agentIdOrHandler);
+          }
+        };
+      }
+      this.queuedInputAvailableHandlers.delete(agentIdOrHandler);
+      return () => {};
+    }
+    this.globalQueuedInputAvailableHandler = agentIdOrHandler;
+    return () => {
+      if (this.globalQueuedInputAvailableHandler === agentIdOrHandler) {
+        this.globalQueuedInputAvailableHandler = undefined;
+      }
+    };
+  }
+
+  /**
    * 注册宿主定向请求回调：ViewerWorker 下发 host-request 帧时触发，
    * 返回值（或抛出的异常）经 host-response 帧回传给发起方。
    * 与 setStopHandler 同一注册形态（per-agent 优先，全局 fallback）。
@@ -1093,6 +1128,20 @@ export class DebugHub {
           });
         } else {
           console.warn(`[DebugHub] 无停止回调，忽略停止指令: agentId=${msg.agentId}`);
+        }
+        break;
+      }
+
+      // 队列变更通知（纯加速信号）：ViewerWorker 在输入入队落盘成功后下发。
+      // 不携带队列数据——事实仍在 viewer 持久队列状态机，回调只应触发一次
+      // 既有的 claim/dequeue 消费尝试。未注册回调时静默忽略（消费方轮询兜底）。
+      case 'queued-input-available': {
+        const queueNotifyHandler = this.queuedInputAvailableHandlers.get(msg.agentId)
+          ?? this.globalQueuedInputAvailableHandler;
+        if (queueNotifyHandler) {
+          Promise.resolve(queueNotifyHandler(msg.agentId)).catch((error) => {
+            console.error('[DebugHub] queuedInputAvailableHandler 执行失败:', error);
+          });
         }
         break;
       }

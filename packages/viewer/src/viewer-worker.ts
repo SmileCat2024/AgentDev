@@ -1361,6 +1361,10 @@ class ViewerWorker {
       };
     }
     this.emitSessionEvent({ kind: 'queued-inputs', agentId });
+    // 入队事实已落定：提醒 runtime 立即消费（ADR-0047 后 durable command
+    // 不走 lease 直答，空闲态消费的唯一触发原是消费方 1s 轮询）。信号在
+    // 落盘之后发出，收到方 claim 时该项必然可见。
+    this.notifyQueuedInputAvailable(agentId, session);
     console.log(`[Viewer Worker] 用户回合已排队: ${agentId}, source=${input.source || 'unknown'}, queueLength=${session.queuedInputs.length}`);
     return {
       success: true,
@@ -1660,6 +1664,23 @@ class ViewerWorker {
       }
     }
     return queuedInput;
+  }
+
+  /**
+   * 入队通知（纯加速信号）：输入已接收落盘后，提醒 runtime 立即来做一次
+   * claim/dequeue。不携带队列数据——队列事实只在本类状态机，消费仍走完整
+   * 协议；写失败 / runtime 未连接时静默放弃，消费方轮询兜底，不参与正确性。
+   */
+  private notifyQueuedInputAvailable(agentId: string, session: AgentSession): void {
+    const targetClientId = session.clientId;
+    if (!targetClientId) return;
+    const targetSocket = this.udsClients.get(targetClientId);
+    if (!targetSocket) return;
+    try {
+      targetSocket.write(JSON.stringify({ type: 'queued-input-available', agentId }) + '\n');
+    } catch (writeError) {
+      console.warn(`[Viewer Worker] 队列通知写入失败（消费方轮询兜底）: agentId=${agentId}`, (writeError as Error)?.message || writeError);
+    }
   }
 
   /**

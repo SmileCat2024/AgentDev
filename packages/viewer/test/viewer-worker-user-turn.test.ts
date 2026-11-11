@@ -547,9 +547,10 @@ describe('ViewerWorker user-turn contract', () => {
     });
 
     expect(result).toMatchObject({ success: true, delivery: 'queued' });
-    // 租约原样保留，runtime 未收到冒充的用户应答
+    // 租约原样保留，runtime 未收到冒充的用户应答（排队路径只允许发
+    // queued-input-available 纯加速信号，不得写 input-response）
     expect(session.inputLease).toMatchObject({ requestId: 'input-waiting' });
-    expect(writes).toHaveLength(0);
+    expect(writes.filter((m) => JSON.parse(m)?.type === 'input-response')).toHaveLength(0);
     expect(session.queuedInputs).toHaveLength(1);
     expect(session.queuedInputs[0]).toMatchObject({
       text: '[后台任务 bg-1 已完成]',
@@ -692,7 +693,12 @@ describe('ViewerWorker resume turn contract (empty-message restart)', () => {
 
     expect(result.success).toBe(true);
     expect(result.delivery).toBe('queued');
-    expect(writes).toHaveLength(0, 'resume must not resolve the input lease');
+    // resume 不得冒充用户应答 lease；排队路径只允许写 queued-input-available
+    // 纯加速信号（消费仍由邮箱循环异步领取）
+    expect(
+      writes.filter((m) => JSON.parse(m)?.type === 'input-response'),
+      'resume must not resolve the input lease',
+    ).toHaveLength(0);
     expect(session.inputLease?.requestId).toBe('input-waiting');
     expect(session.queuedInputs[0]?.kind).toBe('resume');
   });

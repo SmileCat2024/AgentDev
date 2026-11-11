@@ -502,4 +502,152 @@ describe('ViewerWorker queued-input persistence (ADR-0047 stage 3a)', () => {
     expect(Array.isArray(second.session.queuedInputs)).toBe(true);
     expect(second.session.queuedInputs).toHaveLength(0);
   });
+
+  // ── ADR-0047 claim 期时序补充：换头采纳 / 重启换租 / 混合 FIFO ──────────
+  //
+  // 既有用例覆盖 submit 期 fencing 与 ack 幂等；以下三例锁定 claim 期的
+  // 身份链语义——队列项的 fencing 不止于提交面，领取面同样拒绝陈旧身份。
+
+  it('refuses to claim a stale-generation durable item after the head re-registered at a newer generation (claim-level fencing)', () => {
+    // 换头采纳缺口在 viewer 侧的收敛：旧代（gen3）队列项对已采纳到新代
+    // （gen4）的会话永远不可领取，但也绝不静默丢弃——处置权在 Inbox 的
+    // unresolved 事实，Viewer 只持有。恢复路径：Inbox reissue 以新
+    // commandId + 当前代身份入队 → 可领取、可结清。
+    const dir = join(root, 'claim-fencing');
+    const { worker, session, agentId } = createWorker('claim-fence-agent', dir);
+    session.threadId = 'thread-cf';
+    session.headGeneration = 3;
+    session.workSessionId = 'ws-cf';
+    session.runtimeInstanceId = 'rt-cf-1';
+    session.callActive = true;
+    expect(worker.submitUserTurn(agentId, {
+      text: 'gen3 command', sourceRef: 'cmd-cf-1', sessionId: 'ws-cf',
+      commandIdentity: { commandId: 'cmd-cf-1', threadId: 'thread-cf', headGeneration: 3 },
+    })).toMatchObject({ success: true, delivery: 'queued' });
+
+    // 换头采纳：同会话重注册到 gen4（新 head runtime）
+    session.headGeneration = 4;
+    session.runtimeInstanceId = 'rt-cf-2';
+    expect(claimViaMethod(worker, agentId)).toBeNull();
+    expect(session.queuedInputs).toHaveLength(1);
+
+    // 重启 + 新 runtime 采纳后依旧不可领取（持久事实，不是内存巧合）
+    const second = createWorker('claim-fence-agent', dir);
+    second.session.threadId = 'thread-cf';
+    second.session.headGeneration = 4;
+    second.session.workSessionId = 'ws-cf';
+    second.session.runtimeInstanceId = 'rt-cf-2';
+    second.session.callActive = true;
+    expect(claimViaMethod(second.worker, 'claim-fence-agent')).toBeNull();
+    expect(second.session.queuedInputs).toHaveLength(1);
+
+    // 协议恢复路径：Inbox reissue 投给新 head runtime 的独立会话（生产
+    // 拓扑：每代 head runtime 是独立 viewer 会话/队列文件，陈旧项不会与新
+    // 项同队）。新 commandId + 当前代身份 → 可领取、可结清。
+    const next = createWorker('claim-fence-agent-next', dir);
+    next.session.threadId = 'thread-cf';
+    next.session.headGeneration = 4;
+    next.session.workSessionId = 'ws-cf';
+    next.session.runtimeInstanceId = 'rt-cf-next';
+    next.session.callActive = true;
+    expect(next.worker.submitUserTurn('claim-fence-agent-next', {
+      text: 'gen3 command (reissued)', sourceRef: 'cmd-cf-2', sessionId: 'ws-cf',
+      commandIdentity: { commandId: 'cmd-cf-2', threadId: 'thread-cf', headGeneration: 4 },
+    })).toMatchObject({ success: true, delivery: 'queued' });
+    const claimed = claimViaMethod(next.worker, 'claim-fence-agent-next');
+    expect(claimed).toMatchObject({ sourceRef: 'cmd-cf-2' });
+    expect(claimed!.inputLease).toMatchObject({ headGeneration: 4, runtimeInstanceId: 'rt-cf-next' });
+    expect(ackViaMethod(next.worker, 'claim-fence-agent-next', claimed!.inputLease!)).toBe(true);
+    expect(next.session.queuedInputs).toHaveLength(0);
+    // 旧 gen3 项在原会话队列保留：它是 Inbox unresolved 的事实物证，
+    // 不归 Viewer 处置
+    expect(second.session.queuedInputs).toHaveLength(1);
+    expect(second.session.queuedInputs[0]).toMatchObject({ sourceRef: 'cmd-cf-1' });
+  });
+
+  it('rotates the durable lease when the runtime re-registers after a restart and rejects the old lease ack', () => {
+    // claim 后 runtime 崩溃重启（新 runtimeInstanceId，同代 head）：重启
+    // 恢复的队列项可被重新领取，但租约必须轮换——旧 runtime 迟到的 ack
+    // 不得移除新 runtime 名下的项（否则同指令存在二次执行窗口）。
+    const dir = join(root, 'lease-rotate');
+    const first = createWorker('lease-rotate-agent', dir);
+    first.session.threadId = 'thread-lr';
+    first.session.headGeneration = 2;
+    first.session.workSessionId = 'ws-lr';
+    first.session.runtimeInstanceId = 'rt-lr-a';
+    first.session.callActive = true;
+    expect(first.worker.submitUserTurn('lease-rotate-agent', {
+      text: 'restart lease', sourceRef: 'cmd-lr-1', sessionId: 'ws-lr',
+      commandIdentity: { commandId: 'cmd-lr-1', threadId: 'thread-lr', headGeneration: 2 },
+    })).toMatchObject({ success: true, delivery: 'queued' });
+
+    const lease1 = claimViaMethod(first.worker, 'lease-rotate-agent')!.inputLease!;
+    expect(lease1).toMatchObject({ runtimeInstanceId: 'rt-lr-a', headGeneration: 2 });
+
+    // worker 重启 + runtime 重启（新实例 id，同代）：重新领取 → 新租约
+    const second = createWorker('lease-rotate-agent', dir);
+    second.session.threadId = 'thread-lr';
+    second.session.headGeneration = 2;
+    second.session.workSessionId = 'ws-lr';
+    second.session.runtimeInstanceId = 'rt-lr-b';
+    second.session.callActive = true;
+    const reClaimed = claimViaMethod(second.worker, 'lease-rotate-agent');
+    expect(reClaimed).toMatchObject({ sourceRef: 'cmd-lr-1' });
+    const lease2 = reClaimed!.inputLease!;
+    expect(lease2.leaseId).not.toBe(lease1.leaseId);
+    expect(lease2).toMatchObject({ runtimeInstanceId: 'rt-lr-b', headGeneration: 2 });
+
+    // 旧租约 ack（旧 runtime 崩溃前的迟到回执）：拒绝，项不被移除
+    expect(ackViaMethod(second.worker, 'lease-rotate-agent', lease1)).toBe(false);
+    expect(second.session.queuedInputs).toHaveLength(1);
+    // 新租约 ack：结清；重启后持久结果仍是空队列
+    expect(ackViaMethod(second.worker, 'lease-rotate-agent', lease2)).toBe(true);
+    expect(second.session.queuedInputs).toHaveLength(0);
+    const third = createWorker('lease-rotate-agent', dir);
+    expect(third.session.queuedInputs).toHaveLength(0);
+  });
+
+  it('keeps FIFO discipline across mixed legacy and durable items: legacy via dequeue, durable only via claim', () => {
+    // React drain / CallArbiter 安全网（legacy dequeue）与 claim/ack 协议
+    // 共享一条队列：durable 项是队首时 legacy 路径必须让路（返回 null、
+    // 不移除），claim 领取未 ack 期间同样不让路；结清后 FIFO 恢复。
+    const dir = join(root, 'mixed-fifo');
+    const { worker, session, agentId } = createWorker('mixed-fifo-agent', dir);
+    session.threadId = 'thread-mf';
+    session.headGeneration = 1;
+    session.workSessionId = 'ws-mf';
+    session.runtimeInstanceId = 'rt-mf';
+    session.callActive = true;
+    worker.submitUserTurn(agentId, { text: 'plain A', source: 'thread', sourceRef: 'cmd-mf-a' });
+    worker.submitUserTurn(agentId, {
+      text: 'durable D', sourceRef: 'cmd-mf-d', sessionId: 'ws-mf',
+      commandIdentity: { commandId: 'cmd-mf-d', threadId: 'thread-mf', headGeneration: 1 },
+    });
+    worker.submitUserTurn(agentId, { text: 'plain B', source: 'thread', sourceRef: 'cmd-mf-b' });
+    expect(session.queuedInputs).toHaveLength(3);
+
+    // 队首普通项：legacy dequeue 照常消费（A）
+    const first = dequeueViaHandler(worker, agentId);
+    expect(first.status).toBe(200);
+    expect(first.body.input?.sourceRef).toBe('cmd-mf-a');
+    expect(session.queuedInputs).toHaveLength(2);
+
+    // 队首 durable 项：legacy drain 不接管（协议独占），已 claim 未 ack
+    // 期间同样不移交
+    let guarded = dequeueViaHandler(worker, agentId);
+    expect(guarded.status).toBe(200);
+    expect(guarded.body.input).toBeNull();
+    expect(guarded.body.remaining).toBe(2);
+    const claimed = claimViaMethod(worker, agentId);
+    expect(claimed).toMatchObject({ sourceRef: 'cmd-mf-d' });
+    guarded = dequeueViaHandler(worker, agentId);
+    expect(guarded.body.input).toBeNull();
+    expect(session.queuedInputs).toHaveLength(2);
+    expect(ackViaMethod(worker, agentId, claimed!.inputLease!)).toBe(true);
+
+    // durable 结清后，后续普通项恢复 FIFO
+    const last = dequeueViaHandler(worker, agentId);
+    expect(last.body.input?.sourceRef).toBe('cmd-mf-b');
+    expect(session.queuedInputs).toHaveLength(0);
+  });
 });

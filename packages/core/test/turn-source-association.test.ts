@@ -198,6 +198,50 @@ describe('busy queued input consumption identity (react-loop drain)', () => {
       .toBe(true);
   });
 
+  it('thread runtime consumes a lease-less reminder via the claim-204 dequeue fallback instead of dropping it', async () => {
+    // 回归（后台唤醒丢失）：线程身份会话 claim 到 204（队首是 reminder 而非
+    // durable command）时走 dequeue 回退；回退结果本就没有 inputLease——
+    // durable-lease 校验只属于 claim 协议，不得应用到回退响应上。修复前这里
+    // 把已 dequeue 的 reminder 当服务端异常吞成 null：输入被从队列取走却在
+    // 模型面前消失，后台完成通知无法唤醒会话。
+    const mailbox: Array<{ text: string; kind?: string; source?: string; sourceRef?: string }> = [];
+    const modelInputs: Message[][] = [];
+    const llm: LLMClient = {
+      async chat(messages: Message[]): Promise<LLMResponse> {
+        modelInputs.push(messages);
+        if (modelInputs.length === 1) {
+          mailbox.push({ text: '[后台任务 bg-1 已完成]', kind: 'reminder', source: 'shell', sourceRef: 'shell-evt-regression-1' });
+        }
+        return { content: `reply-${modelInputs.length}` };
+      },
+    };
+    const runtimeIdentity = { threadId: 'wt-reminder', headGeneration: 1 };
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const target = String(url);
+      if (target.includes('/command-input/claim')) {
+        // 队首是 reminder（非 durable command）：claim 语义下无可领项 → 204。
+        return { ok: true, status: 204, json: async () => { throw new Error('204 has no body'); } };
+      }
+      if (target.includes('/dequeue-input')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ input: mailbox.shift() ?? null, remaining: mailbox.length }),
+        };
+      }
+      throw new Error(`unexpected fetch: ${target}`);
+    });
+
+    const agent = new HookContinueAgent({ llm, maxTurns: 3, runtimeInputIdentity: runtimeIdentity });
+    await agent.onCall('等待后台通知');
+
+    // reminder 必须作为带 source 的 system 消息进入下一次模型请求
+    expect(modelInputs.length).toBeGreaterThanOrEqual(2);
+    expect(modelInputs[1].some((message) => message.role === 'system' && message.content === '[后台任务 bg-1 已完成]'))
+      .toBe(true);
+    expect(mailbox).toHaveLength(0);
+  });
+
   it('busy thread claim persists receipt before ack and exposes the receipt on the next model request', async () => {
     const receipt = {
       commandId: 'cmd-busy-durable', threadId: 'wt-busy', headGeneration: 3,

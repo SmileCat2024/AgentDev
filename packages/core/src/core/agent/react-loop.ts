@@ -852,11 +852,17 @@ export class ReActLoopRunner {
       });
       // Legacy non-thread items keep their dequeue semantics. A 204 claim means
       // the queue head is empty or non-command; only then consume the legacy item.
+      // usedClaim tracks which endpoint produced `res`: the durable-lease check
+      // below is a claim-protocol invariant and must NOT be applied to the
+      // fallback's payload — reminder / legacy user items legitimately carry no
+      // inputLease, and mis-checking them discards an already-dequeued input.
+      let usedClaim = Boolean(reliableThreadInput);
       if (reliableThreadInput && res.status === 204) {
         res = await fetch(`${viewerOrigin}/api/agents/${encodeURIComponent(agentId)}/dequeue-input`, {
           method: 'POST',
           headers,
         });
+        usedClaim = false;
       }
 
       if (!res.ok) {
@@ -864,7 +870,7 @@ export class ReActLoopRunner {
       }
 
       const data = await res.json();
-      if (reliableThreadInput && data.input && !data.input.inputLease) {
+      if (usedClaim && data.input && !data.input.inputLease) {
         throw new Error('Viewer returned a thread command without a durable lease');
       }
       // 空文本项：resume 唤醒的合法形态（text 允许为空）。不能按"无项"返回——

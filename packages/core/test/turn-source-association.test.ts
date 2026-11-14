@@ -292,6 +292,107 @@ describe('busy queued input consumption identity (react-loop drain)', () => {
     expect(agent.getContext().getAll().filter((message: any) => message.inputReceipt?.commandId === receipt.commandId)).toHaveLength(1);
   });
 
+  it('drains multiple durable commands in FIFO order with one claim outstanding at a time', async () => {
+    const receipts = [
+      { commandId: 'cmd-busy-durable-1', threadId: 'wt-busy', headGeneration: 4, leaseId: 'lease-1', sessionId: 'session-busy', runtimeInstanceId: 'runtime-busy' },
+      { commandId: 'cmd-busy-durable-2', threadId: 'wt-busy', headGeneration: 4, leaseId: 'lease-2', sessionId: 'session-busy', runtimeInstanceId: 'runtime-busy' },
+    ];
+    const mailbox = receipts.map((inputLease, index) => ({
+      text: `durable busy command ${index + 1}`,
+      source: 'thread',
+      sourceRef: inputLease.commandId,
+      inputLease,
+    }));
+    const order: string[] = [];
+    const store = {
+      snapshots: [] as any[],
+      async save(_sessionId: string, snapshot: any) { this.snapshots.push(structuredClone(snapshot)); return '/tmp/busy-multi.json'; },
+      async load() { throw new Error('unused'); },
+      async list() { return []; },
+      async delete() {},
+    };
+    const llm: LLMClient = {
+      async chat(messages: Message[]): Promise<LLMResponse> {
+        order.push(`llm-${messages.filter((message: any) => message.inputReceipt).map((message: any) => message.inputReceipt.commandId).join(',')}`);
+        return { content: 'done' };
+      },
+    };
+    const runtimeIdentity = { threadId: 'wt-busy', headGeneration: 4 };
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('/command-input/claim')) {
+        const next = mailbox[0];
+        if (next) order.push(`claim-${next.inputLease.commandId}`);
+        return { ok: true, status: 200, json: async () => ({ input: next || null }) };
+      }
+      if (String(url).includes('/command-input/ack')) {
+        const receipt = JSON.parse(String(init?.body)).receipt;
+        order.push(`ack-${receipt.commandId}`);
+        expect(store.snapshots.at(-1)?.runtime.context?.messages.some((message: any) => message.inputReceipt?.commandId === receipt.commandId)).toBe(true);
+        expect(mailbox[0]?.inputLease.commandId).toBe(receipt.commandId);
+        mailbox.shift();
+        return { ok: true, status: 200, json: async () => ({ acknowledged: true }) };
+      }
+      throw new Error(`unexpected fetch: ${String(url)}`);
+    });
+
+    const agent = new HookContinueAgent({ llm, maxTurns: 2, runtimeInputIdentity: runtimeIdentity });
+    agent.enableStepAutoSave('session-busy', store as any);
+    await agent.onCallDetailed('start work');
+
+    expect(order.filter((event) => event.startsWith('claim-') || event.startsWith('ack-'))).toEqual([
+      'claim-cmd-busy-durable-1',
+      'ack-cmd-busy-durable-1',
+      'claim-cmd-busy-durable-2',
+      'ack-cmd-busy-durable-2',
+    ]);
+    expect(order.indexOf('ack-cmd-busy-durable-1')).toBeLessThan(order.indexOf('claim-cmd-busy-durable-2'));
+    expect(agent.getContext().getAll().filter((message: any) => message.inputReceipt).map((message: any) => message.inputReceipt.commandId)).toEqual([
+      'cmd-busy-durable-1',
+      'cmd-busy-durable-2',
+    ]);
+  });
+
+  it('stops the durable drain after an acknowledgement failure and leaves later commands unclaimed', async () => {
+    const receipts = [
+      { commandId: 'cmd-busy-fail-1', threadId: 'wt-busy', headGeneration: 5, leaseId: 'lease-fail-1', sessionId: 'session-busy', runtimeInstanceId: 'runtime-busy' },
+      { commandId: 'cmd-busy-fail-2', threadId: 'wt-busy', headGeneration: 5, leaseId: 'lease-fail-2', sessionId: 'session-busy', runtimeInstanceId: 'runtime-busy' },
+    ];
+    const mailbox = receipts.map((inputLease, index) => ({
+      text: `durable failing command ${index + 1}`,
+      source: 'thread',
+      sourceRef: inputLease.commandId,
+      inputLease,
+    }));
+    const claimed: string[] = [];
+    const store = {
+      snapshots: [] as any[],
+      async save(_sessionId: string, snapshot: any) { this.snapshots.push(structuredClone(snapshot)); return '/tmp/busy-fail.json'; },
+      async load() { throw new Error('unused'); },
+      async list() { return []; },
+      async delete() {},
+    };
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('/command-input/claim')) {
+        const next = mailbox[0];
+        if (next) claimed.push(next.inputLease.commandId);
+        return { ok: true, status: 200, json: async () => ({ input: next || null }) };
+      }
+      if (String(url).includes('/command-input/ack')) {
+        expect(JSON.parse(String(init?.body)).receipt.commandId).toBe(receipts[0].commandId);
+        return { ok: false, status: 503, json: async () => ({ acknowledged: false }) };
+      }
+      throw new Error(`unexpected fetch: ${String(url)}`);
+    });
+
+    const agent = new HookContinueAgent({ llm: new ImmediateLLM(), maxTurns: 2, runtimeInputIdentity: { threadId: 'wt-busy', headGeneration: 5 } });
+    agent.enableStepAutoSave('session-busy', store as any);
+    await expect(agent.onCallDetailed('start work')).rejects.toThrow('Durable input acknowledgement failed: 503');
+
+    expect(claimed).toEqual(['cmd-busy-fail-1']);
+    expect(agent.getContext().getAll().filter((message: any) => message.inputReceipt?.commandId === receipts[0].commandId)).toHaveLength(1);
+    expect(agent.getContext().getAll().some((message: any) => message.inputReceipt?.commandId === receipts[1].commandId)).toBe(false);
+  });
+
   it('turn.completed carries consumedSourceRefs for busy-injected inputs in injection order', async () => {
     // busy 路径：call 进行/收尾边界 drain 邮箱，排队项身份聚合为
     // consumedSourceRefs 挂到本回合终态（排队项不产生独立 turn）。

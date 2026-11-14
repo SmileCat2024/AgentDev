@@ -929,19 +929,30 @@ export class ReActLoopRunner {
     let durableReceiptClaimed = false;
     const internalToken = process.env.PROTOCLAW_INTERNAL_TOKEN;
     try {
-      const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number; inputReceipt?: InputReceiptIdentity }> = [];
+      let injectedAny = false;
       while (true) {
-        const qi = await this.fetchQueuedInput(this.agent.agentId);
-        if (!qi) break;
-        items.push(qi);
-        // A durable claim remains at the queue head until snapshot+ack. Process
-        // one receipt at a time so the next poll cannot claim the same item.
-        if (qi.inputReceipt) {
-          durableReceiptClaimed = true;
-          break;
+        const items: Array<{ text: string; kind?: TurnKind; images?: ImageInput[]; capabilityActivations?: string[]; metadata?: Record<string, unknown>; source?: string; sourceRef?: string; timestamp?: number; inputReceipt?: InputReceiptIdentity }> = [];
+        let batchHasDurableReceipt = false;
+        while (true) {
+          const qi = await this.fetchQueuedInput(this.agent.agentId);
+          if (!qi) break;
+          items.push(qi);
+          // A durable claim remains at the queue head until snapshot+ack. Process
+          // one receipt at a time so the next poll cannot claim the same item.
+          // The current batch stops at that item; after its snapshot+ack, the
+          // outer drain loop starts a fresh batch and may claim the next item.
+          if (qi.inputReceipt) {
+            durableReceiptClaimed = true;
+            batchHasDurableReceipt = true;
+            break;
+          }
         }
-      }
-      if (items.length > 0) {
+        if (items.length === 0) {
+          return injectedAny
+            ? { injected: true, sourceRefs: consumedSourceRefs }
+            : { injected: false, sourceRefs: [] };
+        }
+
         logger.info(`${logLabel}：注入排队消息`, { count: items.length });
         let injected = false;
         for (const qi of items) {
@@ -1001,7 +1012,12 @@ export class ReActLoopRunner {
           injected = true;
         }
         this.pushToDebug(context.getAll(), false, context.getTimestamps());
-        if (injected) return { injected: true, sourceRefs: consumedSourceRefs };
+        if (injected) injectedAny = true;
+        // A durable item was claimed at the head of this batch. Its snapshot and
+        // ack are now complete, so the next claim is safe; continue the same
+        // drain instead of returning after the first durable item.
+        if (batchHasDurableReceipt) continue;
+        if (injectedAny) return { injected: true, sourceRefs: consumedSourceRefs };
       }
     } catch (e) {
       logger.debug(`${logLabel}：队列查询失败，忽略`, { error: e instanceof Error ? e.message : String(e) });

@@ -43,6 +43,10 @@ const MAX_SUBJECT_LENGTH = 160;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_DELIVER_LENGTH = 300;
 
+/** 连续未使用 todo 工具时的提醒间隔（单位：ReAct Step）。 */
+const REMINDER_INTERVALS_WITH_TASKS = [10, 15, 20, 25] as const;
+const REMINDER_INTERVALS_WITHOUT_TASKS = [5, 10, 15] as const;
+
 /**
  * TodoFeature 实现
  *
@@ -63,19 +67,17 @@ export class TodoFeature implements AgentFeature {
   private tasks = new Map<string, TodoTask>();
   private counter = 0;
   private debugAgentId = '';
-  private config: Required<Omit<TodoFeatureConfig, 'reminderTemplate' | 'reminderThresholdWithTasks' | 'reminderThresholdWithoutTasks'>> & {
+  private config: {
     reminderTemplate?: string;
-    reminderThresholdWithTasks?: number;
-    reminderThresholdWithoutTasks?: number;
   };
 
   // Reminder 相关状态
   private reminderContent = '';
 
-  // 连续未使用 todo 工具的轮次计数器
+  // 自上次提醒或 CallStart 以来连续未使用 todo 工具的 Step 数
   private consecutiveNoTodoTurns = 0;
-  // 上一轮是否已注入 reminder（防止重复注入）
-  private reminderInjected = false;
+  // 当前提醒阶段已消费的提醒次数；CallStart 或 todo 工具使用时归零
+  private reminderCount = 0;
 
   // 工具工厂实例
   private toolFactory?: TodoToolFactory;
@@ -84,8 +86,6 @@ export class TodoFeature implements AgentFeature {
 
   constructor(config: TodoFeatureConfig = {}) {
     this.config = {
-      reminderThresholdWithTasks: config.reminderThresholdWithTasks ?? 3,
-      reminderThresholdWithoutTasks: config.reminderThresholdWithoutTasks ?? 6,
       reminderTemplate: config.reminderTemplate,
     };
     this.reminderContent = this.getDefaultReminder();
@@ -129,7 +129,7 @@ export class TodoFeature implements AgentFeature {
   }
 
   async onInitiate(_ctx: FeatureInitContext): Promise<void> {
-    console.log(`[TodoFeature] Initialized with reminderThresholdWithTasks=${this.config.reminderThresholdWithTasks}, reminderThresholdWithoutTasks=${this.config.reminderThresholdWithoutTasks}`);
+    console.log('[TodoFeature] Initialized with progressive reminder schedule');
 
     // 如果配置了模板文件，异步加载
     const templatePath = this.config.reminderTemplate;
@@ -154,7 +154,7 @@ export class TodoFeature implements AgentFeature {
       counter: this.counter,
       reminderContent: this.reminderContent,
       consecutiveNoTodoTurns: this.consecutiveNoTodoTurns,
-      reminderInjected: this.reminderInjected,
+      reminderCount: this.reminderCount,
     };
   }
 
@@ -164,7 +164,8 @@ export class TodoFeature implements AgentFeature {
       counter?: number;
       reminderContent?: string;
       consecutiveNoTodoTurns?: number;
-      reminderInjected?: boolean;
+      reminderCount?: number;
+      // 旧快照可能带有 reminderInjected；新调度不再读取它。
     };
 
     // 白名单重建：仅保留新 schema 字段，丢弃旧 session 中可能存在的
@@ -192,7 +193,9 @@ export class TodoFeature implements AgentFeature {
     this.consecutiveNoTodoTurns = typeof state.consecutiveNoTodoTurns === 'number'
       ? state.consecutiveNoTodoTurns
       : 0;
-    this.reminderInjected = Boolean(state.reminderInjected);
+    this.reminderCount = typeof state.reminderCount === 'number'
+      ? Math.max(0, state.reminderCount)
+      : 0;
     this.pushDebugSnapshot();
   }
 
@@ -223,19 +226,19 @@ export class TodoFeature implements AgentFeature {
    *
    * 触发时机：每轮 ReAct 迭代开始时
    * 处理逻辑：
-   * 1. 检查连续未使用 todo 工具的轮次
-   * 2. 达到阈值时注入 reminder 系统消息（包含当前/下一任务状态）
-   * 3. 防止重复注入
+   * 1. 根据当前是否有未完成任务，取得本阶段提醒间隔
+   * 2. 达到间隔时注入一次简短 reminder
+   * 3. 注入后从零重新计数；下一次间隔按递进计划取得
    */
   async checkAndInjectReminder(ctx: StepStartContext): Promise<void> {
-    const threshold = this.getCurrentThreshold();
-    console.log(`[TodoFeature] callIndex=${ctx.callIndex}, counter=${this.consecutiveNoTodoTurns}, threshold=${threshold}, injected=${this.reminderInjected}`);
+    const interval = this.getCurrentReminderInterval();
+    console.log(`[TodoFeature] callIndex=${ctx.callIndex}, counter=${this.consecutiveNoTodoTurns}, interval=${interval}, reminderCount=${this.reminderCount}`);
 
-    // 检查是否需要注入 reminder
-    if (this.consecutiveNoTodoTurns >= threshold && !this.reminderInjected) {
-      console.log('[TodoFeature] Threshold reached, injecting reminder');
+    if (this.consecutiveNoTodoTurns >= interval) {
+      console.log('[TodoFeature] Reminder interval reached, injecting reminder');
       ctx.context.add({ role: 'system', content: this.buildDynamicReminder() });
-      this.reminderInjected = true;
+      this.consecutiveNoTodoTurns = 0;
+      this.reminderCount += 1;
     }
   }
 
@@ -251,6 +254,10 @@ export class TodoFeature implements AgentFeature {
    * 4. 重置 no-todo 计数器（新一轮用户交互）
    */
   async onCallStart(ctx: CallStartContext): Promise<void> {
+    // 每个新 call 都开启新的提醒周期；即使后续因首次调用、后台唤醒或无任务而跳过注入，也要重置计数。
+    this.consecutiveNoTodoTurns = 0;
+    this.reminderCount = 0;
+
     // 首次调用不注入
     if (ctx.isFirstCall) return;
 
@@ -269,11 +276,7 @@ export class TodoFeature implements AgentFeature {
     // 视野中消失：既不被执行，也不被清理，成为无人认领的僵尸任务。
     ctx.context.add({ role: 'system', content: this.buildCurrentTaskPlanContext() });
 
-    // 重置计数器（新的用户消息代表新一轮交互）
-    this.consecutiveNoTodoTurns = 0;
-    this.reminderInjected = false;
-
-    console.log('[TodoFeature] CallStart: injected full task plan, reset counter');
+    console.log('[TodoFeature] CallStart: injected full task plan, reset reminder schedule');
   }
 
   /**
@@ -292,15 +295,15 @@ export class TodoFeature implements AgentFeature {
     const wroteTodo = toolCalls.some((call: { name: string }) => this.isTodoWriteTool(call.name));
 
     if (usedTodoTool) {
-      // 使用了 todo 工具，重置计数器
+      // 使用了 todo 工具，开启新的提醒间隔阶段
       this.consecutiveNoTodoTurns = 0;
-      this.reminderInjected = false;
-      console.log(`[TodoFeature] Todo tool used, reset counter`);
+      this.reminderCount = 0;
+      console.log(`[TodoFeature] Todo tool used, reset reminder schedule`);
     } else {
       // 未使用 todo 工具，计数器加 1
       this.consecutiveNoTodoTurns++;
-      const threshold = this.getCurrentThreshold();
-      console.log(`[TodoFeature] No todo tool, counter=${this.consecutiveNoTodoTurns}/${threshold}`);
+      const interval = this.getCurrentReminderInterval();
+      console.log(`[TodoFeature] No todo tool, counter=${this.consecutiveNoTodoTurns}/${interval}`);
     }
 
     // 若本轮有 Todo 写操作，注入一次最新完整任务列表
@@ -328,17 +331,23 @@ export class TodoFeature implements AgentFeature {
     this.reminderContent = content;
   }
 
-  /**
-   * 获取当前的提醒阈值（根据任务状态动态调整）
-   */
-  private getCurrentThreshold(): number {
-    // 检查是否有待执行的任务（pending 或 in_progress）
-    const hasActiveTasks = Array.from(this.tasks.values()).some(
+  /** 获取当前是否存在未完成任务。 */
+  private hasActiveTasks(): boolean {
+    return Array.from(this.tasks.values()).some(
       t => t.status === 'pending' || t.status === 'in_progress'
     );
-    return hasActiveTasks
-      ? this.config.reminderThresholdWithTasks!
-      : this.config.reminderThresholdWithoutTasks!;
+  }
+
+  /**
+   * 获取当前提醒间隔。
+   * 计划为：有任务 10/15/20/25/25...；无任务 5/10/15/15...。
+   * reminderCount 表示本阶段已经触发过几次提醒，索引超出后固定取最后一个间隔。
+   */
+  private getCurrentReminderInterval(): number {
+    const intervals = this.hasActiveTasks()
+      ? REMINDER_INTERVALS_WITH_TASKS
+      : REMINDER_INTERVALS_WITHOUT_TASKS;
+    return intervals[Math.min(this.reminderCount, intervals.length - 1)]!;
   }
 
   /**
@@ -545,19 +554,21 @@ export class TodoFeature implements AgentFeature {
   }
 
   /**
-   * 构建动态 reminder 文本
-   * 有 active tasks 时为完整任务列表 + 自定义模板/默认提醒；无任务时仅模板/默认提醒
+   * 构建动态 reminder 文本。
+   * 长 call 内的静默提醒只带当前/下一任务和提醒尾文案，不重复完整任务计划；
+   * 完整计划由 CallStart 和 todo 写操作后的注入提供。
    */
   private buildDynamicReminder(): string {
-    const tail = this.reminderContent || this.getDefaultReminder();
-    const lines = this.renderActiveTaskLines();
-    if (!lines) {
-      return tail;
-    }
-
+    const activeTasks = Array.from(this.tasks.values())
+      .filter(task => task.status === 'pending' || task.status === 'in_progress')
+      .sort((a, b) => a.createdAt - b.createdAt || Number(a.id) - Number(b.id));
+    const currentTask = activeTasks.find(task => task.status === 'in_progress');
+    const nextTask = activeTasks.find(task => task.status === 'pending');
+    const lines: string[] = ['[任务状态提醒]'];
+    lines.push(`当前：${currentTask ? `#${currentTask.id} ${currentTask.subject}` : '无'}`);
+    lines.push(`下一项：${nextTask ? `#${nextTask.id} ${nextTask.subject}` : '无'}`);
     lines.push('');
-    lines.push(tail);
-
+    lines.push(this.reminderContent || this.getDefaultReminder());
     return lines.join('\n');
   }
 

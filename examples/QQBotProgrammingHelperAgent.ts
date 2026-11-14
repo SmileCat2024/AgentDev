@@ -21,9 +21,9 @@ export interface QQBotProgrammingHelperAgentConfig extends BasicAgentConfig {
   name?: string;
   /** MCP 配置名称（可选）；传 false 时不挂载 MCPFeature；不传时自动扫描 .agentdev/mcps */
   mcpServer?: string | false;
-  /** 有待执行任务时的提醒间隔（默认：3 轮） */
+  /** @deprecated Todo 提醒间隔现由框架内置递进策略决定，此字段仅为兼容保留。 */
   reminderThresholdWithTasks?: number;
-  /** 无待执行任务时的提醒间隔（默认：6 轮） */
+  /** @deprecated Todo 提醒间隔现由框架内置递进策略决定，此字段仅为兼容保留。 */
   reminderThresholdWithoutTasks?: number;
   /** QQ Bot AppID */
   appId?: string;

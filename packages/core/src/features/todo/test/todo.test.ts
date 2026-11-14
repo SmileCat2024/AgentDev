@@ -23,7 +23,7 @@ describe('TodoFeature', () => {
       expect(snapshot.counter).toBe(0);
     });
 
-    it('should accept config for reminder thresholds', () => {
+    it('accepts the legacy reminder threshold fields for compatibility', () => {
       const f = new TodoFeature({
         reminderThresholdWithTasks: 5,
         reminderThresholdWithoutTasks: 10,
@@ -426,23 +426,76 @@ describe('TodoFeature', () => {
       } as any;
     }
 
-    it('injects full task list alongside reminder text', async () => {
+    it('uses a concise reminder and advances the interval schedule with active tasks', async () => {
       feature.createTask('正在处理的工作');
       feature.createTask('B 被搁置的任务');
       feature.updateTask('1', { status: 'in_progress' });
-      // 连续未使用 todo 工具达到阈值（默认 withTasks=3）
-      (feature as any).consecutiveNoTodoTurns = 3;
+      (feature as any).consecutiveNoTodoTurns = 10;
 
       const { added, ctx } = makeStepStartCtx();
       await feature.checkAndInjectReminder(ctx);
 
       expect(added).toHaveLength(1);
       const text = added[0].content;
-      // 完整列表与温和提醒尾部同时在场，证明两者被拼接而非互相替代
-      expect(text).toContain('[当前任务计划]');
-      expect(text).toContain('- #1 [in_progress] 正在处理的工作');
-      expect(text).toContain('- #2 [pending] B 被搁置的任务');
-      expect(text).toContain('温和的提醒');
+      expect(text).toMatch(/\[任务状态提醒\]/);
+      expect(text).toMatch(/当前：#1 正在处理的工作/);
+      expect(text).toMatch(/下一项：#2 B 被搁置的任务/);
+      expect(text).not.toMatch(/\[当前任务计划\]/);
+      expect((feature as any).consecutiveNoTodoTurns).toBe(0);
+      expect((feature as any).reminderCount).toBe(1);
+
+      (feature as any).consecutiveNoTodoTurns = 15;
+      const second = makeStepStartCtx();
+      await feature.checkAndInjectReminder(second.ctx);
+      expect(second.added).toHaveLength(1);
+      expect((feature as any).reminderCount).toBe(2);
+
+      (feature as any).consecutiveNoTodoTurns = 20;
+      const third = makeStepStartCtx();
+      await feature.checkAndInjectReminder(third.ctx);
+      expect(third.added).toHaveLength(1);
+      expect((feature as any).reminderCount).toBe(3);
+
+      (feature as any).consecutiveNoTodoTurns = 25;
+      const fourth = makeStepStartCtx();
+      await feature.checkAndInjectReminder(fourth.ctx);
+      expect(fourth.added).toHaveLength(1);
+      expect((feature as any).reminderCount).toBe(4);
+    });
+
+    it('uses the 5/10/15/15 schedule without active tasks', async () => {
+      (feature as any).consecutiveNoTodoTurns = 5;
+      const first = makeStepStartCtx();
+      await feature.checkAndInjectReminder(first.ctx);
+      expect(first.added).toHaveLength(1);
+
+      (feature as any).consecutiveNoTodoTurns = 10;
+      const second = makeStepStartCtx();
+      await feature.checkAndInjectReminder(second.ctx);
+      expect(second.added).toHaveLength(1);
+
+      (feature as any).consecutiveNoTodoTurns = 15;
+      const third = makeStepStartCtx();
+      await feature.checkAndInjectReminder(third.ctx);
+      expect(third.added).toHaveLength(1);
+
+      (feature as any).consecutiveNoTodoTurns = 14;
+      const belowFourth = makeStepStartCtx();
+      await feature.checkAndInjectReminder(belowFourth.ctx);
+      expect(belowFourth.added).toHaveLength(0);
+
+      (feature as any).consecutiveNoTodoTurns = 15;
+      const fourth = makeStepStartCtx();
+      await feature.checkAndInjectReminder(fourth.ctx);
+      expect(fourth.added).toHaveLength(1);
+    });
+
+    it('resets the reminder schedule at CallStart', async () => {
+      (feature as any).consecutiveNoTodoTurns = 12;
+      (feature as any).reminderCount = 2;
+      await feature.onCallStart({ isFirstCall: true, context: { add() {} } } as any);
+      expect((feature as any).consecutiveNoTodoTurns).toBe(0);
+      expect((feature as any).reminderCount).toBe(0);
     });
   });
 

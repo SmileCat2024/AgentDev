@@ -72,8 +72,8 @@ export interface TodoTaskSummary {
 export interface TodoFeatureConfig {
   /** Reminder 模板文件路径 */
   reminderTemplate?: string;
-  /** 有待执行任务时的提醒间隔（默认：3 轮） */
+  /** @deprecated 提醒间隔现由内置递进策略决定：有任务 10/15/20/25...。 */
   reminderThresholdWithTasks?: number;
-  /** 无待执行任务时的提醒间隔（默认：6 轮） */
+  /** @deprecated 保留兼容字段，当前不再参与提醒间隔计算。 */
   reminderThresholdWithoutTasks?: number;
 }

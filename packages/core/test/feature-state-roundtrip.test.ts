@@ -110,12 +110,12 @@ const MUTATIONS: Record<string, Mutate> = {
       counter: number;
       reminderContent: string;
       consecutiveNoTodoTurns: number;
-      reminderInjected: boolean;
+      reminderCount: number;
     };
     f.counter = 5;
     f.reminderContent = 'reminder-x';
     f.consecutiveNoTodoTurns = 2;
-    f.reminderInjected = true;
+    f.reminderCount = 1;
   },
 };
 

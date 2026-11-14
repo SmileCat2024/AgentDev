@@ -28,6 +28,7 @@ import {
   type UserInputRequest,
   type UserInputResponse,
   type UserInputAction,
+  type WorkThreadCommandIdentity,
 } from './types.js';
 import { ClawDebugClient } from './claw-debug-client.js';
 import { getClawRuntimeUrl, resolveDebugTransportMode } from './debug-transport.js';
@@ -65,8 +66,8 @@ export class DebugHub {
 
   // 输入请求回调映射：requestId → owned request lifecycle
   private pendingInputRequests = new Map<string, PendingInputRequest>();
-  private interruptHandlers = new Map<string, (agentId: string, clearQueue: boolean) => void | Promise<void>>();
-  private globalInterruptHandler?: (agentId: string, clearQueue: boolean) => void | Promise<void>;
+  private interruptHandlers = new Map<string, (agentId: string, clearQueue: boolean, cancelledCommands?: WorkThreadCommandIdentity[]) => void | Promise<void>>();
+  private globalInterruptHandler?: (agentId: string, clearQueue: boolean, cancelledCommands?: WorkThreadCommandIdentity[]) => void | Promise<void>;
   // 平台停止指令回调（外部 runtime 生命周期通道，ADR-0037）：未注册时收到
   // stop-agent 只记录不动作——停止语义归宿主，框架不代决定退出时机。
   private stopHandlers = new Map<string, (agentId: string) => void | Promise<void>>();
@@ -707,8 +708,8 @@ export class DebugHub {
   }
 
   setInterruptHandler(
-    agentIdOrHandler: string | ((agentId: string, clearQueue: boolean) => void | Promise<void>) | undefined,
-    handler?: (agentId: string, clearQueue: boolean) => void | Promise<void>,
+    agentIdOrHandler: string | ((agentId: string, clearQueue: boolean, cancelledCommands?: WorkThreadCommandIdentity[]) => void | Promise<void>) | undefined,
+    handler?: (agentId: string, clearQueue: boolean, cancelledCommands?: WorkThreadCommandIdentity[]) => void | Promise<void>,
   ): () => void {
     if (typeof agentIdOrHandler === 'string') {
       // per-agent 注册
@@ -1110,7 +1111,11 @@ export class DebugHub {
         const specificHandler = this.interruptHandlers.get(msg.agentId);
         const effectiveHandler = specificHandler ?? this.globalInterruptHandler;
         if (effectiveHandler) {
-          Promise.resolve(effectiveHandler(msg.agentId, msg.clearQueue === true)).catch((error) => {
+          const cancelledCommands = Array.isArray(msg.cancelledCommands) ? msg.cancelledCommands : undefined;
+          const handlerResult = cancelledCommands === undefined
+            ? effectiveHandler(msg.agentId, msg.clearQueue === true)
+            : effectiveHandler(msg.agentId, msg.clearQueue === true, cancelledCommands);
+          Promise.resolve(handlerResult).catch((error) => {
             console.error('[DebugHub] interruptHandler 执行失败:', error);
           });
         }

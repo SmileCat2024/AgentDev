@@ -795,15 +795,22 @@ export class WorkThread {
     };
   }
 
-  /** 取消一条尚未投递的指令（pending → cancelled）。 */
+  /**
+   * 取消一条尚未完成消费确认的指令（pending/delivered → cancelled）。
+   * delivered 只表示桥已接受投递，不表示 Viewer ack 或模型执行已确认；
+   * 因此用户打断在 Viewer 先提交取消事实后，仍需把 Inbox 的 delivered
+   * 镜像收口为 cancelled。其它终态（尤其已确认消费的历史事实）不回滚。
+   */
   async cancelCommand(threadId: string, commandId: string): Promise<WorkThreadCommand | null> {
     const tid = validateId(threadId, 'threadId');
     const cid = validateId(commandId, 'commandId');
     const { record } = await this.store.update(tid, (draft) => {
       const command = findCommand(draft, cid);
-      if (command && command.status === WorkThreadCommandStatus.PENDING) {
+      if (command && (command.status === WorkThreadCommandStatus.PENDING
+        || command.status === WorkThreadCommandStatus.DELIVERED)) {
         command.status = WorkThreadCommandStatus.CANCELLED;
         command.updatedAt = Date.now();
+        command.lastReason = 'cancelled_by_interrupt';
       }
       return draft;
     });

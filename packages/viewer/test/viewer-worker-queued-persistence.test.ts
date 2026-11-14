@@ -358,6 +358,96 @@ describe('ViewerWorker queued-input persistence (ADR-0047 stage 3a)', () => {
     expect(second.session.queuedInputs).toHaveLength(1);
   });
 
+  it('persists interrupt cancellation facts across restart: resubmission rejected, late ack cannot resurrect', () => {
+    // ADR-0047 §6.3：cancel 先提交 → cancelled。取消事实必须跨重启持久：
+    // 重启后同 commandId 重投仍被拒绝；claim 过但未 ack 的项被取消后，
+    // 迟到 ack 不得把命令记为 consumed（ack 返回 false，消费集不收录）。
+    const dir = join(root, 'cancel-persist');
+    const { worker, session, agentId } = createWorker('cancel-persist-agent', dir);
+    session.threadId = 'thread-cp';
+    session.headGeneration = 2;
+    session.workSessionId = 'ws-cp';
+    session.runtimeInstanceId = 'rt-cp';
+    session.callActive = true;
+    const identity = { commandId: 'cmd-cp-1', threadId: 'thread-cp', headGeneration: 2 };
+    expect(worker.submitUserTurn(agentId, {
+      text: 'cancel me', sourceRef: 'cmd-cp-1', sessionId: 'ws-cp', commandIdentity: identity,
+    })).toMatchObject({ success: true, delivery: 'queued' });
+
+    // 已 claim、未 ack（中断截点的典型在场状态）
+    const claimed = claimViaMethod(worker, agentId)!;
+    expect(claimed.inputLease).toBeTruthy();
+
+    let status = 0;
+    let body = '';
+    const res: any = { writeHead(code: number) { status = code; }, end(payload: string) { body = payload; } };
+    (worker as any).handleInterrupt({ resume() {} } as any, res, agentId);
+    expect(status).toBe(200);
+    expect(JSON.parse(body).cancelledCommandIds).toEqual(['cmd-cp-1']);
+    expect(session.queuedInputs).toHaveLength(0);
+    expect((worker as any).loadQueuedInputState(agentId).cancelledCommandIds).toContain('cmd-cp-1');
+
+    // 迟到 ack：命令已取消，不得复活为 consumed
+    expect(ackViaMethod(worker, agentId, claimed.inputLease!)).toBe(false);
+    const state = (worker as any).loadQueuedInputState(agentId);
+    expect(state.consumedSourceRefs).not.toContain('cmd-cp-1');
+    expect(state.cancelledCommandIds).toContain('cmd-cp-1');
+
+    // 重启后取消事实仍在：重投被拒，且不重新入队
+    const second = createWorker('cancel-persist-agent', dir);
+    const resubmit = second.worker.submitUserTurn('cancel-persist-agent', {
+      text: 'cancel me', sourceRef: 'cmd-cp-1', sessionId: 'ws-cp', commandIdentity: identity,
+    });
+    expect(resubmit).toMatchObject({ success: false, code: 'command_cancelled' });
+    expect(second.session.queuedInputs).toHaveLength(0);
+    // 重启后迟到 ack 同样不得复活
+    expect(ackViaMethod(second.worker, 'cancel-persist-agent', claimed.inputLease!)).toBe(false);
+
+    // 截点后的新 durable 命令不属于本次取消：正常接收、保留、可领取
+    second.session.threadId = 'thread-cp';
+    second.session.headGeneration = 2;
+    second.session.workSessionId = 'ws-cp';
+    second.session.runtimeInstanceId = 'rt-cp';
+    second.session.callActive = true;
+    const freshIdentity = { commandId: 'cmd-cp-2', threadId: 'thread-cp', headGeneration: 2 };
+    expect(second.worker.submitUserTurn('cancel-persist-agent', {
+      text: 'after checkpoint', sourceRef: 'cmd-cp-2', sessionId: 'ws-cp', commandIdentity: freshIdentity,
+    })).toMatchObject({ success: true, delivery: 'queued' });
+    expect(second.session.queuedInputs).toHaveLength(1);
+    expect(claimViaMethod(second.worker, 'cancel-persist-agent')).toMatchObject({ sourceRef: 'cmd-cp-2' });
+  });
+
+  it('keeps the queue intact and fails the interrupt (503) when the cancel checkpoint store write fails', async () => {
+    // §6.2：取消必须由持久事实线性化。store 写失败时不得静默清队列、
+    // 不得向 runtime 发送无回执能力的取消帧——显式 503，调用方可重试。
+    const dir = join(root, 'cancel-storefail');
+    const { worker, session, agentId } = createWorker('cancel-storefail-agent', dir);
+    session.threadId = 'thread-csf';
+    session.headGeneration = 1;
+    session.workSessionId = 'ws-csf';
+    session.runtimeInstanceId = 'rt-csf';
+    session.callActive = true;
+    expect(worker.submitUserTurn(agentId, {
+      text: 'pending cancel', sourceRef: 'cmd-csf-1', sessionId: 'ws-csf',
+      commandIdentity: { commandId: 'cmd-csf-1', threadId: 'thread-csf', headGeneration: 1 },
+    })).toMatchObject({ success: true, delivery: 'queued' });
+
+    const writes: string[] = [];
+    (worker as any).udsClients.set('client-1', { write(message: string) { writes.push(message); } });
+    const blocker = join(root, 'blocker-file-3');
+    await wf(blocker, 'x', 'utf8');
+    (worker as any).queuedInputStoreDir = blocker;
+
+    let status = 0;
+    let body = '';
+    const res: any = { writeHead(code: number) { status = code; }, end(payload: string) { body = payload; } };
+    (worker as any).handleInterrupt({ resume() {} } as any, res, agentId);
+    expect(status).toBe(503);
+    expect(JSON.parse(body).code).toBe('persistent_store_unavailable');
+    expect(session.queuedInputs).toHaveLength(1);
+    expect(writes).toHaveLength(0);
+  });
+
   it('claims durably and removes a WorkThread input only for the exact runtime/head receipt', () => {
     const dir = join(root, 'claim-ack');
     const { worker, session, agentId } = createWorker('claim-ack-agent', dir);

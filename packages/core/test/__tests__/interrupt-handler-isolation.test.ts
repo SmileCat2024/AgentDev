@@ -36,6 +36,21 @@ describe('DebugHub interruptHandler per-agent 隔离', () => {
     expect(handlerA).toHaveBeenCalledWith('agent-A', false);
   });
 
+  it('forwards durable cancellation identities without changing legacy two-argument handlers', () => {
+    const handler = vi.fn();
+    hub.setInterruptHandler('agent-A', handler);
+    const cancelledCommands = [{ commandId: 'cmd-1', threadId: 'wt-1', headGeneration: 2 }];
+
+    hub.handleWorkerMessage({
+      type: 'interrupt-agent',
+      agentId: 'agent-A',
+      clearQueue: true,
+      cancelledCommands,
+    });
+
+    expect(handler).toHaveBeenCalledWith('agent-A', true, cancelledCommands);
+  });
+
   it('不同 agentId 的 handler 不应互相调用', () => {
     const handlerA = vi.fn();
     const handlerB = vi.fn();

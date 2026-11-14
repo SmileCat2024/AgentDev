@@ -128,6 +128,12 @@ class ViewerWorker {
    * 无 storeDir 宿主的重复 ack 幂等判定；持久模式重启后由磁盘消费集接管。
    */
   private readonly consumedCommandAcks = new Map<string, Set<string>>();
+  /**
+   * 用户 interrupt 已线性化取消的 durable commandId 集合。
+   * 与 consumedCommandAcks 分开：迟到 ack 必须识别为 cancelled，而不能
+   * 被当作幂等 consumed 成功；两者都按有界窗口保留并随持久队列保存。
+   */
+  private readonly cancelledCommandIds = new Map<string, Set<string>>();
   private udsClients: Map<string, Socket> = new Map();
 
   // 宿主定向请求的在途关联：requestId → pending。宿主断连（socket close /
@@ -1269,6 +1275,14 @@ class ViewerWorker {
       if (inQueue) {
         return { success: true, delivery: 'queued', id: inQueue.id, queueLength: session.queuedInputs.length, duplicate: true, source: input.source, sourceRef: input.sourceRef };
       }
+      if (this.isCommandCancelled(agentId, input.commandIdentity.commandId)) {
+        return {
+          success: false,
+          code: 'command_cancelled',
+          error: 'This WorkThread command was cancelled by interrupt',
+          retryable: false,
+        };
+      }
     }
     if (input.commandIdentity && (session.threadId !== input.commandIdentity.threadId
       || session.headGeneration !== input.commandIdentity.headGeneration
@@ -1388,6 +1402,7 @@ class ViewerWorker {
           : result.code === 'agent_not_found'
             ? 404
             : result.code === 'input_mode_conflict' || result.code === 'runtime_not_accepting_input'
+                || result.code === 'command_cancelled'
               ? 409
               : result.code === 'persistent_store_unavailable'
                 ? 503
@@ -1516,6 +1531,7 @@ class ViewerWorker {
     const next = [...session.queuedInputs];
     next.splice(index, 1);
     const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+    const cancelledCommandIds = this.getCancelledCommandIds(agentId);
     if (this.queuedInputStoreDir) {
       // ack 即消费确认（该输入已随会话快照持久进入上下文，不同于转交前的
       // 预写）：与队列移除同一次原子写记入有界消费集——重复 ack 幂等成功；
@@ -1524,11 +1540,12 @@ class ViewerWorker {
       const nextRefs = consumedSourceRefs.includes(receipt.commandId)
         ? consumedSourceRefs
         : [...consumedSourceRefs, receipt.commandId].slice(-ViewerWorker.CONSUMED_REF_CAP);
-      if (!this.saveQueuedInputState(agentId, next, nextRefs)) return false;
+      if (!this.saveQueuedInputState(agentId, next, nextRefs, cancelledCommandIds)) return false;
     }
     session.queuedInputs.splice(index, 1);
     const acked = this.consumedCommandAcks.get(agentId) ?? new Set<string>();
     acked.add(receipt.commandId);
+    this.cancelledCommandIds.get(agentId)?.delete(receipt.commandId);
     if (acked.size > ViewerWorker.CONSUMED_REF_CAP) {
       for (const id of acked) {
         acked.delete(id);
@@ -1548,32 +1565,52 @@ class ViewerWorker {
     return join(this.queuedInputStoreDir, 'queued-inputs', `${safe}.json`);
   }
 
-  private loadQueuedInputState(agentId: string): { items: QueuedInput[]; consumedSourceRefs: string[] } {
+  private loadQueuedInputState(agentId: string): { items: QueuedInput[]; consumedSourceRefs: string[]; cancelledCommandIds: string[] } {
     const file = this.queuedInputStoreFile(agentId);
-    if (!file || !existsSync(file)) return { items: [], consumedSourceRefs: [] };
+    if (!file || !existsSync(file)) return { items: [], consumedSourceRefs: [], cancelledCommandIds: [] };
     try {
       const parsed = JSON.parse(readFileSync(file, 'utf8'));
       const items = Array.isArray(parsed?.items) ? parsed.items.filter((x: unknown) => x && typeof x === 'object') : [];
       const refs = Array.isArray(parsed?.consumedSourceRefs)
         ? parsed.consumedSourceRefs.filter((x: unknown): x is string => typeof x === 'string')
         : [];
-      return { items, consumedSourceRefs: refs };
+      const cancelledCommandIds = Array.isArray(parsed?.cancelledCommandIds)
+        ? parsed.cancelledCommandIds.filter((x: unknown): x is string => typeof x === 'string')
+        : [];
+      return { items, consumedSourceRefs: refs, cancelledCommandIds };
     } catch (error) {
       // 损坏不炸 worker：隔离取证副本，按空状态继续（下次写覆盖）。
       try { renameSync(file, `${file}.corrupt`); } catch { /* 并发隔离失败可容忍 */ }
       console.warn(`[Viewer Worker] 排队输入持久文件损坏，已隔离并重置: ${file}`, error);
-      return { items: [], consumedSourceRefs: [] };
+      return { items: [], consumedSourceRefs: [], cancelledCommandIds: [] };
     }
   }
 
+  private getCancelledCommandIds(agentId: string): string[] {
+    const ids = new Set(this.cancelledCommandIds.get(agentId) || []);
+    if (this.queuedInputStoreDir) {
+      for (const id of this.loadQueuedInputState(agentId).cancelledCommandIds) ids.add(id);
+    }
+    return [...ids].slice(-ViewerWorker.CONSUMED_REF_CAP);
+  }
+
+  private isCommandCancelled(agentId: string, commandId: string): boolean {
+    return this.getCancelledCommandIds(agentId).includes(commandId);
+  }
+
   /** @returns 持久化是否成功。无 storeDir 时返回 true（内存语义无磁盘承诺）。 */
-  private saveQueuedInputState(agentId: string, items: QueuedInput[], consumedSourceRefs: string[]): boolean {
+  private saveQueuedInputState(
+    agentId: string,
+    items: QueuedInput[],
+    consumedSourceRefs: string[],
+    cancelledCommandIds: string[] = this.getCancelledCommandIds(agentId),
+  ): boolean {
     const file = this.queuedInputStoreFile(agentId);
     if (!file) return true;
     try {
       mkdirSync(join(file, '..'), { recursive: true });
       const tmp = `${file}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ version: 1, items, consumedSourceRefs }));
+      writeFileSync(tmp, JSON.stringify({ version: 1, items, consumedSourceRefs, cancelledCommandIds }));
       renameSync(tmp, file);
       return true;
     } catch (error) {
@@ -1582,6 +1619,43 @@ class ViewerWorker {
       console.error('[Viewer Worker] 排队输入持久化失败:', error);
       return false;
     }
+  }
+
+  /**
+   * 记录一次 durable command 的用户取消，并移除尚未 ack 的队列项。
+   * 这是 Viewer 侧的取消线性化点：写盘成功后才修改内存，已 ack 的命令
+   * 只存在 consumed 集，不会进入 cancelled 集。
+   */
+  private cancelDurableQueuedInputs(
+    agentId: string,
+    session: AgentSession,
+  ): Array<NonNullable<QueuedInput['commandIdentity']>> | null {
+    const queued = Array.isArray(session.queuedInputs) ? session.queuedInputs : [];
+    const cancelled = queued
+      .map((item) => item.commandIdentity)
+      .filter((identity): identity is NonNullable<QueuedInput['commandIdentity']> => (
+        identity !== undefined && !this.isCommandConsumed(agentId, identity.commandId)
+      ));
+    const cancelledIds = cancelled.map((identity) => identity.commandId);
+    const nextCancelled = [...new Set([...this.getCancelledCommandIds(agentId), ...cancelledIds])]
+      .slice(-ViewerWorker.CONSUMED_REF_CAP);
+    // 旧式输入仍遵循 interrupt 的既有 clearQueue 语义；durable 项只有
+    // 尚未消费确认者被移除，已 ack 项不应重新出现在队列中。
+    const nextItems = queued.filter((item) => item.commandIdentity?.commandId
+      && !cancelledIds.includes(item.commandIdentity.commandId));
+    const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
+    if (!this.saveQueuedInputState(agentId, nextItems, consumedSourceRefs, nextCancelled)) return null;
+    session.queuedInputs = nextItems;
+    this.cancelledCommandIds.set(agentId, new Set(nextCancelled));
+    if (queued.length !== session.queuedInputs.length) this.emitSessionEvent({ kind: 'queued-inputs', agentId });
+    return cancelled;
+  }
+
+  private isCommandConsumed(agentId: string, commandId: string): boolean {
+    if (this.consumedCommandAcks.get(agentId)?.has(commandId)) return true;
+    return this.queuedInputStoreDir
+      ? this.loadQueuedInputState(agentId).consumedSourceRefs.includes(commandId)
+      : false;
   }
 
   /**
@@ -1765,6 +1839,7 @@ class ViewerWorker {
     }
 
     // 通过 UDS 发送中断消息到 Agent 进程
+    let durableCancelled: Array<NonNullable<QueuedInput['commandIdentity']>> = [];
     const targetClientId = session.clientId;
     console.log(`[VW.handleInterrupt] session.clientId=${targetClientId}, udsClientKeys=[${[...this.udsClients.keys()].join(',')}]`);
     if (targetClientId) {
@@ -1781,22 +1856,24 @@ class ViewerWorker {
         return;
       }
       try {
-        if (Array.isArray(session.queuedInputs) && session.queuedInputs.length > 0) {
-          // 用户显式中断 = 放弃排队项（不是消费）：持久队列同步清空，
-          // 但不记 consumedSourceRefs——同 commandId 重投是新的投递意图。
-          // 取舍：中断优先于存储（不能被 store 故障劫持），写盘失败仅告警
-          // ——重启后这些被放弃的项会恢复入队，由下一次中断或人工清理；
-          // 这是显式接受的窄风险，不是静默降级。
-          if (this.queuedInputStoreDir) {
-            const { consumedSourceRefs } = this.loadQueuedInputState(agentId);
-            this.saveQueuedInputState(agentId, [], consumedSourceRefs);
-          }
-          session.queuedInputs = [];
+        // 取消截点先于 UDS 写出提交（§6.3 单向收口）：若先写出再提交，
+        // 提交失败会留下「Inbox 已取消、Viewer 队列仍持有该项」的分裂，
+        // 下一次 drain 将 claim 并执行已取消的命令。先提交的最坏情形是
+        // 写出失败时 Inbox 收不到回执——命令不再执行，delivered 由下一
+        // 次接续保守转为 unresolved，不复活、不丢失。
+        const cancelledAtCheckpoint = this.cancelDurableQueuedInputs(agentId, session);
+        if (cancelledAtCheckpoint === null) {
+          res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '1' });
+          res.end(JSON.stringify({ success: false, code: 'persistent_store_unavailable', retryable: true }));
+          return;
         }
+        durableCancelled = cancelledAtCheckpoint;
         targetSocket.write(JSON.stringify({
           type: 'interrupt-agent',
           agentId,
           clearQueue: true,
+          cancelledCommandIds: durableCancelled.map((identity) => identity.commandId),
+          cancelledCommands: durableCancelled,
         }) + '\n');
         console.log(`[VW.handleInterrupt] UDS message sent to ${targetClientId}: ${agentId}`);
       } catch (writeError) {
@@ -1821,7 +1898,11 @@ class ViewerWorker {
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ success: true }));
+    res.end(JSON.stringify({
+      success: true,
+      cancelledCommandIds: durableCancelled.map((identity) => identity.commandId),
+      cancelledCommands: durableCancelled,
+    }));
   }
 
   /**

@@ -900,7 +900,7 @@ export type UserTurnSubmissionResult =
     }
   | {
       success: false;
-      code: 'agent_not_found' | 'invalid_input' | 'input_mode_conflict' | 'runtime_not_accepting_input' | 'persistent_store_unavailable';
+      code: 'agent_not_found' | 'invalid_input' | 'input_mode_conflict' | 'runtime_not_accepting_input' | 'persistent_store_unavailable' | 'command_cancelled';
       error: string;
       pendingMode?: UserInputRequestMode;
       /**
@@ -1150,6 +1150,10 @@ export interface InterruptAgentMsg {
   type: 'interrupt-agent';
   agentId: string;
   clearQueue?: boolean;
+  /** Durable WorkThread command ids cancelled at the Viewer interrupt linearization point. */
+  cancelledCommandIds?: string[];
+  /** Stable identities used to close the matching WorkThread Inbox records. */
+  cancelledCommands?: Array<WorkThreadCommandIdentity>;
 }
 
 /**

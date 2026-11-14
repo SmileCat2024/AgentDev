@@ -417,7 +417,7 @@ describe('WorkThread (anchor layer)', () => {
     expect(second.closeReason).toBe('user', '重复 close 幂等，不改写首个 closeReason');
   });
 
-  it('cancelCommand only affects pending', async () => {
+  it('cancelCommand also closes a delivered command until Viewer ack confirms consumption', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 's1' } });
     const { command } = await thread.appendCommand({ threadId: wt.threadId, text: 'x' });
@@ -427,6 +427,42 @@ describe('WorkThread (anchor layer)', () => {
 
     const record = await thread.getThread(wt.threadId);
     expect(record!.commands[0].status).toBe(WorkThreadCommandStatus.CANCELLED);
+
+    const delivered = await thread.appendCommand({ threadId: wt.threadId, text: 'delivered' });
+    const bridge = (thread as any)._bridge;
+    (bridge as any)._enabled = true;
+    (bridge as any)._resolveRuntimeViewerId = () => 'viewer';
+    (bridge as any)._submitTurn = async () => ({ success: true });
+    await thread.deliverPendingCommands(wt.threadId);
+    expect((await thread.getThread(wt.threadId))!.commands.find((c) => c.commandId === delivered.command.commandId)?.status)
+      .toBe(WorkThreadCommandStatus.DELIVERED);
+    await thread.cancelCommand(wt.threadId, delivered.command.commandId);
+    expect((await thread.getThread(wt.threadId))!.commands.find((c) => c.commandId === delivered.command.commandId)?.status)
+      .toBe(WorkThreadCommandStatus.CANCELLED);
+  });
+
+  it('cancelCommand never rewrites a FAILED terminal fact', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 's1' } });
+    const { command } = await thread.appendCommand({ threadId: wt.threadId, text: 'will fail' });
+    const bridge = (thread as any)._bridge;
+    (bridge as any)._enabled = true;
+    (bridge as any)._resolveRuntimeViewerId = () => 'viewer';
+    // 非重试拒绝 → FAILED 终态（bridge 契约：抛 UserTurnDeliveryError 形错误）
+    (bridge as any)._submitTurn = async () => {
+      const error: any = new Error('viewer rejected');
+      error.name = 'UserTurnDeliveryError';
+      error.code = 'input_mode_conflict';
+      error.retryable = false;
+      throw error;
+    };
+    await thread.deliverPendingCommands(wt.threadId);
+    expect((await thread.getThread(wt.threadId))!.commands[0].status).toBe(WorkThreadCommandStatus.FAILED);
+
+    await thread.cancelCommand(wt.threadId, command.commandId);
+    const after = (await thread.getThread(wt.threadId))!.commands[0];
+    expect(after.status).toBe(WorkThreadCommandStatus.FAILED, 'interrupt 取消只收口 pending/delivered，不改写失败终态');
+    expect(after.lastReason).toBe('input_mode_conflict');
   });
 
   it('appendCommand is idempotent by idempotencyKey', async () => {

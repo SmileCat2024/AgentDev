@@ -213,7 +213,7 @@ export function createShellCommandTool(
   const budgetMs = options.timeoutMs ?? FOREGROUND_BUDGET_DEFAULT_MS;
   return createTool({
     name: 'bash',
-    description: `${description}\n\n适用范围：短时、需要立即查看结果的前台命令。前台等待预算到期后命令会转入后台继续运行；对于预期长时间运行的构建、测试、开发服务器或无需立即等待的任务，请直接使用 bash_bg。`,
+    description: `${description}\n\n适用范围：短时、需要立即查看结果的前台命令。前台等待预算到期后命令会转入后台继续运行，输出随即由任务日志全量接管——命令保持裸形态即可，无需接 tail / head 控制输出体积；预期长时间运行的构建、测试、开发服务器或无需立即等待的任务，请直接使用 bash_bg。`,
     // ADR-0023：CMD 风格 >nul 重写为 >/dev/null 时，历史记录生效命令
     rewritable: true,
     parameters: {

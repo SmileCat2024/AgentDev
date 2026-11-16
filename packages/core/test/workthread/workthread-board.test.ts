@@ -92,7 +92,13 @@ describe('WorkThreadBoard', () => {
     const stored = await board.getExecutionEvents(wt.threadId);
     expect(stored.events.some((e) => e.type === 'turn.cancelled')).toBe(true);
 
-    // 轮换接续：head 推进（锚点层）后，新 turn 自然开始并完成
+    // 轮换接续：先建立挡板，再推进 head；新 turn 自然开始并完成
+    await core.beginSessionHandoff({
+      threadId: wt.threadId,
+      fromSessionId: 'cancel-session',
+      reason: 'context_rotation',
+      seedContinuation: false,
+    });
     await core.advanceHead({ threadId: wt.threadId, toSessionId: 'cancel-session-2', fromSessionId: 'cancel-session', endKind: 'context_rotation' });
     await board.recordRuntimeEvent({
       agentId: 'cancel-agent', sessionId: 'cancel-session-2', runtimeInstanceId: 'runtime-2',

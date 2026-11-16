@@ -296,6 +296,8 @@ function createWorkThreadAnchorMachine(
         from: '*',
         guards: [
           (record) => (record.hold === true ? { code: 'thread_held' } : true),
+          // head 推进必须属于一笔已建立的接续；rotation_failed 仍可带挡板恢复推进。
+          (record) => (record.pendingSuccession ? true : { code: 'handoff_not_started' }),
           (record, event) => (
             record.headSessionId !== event.fromSessionId ? { code: 'head_mismatch' } : true
           ),
@@ -984,6 +986,12 @@ export class WorkThread {
     const tid = validateId(threadId, 'threadId');
     const wantHold = held === true;
     const { record } = await this.store.update(tid, (draft) => {
+      if (draft.status === WORKTHREAD_TERMINAL_STATUS) {
+        throw Object.assign(new Error(`WorkThread "${tid}" is closed`), {
+          code: 'thread_closed',
+          status: 409,
+        });
+      }
       if (draft.hold === wantHold) return draft;
       draft.hold = wantHold;
       return draft;
@@ -1004,6 +1012,8 @@ export class WorkThread {
    * 要么明确指向新 head；推进与指令状态 / 清挡板在同一次落盘中变更。
    *
    * 交接挡板（pendingSuccession）与 head 推进原子成对清除（换代 + 清挡板）。
+   * `advanceHead` 只能提交一笔已建立的接续；没有活动挡板时返回
+   * `handoff_not_started`。`rotation_failed` 只要仍保留挡板，仍可沿恢复路径推进。
    *
    * T001 身份连续性不变量：successor 加入前必须通过三道校验，任何一道失败
    * 都抛稳定错误且线程记录零变更（旧 head 保持有效）：
@@ -1083,6 +1093,12 @@ export class WorkThread {
             throw Object.assign(
               new Error(`Session "${normalizedTo}" is already the head of workthread "${threadId}"`),
               { code: 'already_head', status: 409 },
+            );
+          }
+          if (result.reason === 'handoff_not_started') {
+            throw Object.assign(
+              new Error(`WorkThread "${threadId}" has no active session handoff`),
+              { code: 'handoff_not_started', status: 409 },
             );
           }
           // 唯一剩余守卫 code：duplicate_session

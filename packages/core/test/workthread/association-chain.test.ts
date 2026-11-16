@@ -272,6 +272,12 @@ describe('WorkThread association chain (ADR-0031 step 1)', () => {
     expect(blocked.delivered).toBe(0);
 
     // 接力：head s1 → s2，指令 pending 穿越（revision 取 append 后的最新值）
+    await env.core.beginSessionHandoff({
+      threadId: wt.threadId,
+      fromSessionId: 's1',
+      reason: 'context_rotation',
+      seedContinuation: false,
+    });
     const fresh = await env.core.getThread(wt.threadId);
     await env.core.advanceHead({
       threadId: wt.threadId,

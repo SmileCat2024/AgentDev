@@ -343,12 +343,13 @@ describe('WorkThread (anchor layer)', () => {
   it('advanceHead closes old chain entry and moves head atomically', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 's1' } });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 's1', reason: 'manual', seedContinuation: false });
 
     const advanced = await thread.advanceHead({
       threadId: wt.threadId,
       toSessionId: 's2',
       fromSessionId: 's1',
-      expectedRevision: wt.revision,
+      expectedRevision: (await thread.getThread(wt.threadId))!.revision,
       endKind: 'context_rotation',
     });
 
@@ -369,10 +370,16 @@ describe('WorkThread (anchor layer)', () => {
       () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 's1', expectedRevision: 999 }),
     ).rejects.toThrow(WorkThreadRevisionConflictError);
     await expect(
+      () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 's1' }),
+    ).rejects.toMatchObject({ code: 'handoff_not_started' });
+
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 's1', reason: 'manual', seedContinuation: false });
+    await expect(
       () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 'wrong' }),
     ).rejects.toMatchObject({ code: 'head_mismatch' });
 
     await thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 's1' });
+    await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 's2', reason: 'manual', seedContinuation: false });
     await expect(
       () => thread.advanceHead({ threadId: wt.threadId, toSessionId: 's2', fromSessionId: 's2' }),
     ).rejects.toMatchObject({ code: 'already_head' });
@@ -396,6 +403,17 @@ describe('WorkThread (anchor layer)', () => {
     ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
   });
 
+  it('closed thread cannot change hold and preserves the terminal snapshot', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'closed-hold' } });
+    const closed = await thread.closeThread(wt.threadId, { reason: 'user' });
+
+    await expect(() => thread.setHold(wt.threadId, true))
+      .rejects.toMatchObject({ code: 'thread_closed', status: 409 });
+    const after = await thread.getThread(wt.threadId);
+    expect(after).toMatchObject({ status: 'closed', hold: false, revision: closed.revision });
+  });
+
   it('closeThread closes and cancels pending commands', async () => {
     const { thread } = makeThread(root);
     const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 's1' } });
@@ -415,6 +433,19 @@ describe('WorkThread (anchor layer)', () => {
     const second = await thread.closeThread(wt.threadId, { reason: 'again' });
     expect(second.status).toBe('closed');
     expect(second.closeReason).toBe('user', '重复 close 幂等，不改写首个 closeReason');
+  });
+
+  it('closed thread rejects setHold without changing the terminal record', async () => {
+    const { thread } = makeThread(root);
+    const wt = await thread.start({ sessionRef: { agentId: 'a', sessionId: 'cl-hold' } });
+    const closed = await thread.closeThread(wt.threadId, { reason: 'user' });
+    const revision = closed.revision;
+
+    await expect(() => thread.setHold(wt.threadId, true))
+      .rejects.toMatchObject({ code: 'thread_closed', status: 409 });
+
+    const after = await thread.getThread(wt.threadId);
+    expect(after).toMatchObject({ status: 'closed', hold: false, revision });
   });
 
   it('cancelCommand also closes a delivered command until Viewer ack confirms consumption', async () => {
@@ -1318,7 +1349,8 @@ describe('WorkThread delivery loop freshness (K20)', () => {
         submitTurn: async (params) => {
           turns.push(params);
           if (turns.length === 1) {
-            // 第一条投递期间换代（模拟并发 advanceHead）
+            // 第一条投递期间换代（模拟并发接续）：先立挡板，再推进 head。
+            await thread.beginSessionHandoff({ threadId: wt.threadId, fromSessionId: 'dl-s1', reason: 'trim', seedContinuation: false });
             await thread.advanceHead({ threadId: wt.threadId, fromSessionId: 'dl-s1', toSessionId: 'dl-s2', endKind: 'trim' });
           }
           return { success: true };
@@ -1328,7 +1360,6 @@ describe('WorkThread delivery loop freshness (K20)', () => {
     const wt = await thread.start({ sessionRef: { agentId: 'coder', sessionId: 'dl-s1' } });
     await thread.appendCommand({ threadId: wt.threadId, text: 'first', idempotencyKey: 'k1' });
     await thread.appendCommand({ threadId: wt.threadId, text: 'second', idempotencyKey: 'k2' });
-
     const result = await thread.deliverPendingCommands(wt.threadId);
     expect(result.delivered).toBe(1);
     expect(result.reason).toBe('head_changed');

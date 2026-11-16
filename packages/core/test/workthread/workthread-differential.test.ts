@@ -1,10 +1,10 @@
 /**
  * WorkThread 差分测试（PR-F3 / ADR-0021 阶段 1，实施计划 §5）。
  *
- * 形态：本文件内置 legacy 参考副本——git commit fdfcaf7（迁移前 HEAD）的
- * core.ts 六个事务体逐字拷贝为独立纯函数（仅剥离 store.update 包装与 this
- * 绑定替换为参数：continuationPolicy / identitySource / store）。迁移稳定
- * 一个版本周期后删除本文件。
+ * 形态：本文件内置独立参考副本，表达当前 WorkThread 公共契约的纯状态转移
+ * （仅剥离 store.update 包装与 this 绑定，参数化 continuationPolicy /
+ * identitySource / store）。它不再作为迁移前实现的永久等价基准；契约变更时必须
+ * 同步更新这里的独立规则，并由模型性质测试提供更高层的状态序列验证。
  *
  * 驱动：mulberry32 固定 seed 的确定性 PRNG 生成随机事件序列，词汇
  * begin(from, reason) / fail(reason, stage, error) / advance(from, to, endKind) /
@@ -272,6 +272,9 @@ function legacyClearStale(draft: WorkThreadRecord): WorkThreadRecord {
 
 /** setHold 事务体（hold 是伴随字段，非 status 轴转换）。 */
 function legacySetHold(draft: WorkThreadRecord, wantHold: boolean): WorkThreadRecord {
+  if (draft.status === WORKTHREAD_TERMINAL_STATUS) {
+    throw Object.assign(new Error('WorkThread is closed'), { code: 'thread_closed', status: 409 });
+  }
   if (draft.hold === wantHold) return draft;
   draft.hold = wantHold;
   return draft;
@@ -300,6 +303,12 @@ async function legacyAdvance(
     throw Object.assign(
       new Error(`WorkThread "${threadId}" is held (administrative freeze); head cannot advance`),
       { code: 'thread_held', status: 409 },
+    );
+  }
+  if (!draft.pendingSuccession) {
+    throw Object.assign(
+      new Error(`WorkThread "${threadId}" has no active session handoff`),
+      { code: 'handoff_not_started', status: 409 },
     );
   }
   if (draft.headSessionId !== normalizedFrom) {

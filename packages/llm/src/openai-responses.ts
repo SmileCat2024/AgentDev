@@ -18,6 +18,15 @@ import { initHttpClient } from './http-client.js';
 import { emitRetryObservability } from './retry-observability.js';
 import { normalizeApiBaseUrl } from './api-url.js';
 
+async function emitOpenAIResponsesComplete(charCount: number): Promise<void> {
+  try {
+    const { emitNotification, createLLMComplete } = await import('@agentdevjs/core');
+    emitNotification(createLLMComplete(charCount));
+  } catch {
+    // Ignore notification failures.
+  }
+}
+
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
 function ensureHttpClientInitialized() {
@@ -223,9 +232,26 @@ export class OpenAIResponsesLLM implements LLMClient {
         const reasoningItems = new Map<string, AccumulatedReasoning>();
 
         for await (const event of stream) {
-          // 每收到一个流事件重置空闲计时：数据在流动就不算断连；首个数据把
-          // 计时从首段预算切换到间隔预算
-          deadline.touchData();
+          // 只有事件携带实际模型进展时才续命 deadline。空 delta、usage、ping
+          // 等结构性事件不代表模型仍在生成，不能阻止 ReAct 循环超时收口。
+          const hasMeaningfulProgress = event.type === 'response.output_text.delta'
+            ? Boolean(extractTextDelta(event.delta))
+            : event.type === 'response.function_call_arguments.delta'
+              ? typeof event.delta === 'string' && event.delta.length > 0
+              : event.type === 'response.function_call_arguments.done'
+                ? Boolean(event.arguments)
+                : event.type === 'response.output_item.added' || event.type === 'response.output_item.done'
+                  ? event.item?.type === 'function_call'
+                  : event.type === 'response.reasoning_summary.delta'
+                    || event.type === 'response.reasoning_summary_text.delta'
+                    ? Boolean(extractTextDelta(event.delta))
+                    : event.type === 'response.reasoning_summary.done'
+                      || event.type === 'response.reasoning_summary_text.done'
+                      ? Boolean(event.text)
+                      : false;
+          if (hasMeaningfulProgress) {
+            deadline.touchData();
+          }
           sawAnyStreamEvent = true;
           throwIfAborted(signal);
 
@@ -389,6 +415,7 @@ export class OpenAIResponsesLLM implements LLMClient {
         const finalReasoning = parsedSnapshot?.reasoning || reasoning;
         const finalStopReason = parsedSnapshot?.stopReason ?? stopReason;
 
+        await emitOpenAIResponsesComplete(finalContent.length + finalReasoning.length);
         return {
           content: finalContent,
           ...(parsedToolCalls.length > 0 ? { toolCalls: parsedToolCalls } : {}),

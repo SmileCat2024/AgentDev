@@ -115,6 +115,25 @@ describe('OpenAILLM idle deadline', () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it('does not let empty chunks keep a tool-call stream alive', async () => {
+    const TIMEOUT_MS = 500;
+    const llm = createOpenAILLM({ apiKey: 'k', model: 'm', timeoutMs: TIMEOUT_MS, maxRetries: 3 });
+    disableHttpInit(llm);
+
+    const create = stubOpenAIClient(llm, [
+      { delayMs: 50, chunk: openAIChunk('工具参数开始') },
+      ...Array.from({ length: 20 }, () => ({ delayMs: 100, chunk: openAIChunk() })),
+      { delayMs: 60_000, chunk: openAIChunk('迟到的数据') },
+    ]);
+
+    const settled = captureError(llm.chat([{ role: 'user', content: 'hi' }], []));
+    await vi.advanceTimersByTimeAsync(1000);
+    const error = await settled;
+
+    expectIdleTimeoutRejection(error, TIMEOUT_MS);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects with a timeout error without retrying when the stream goes silent past the deadline', async () => {
     const TIMEOUT_MS = 500;
     const llm = createOpenAILLM({ apiKey: 'k', model: 'm', timeoutMs: TIMEOUT_MS, maxRetries: 3 });
@@ -171,6 +190,25 @@ describe('OpenAIResponsesLLM idle deadline', () => {
     const result = await pending;
 
     expect(result.content).toBe(segments.join(''));
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let empty events keep a tool-call stream alive', async () => {
+    const TIMEOUT_MS = 500;
+    const llm = createOpenAIResponsesLLM({ apiKey: 'k', model: 'm', timeoutMs: TIMEOUT_MS, maxRetries: 3 });
+    disableHttpInit(llm);
+
+    const stream = stubResponsesClient(llm, [
+      { delayMs: 50, event: { type: 'response.function_call_arguments.delta', delta: '{' } },
+      ...Array.from({ length: 20 }, () => ({ delayMs: 100, event: { type: 'response.output_text.delta', delta: '' } })),
+      { delayMs: 60_000, event: { type: 'response.completed', response: { status: 'completed', output: [] } } },
+    ]);
+
+    const settled = captureError(llm.chat([{ role: 'user', content: 'hi' }], []));
+    await vi.advanceTimersByTimeAsync(1000);
+    const error = await settled;
+
+    expectIdleTimeoutRejection(error, TIMEOUT_MS);
     expect(stream).toHaveBeenCalledTimes(1);
   });
 
@@ -339,6 +377,28 @@ describe('AnthropicLLM idle deadline', () => {
 
     expect(result.content).toBe(segments.join(''));
     expect(result.stopReason).toBe('end_turn');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let usage-only SSE events keep a stream alive', async () => {
+    const TIMEOUT_MS = 500;
+    const llm = createAnthropicUnderTest(TIMEOUT_MS, 3);
+
+    const fetchMock = stubAnthropicFetch([
+      { delayMs: 50, event: { type: 'message_start', message: { usage: { input_tokens: 3, output_tokens: 0 } } } },
+      { delayMs: 50, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '工具调用开始' } } },
+      ...Array.from({ length: 20 }, () => ({
+        delayMs: 100,
+        event: { type: 'message_delta', usage: { output_tokens: 1 } },
+      })),
+      { delayMs: 60_000, event: { type: 'message_stop' } },
+    ]);
+
+    const settled = captureError(llm.chat([{ role: 'user', content: 'hi' }], []));
+    await vi.advanceTimersByTimeAsync(1000);
+    const error = await settled;
+
+    expectIdleTimeoutRejection(error, TIMEOUT_MS);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

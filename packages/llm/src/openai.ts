@@ -18,6 +18,15 @@ import { emitRetryObservability } from './retry-observability.js';
 import { wrapReminder } from './reminder.js';
 import { normalizeApiBaseUrl } from './api-url.js';
 
+async function emitOpenAIComplete(charCount: number): Promise<void> {
+  try {
+    const { emitNotification, createLLMComplete } = await import('@agentdevjs/core');
+    emitNotification(createLLMComplete(charCount));
+  } catch {
+    // Ignore notification failures.
+  }
+}
+
 // 确保 HTTP 客户端基础设施（DNS 缓存、代理、连接池）在首次 fetch 前初始化
 let httpClientInitPromise: Promise<void> | null = null;
 function ensureHttpClientInitialized() {
@@ -313,9 +322,28 @@ export class OpenAILLM implements LLMClient {
 
         // 迭代流式响应
         for await (const chunk of stream) {
-          // 每收到一个 chunk 重置空闲计时：数据在流动就不算断连；首个数据把
-          // 计时从首段预算切换到间隔预算
-          deadline.touchData();
+          // 只有产生实际模型进展的 chunk 才能续命空闲 deadline。空 delta、仅
+          // usage 的尾块和网关心跳不代表模型仍在生成；否则这些无效块会让
+          // ReAct 循环永久停留在 llm.chat()，工具调用后的下一轮也无法开始。
+          const choice = chunk.choices[0];
+          const choiceDelta = choice?.delta;
+          const progressReasoningDelta = (choiceDelta as { reasoning_content?: string; reasoning?: string } | undefined)
+            ?.reasoning_content
+            || (choiceDelta as { reasoning?: string } | undefined)?.reasoning;
+          const hasToolCallProgress = choiceDelta?.tool_calls?.some(toolCall => Boolean(
+            toolCall.id
+            || toolCall.function?.name
+            || toolCall.function?.arguments,
+          )) ?? false;
+          const hasMeaningfulProgress = Boolean(
+            progressReasoningDelta
+            || choiceDelta?.content
+            || hasToolCallProgress,
+          );
+          if (hasMeaningfulProgress) {
+            // 首个有效进展把首段预算切换为后续 chunk 间隔预算。
+            deadline.touchData();
+          }
           // 在流式读取中检查中断信号
           throwIfAborted(signal);
 
@@ -443,6 +471,7 @@ export class OpenAILLM implements LLMClient {
           });
         }
 
+        await emitOpenAIComplete(content.length + reasoning.length);
         return {
           content,
           toolCalls,

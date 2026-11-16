@@ -688,10 +688,9 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, deadline: I
       // reader.read() 可能被 abort 中断后返回，检查是否需要提前退出
       throwIfAborted(signal);
       if (done) break;
-      // 每读到一段流数据重置空闲计时：数据在流动就不算断连；首个数据把
-      // 计时从首段预算切换到间隔预算
-      deadline.touchData();
-
+      // 仅在下面解析出携带实际模型进展的 SSE 事件后刷新 deadline。
+      // reader.read() 得到的 body 分片可能只是空白、心跳或半个 SSE 事件；
+      // 这些都不能阻止模型调用在真正无进展时超时。
       buffer += decoder.decode(value, { stream: true });
 
       let sep = findDoubleNewlineIndex(buffer);
@@ -701,6 +700,20 @@ async function readAnthropicStream(body: ReadableStream<Uint8Array>, deadline: I
         const event = parseSSEEvent(rawEvent);
         if (event) {
           applyEvent(event);
+          const hasMeaningfulProgress = event.type === 'content_block_delta'
+            ? Boolean(
+              event.delta?.text
+              || event.delta?.thinking
+              || event.delta?.partial_json
+              || (event.delta as { signature?: string } | undefined)?.signature,
+            )
+            : event.type === 'content_block_start'
+              ? event.content_block?.type === 'tool_use'
+                && Boolean(event.content_block.id || event.content_block.name)
+              : false;
+          if (hasMeaningfulProgress) {
+            deadline.touchData();
+          }
           const toolNames = Array.from(pendingToolUses.values()).map(t => t.name).filter(Boolean);
           await emitAnthropicProgress(
             phaseCharCount(currentPhase),

@@ -33,19 +33,21 @@ import {
 
 // ============ 提示词（以 claude-compact-prompts.js 为蓝本） ============
 
-const BASE_SUMMARY_PROMPT = `你的任务是为当前对话创建一份详细摘要，重点关注用户的明确请求和该 agent 之前采取的行动。
-这份摘要应保留恢复工作所需的任务连续性关键信息。
+const BASE_SUMMARY_PROMPT = `你的任务是为当前对话创建一份详细摘要，重点关注用户的明确请求、该 agent 采取的行动，以及下一代 agent 继续工作时不能靠猜测补齐的上下文。
+这份摘要应保留恢复工作所需的任务连续性关键信息；它是交接记录，不是对上一代 agent 的自我评价的无条件复述。
 
-按时间顺序分析对话：
+按时间顺序分析对话，并遵守以下记录规则：
 
-1. 识别用户的明确请求和意图
-2. 保留用户较为模糊的术语概念与情况表述，不做过多推测与转述
-3. 识别该 agent 的方法和关键决策，以及用户的反馈，特别注意该 agent 曾理解有误、或后续改变方向的用户反馈
-4. 记录与用户探讨的重要结论，以及最终放弃、或纠正某些决策的原因
-5. 记录当前讨论要点之于整个项目的层次，以及重要的技术概念、文件名、代码模式
-6. 记录遇到的错误及修复方式
+1. 识别用户的明确请求和意图；保留用户对范围、优先级、方向和交付标准的明确要求。
+2. 保留用户的观点、反馈和方向调整，特别是用户纠正了 agent 的理解、否定了某条路线，或明确要求改变推进方式的地方。
+3. 识别 agent 的方法和关键决策，但不要把计划、尝试、推测、已完成和已验证混写。对每项工作分别说明当前处于哪种状态。
+4. 记录重要结论时，绑定结论的主语、适用范围和依据：说明它涉及哪个对象、覆盖哪条链路或输入范围、依据是实际结果还是对话中的判断；如果只验证了局部，不得写成整体成立。
+5. 对“已完成”“已修复”“已验证”“测试通过”等状态保持证据边界：优先记录可核对的命令、结果、数字、样本范围或用户确认；只有 agent 的自我判断而没有相应证据时，明确写成“agent 判断/报告”，不要当作已证实事实。
+6. 记录关键技术概念、文件名、代码模式及它们在项目中的作用；解释机制时写清主体和作用域，避免只留下“每次”“全局”“已支持”这类没有对象的说法。
+7. 记录遇到的错误、修复方式和验证范围；同时保留重要的未解决问题、被否定的方向及放弃原因。
+8. 记录当前工作状态：摘要截断前正在处理什么、停在什么具体动作或判断上、哪些任务仍未完成。区分用户明确要求的下一步与 agent 自己提出的建议；若对推进节奏有明确的用户反馈，也保留该事实，但不要把 agent 的节奏判断伪装成用户要求。
 
-摘要使用以下十段式结构：
+摘要使用以下结构：
 
 1. 主要请求与意图
 2. 用户观点表态与方向调整
@@ -58,7 +60,7 @@ const BASE_SUMMARY_PROMPT = `你的任务是为当前对话创建一份详细摘
 9. 当前工作
 10. 可选的下一步
 
-摘要控制在 3000 个词以内，优先使用要点而非段落。`;
+第 4、6、8、9、10 节尤其要保留状态和边界，不要只写一个无条件的结论或建议清单。没有证据、没有待办或没有可选下一步时，明确写“未发现”或“不适用”，不要编造内容。摘要控制在 3000 个词以内，优先使用要点而非段落。`;
 
 const TRIM_APPENDED_SUMMARY_PROMPT = `你的任务是为当前对话创建一份详细摘要，留存其中的关键信息，并让摘要本身结构清晰、脉络连贯、可以独立阅读。
 
@@ -206,7 +208,7 @@ export interface SummaryExportPolicy {
 export function normalizeSummaryPolicy(rawPolicy: Record<string, unknown> = {}): SummaryExportPolicy {
   return {
     strategy: 'summarized-nine-section',
-    summaryShape: 'claude-nine-section-v1',
+    summaryShape: 'claude-nine-section-v2',
     maxAttempts: Number.isFinite(rawPolicy?.maxAttempts)
       ? Math.max(1, Math.min(5, Number(rawPolicy.maxAttempts)))
       : 3,
@@ -400,7 +402,7 @@ export class SummaryTransformation implements SessionTransformation {
       importantSkills: scanned.skills,
       fileRanges: scanned.fileRanges,
       meta: {
-        compilerVersion: 'summarized-nine-section-v1',
+        compilerVersion: 'summarized-nine-section-v2',
         seedKind: 'summary-message',
         mode: policy.strategy,
         summaryShape: policy.summaryShape,

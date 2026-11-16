@@ -50,6 +50,14 @@ describe('buildSummaryPrompt', () => {
     assert.ok(!prompt.includes('额外压缩指令'));
   });
 
+  it('requires evidence boundaries for status claims and conclusions', () => {
+    const prompt = buildSummaryPrompt({});
+    assert.ok(prompt.includes('绑定结论的主语、适用范围和依据'));
+    assert.ok(prompt.includes('已完成”“已修复”“已验证”“测试通过'));
+    assert.ok(prompt.includes('计划、尝试、推测、已完成和已验证'));
+    assert.ok(prompt.includes('主体和作用域'));
+  });
+
   it('appends additional instructions', () => {
     const prompt = buildSummaryPrompt({ additionalInstructions: 'focus on tests' });
     assert.ok(prompt.includes('额外压缩指令\nfocus on tests'));
@@ -252,6 +260,8 @@ describe('SummaryTransformation', () => {
     assert.ok(seed.seedMessages[0].content.includes('summary of work'));
     assert.deepEqual(seed.importantFiles, ['a.ts']);
     assert.equal((seed.meta as any).mode, 'summarized-nine-section');
+    assert.equal((seed.meta as any).summaryShape, 'claude-nine-section-v2');
+    assert.equal((seed.meta as any).compilerVersion, 'summarized-nine-section-v2');
   });
 
   it('declares seedBoundary: 全部产物为单一 summary 注入', async () => {

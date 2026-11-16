@@ -29,7 +29,7 @@ const resolutionValues = ['consumed', 'reissue', 'discard'] as const;
 type Resolution = (typeof resolutionValues)[number];
 
 type CommandSpec = {
-  status: WorkThreadCommandStatus;
+  status: WorkThreadCommand['status'];
   kind: string;
   deliveredAt: number | null;
 };
@@ -117,6 +117,11 @@ async function makeUnresolvedThread(root: string, text: string) {
     return draft;
   });
 
+  await thread.beginSessionHandoff({
+    threadId: started.threadId,
+    fromSessionId: 's-property',
+    seedContinuation: false,
+  });
   const committed = await thread.commitSessionSuccession({
     threadId: started.threadId,
     fromSessionId: 's-property',
@@ -227,6 +232,46 @@ describe('WorkThread succession properties', () => {
       }),
       { numRuns: 100 },
     );
+  });
+
+  it('recognizes only correctly scoped consumption evidence and is invariant to event ordering, duplicates and time translation', () => {
+    // Every generated command is a known eligible input by construction. The oracle
+    // does not reproduce the classifier's candidate filter or timestamp arithmetic.
+    const specsArb = fc.array(fc.record({ initiallySeen: fc.boolean(), laterSeen: fc.boolean() }), { minLength: 1, maxLength: 15 });
+    fc.assert(fc.property(specsArb, fc.integer({ min: 1, max: 1_000_000 }), fc.constantFrom(
+      'turn.started', 'turn.continued', 'turn.completed', 'turn.cancelled', 'turn.failed',
+    ), (specs, start, type) => {
+      const commands = specs.map((_, index) => ({
+        ...createCommandRecord({ threadId: 'evidence-thread', text: `work-${index}` }),
+        commandId: `cmd-${index}`, status: WorkThreadCommandStatus.DELIVERED, deliveredAt: start + index + 1,
+      }));
+      const known = specs.flatMap((spec, index) => spec.initiallySeen ? [`cmd-${index}`] : []);
+      const extended = specs.flatMap((spec, index) => spec.initiallySeen || spec.laterSeen ? [`cmd-${index}`] : []);
+      const classify = (events: SuccessionEvidence['events'], shift = 0) => classifyRetiredCommands({
+        commands: commands.map((command) => ({ ...command, deliveredAt: command.deliveredAt + shift })),
+        sessionChain: [{ sessionId: 'retired', startedAt: start + shift, endedAt: start + specs.length + 1 + shift }],
+      }, 'retired', { integrity: 'ok', events });
+      const event = (refs: string[]) => ({ sessionId: 'retired', event: { type, consumedSourceRefs: refs } });
+      const noise = [
+        { sessionId: 'other-session', event: { type, consumedSourceRefs: commands.map((c) => c.commandId) } },
+        { sessionId: 'retired', event: { type: 'runtime.stopped', sourceRef: commands[0].commandId } },
+        { sessionId: 'retired', event: { type, sourceRef: `${commands[0].commandId}-suffix` } },
+      ];
+      const initial = classify([event(known), ...noise]);
+      expect([...initial.consumedCommandIds].sort()).toEqual([...known].sort());
+      expect(ids(initial.undecidable.map((entry) => entry.command))).toEqual(
+        commands.filter((command) => !known.includes(command.commandId)).map((command) => command.commandId).sort(),
+      );
+      const expanded = classify([event(extended), ...noise]);
+      expect([...expanded.consumedCommandIds].sort()).toEqual([...extended].sort());
+      const partitioned = extended.map((sourceRef) => ({ sessionId: 'retired', event: { type, sourceRef } }));
+      const reordered = classify([...noise.slice().reverse(), event([]), ...partitioned.slice().reverse(), ...partitioned]);
+      expect(reordered).toEqual(expanded);
+      expect(classify([event(extended), ...noise], 10_000_000)).toEqual({
+        consumedCommandIds: expanded.consumedCommandIds,
+        undecidable: expanded.undecidable.map(({ command, reason }) => ({ command: { ...command, deliveredAt: command.deliveredAt! + 10_000_000 }, reason })),
+      });
+    }), { numRuns: 80 });
   });
 
   it('makes repeated reissue resolution return the one actual pending command', async () => {

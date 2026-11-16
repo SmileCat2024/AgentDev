@@ -1209,9 +1209,9 @@ export class WorkThread {
    * integrity 'unreadable'（瞬时读取失败）在本方法入口被拒绝（可重试
    * 409 evidence_unreadable），不进入分类。
    *
-   * 崩溃窗口：事务提交后、响应返回前进程死亡——调用方重试时 from 已不是
-   * head，handoff_completed 的 head CAS 守卫以 head_mismatch 拒绝（幂等），
-   * unresolved 与换头事实均已持久，无丢失窗口。
+   * 崩溃窗口：事务提交后、响应返回前进程死亡——原挡板已清，调用方直接
+   * 重试被 handoff_not_started 拒绝；若已开始另一笔接续，则仍受 head CAS
+   * 等守卫约束。unresolved 与换头事实已持久，不依赖重试补建。
    *
    * 强制发现通知（ADR-0047 阶段 2b）：自动接续传 composeNotice 回调时，
    * 本事务在 unresolved 创建后立即构造通知指令入箱（幂等键
@@ -1304,6 +1304,12 @@ export class WorkThread {
             throw Object.assign(
               new Error(`Session "${normalizedTo}" is already the head of workthread "${threadId}"`),
               { code: 'already_head', status: 409 },
+            );
+          }
+          if (result.reason === 'handoff_not_started') {
+            throw Object.assign(
+              new Error(`WorkThread "${threadId}" has no active session handoff`),
+              { code: 'handoff_not_started', status: 409 },
             );
           }
           throw Object.assign(

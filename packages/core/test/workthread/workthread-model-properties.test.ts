@@ -16,7 +16,7 @@ import {
   HANDOFF_STALE_MS,
   WorkThread,
 } from '../../src/core/workthread/core.js';
-import { WorkThreadRuntimeBridge } from '../../src/core/workthread/bridge.js';
+import { WorkThreadRuntimeBridge, type WorkThreadBridgeSubmitTurnParams } from '../../src/core/workthread/bridge.js';
 import {
   WorkThreadCommandStatus,
   type WorkThreadCommand,
@@ -47,7 +47,7 @@ type ModelCommand = {
   id: string;
   key: string;
   text: string;
-  status: WorkThreadCommandStatus;
+  status: WorkThreadCommand['status'];
   attempts: number;
   lastReason: string | null;
 };
@@ -115,7 +115,7 @@ function errorCode(error: unknown): string | null {
 function commandSnapshot(command: ModelCommand | WorkThreadCommand) {
   return {
     id: 'id' in command ? command.id : 'id',
-    key: command.key ?? command.idempotencyKey,
+    key: 'key' in command ? command.key : command.idempotencyKey,
     text: command.text,
     status: command.status,
     attempts: command.attempts,
@@ -302,11 +302,12 @@ function applyModel(model: ModelState, operation: Operation, deliveryMode: { val
   }
 }
 
-function makeBridge(mode: { value: DeliveryMode }): WorkThreadRuntimeBridge {
+function makeBridge(mode: { value: DeliveryMode }, submissions: WorkThreadBridgeSubmitTurnParams[]): WorkThreadRuntimeBridge {
   return new WorkThreadRuntimeBridge({
     enabled: true,
     resolveRuntimeViewerId: () => 'model-viewer',
-    submitTurn: async () => {
+    submitTurn: async (params) => {
+      submissions.push(structuredClone(params));
       if (mode.value === 'success') return { success: true };
       if (mode.value === 'retryable') throw new Error('temporary delivery failure');
       const error = Object.assign(new Error('fatal delivery failure'), {
@@ -370,7 +371,9 @@ async function applyReal(
         return null;
     }
   } catch (error) {
-    return errorCode(error);
+    const code = errorCode(error);
+    if (!code) throw error; // An unexpected exception is never equivalent to a successful model step.
+    return code;
   }
 }
 
@@ -384,7 +387,8 @@ describe('WorkThread model-based state machine properties', () => {
           const root = await mkdtemp(join(tmpdir(), 'agentdev-workthread-model-'));
           try {
             const deliveryMode = { value: 'success' as DeliveryMode };
-            let thread = new WorkThread({ store: new WorkThreadStore({ rootDir: root }), bridge: makeBridge(deliveryMode) });
+            const submissions: WorkThreadBridgeSubmitTurnParams[] = [];
+            let thread = new WorkThread({ store: new WorkThreadStore({ rootDir: root }), bridge: makeBridge(deliveryMode, submissions) });
             const started = await thread.start({ sessionRef: { agentId: THREAD_AGENT, sessionId: ROOT_SESSION } });
             const threadId = started.threadId;
             const model = makeModel();
@@ -392,6 +396,20 @@ describe('WorkThread model-based state machine properties', () => {
             const modelIds = new Map<string, string>();
 
             for (const [stepIndex, operation] of operations.entries()) {
+              // 观察公开投递边界，而非只比较最后落盘状态。相同时间戳的命令
+              // 按公开的 commandId 次序打破平局，不依赖模型的插入顺序。
+              const pendingIds = new Set(model.commands.filter((c) => c.status === 'pending').map((c) => c.id));
+              const before = await thread.getThread(threadId);
+              const shouldSubmit = operation.kind === 'deliver' && model.status !== 'closed' && !model.hold
+                && (!model.pendingSuccession || Date.now() - model.pendingSuccession.startedAt >= HANDOFF_STALE_MS);
+              const expectedSubmissions = shouldSubmit
+                ? [...(before?.commands ?? [])].filter((c) => pendingIds.has(modelIds.get(c.commandId) ?? ''))
+                  .sort((a, b) => a.createdAt - b.createdAt || (a.commandId < b.commandId ? -1 : 1))
+                : [];
+              if (deliveryMode.value === 'retryable') expectedSubmissions.splice(1);
+              const submissionOffset = submissions.length;
+              const expectedHead = model.headSessionId;
+              const expectedGeneration = model.chain.length;
               const expectedError = applyModel(model, operation, deliveryMode);
               const actualError = await applyReal(thread, threadId, operation, deliveryMode, commandIds);
 
@@ -404,11 +422,16 @@ describe('WorkThread model-based state machine properties', () => {
               }
 
               expect(actualError, `step ${stepIndex}: ${JSON.stringify(operation)}`).toBe(expectedError);
+              expect(submissions.slice(submissionOffset)).toEqual(expectedSubmissions.map((c) => ({
+                agentId: 'model-viewer', kind: 'user_message', text: c.text, source: 'thread',
+                sourceRef: c.commandId, sessionId: expectedHead,
+                commandIdentity: { commandId: c.commandId, threadId, headGeneration: expectedGeneration },
+              })));
               const record = await thread.getThread(threadId);
               assertEquivalent(model, record, modelIds);
 
               if (operation.kind === 'reload') {
-                thread = new WorkThread({ store: new WorkThreadStore({ rootDir: root }), bridge: makeBridge(deliveryMode) });
+                thread = new WorkThread({ store: new WorkThreadStore({ rootDir: root }), bridge: makeBridge(deliveryMode, submissions) });
                 const reloaded = await thread.getThread(threadId);
                 assertEquivalent(model, reloaded, modelIds);
               }
@@ -417,7 +440,7 @@ describe('WorkThread model-based state machine properties', () => {
             await rm(root, { recursive: true, force: true });
           }
         }),
-        { numRuns: 40, endOnFailure: true },
+        { numRuns: 40 },
       );
     } finally {
       vi.useRealTimers();

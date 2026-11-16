@@ -85,12 +85,25 @@ describe('commitSessionSuccession (ADR-0047 stage 2)', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('rejects a commit without a begun handoff with the actionable code and no disk changes', async () => {
+    const { store, thread } = makeThread(root);
+    const started = await thread.start({ sessionRef: { agentId: 'a1', sessionId: 'not-begun' } });
+    const before = await store.get(started.threadId);
+    await expect(thread.commitSessionSuccession({
+      threadId: started.threadId,
+      fromSessionId: 'not-begun',
+      toSessionId: 'not-begun-successor',
+    })).rejects.toMatchObject({ code: 'handoff_not_started', status: 409 });
+    expect(await new WorkThreadStore({ rootDir: root }).get(started.threadId)).toEqual(before);
+  });
+
   it('classifies all candidates consumed when every delivered command has a reliable reference', async () => {
     const { store, thread } = makeThread(root);
     const started = await thread.start({ sessionRef: { agentId: 'a1', sessionId: 's1' } });
     const appended = await thread.appendCommand({ threadId: started.threadId, text: 'do work' });
     await markDelivered(store, started.threadId, appended.command.commandId, Date.now());
 
+    await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: 's1', seedContinuation: false });
     const out = await thread.commitSessionSuccession({
       threadId: started.threadId,
       fromSessionId: 's1',
@@ -122,6 +135,7 @@ describe('commitSessionSuccession (ADR-0047 stage 2)', () => {
     await markDelivered(store, started.threadId, appended.command.commandId, deliveredAt);
 
     // 窗口可见（该棒有事件）但指令无可靠引用
+    await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: 's1', seedContinuation: false });
     const out = await thread.commitSessionSuccession({
       threadId: started.threadId,
       fromSessionId: 's1',
@@ -161,6 +175,7 @@ describe('commitSessionSuccession (ADR-0047 stage 2)', () => {
       const appended = await thread.appendCommand({ threadId: started.threadId, text: 'x' });
       await markDelivered(store, started.threadId, appended.command.commandId, Date.now());
 
+      await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: 's1', seedContinuation: false });
       const out = await thread.commitSessionSuccession({
         threadId: started.threadId,
         fromSessionId: 's1',
@@ -180,6 +195,7 @@ describe('commitSessionSuccession (ADR-0047 stage 2)', () => {
     const appended = await thread.appendCommand({ threadId: started.threadId, text: 'old bar work' });
     await markDelivered(store, started.threadId, appended.command.commandId, earlyBarStart);
 
+    await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: 's1', seedContinuation: false });
     const out = await thread.commitSessionSuccession({
       threadId: started.threadId,
       fromSessionId: 's1',
@@ -221,6 +237,7 @@ describe('commitSessionSuccession (ADR-0047 stage 2)', () => {
       const appended = await thread.appendCommand({ threadId: started.threadId, text: 'x' });
       await markDelivered(store, started.threadId, appended.command.commandId, Date.now());
 
+      await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: 's1', seedContinuation: false });
       await expect(thread.commitSessionSuccession({
         threadId: started.threadId,
         fromSessionId: 's1',
@@ -236,12 +253,13 @@ describe('commitSessionSuccession (ADR-0047 stage 2)', () => {
     }
   });
 
-  it('is idempotent on retry after a committed transaction: head_mismatch, no duplicate unresolved', async () => {
+  it('rejects retry after a committed transaction: no handoff and no duplicate unresolved', async () => {
     const { store, thread } = makeThread(root);
     const started = await thread.start({ sessionRef: { agentId: 'a1', sessionId: 's1' } });
     const appended = await thread.appendCommand({ threadId: started.threadId, text: 'x' });
     await markDelivered(store, started.threadId, appended.command.commandId, Date.now());
 
+    await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: 's1', seedContinuation: false });
     const first = await thread.commitSessionSuccession({
       threadId: started.threadId,
       fromSessionId: 's1',
@@ -256,7 +274,7 @@ describe('commitSessionSuccession (ADR-0047 stage 2)', () => {
       fromSessionId: 's1',
       toSessionId: 's2',
       evidence: { integrity: 'missing', events: [] },
-    })).rejects.toMatchObject({ code: 'head_mismatch' });
+    })).rejects.toMatchObject({ code: 'handoff_not_started' });
 
     const after = await store.get(started.threadId);
     expect(after?.headSessionId).toBe('s2');
@@ -283,6 +301,7 @@ describe('resolveUnresolved / listUnresolved (ADR-0047 stage 2)', () => {
       metadata: { tag },
     });
     await markDelivered(store, started.threadId, appended.command.commandId, Date.now());
+    await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: `s1-${tag}`, seedContinuation: false });
     const out = await thread.commitSessionSuccession({
       threadId: started.threadId,
       fromSessionId: `s1-${tag}`,
@@ -529,6 +548,7 @@ describe('composeNotice in-transaction notice (stage 2b review: crash window)', 
     const started = await thread.start({ sessionRef: { agentId: 'a1', sessionId: `s1-${tag}` } });
     const appended = await thread.appendCommand({ threadId: started.threadId, text: `payload ${tag}` });
     await markDelivered(store, started.threadId, appended.command.commandId, Date.now());
+    await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: `s1-${tag}`, seedContinuation: false });
     const out = await thread.commitSessionSuccession({
       threadId: started.threadId,
       fromSessionId: `s1-${tag}`,
@@ -559,6 +579,7 @@ describe('composeNotice in-transaction notice (stage 2b review: crash window)', 
     const appended = await thread.appendCommand({ threadId: started.threadId, text: 'payload throw' });
     await markDelivered(store, started.threadId, appended.command.commandId, Date.now());
     // composeNotice 抛错 = 整体失败：换头未发生、无 unresolved、无通知指令
+    await thread.beginSessionHandoff({ threadId: started.threadId, fromSessionId: 's1-throw', seedContinuation: false });
     await expect(thread.commitSessionSuccession({
       threadId: started.threadId,
       fromSessionId: 's1-throw',
@@ -581,7 +602,7 @@ describe('composeNotice in-transaction notice (stage 2b review: crash window)', 
 
   it('keeps unresolved persisted even when the caller crashes after commit (retry is CAS-rejected, facts survive)', async () => {
     const { thread, threadId } = await commitWithNotice('crash', () => ({ text: 'notice' }));
-    // 模拟调用方 commit 返回后崩溃重启，重试同一提交：head CAS 拒绝（幂等），
+    // 模拟调用方 commit 返回后崩溃重启，重试同一提交：挡板已清，拒绝再次提交，
     // 但持久事实（unresolved + 通知指令）已在此前事务中落盘——不依赖重试补建。
     await expect(thread.commitSessionSuccession({
       threadId,
@@ -589,7 +610,7 @@ describe('composeNotice in-transaction notice (stage 2b review: crash window)', 
       toSessionId: 's2-crash',
       evidence: { integrity: 'missing', events: [] },
       composeNotice: () => ({ text: 'duplicate notice' }),
-    })).rejects.toMatchObject({ code: 'head_mismatch' });
+    })).rejects.toMatchObject({ code: 'handoff_not_started' });
     const record = await thread.getThread(threadId);
     const notices = (record.commands || []).filter((c) => c.idempotencyKey === `succession-notice:${threadId}:s2-crash`);
     expect(notices).toHaveLength(1);
@@ -746,6 +767,7 @@ describe('evidence unreadable rejection (stage 2a review)', () => {
       const appended = await thread.appendCommand({ threadId: tid, text: 'do work', source: 'api' });
       await markDelivered(store, tid, appended.command.commandId, Date.now());
 
+      await thread.beginSessionHandoff({ threadId: tid, fromSessionId: 's1', seedContinuation: false });
       const err = await thread.commitSessionSuccession({
         threadId: tid,
         fromSessionId: 's1',

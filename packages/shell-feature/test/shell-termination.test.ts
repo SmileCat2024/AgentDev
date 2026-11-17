@@ -2,13 +2,12 @@
  * shell 工具终止收集与 <shell_metadata> 测试（ticket 024 / ADR-0005；bg 化后契约更新）
  *
  * 覆盖：
- * - bash/powershell 三态语义（bg 化后 bash 超时分支变化）：
- *   1) bash 超时 → 未配置 registry 时降级 kill + drain，结果含部分输出与
- *      元数据块（reason: timeout）；配置 registry 时转后台（bg-core.test 覆盖）
- *   2) 用户打断（signal aborted）→ kill + drain（reason: user），本轮由 react-loop 收尾
- *   3) 正常完成 → 干净输出，无元数据块
- * - bash 的 timeout 契约为固定预算（defaultMs=maxMs=20000，无 fromArg，
- *   对模型不可见不可调）；powershell 保持可调 fromArg（第一版不 bg 化）
+ * - bash/powershell 三态语义：
+ *   1) 未配置 registry 时，超时降级 kill + drain，结果含部分输出与元数据块；
+ *   2) 配置 registry 时，超时转后台且进程继续运行；
+ *   3) 用户打断（signal aborted）→ kill + drain，正常完成 → 干净输出。
+ * - bash/powershell 的 timeout 契约都为固定预算（无 fromArg，对模型不可见不可调）；
+ *   超预算不终止进程，转入共享后台任务表
  * - 元数据字段：terminated / reason / durationMs / exitCode(null when killed) /
  *   outputBytes / truncated / logPath（终止态无条件落盘）
  */
@@ -17,7 +16,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Agent } from '@agentdevjs/core';
+import { Agent, BackgroundAccess, isWithDisplayResult } from '@agentdevjs/core';
 import type { LLMClient, LLMResponse, Message, ToolExecutionContext, ToolTerminationReason } from '@agentdevjs/core';
 import {
   createShellCommandTool,
@@ -27,8 +26,17 @@ import {
 } from '../src/index.js';
 
 const workdir = mkdtempSync(join(tmpdir(), 'agentdev-shell-024-'));
-afterAll(() => {
-  rmSync(workdir, { recursive: true, force: true });
+afterAll(async () => {
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try {
+      rmSync(workdir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 });
 
 /** 构造模拟 executor 注入的 toolContext（ticket 023 合并 signal 契约）。 */
@@ -268,37 +276,57 @@ describe.skipIf(BASH_SKIP)('bash 终止收集与元数据（ticket 024）', () =
 // powershell 与 bash 逐项对齐
 // ===========================================================================
 
-describe('powershell 终止语义（第一版不 bg 化，保持 ticket 024 原契约）', () => {
-  it('工具契约：ps 保持可调 timeout（fromArg）；bash 为固定预算——刻意不对称', () => {
+describe('powershell 与 bash 的前台/后台语义对齐', () => {
+  it('工具契约：两者都使用不可调的固定前台预算', () => {
     const ps = createPowerShellTool('test ps', { workdir });
     expect(ps.name).toBe('powershell');
     expect(ps.render).toBeDefined();
-    expect(ps.timeout).toEqual({
-      defaultMs: 120_000,
-      maxMs: 600_000,
-      fromArg: 'timeout',
-    });
+    expect(ps.timeout).toEqual({ defaultMs: 20_000, maxMs: 20_000 });
     const bash = createShellCommandTool('test bash', { workdir });
-    expect(bash.timeout).toEqual({
-      defaultMs: 20_000,
-      maxMs: 20_000,
-    });
+    expect(bash.timeout).toEqual({ defaultMs: 20_000, maxMs: 20_000 });
   });
 
-  it.skipIf(PS_SKIP)('超时：部分输出 + 元数据块（reason=timeout），与 bash 同构', async () => {
-    const tool = createPowerShellTool('test ps', { workdir });
-    const ctx = makeContext({ terminateAfterMs: 300 });
-    const result = await tool.execute(
-      { command: `1..10 | ForEach-Object { "ps tick $_"; Start-Sleep -Milliseconds 250 }` },
-      ctx,
-    ) as string;
-
-    expect(result).toContain('ps tick');
-    const meta = parseMetadata(result);
-    expect(meta['terminated']).toBe('true');
-    expect(meta['reason']).toBe('timeout');
-    expect(meta['exitCode']).toBe('null');
-    expect(existsSync(String(meta['logPath']))).toBe(true);
+  it.skipIf(PS_SKIP)('超时：不终止 PowerShell，而是转入共享后台任务表', async () => {
+    let finalizedResolve!: () => void;
+    const finalized = new Promise<void>((resolve) => { finalizedResolve = resolve; });
+    const registry = new (await import('../src/index.js')).BgRegistry({
+      enableExitGuard: false,
+      observer: (event) => {
+        if (event.kind === 'finalized') finalizedResolve();
+      },
+    });
+    const access = new BackgroundAccess({
+      source: 'shell',
+      deliver: async () => {},
+      aggregationWindowMs: 1,
+      onWorkRelease: () => registry.trimDone(),
+    });
+    try {
+      const tool = createPowerShellTool('test ps', {
+        workdir,
+        psPath: findPowerShellPath()!,
+        timeoutMs: 200,
+        registry,
+        access,
+      });
+      const ctx = makeContext({ terminateAfterMs: 200 });
+      const raw = await tool.execute(
+        { command: `Start-Sleep -Milliseconds 1000; Write-Output ps-survived` },
+        ctx,
+      );
+      expect(isWithDisplayResult(raw)).toBe(true);
+      const result = raw as { text: string; display: { kind: string; taskId: string } };
+      expect(result.text).toContain('已转为后台任务');
+      expect(result.display.kind).toBe('bg-started');
+      const task = registry.get(result.display.taskId);
+      expect(task?.status).toBe('running');
+      expect(task?.command).toContain('ps-survived');
+      registry.kill(result.display.taskId);
+      await finalized;
+    } finally {
+      access.dispose();
+      registry.dispose();
+    }
   }, 15_000);
 
   it.skipIf(PS_SKIP)('用户打断：kill 后 resolve（reason=user），与 bash 同构', async () => {
@@ -326,7 +354,7 @@ describe('powershell 终止语义（第一版不 bg 化，保持 ticket 024 原�
 });
 
 // ===========================================================================
-// args.timeout 由 executor clamp（工具声明 fromArg 契约，计时归 executor）
+// 前台预算由 executor 注入 signal，工具只消费固定 timeout 契约
 // ===========================================================================
 
 describe('args.timeout clamp（ticket 023 executor 职责，工具侧仅声明契约）', () => {

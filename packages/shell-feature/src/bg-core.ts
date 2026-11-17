@@ -102,10 +102,19 @@ export interface BgTaskPace {
   quietAfterMs: number;
 }
 
+export interface BgInvocation {
+  execPath: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
+
 export interface BgSpawnOptions {
   workdir: string;
-  bashPath: string;
+  /** Bash 路径（默认 Bash invocation 使用；其他 Shell 可省略）。 */
+  bashPath?: string;
   resourceRoot: string;
+  /** 非 Bash 后端提供自己的命令到 argv 映射。 */
+  buildInvocation?: (command: string, opts: BgSpawnOptions) => BgInvocation;
 }
 
 export interface BgTaskSnapshot {
@@ -224,7 +233,8 @@ export type ForegroundOutcome =
 export function buildBashInvocation(
   command: string,
   opts: BgSpawnOptions,
-): { execPath: string; args: string[]; env: NodeJS.ProcessEnv } {
+): BgInvocation {
+  if (!opts.bashPath) throw new Error('Bash path is required for Bash background execution.');
   const resourceRoot = opts.resourceRoot.replace(/\\/g, '/');
   const bashrcPath = resourceRoot + '/.agentdev/bashrc';
   const normalizedCommand = rewriteWindowsNullRedirect(command);
@@ -249,7 +259,7 @@ export function spawnBackgroundProcess(
   command: string,
   opts: BgSpawnOptions,
 ): ChildProcess {
-  const inv = buildBashInvocation(command, opts);
+  const inv = (opts.buildInvocation ?? buildBashInvocation)(command, opts);
   const child = spawn(inv.execPath, inv.args, {
     cwd: opts.workdir,
     env: inv.env,

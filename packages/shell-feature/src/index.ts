@@ -298,6 +298,7 @@ export class ShellFeature implements AgentFeature {
   async getAsyncTools(ctx: FeatureInitContext): Promise<Tool[]> {
     const config = this.resolveShellConfig(ctx.featureConfig);
     const tools: Tool[] = [];
+    let backgroundToolsAdded = false;
 
     // ── Bash 工具（前台）+ 后台任务工具族 ──
     if (config.bashEnabled) {
@@ -346,12 +347,13 @@ export class ShellFeature implements AgentFeature {
         tools.push(createBgTuneTool(registry, access));
         tools.push(createBgWriteTool(registry));
         tools.push(createBgKillTool(registry));
+        backgroundToolsAdded = true;
       } else {
         console.warn('[shell] Bash is enabled but was not found on this system. Skipping Bash tool.');
       }
     }
 
-    // ── PowerShell 工具（前台语义保持现状：可调 timeout、超时打断） ──
+    // ── PowerShell 工具（与 Bash 对齐：固定前台预算，超时转后台） ──
     if (config.powershellEnabled) {
       const psPath = findPowerShellPath(config.powershellPath);
       if (psPath) {
@@ -363,12 +365,25 @@ export class ShellFeature implements AgentFeature {
             this.powershellDescription = '执行 PowerShell 命令';
           }
         }
+        const registry = this.ensureRegistry(ctx.agentId);
+        const access = this.ensureAccess(ctx.agentId, registry);
         tools.push(createPowerShellTool(this.powershellDescription, {
           workspaceDir: this.workspaceDir,
           workdir: this.workdir,
           resourceRoot: this.resourceRoot,
           psPath,
+          timeoutMs: config.defaultTimeoutMs,
+          registry,
+          access,
         }));
+        if (!backgroundToolsAdded) {
+          tools.push(createBgListTool(registry));
+          tools.push(createBgStatusTool(registry));
+          tools.push(createBgWatchTool(registry, access));
+          tools.push(createBgTuneTool(registry, access));
+          tools.push(createBgWriteTool(registry));
+          tools.push(createBgKillTool(registry));
+        }
       } else {
         console.warn('[shell] PowerShell is enabled but was not found on this system. Skipping PowerShell tool.');
       }
@@ -428,6 +443,7 @@ export type {
   BgTaskPace,
   BgTaskSnapshot,
   BgRegisterOptions,
+  BgInvocation,
   BgSpawnOptions,
   BgTaskStatus,
   BgTask,
@@ -445,7 +461,7 @@ export {
   createBgWatchTool,
   createBgWriteTool,
 } from './bg-tools.js';
-export { createPowerShellTool, runPowerShellCommand, findPowerShellPath } from './powershell.js';
+export { createPowerShellTool, runPowerShellCommand, findPowerShellPath, buildPowerShellInvocation } from './powershell.js';
 
 // 导出共享运行核心（供高级用户使用；截断落盘函数自 tools.ts 迁入，行为不变）
 export {

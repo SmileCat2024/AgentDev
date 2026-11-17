@@ -1214,7 +1214,7 @@ export class WorkThread {
    * 等守卫约束。unresolved 与换头事实已持久，不依赖重试补建。
    *
    * 强制发现通知（ADR-0047 阶段 2b）：自动接续传 composeNotice 回调时，
-   * 本事务在 unresolved 创建后立即构造通知指令入箱（幂等键
+   * 本事务按全部仍未结清的 unresolved 构造通知指令入箱（含前代遗留，幂等键
    * `succession-notice:<threadId>:<toSessionId>`）。通知与换头/unresolved
    * 同事务原子——不存在「已换头但通知未追加」的窗口（阶段 2b 审查发现：
    * 事务外追加在 commit 后崩溃会因 head CAS 拒绝重试而永不补建，未决项
@@ -1345,23 +1345,24 @@ export class WorkThread {
             reasons,
             commandIds: classification.undecidable.map((entry) => entry.command.commandId),
           });
+        }
 
-          // 强制发现通知与换头/unresolved 同事务：commit 后崩溃也不存在
-          // 「已换头、unresolved 已持久，但通知永不进入后继首轮」的窗口。
-          // 回调抛错 = 整体失败回滚（换头不发生），调用方重试。
-          if (typeof opts.composeNotice === 'function') {
-            const notice = opts.composeNotice(createdUnresolved);
-            if (notice && typeof notice.text === 'string' && notice.text.trim()) {
-              const noticeCommand = createCommandRecord({
-                threadId,
-                kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
-                text: notice.text,
-                source: 'thread_succession',
-                idempotencyKey: `succession-notice:${threadId}:${normalizedTo}`,
-              });
-              appendCommandToRecord(draft, noticeCommand);
-              pruneCommands(draft);
-            }
+        // 恢复责任来自全部未结清项，而非本次新增项：旧通知可能被变换裁掉，
+        // 也可能已投递但尚未消费。每个自动后继独立获得当前清单。
+        // 通知与换头同事务；构造失败回滚，手动免播不传回调。
+        const openUnresolved = openUnresolvedCommands(draft);
+        if (openUnresolved.length > 0 && typeof opts.composeNotice === 'function') {
+          const notice = opts.composeNotice(openUnresolved);
+          if (notice && typeof notice.text === 'string' && notice.text.trim()) {
+            const noticeCommand = createCommandRecord({
+              threadId,
+              kind: WorkThreadCommandKind.SYSTEM_CONTINUATION,
+              text: notice.text,
+              source: 'thread_succession',
+              idempotencyKey: `succession-notice:${threadId}:${normalizedTo}`,
+            });
+            appendCommandToRecord(draft, noticeCommand);
+            pruneCommands(draft);
           }
         }
 

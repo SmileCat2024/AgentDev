@@ -573,6 +573,81 @@ describe('composeNotice in-transaction notice (stage 2b review: crash window)', 
     expect(out.record.headSessionId).toBe('s2-txn');
   });
 
+  it('carries all still-open recovery items to each successor without reopening resolved items', async () => {
+    const { thread, threadId, out } = await commitWithNotice('carry', () => ({ text: 'first notice' }));
+    const originalId = out.unresolved[0].unresolvedId;
+    await thread.beginSessionHandoff({ threadId, fromSessionId: 's2-carry', seedContinuation: false });
+    const next = await thread.commitSessionSuccession({
+      threadId, fromSessionId: 's2-carry', toSessionId: 's3-carry',
+      evidence: { integrity: 'missing', events: [] },
+      composeNotice: items => ({ text: `open:${items.map(item => item.unresolvedId).join(',')}` }),
+    });
+    expect(next.unresolved).toEqual([]); // Public result remains this transaction's new items.
+    expect(next.record.commands?.find(c => c.idempotencyKey === `succession-notice:${threadId}:s3-carry`)?.text)
+      .toBe(`open:${originalId}`);
+    expect(await thread.listUnresolved(threadId)).toHaveLength(1);
+
+    await thread.resolveUnresolved({ threadId, unresolvedId: originalId, resolution: 'consumed' });
+    await thread.beginSessionHandoff({ threadId, fromSessionId: 's3-carry', seedContinuation: false });
+    const settled = await thread.commitSessionSuccession({
+      threadId, fromSessionId: 's3-carry', toSessionId: 's4-carry',
+      evidence: { integrity: 'missing', events: [] }, composeNotice: () => ({ text: 'must not be created' }),
+    });
+    expect(settled.record.commands?.some(c => c.idempotencyKey === `succession-notice:${threadId}:s4-carry`)).toBe(false);
+  });
+
+  it('notifies old and newly uncertain items together, excluding an explicitly discarded item', async () => {
+    const { store, thread } = makeThread(root);
+    const started = await thread.start({ sessionRef: { agentId: 'a1', sessionId: 'mixed-old' } });
+    const threadId = started.threadId;
+    for (const text of ['retain old', 'discard old']) {
+      const appended = await thread.appendCommand({ threadId, text });
+      await markDelivered(store, threadId, appended.command.commandId, Date.now());
+    }
+    await thread.beginSessionHandoff({ threadId, fromSessionId: 'mixed-old', seedContinuation: false });
+    const first = await thread.commitSessionSuccession({ threadId, fromSessionId: 'mixed-old', toSessionId: 'mixed-middle',
+      evidence: { integrity: 'missing', events: [] } });
+    const discarded = first.unresolved.find(u => u.text === 'discard old')!;
+    await thread.resolveUnresolved({ threadId, unresolvedId: discarded.unresolvedId, resolution: 'discard' });
+    const fresh = await thread.appendCommand({ threadId, text: 'retain new' });
+    await markDelivered(store, threadId, fresh.command.commandId, Date.now());
+    await thread.beginSessionHandoff({ threadId, fromSessionId: 'mixed-middle', seedContinuation: false });
+    const next = await thread.commitSessionSuccession({ threadId, fromSessionId: 'mixed-middle', toSessionId: 'mixed-last',
+      evidence: { integrity: 'missing', events: [] },
+      composeNotice: items => ({ text: items.map(u => u.text).join('|') }) });
+    expect(next.unresolved.map(u => u.text)).toEqual(['retain new']);
+    expect(next.record.commands?.find(c => c.idempotencyKey === `succession-notice:${threadId}:mixed-last`)?.text)
+      .toBe('retain old|retain new');
+    const fromDisk = await new WorkThreadStore({ rootDir: root }).get(threadId);
+    expect(fromDisk?.commands?.find(c => c.idempotencyKey === `succession-notice:${threadId}:mixed-last`)?.text)
+      .toBe('retain old|retain new');
+  });
+
+  it('leaves existing open items visible without creating an input for manual no-broadcast succession', async () => {
+    const { thread, threadId } = await commitWithNotice('carry-manual', () => ({ text: 'first notice' }));
+    await thread.beginSessionHandoff({ threadId, fromSessionId: 's2-carry-manual', seedContinuation: false });
+    const out = await thread.commitSessionSuccession({
+      threadId, fromSessionId: 's2-carry-manual', toSessionId: 's3-carry-manual',
+      evidence: { integrity: 'missing', events: [] },
+    });
+    expect(await thread.listUnresolved(threadId)).toHaveLength(1);
+    expect(out.record.commands?.some(c => c.idempotencyKey === `succession-notice:${threadId}:s3-carry-manual`)).toBe(false);
+  });
+
+  it('rolls back a later succession if composing the existing open-item notice fails', async () => {
+    const { thread, threadId } = await commitWithNotice('carry-throw', () => ({ text: 'first notice' }));
+    await thread.beginSessionHandoff({ threadId, fromSessionId: 's2-carry-throw', seedContinuation: false });
+    await expect(thread.commitSessionSuccession({
+      threadId, fromSessionId: 's2-carry-throw', toSessionId: 's3-carry-throw',
+      evidence: { integrity: 'missing', events: [] }, composeNotice: () => { throw new Error('carry notice failed'); },
+    })).rejects.toThrow('carry notice failed');
+    const after = await thread.getThread(threadId);
+    expect(after.headSessionId).toBe('s2-carry-throw');
+    expect(after.pendingSuccession).toBeTruthy();
+    expect(await thread.listUnresolved(threadId)).toHaveLength(1);
+    expect(after.commands?.some(c => c.idempotencyKey === `succession-notice:${threadId}:s3-carry-throw`)).toBe(false);
+  });
+
   it('rolls back the whole succession when composeNotice throws (no head advance, no unresolved)', async () => {
     const { store, thread } = makeThread(root);
     const started = await thread.start({ sessionRef: { agentId: 'a1', sessionId: 's1-throw' } });

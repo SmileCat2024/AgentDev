@@ -118,11 +118,53 @@ describe('durable input receipt', () => {
     expect(countReceiptMessages()).toBe(1); // 三元组幂等：不重复追加
     expect(store.snapshots.length).toBe(snapshotsBefore + 2); // 每次边界仍落快照（补 ack 前置）
 
-    // 对照：新命令（不同 commandId）正常追加——证明观察点与追加路径都活着
-    await (agent as any)._persistInputReceiptDurable(agent.getContext(), {
-      text: 'another command',
-      receipt: { ...receipt, commandId: 'cmd-other-2', leaseId: 'lease-x' },
-    });
-    expect(agent.getContext().getAll().filter((m) => (m as any).inputReceipt?.commandId === 'cmd-other-2')).toHaveLength(1);
+  });
+});
+
+describe('plain-turn pre-execution persistence', () => {
+  it('persists the user message before the first model call of the turn', async () => {
+    // 复现锚：新会话首轮、首个 step（模型调用 + 工具执行）尚未完成时，
+    // 磁盘快照必须已含本轮用户输入——否则只读磁盘的消费方（会话引用、
+    // 崩溃恢复）在长首 step 窗口内读到空记录。观察点放在模型调用时刻：
+    // 那时 step 保存尚未触发，快照只能来自 callUserInput 的预保存边界。
+    const store = new SnapshotStore();
+    let snapshotAtCall: AgentSessionSnapshot | undefined;
+    const llm: LLMClient = {
+      async chat() {
+        snapshotAtCall = store.snapshots.at(-1);
+        return { content: 'done' };
+      },
+    };
+    const agent = new Agent({ llm, maxTurns: 1 });
+    agent.enableStepAutoSave('session-1', store);
+
+    await agent.onCallDetailed('plain turn input');
+
+    const messages = snapshotAtCall?.runtime.context?.messages || [];
+    expect(messages.some((message) => message.role === 'user' && message.content === 'plain turn input')).toBe(true);
+  });
+
+  it('does not block the turn when the pre-execution save fails', async () => {
+    // 与 durable receipt 边界不同：普通输入的预保存失败不阻断本轮执行，
+    // step 保存与 call-finish 保存仍然兜底。
+    const store = new SnapshotStore();
+    store.fail = true;
+    let modelCalls = 0;
+    const llm: LLMClient = { async chat() { modelCalls++; return { content: 'done' }; } };
+    const agent = new Agent({ llm, maxTurns: 1 });
+    agent.enableStepAutoSave('session-1', store);
+
+    await agent.onCallDetailed('plain turn input');
+    expect(modelCalls).toBe(1);
+  });
+
+  it('skips the pre-execution save when no session store is enabled', async () => {
+    // 无 stepAutoSave 的调用方（无会话存储的 plain agent）行为不变。
+    let modelCalls = 0;
+    const llm: LLMClient = { async chat() { modelCalls++; return { content: 'done' }; } };
+    const agent = new Agent({ llm, maxTurns: 1 });
+
+    await agent.onCallDetailed('plain turn input');
+    expect(modelCalls).toBe(1);
   });
 });

@@ -653,6 +653,26 @@ class AgentBase {
         // no model/tool step may start until this write and the ack both succeed.
         await this.saveSession(sessionId, store);
         await options.acknowledgeInputReceipt(options.inputReceipt);
+      } else if (this._stepAutoSave) {
+        // Persist the plain user turn before the model/tool loop may execute.
+        // The step auto-save boundary fires only when a step COMPLETES (one
+        // model call + all of its tool executions); until the first step of
+        // the turn finishes, a fresh session's on-disk snapshot stays at its
+        // startup state, so record readers (session references, crash
+        // recovery) see an empty session while the turn is already running.
+        // Mirrors the durable-receipt boundary above (message + rollback
+        // checkpoint saved together) minus the acknowledgement; a failure
+        // here does not block the turn — step saves and the call-finish
+        // save still back it up.
+        const { sessionId, store } = this._stepAutoSave;
+        try {
+          await this.saveSession(sessionId, store);
+        } catch (error) {
+          this.logger.warn('Failed to persist user turn before execution', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       // ========== 初始化执行器（延迟初始化）==========
